@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { DashboardPage } from "./pages/DashboardPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -8,22 +9,20 @@ import { useContract } from "./hooks/useContract";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal } from "./lib/submit";
 
-type Page = "dashboard" | "history" | "settings";
-
 export default function App() {
-  const [page, setPage] = useState<Page>("dashboard");
   const [showCreate, setShowCreate] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
 
   const { proposals, owners, stats, loading, error, refresh } = useContract();
   const wallet = useWallet();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const currentPath = location.pathname;
 
   const activeProposals = proposals.filter((p) =>
     ["pending", "ready"].includes(p.status)
   );
-
- 
 
   async function withTx(fn: () => Promise<void>) {
     if (!wallet.address) {
@@ -54,10 +53,6 @@ export default function App() {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
   }
 
-  function handleGoHome() {
-    setPage("dashboard");
-  }
-
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
@@ -73,19 +68,22 @@ export default function App() {
           </div>
 
           <nav className="flex items-center gap-1">
-            {(["dashboard", "history", "settings"] as Page[]).map((navPage) => (
-              <button
-                key={navPage}
-                type="button"
-                onClick={() => setPage(navPage)}
+            {[
+              { label: "dashboard", to: "/" },
+              { label: "history", to: "/history" },
+              { label: "settings", to: "/settings" },
+            ].map(({ label, to }) => (
+              <Link
+                key={label}
+                to={to}
                 className={`text-sm px-3 py-1.5 rounded-lg capitalize transition-colors ${
-                  page === navPage
+                  currentPath === to
                     ? "bg-zinc-800 text-white"
                     : "text-zinc-500 hover:text-zinc-300"
                 }`}
               >
-                {navPage}
-              </button>
+                {label}
+              </Link>
             ))}
           </nav>
 
@@ -146,23 +144,32 @@ export default function App() {
           <div className="text-center py-16 text-zinc-500 text-sm">
             Loading contract data…
           </div>
-        ) : page === "dashboard" ? (
-          <DashboardPage
-            activeProposals={activeProposals}
-            owners={owners}
-            dashboardStats={stats}
-            walletAddress={wallet.address}
-            onApprove={handleApprove}
-            onExecute={handleExecute}
-            onCreateProposal={() => setShowCreate(true)}
-          />
-        ) : page === "history" ? (
-          <HistoryPage proposals={proposals} onApprove={handleApprove} />
         ) : (
-          <>
-          <NotFoundPage onGoHome={handleGoHome} />
-          <SettingsPage stats={stats} />
-          </>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <DashboardPage
+                  activeProposals={activeProposals}
+                  owners={owners}
+                  dashboardStats={stats}
+                  walletAddress={wallet.address}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                  onCreateProposal={() => setShowCreate(true)}
+                />
+              }
+            />
+            <Route
+              path="/history"
+              element={<HistoryPage proposals={proposals} onApprove={handleApprove} />}
+            />
+            <Route
+              path="/settings"
+              element={<SettingsPage stats={stats} />}
+            />
+            <Route path="*" element={<NotFoundPage onGoHome={() => navigate("/")} />} />
+          </Routes>
         )}
       </main>
 

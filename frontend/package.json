@@ -13,8 +13,10 @@
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^15.1.0",
     "@tailwindcss/vite": "^4.2.4",
+    "@types/react-router-dom": "^5.3.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-router-dom": "^7.18.0",
     "tailwindcss": "^4.2.4"
   },
   "devDependencies": {
