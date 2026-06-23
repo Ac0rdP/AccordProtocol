@@ -65,6 +65,7 @@ export default function App() {
               testnet
             </span>
           </div>
+     
 
           <nav className="flex items-center gap-1">
             {[
@@ -85,6 +86,7 @@ export default function App() {
               </Link>
             ))}
           </nav>
+
 
           {!wallet.installed ? (
             <a
