@@ -712,6 +712,62 @@ fn get_proposals_paged_returns_correct_window() {
     assert_eq!(page2.get(0).unwrap().id, 4);
 }
 
+#[test]
+fn get_proposals_paged_returns_empty_beyond_offset() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    for _ in 0..3_u32 {
+        client.create_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &1_000_000_i128,
+            &token_client.address,
+            &str(&env, "Test"),
+            &DEADLINE,
+        );
+    }
+    let page = client.get_proposals_paged(&10, &5);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
+fn get_total_proposals_counts_all_ever_created() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(1);
+    // Create 3 proposals
+    let id1 = client.create_proposal(
+        &owner_a,
+        &Address::generate(&env),
+        &1_000_000_i128,
+        &token_client.address,
+        &str(&env, "Proposal 1"),
+        &DEADLINE,
+    );
+    let id2 = client.create_proposal(
+        &owner_a,
+        &Address::generate(&env),
+        &1_000_000_i128,
+        &token_client.address,
+        &str(&env, "Proposal 2"),
+        &DEADLINE,
+    );
+    let _id3 = client.create_proposal(
+        &owner_a,
+        &Address::generate(&env),
+        &1_000_000_i128,
+        &token_client.address,
+        &str(&env, "Proposal 3"),
+        &DEADLINE,
+    );
+    
+    // Execute 2 of them
+    client.approve(&owner_a, &id1);
+    client.execute(&owner_b, &id1);
+    client.approve(&owner_a, &id2);
+    client.execute(&owner_c, &id2);
+    
+    // Check total count is still 3
+    assert_eq!(client.get_total_proposals(), 3);
+}
+
 // ─── Full Lifecycle ───────────────────────────────────────────────────────────
 
 #[test]
