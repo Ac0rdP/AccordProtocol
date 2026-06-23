@@ -754,6 +754,83 @@ fn full_lifecycle_2of3() {
     );
 }
 
+#[test]
+fn execute_fails_when_balance_insufficient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let owner_c = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client = token::Client::new(&env, &token_id.address());
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner_a.clone());
+    owners.push_back(owner_b.clone());
+    owners.push_back(owner_c.clone());
+    client.initialize(&owners, &2, &0);
+
+    // Do not mint any tokens to the contract — balance is zero.
+
+    let amount: i128 = 1_000_000;
+    let id = client.create_proposal(
+        &owner_a,
+        &recipient,
+        &amount,
+        &token_client.address,
+        &str(&env, "Insufficient balance"),
+        &DEADLINE,
+    );
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    // Execute should fail because the contract has no funds.
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+}
+
+#[test]
+fn create_proposal_rejects_at_limit() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Create exactly 50 proposals (MAX_ACTIVE_PROPOSALS).
+    for i in 0..50 {
+        client.create_proposal(
+            &owner_a,
+            &recipient,
+            &1_000_000_i128,
+            &token_client.address,
+            &str(&env, &format!("Proposal {}", i)),
+            &DEADLINE,
+        );
+    }
+
+    // The 51st proposal should be rejected with TooManyActiveProposals.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &recipient,
+            &1_000_000_i128,
+            &token_client.address,
+            &str(&env, "51st proposal"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::TooManyActiveProposals))
+    );
+}
+
 // ─── Deadline Edge Cases ──────────────────────────────────────────────────────
 
 #[test]
