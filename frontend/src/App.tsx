@@ -23,9 +23,7 @@ export default function App() {
     ["pending", "ready"].includes(p.status)
   );
 
-  const historyProposals = proposals.filter((p) =>
-    ["executed", "expired", "revoked"].includes(p.status)
-  );
+ 
 
   async function withTx(fn: () => Promise<void>) {
     if (!wallet.address) {
