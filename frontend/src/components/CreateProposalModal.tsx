@@ -14,6 +14,11 @@ type Props = {
   onSubmitted: () => void;
 };
 
+function truncateAddress(address: string | null) {
+  if (!address) return "Not connected";
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
 export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Props) {
   const defaultDeadline = () => {
     const d = new Date();
@@ -106,6 +111,21 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
         </div>
 
         <div className="space-y-4">
+          <div>
+            <label className="text-xs text-zinc-400 block mb-1.5">
+              Proposer
+            </label>
+            <div
+              className={`w-full border rounded-lg px-3 py-2.5 text-sm ${
+                walletAddress
+                  ? "bg-zinc-800/60 border-zinc-700/60 text-zinc-300 font-mono"
+                  : "bg-zinc-800/30 border-zinc-700/30 text-zinc-500"
+              } truncate`}
+            >
+              {truncateAddress(walletAddress)}
+            </div>
+          </div>
+
           <div>
             <label className="text-xs text-zinc-400 block mb-1.5">
               Recipient Address
