@@ -7,6 +7,10 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { useContract } from "./hooks/useContract";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
+import { ProposalCardSkeleton } from "./components/ProposalCardSkeleton";
+import { useEventPolling } from "./hooks/useEventPolling";
+
+type Page = "dashboard" | "history" | "settings" | "owners";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 export default function App() {
@@ -15,6 +19,27 @@ export default function App() {
   const [txPending, setTxPending] = useState(false);
 
   const wallet = useWallet();
+
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    if (!wallet.address) return;
+    try {
+      navigator.clipboard.writeText(wallet.address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore clipboard errors
+    }
+  }
+
+  const { proposals, owners, stats, loading, error, refresh } = useContract(wallet.address);
+  
+  useEventPolling(refresh, 5000);
+
+  const activeProposals = proposals.filter((p) =>
+    ["pending", "ready"].includes(p.status)
+  );
   const { proposals, owners, stats, loading, error, refresh } = useContract(wallet.address);
   const navigate = useNavigate();
   const location = useLocation();
@@ -68,6 +93,11 @@ export default function App() {
      
 
           <nav className="flex items-center gap-1">
+            {(["dashboard", "history", "owners", "settings"] as Page[]).map((navPage) => (
+              <button
+                key={navPage}
+                type="button"
+                onClick={() => setPage(navPage)}
             {[
               { label: "dashboard", to: "/" },
               { label: "history", to: "/history" },
@@ -141,6 +171,37 @@ export default function App() {
           </div>
         )}
 
+        {loading ? (
+          <div className="text-center py-16 text-zinc-500 text-sm">
+            Loading contract data…
+          </div>
+        ) : page === "dashboard" ? (
+          <DashboardPage
+            activeProposals={activeProposals}
+            owners={owners}
+            dashboardStats={stats}
+            walletAddress={wallet.address}
+            onApprove={handleApprove}
+            onExecute={handleExecute}
+            onRevoke={handleRevoke}
+            onCreateProposal={() => setShowCreate(true)}
+          />
+        ) : page === "history" ? (
+          <HistoryPage proposals={proposals} onApprove={handleApprove} />
+        ) : page === "owners" ? (
+          <OwnersPage
+            owners={owners}
+            threshold={parseInt(stats.find((s) => s.label === "Threshold")?.value.split(" ")[0] || "0")}
+            totalOwners={owners.length}
+          />
+        ) : page === "settings" ? (
+          <SettingsPage stats={stats} />
+        ) : (
+          <>
+          <NotFoundPage onGoHome={handleGoHome} />
+          <SettingsPage stats={stats} />
+          </>
+        )}
         <Routes>
           <Route
             path="/"

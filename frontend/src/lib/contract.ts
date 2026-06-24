@@ -121,3 +121,32 @@ export async function hasApproved(
   ]);
   return scValToNative(val) as boolean;
 }
+
+export async function getLatestLedger(): Promise<number> {
+  try {
+    const res = await server.getLatestLedger();
+    return res.sequence;
+  } catch (err) {
+    console.error("Failed to get latest ledger:", err);
+    throw err;
+  }
+}
+
+export async function getContractEvents(fromLedger: number): Promise<number> {
+  try {
+    const res = await server.getEvents({
+      startLedger: fromLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [CONTRACT_ID],
+        },
+      ],
+      limit: 100,
+    });
+    return res.latestLedger || fromLedger;
+  } catch (err) {
+    console.error("Failed to get contract events:", err);
+    return fromLedger;
+  }
+}
