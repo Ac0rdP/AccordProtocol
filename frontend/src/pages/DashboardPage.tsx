@@ -1,6 +1,7 @@
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
+import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -11,6 +12,8 @@ type DashboardPageProps = {
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
+  loading: boolean;
+  error: string | null;
 };
 
 export function DashboardPage({
@@ -22,6 +25,8 @@ export function DashboardPage({
   onExecute,
   onRevoke,
   onCreateProposal,
+  loading,
+  error,
 }: DashboardPageProps) {
   return (
     <>
@@ -30,7 +35,21 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
-
+       
+         {(error) && !loading && (
+          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => {
+               
+              }}
+              className="underline hover:text-red-300 ml-4 shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Active Proposals</h2>
         <button
@@ -43,15 +62,21 @@ export function DashboardPage({
       </div>
 
       <div className="space-y-3">
-        {activeProposals.length === 0 ? (
-          <p className="text-zinc-600 text-sm py-8 text-center">
-            No active proposals
-          </p>
+        {loading ? (
+          <>
+            <ProposalCardSkeleton />
+            <ProposalCardSkeleton />
+          </>
+        ) :  activeProposals.length === 0 ? (
+          <div className="text-center py-16 text-zinc-500 text-sm">
+            <p className="font-semibold mb-2">No active proposals</p>
+           
+          </div>
         ) : (
-          activeProposals.map((p) => (
+          activeProposals.map((proposal) => (
             <ProposalCard
-              key={p.id}
-              proposal={p}
+              key={proposal.id}
+              proposal={proposal}
               walletAddress={walletAddress}
               onApprove={onApprove}
               onExecute={onExecute}
