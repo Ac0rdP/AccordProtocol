@@ -250,7 +250,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
                       type="button"
                       onClick={() => setToken(symbol)}
                       aria-pressed={active}
-                      className={`rounded-lg border px-1.5 py-2 text-[10px] font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
+                      className={`rounded-lg border px-1.5 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
                         active
                           ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
                           : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"

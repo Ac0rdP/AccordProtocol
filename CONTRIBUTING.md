@@ -293,6 +293,21 @@ Use **GitHub Draft PRs** when you want early feedback on direction before the ch
 - Document **non-obvious invariants** (for example, threshold bounds, owner uniqueness) in comments near the code that enforces them.
 - Keep **error handling** explicit; use typed errors where the Soroban project pattern supports it.
 - Avoid **panics** on user-controlled inputs; return errors that tests can assert.
+- Run `cargo clippy -- -D warnings` before opening a PR and fix all lints it reports. You can enforce this automatically with a local pre-commit hook:
+
+  ```bash
+  # Create the hook file
+  cat > .git/hooks/pre-commit << 'EOF'
+  #!/usr/bin/env sh
+  set -e
+  cargo clippy -- -D warnings
+  EOF
+
+  # Make it executable
+  chmod +x .git/hooks/pre-commit
+  ```
+
+  The hook runs from the repository root on every `git commit` attempt and aborts the commit if any clippy warning is found.
 
 ### General
 
@@ -318,6 +333,18 @@ npm run build
 ```bash
 stellar contract test
 ```
+
+#### Updating snapshots
+
+Soroban tests may store **snapshot files** alongside the test source that capture expected contract output. When you make an **intentional** contract behaviour change a test may fail only because its stored snapshot no longer matches the new output — not because the logic is wrong.
+
+To regenerate all snapshot files in one pass, set the `UPDATE_EXPECT` environment variable when running the test suite:
+
+```bash
+UPDATE_EXPECT=1 stellar contract test
+```
+
+After regeneration, review each updated snapshot file to confirm the new output is correct, then **commit the updated snapshot files alongside your code change**. A PR that changes contract behaviour but omits the refreshed snapshots will fail CI.
 
 If your change touches both areas, run **both** frontend and contract commands and state that in the PR.
 

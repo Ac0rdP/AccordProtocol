@@ -10,7 +10,11 @@ const STATUS_STYLES: Record<ProposalStatus, string> = {
 
 export function StatusBadge({ status }: { status: ProposalStatus }) {
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${STATUS_STYLES[status]}`}>
+    <span
+      role="status"
+      aria-label={`Status: ${status}`}
+      className={`text-xs px-2 py-0.5 rounded-full font-mono ${STATUS_STYLES[status]}`}
+    >
       {status}
     </span>
   );

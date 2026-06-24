@@ -1,6 +1,6 @@
 export function ApprovalBar({ approvals, threshold }: { approvals: number; threshold: number }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" aria-label={`${approvals} of ${threshold} approvals`}>
       <div className="flex gap-1">
         {Array.from({ length: threshold }).map((_, i) => (
           <div

@@ -157,10 +157,28 @@ fn timelock_key() -> Symbol {
 
 // ─── TTL Constants ───────────────────────────────────────────────────────────
 
-const INSTANCE_BUMP: u32 = 518_400; // ~30 days in ledgers
-const INSTANCE_THRESHOLD: u32 = 17_280; // ~1 day
+// 518,400 ledgers ≈ 30 days at the current 5-second ledger close time.
+// 30 days covers the full proposal lifecycle (create → approve → execute) even
+// for slow-moving multisigs, while still expiring contracts that are genuinely
+// abandoned on a human-perceivable timescale. Matches PERSISTENT_BUMP so the
+// contract instance and all proposal data share the same expiry horizon.
+const INSTANCE_BUMP: u32 = 518_400;
 
+// When the instance entry's remaining TTL drops below this value (≈ 1 day),
+// the next contract call triggers a bump back to INSTANCE_BUMP. Keeping the
+// threshold at 1 day means rent is charged at most once per day rather than
+// on every transaction, minimising unnecessary fee payments.
+const INSTANCE_THRESHOLD: u32 = 17_280;
+
+// Matches INSTANCE_BUMP so that each proposal and approval LedgerEntry expires
+// on the same 30-day schedule as the contract instance. Without this alignment
+// the instance could remain live while individual proposals silently expire and
+// become unrecoverable from ledger state.
 const PERSISTENT_BUMP: u32 = 518_400;
+
+// Mirrors INSTANCE_THRESHOLD: bump a persistent entry only when its TTL falls
+// below 1 day. For frequently accessed proposals this keeps per-call rent costs
+// low while ensuring no entry expires mid-workflow.
 const PERSISTENT_THRESHOLD: u32 = 17_280;
 
 fn bump_instance(env: &Env) {

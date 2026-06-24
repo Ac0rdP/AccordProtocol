@@ -90,6 +90,7 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => onApprove(proposal.id)}
+              aria-label={connected ? `Approve proposal #${proposal.id}` : `Connect and approve proposal #${proposal.id}`}
               className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
               {connected ? "Approve" : "Connect & Approve"}
@@ -100,6 +101,7 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => onRevoke(proposal.id)}
+              aria-label={`Revoke approval for proposal #${proposal.id}`}
               className="text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
               Revoke
@@ -110,9 +112,9 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => onExecute(proposal.id)}
+              aria-label={`Execute proposal #${proposal.id}`}
               className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               onClick={() => setAwaitingConfirmation(true)}
-              className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50"
             >
               Execute
             </button>
