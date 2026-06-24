@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { Proposal } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
+import { Copy, Check } from "lucide-react";
 
 type ProposalCardProps = {
   proposal: Proposal;
@@ -17,6 +19,22 @@ export function ProposalCard({
 }: ProposalCardProps) {
   const connected = !!walletAddress;
 
+  // Logic to copy the address to clipboard and show a temporary "copied/checked" icon
+  const [copied, setCopied] = useState(false);
+
+  const copyAddress = async (address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+
+      setTimeout(() => {
+        setCopied(false);
+      }, 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
+
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
       <div className="flex items-start justify-between mb-3">
@@ -30,6 +48,26 @@ export function ProposalCard({
           <p className="text-zinc-500 text-sm font-mono mt-0.5">
             → {proposal.to}
           </p>
+          {/* The proposer's address */}
+          <div className="flex items-center gap-2 mt-0.5">
+            <p className="text-zinc-500 text-sm font-mono">
+              Proposed by → {proposal.proposer.slice(0, 6)}...
+              {proposal.proposer.slice(-4)}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => copyAddress(proposal.proposer)}
+              className="text-zinc-500 hover:text-zinc-700 transition-colors cursor-pointer"
+              title={copied ? "Copied!" : "Copy address"}
+            >
+              {copied ? (
+                <Check size={16} className="text-green-500" />
+              ) : (
+                <Copy size={16} />
+              )}
+            </button>
+          </div>
           {proposal.description && (
             <p className="text-zinc-500 text-xs mt-1.5 leading-relaxed max-w-sm">
               {proposal.description}

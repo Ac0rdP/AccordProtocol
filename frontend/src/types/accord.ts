@@ -11,6 +11,7 @@ export type Proposal = {
   status: ProposalStatus;
   deadline: string;
   createdAt: string;
+  proposer: string;
 };
 
 export type Owner = {

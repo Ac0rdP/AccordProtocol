@@ -164,8 +164,10 @@ export default function App() {
             onApprove={handleApprove}
           />
         ) : (
-          <NotFoundPage onGoHome={handleGoHome} />
-          <SettingsPage stats={stats} />
+          <>
+            <NotFoundPage onGoHome={handleGoHome} />
+            <SettingsPage stats={stats} />
+          </>
         )}
       </main>
 

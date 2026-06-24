@@ -16,6 +16,7 @@ export const MOCK_PROPOSALS: Proposal[] = [
     status: "pending",
     deadline: "Jun 18, 2026",
     createdAt: "2 hours ago",
+    proposer: "GDDFAP2K7TGZNUP6QIFMIHAAWEHCWRH5F5RTADZL3CQSIX3YGVZKKLJX",
   },
   {
     id: 2,
@@ -28,6 +29,7 @@ export const MOCK_PROPOSALS: Proposal[] = [
     status: "ready",
     deadline: "Jun 20, 2026",
     createdAt: "5 hours ago",
+    proposer: "GBUGRXDZQW7OHCAKP7HEYKKED37KCPX4EFOMJAAV3YTOP6XBITYCP3PY",
   },
   {
     id: 3,
@@ -40,6 +42,7 @@ export const MOCK_PROPOSALS: Proposal[] = [
     status: "executed",
     deadline: "Jun 12, 2026",
     createdAt: "1 day ago",
+    proposer: "GAWAKDVEI4XDMLOZYPN3FDWWDGQKEWJUNIV4EBKYCGYEGNXTTX2SWXMV",
   },
   {
     id: 4,
@@ -50,6 +53,7 @@ export const MOCK_PROPOSALS: Proposal[] = [
     approvals: 1,
     threshold: 3,
     status: "expired",
+    proposer: "GD62IF65CKHWTJME4LEFR6TYVFDQAG2BG4I27SYRC3AQXKM6ZRPHCFLH",
     deadline: "Jun 8, 2026",
     createdAt: "3 days ago",
   },
