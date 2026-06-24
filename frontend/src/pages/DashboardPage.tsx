@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
@@ -28,6 +29,17 @@ export function DashboardPage({
   loading,
   error,
 }: DashboardPageProps) {
+  const readyCount = activeProposals.filter((p) => p.status === "ready").length;
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const prevReadyCount = useRef(readyCount);
+
+  useEffect(() => {
+    if (readyCount > prevReadyCount.current) {
+      setBannerDismissed(false);
+    }
+    prevReadyCount.current = readyCount;
+  }, [readyCount]);
+
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
@@ -50,6 +62,21 @@ export function DashboardPage({
             </button>
           </div>
         )}
+      {readyCount > 0 && !bannerDismissed && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
+          <span>
+            {readyCount} {readyCount === 1 ? "proposal is" : "proposals are"} ready to execute.
+          </span>
+          <button
+            type="button"
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss"
+            className="hover:text-emerald-300 ml-4 shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Active Proposals</h2>
         <button
