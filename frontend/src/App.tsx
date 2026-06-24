@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { CreateProposalModal } from "./components/CreateProposalModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { DashboardPage } from "./pages/DashboardPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { HistoryPage } from "./pages/HistoryPage";
@@ -7,17 +8,10 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { useContract } from "./hooks/useContract";
 import { useWallet } from "./hooks/useWallet";
-<<<<<<< feature/wallet-ui-and-token-validation-23-26-30-34
-import { approveProposal, executeProposal } from "./lib/submit";
+import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
+import type { Proposal, ProposalStatus } from "./types/accord";
 
 type Page = "dashboard" | "history" | "settings" | "owners";
-import { ProposalCardSkeleton } from "./components/ProposalCardSkeleton";
-=======
-// CHANGE 1: Import revokeProposal from submit.ts
-import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
-
-type Page = "dashboard" | "history" | "settings";
->>>>>>> main
 
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -26,7 +20,6 @@ export default function App() {
   const [txPending, setTxPending] = useState(false);
 
   const wallet = useWallet();
-<<<<<<< feature/wallet-ui-and-token-validation-23-26-30-34
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
@@ -39,19 +32,18 @@ export default function App() {
       // ignore clipboard errors
     }
   }
-  const navigate = useNavigate();
-  const location = useLocation();
-  const currentPath = location.pathname;
-=======
-  // CHANGE 2: Pass wallet.address into useContract so it can fetch userHasApproved
-  const { proposals, owners, stats, loading, error, refresh } = useContract(wallet.address);
->>>>>>> main
+
+  const { proposals, owners, stats, loading, error, refresh, optimisticUpdate } =
+    useContract(wallet.address);
 
   const activeProposals = proposals.filter((p) =>
     ["pending", "ready"].includes(p.status)
   );
 
-  async function withTx(fn: () => Promise<void>) {
+  async function withTx(
+    fn: () => Promise<void>,
+    optimisticPatch?: { id: number; patch: Partial<Proposal> }
+  ) {
     if (!wallet.address) {
       await wallet.connect();
       return;
@@ -60,25 +52,54 @@ export default function App() {
     setTxError(null);
     setTxPending(true);
 
+    if (optimisticPatch) {
+      optimisticUpdate(optimisticPatch.id, optimisticPatch.patch);
+    }
+
     try {
       await fn();
       refresh();
     } catch (e) {
+      refresh();
       setTxError(e instanceof Error ? e.message : "Transaction failed");
     } finally {
       setTxPending(false);
     }
   }
 
-  const handleApprove = (id: number) =>
-    withTx(() => approveProposal(wallet.address!, id));
+  const handleApprove = (id: number) => {
+    const proposal = proposals.find((p) => p.id === id);
+    if (!proposal) return withTx(() => approveProposal(wallet.address!, id));
+    const newApprovals = proposal.approvals + 1;
+    const newStatus: ProposalStatus =
+      newApprovals >= proposal.threshold && proposal.status === "pending"
+        ? "ready"
+        : proposal.status;
+    return withTx(() => approveProposal(wallet.address!, id), {
+      id,
+      patch: { approvals: newApprovals, status: newStatus, userHasApproved: true },
+    });
+  };
 
   const handleExecute = (id: number) =>
-    withTx(() => executeProposal(wallet.address!, id));
+    withTx(() => executeProposal(wallet.address!, id), {
+      id,
+      patch: { status: "executed" as ProposalStatus },
+    });
 
-  // CHANGE 3: Create the handleRevoke function
-  const handleRevoke = (id: number) =>
-    withTx(() => revokeProposal(wallet.address!, id));
+  const handleRevoke = (id: number) => {
+    const proposal = proposals.find((p) => p.id === id);
+    if (!proposal) return withTx(() => revokeProposal(wallet.address!, id));
+    const newApprovals = Math.max(0, proposal.approvals - 1);
+    const newStatus: ProposalStatus =
+      proposal.status === "ready" && newApprovals < proposal.threshold
+        ? "pending"
+        : proposal.status;
+    return withTx(() => revokeProposal(wallet.address!, id), {
+      id,
+      patch: { approvals: newApprovals, status: newStatus, userHasApproved: false },
+    });
+  };
 
   function shortenAddr(addr: string) {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -91,7 +112,6 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
-        {/* ... (Keep your existing header code exactly the same) ... */}
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-7 h-7 rounded-lg bg-emerald-500 flex items-center justify-center text-xs font-bold text-black">
@@ -104,26 +124,11 @@ export default function App() {
           </div>
 
           <nav className="flex items-center gap-1">
-<<<<<<< feature/wallet-ui-and-token-validation-23-26-30-34
             {(["dashboard", "history", "owners", "settings"] as Page[]).map((navPage) => (
-=======
-            {(["dashboard", "history", "settings"] as Page[]).map((navPage) => (
->>>>>>> main
               <button
                 key={navPage}
                 type="button"
                 onClick={() => setPage(navPage)}
-<<<<<<< feature/wallet-ui-and-token-validation-23-26-30-34
-            {[
-              { label: "dashboard", to: "/" },
-              { label: "history", to: "/history" },
-              { label: "settings", to: "/settings" },
-            ].map(({ label, to }) => (
-              <Link
-                key={label}
-                to={to}
-=======
->>>>>>> main
                 className={`text-sm px-3 py-1.5 rounded-lg capitalize transition-colors ${
                   page === navPage
                     ? "bg-zinc-800 text-white"
@@ -213,38 +218,34 @@ export default function App() {
             Loading contract data…
           </div>
         ) : page === "dashboard" ? (
-          <DashboardPage
-            activeProposals={activeProposals}
-            owners={owners}
-            dashboardStats={stats}
-            walletAddress={wallet.address}
-            onApprove={handleApprove}
-            onExecute={handleExecute}
-            onRevoke={handleRevoke} /* CHANGE 4: Pass the handleRevoke function down to the Dashboard */
-            onCreateProposal={() => setShowCreate(true)}
-          />
+          <ErrorBoundary>
+            <DashboardPage
+              activeProposals={activeProposals}
+              owners={owners}
+              dashboardStats={stats}
+              walletAddress={wallet.address}
+              onApprove={handleApprove}
+              onExecute={handleExecute}
+              onRevoke={handleRevoke}
+              onCreateProposal={() => setShowCreate(true)}
+            />
+          </ErrorBoundary>
         ) : page === "history" ? (
-          <HistoryPage proposals={proposals} onApprove={handleApprove} />
-<<<<<<< feature/wallet-ui-and-token-validation-23-26-30-34
+          <ErrorBoundary>
+            <HistoryPage proposals={proposals} onApprove={handleApprove} />
+          </ErrorBoundary>
         ) : page === "owners" ? (
           <OwnersPage
             owners={owners}
-            threshold={parseInt(stats.find((s) => s.label === "Threshold")?.value.split(" ")[0] || "0")}
+            threshold={parseInt(
+              stats.find((s) => s.label === "Threshold")?.value.split(" ")[0] || "0"
+            )}
             totalOwners={owners.length}
-          />
-          <HistoryPage
-            historyProposals={historyProposals}
-            onApprove={handleApprove}
           />
         ) : page === "settings" ? (
           <SettingsPage stats={stats} />
-=======
->>>>>>> main
         ) : (
-          <>
           <NotFoundPage onGoHome={handleGoHome} />
-          <SettingsPage stats={stats} />
-          </>
         )}
       </main>
 

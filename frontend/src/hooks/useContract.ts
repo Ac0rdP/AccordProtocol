@@ -16,6 +16,7 @@ type ContractState = {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  optimisticUpdate: (id: number, patch: Partial<Proposal>) => void;
 };
 
 export function useContract(walletAddress: string | null): ContractState {
@@ -27,6 +28,15 @@ export function useContract(walletAddress: string | null): ContractState {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
+
+  const optimisticUpdate = useCallback(
+    (id: number, patch: Partial<Proposal>) => {
+      setProposals((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, ...patch } : p))
+      );
+    },
+    []
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -103,5 +113,5 @@ export function useContract(walletAddress: string | null): ContractState {
     };
   }, [tick, walletAddress]);
 
-  return { proposals, owners, stats, loading, error, refresh };
+  return { proposals, owners, stats, loading, error, refresh, optimisticUpdate };
 }
