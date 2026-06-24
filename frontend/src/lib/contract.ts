@@ -7,6 +7,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { Proposal, ProposalStatus } from "../types/accord";
+import { stroopsToDisplay } from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
 const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
@@ -47,13 +48,6 @@ function mapStatus(raw: unknown): ProposalStatus {
   return "pending";
 }
 
-function formatAmount(raw: bigint): string {
-  // Soroban token amounts use 7 decimal places (Stellar standard).
-  const whole = raw / 10_000_000n;
-  const frac = raw % 10_000_000n;
-  if (frac === 0n) return whole.toLocaleString();
-  return `${whole.toLocaleString()}.${frac.toString().padStart(7, "0").replace(/0+$/, "")}`;
-}
 
 function formatDeadline(ts: bigint): string {
   return new Date(Number(ts) * 1000).toLocaleDateString("en-US", {
@@ -72,7 +66,7 @@ export function mapProposal(raw: any, threshold: number): Proposal {
   return {
     id: Number(raw.id),
     to: shortenAddr(String(raw.to)),
-    amount: formatAmount(BigInt(raw.amount)),
+    amount: stroopsToDisplay(BigInt(raw.amount)),
     token: shortenAddr(String(raw.token)),
     description: String(raw.description),
     approvals: Number(raw.approvals),

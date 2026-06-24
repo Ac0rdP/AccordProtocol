@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createProposal } from "../lib/submit";
-
+import { displayToStroops } from "../lib/soroban";
 // Testnet token addresses — swap for mainnet when ready
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -44,8 +44,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
       return;
     }
 
-    // Stellar uses 7 decimal places: 1 XLM = 10_000_000 stroops
-    const amountStroops = BigInt(Math.round(amountNum * 10_000_000));
+    const amountStroops = displayToStroops(amountNum);
 
     // Deadline: 7 days from now (Unix seconds)
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 7 * 24 * 3600);
