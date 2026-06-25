@@ -40,6 +40,14 @@ jobs:
         run: |
           stellar contract build --release
 
+      - name: Upload compiled WASM artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: accord-contract-wasm
+          path: target/wasm32-unknown-unknown/release/*.wasm
+          retention-days: 90
+
       - name: Report WASM file sizes
         run: |
           python3 -c '

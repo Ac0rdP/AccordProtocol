@@ -21,6 +21,22 @@ Read the [README](../README.md) and [Architecture](./ARCHITECTURE.md) for produc
 
 ---
 
+## Your First Contribution
+
+This checklist is designed for first-time contributors to help you get started quickly and smoothly. It links to the more detailed sections below for further guidance.
+
+- [ ] Read the [Architecture](./ARCHITECTURE.md) and [Setup](./SETUP.md) documentation.
+- [ ] Clone the repository or fork it to your local machine.
+- [ ] Run the installation commands as detailed in the [Development Setup](#development-setup) / [SETUP.md](./SETUP.md).
+- [ ] Verify that your local builds succeed.
+- [ ] Find an issue to work on (look for `good first issue`) via [Finding Work](#finding-work).
+- [ ] Create a new branch following the conventions in [Branching and Commits](#branching-and-commits).
+- [ ] Make your change and ensure it is as small as possible to satisfy the issue.
+- [ ] Run local checks and tests (see [Testing](#testing)).
+- [ ] Open a Pull Request and respond to feedback.
+
+---
+
 ## Ways to Contribute
 
 | Area | Examples |

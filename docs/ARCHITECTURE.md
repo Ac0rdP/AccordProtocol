@@ -198,7 +198,18 @@ rent_fee_stroops = ceil(entry_size_bytes / 1024) × fee_rate_1kb × delta_ledger
 
 > These figures use a fee rate of 1 stroop/KB/ledger. Verify the current network value before capacity-planning large deployments; the rate is adjustable via Stellar governance.
 
-### Bump-on-Access Strategy
+### Bump-on-Access Strategy and Configuration
+
+The contract defines the following TTL values for its storage entries:
+- **`INSTANCE_BUMP`**: 518,400 ledgers (≈ 30 days)
+- **`INSTANCE_THRESHOLD`**: 17,280 ledgers (≈ 1 day)
+- **`PERSISTENT_BUMP`**: 518,400 ledgers (≈ 30 days)
+- **`PERSISTENT_THRESHOLD`**: 17,280 ledgers (≈ 1 day)
+
+**Instance storage** bumps on mutating calls, extending the lifetime of the core contract state (`INIT`, `THRESH`, `NEXT`, `ACTCNT`, `TLOCK`). 
+**Persistent storage** bumps per-entry on read or write, meaning that each proposal and approval entry maintains its own independent TTL.
+
+> **Guidance Note**: The bump target must account for the 90-day maximum proposal duration. While the default bump is only 30 days (`518,400` ledgers), this 30-day bump functions correctly only because entries are re-bumped upon access. A proposal with a 90-day deadline will not expire prematurely as long as it is interacted with (read or written) at least once every 30 days.
 
 Every read or write of a storage entry calls `extend_ttl` with a **threshold** and a **bump**:
 

@@ -25,6 +25,7 @@ const NAV_ITEMS = [
   { label: "history", to: "/app/history" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
+  { label: "docs", to: "/docs" },
 ];
 
 type OptimisticPatch = {
@@ -36,6 +37,7 @@ export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
+  const [isStale, setIsStale] = useState(false);
 
   const wallet = useWallet();
   const navigate = useNavigate();
@@ -50,6 +52,7 @@ export default function App() {
     error,
     refresh,
     optimisticUpdate,
+    lastSuccessAt,
   } = useContract(wallet.address);
 
   useEventPolling(refresh, 5000);
@@ -64,6 +67,17 @@ export default function App() {
       setTxError("Wallet disconnected. Please reconnect and try again.");
     }
   }, [wallet.address, txPending]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (lastSuccessAt) {
+        setIsStale(Date.now() - lastSuccessAt > 60000);
+      } else {
+        setIsStale(false);
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [lastSuccessAt]);
 
   const activeProposals = proposals.filter((proposal) =>
     ["pending", "ready"].includes(proposal.status),
@@ -164,7 +178,6 @@ export default function App() {
         <div className="mx-auto flex max-w-4xl items-center justify-between">
           <Link
             to="/"
-            className="flex items-center gap-3 hover:opacity-80 transition-opacity"
             className="flex items-center gap-3 transition-opacity hover:opacity-80"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-xs font-bold text-black">
@@ -181,7 +194,6 @@ export default function App() {
               <Link
                 key={label}
                 to={to}
-                className={`rounded-lg px-3 py-1.5 text-sm capitalize transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
                 className={`rounded-lg px-3 py-1.5 text-sm capitalize transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400 ${
                   location.pathname === to ||
                   (to === "/app" && location.pathname === "/app/")
@@ -225,6 +237,12 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-4xl px-6 py-8">
+        {isStale && !loading && (
+          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400 font-medium">
+            Data may be out of date — last updated over 60 seconds ago.
+          </div>
+        )}
+
         {txError && (
           <div className="mb-6 flex items-center justify-between rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
             <span>{txError}</span>
@@ -242,14 +260,10 @@ export default function App() {
         )}
 
         {wallet.networkMismatch && (
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-amber-400">
+          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
             Your wallet network does not match this app. Expected network:{" "}
             {import.meta.env.VITE_NETWORK_PASSPHRASE}. Switch Freighter network
             to continue.
-          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
-            Your wallet network does not match this app. Expected network:{" "}
-            {import.meta.env.VITE_NETWORK_PASSPHRASE}. Switch Freighter network to
-            continue.
           </div>
         )}
 

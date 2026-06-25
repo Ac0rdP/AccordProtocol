@@ -18,6 +18,7 @@ type ContractState = {
   error: string | null;
   refresh: () => void;
   optimisticUpdate: (id: number, patch: Partial<Proposal>) => void;
+  lastSuccessAt: number | null;
 };
 
 export function useContract(walletAddress: string | null): ContractState {
@@ -28,6 +29,7 @@ export function useContract(walletAddress: string | null): ContractState {
   const [stats, setStats] = useState<DashboardStat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
 
@@ -100,6 +102,10 @@ export function useContract(walletAddress: string | null): ContractState {
           { label: "Total", value: String(total), sub: "proposals created" },
           { label: "Executed", value: String(executed), sub: "all time" },
         ]);
+        
+        if (!cancelled) {
+          setLastSuccessAt(Date.now());
+        }
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -125,5 +131,6 @@ export function useContract(walletAddress: string | null): ContractState {
     error,
     refresh,
     optimisticUpdate,
+    lastSuccessAt,
   };
 }
