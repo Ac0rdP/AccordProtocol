@@ -55,6 +55,24 @@ export function useWallet(): WalletState {
       });
   }, [address]);
 
+  // Detect external disconnects. Freighter emits no event when the user
+  // disconnects from inside the extension, so we poll every 3s while connected
+  // and clear local state if Freighter no longer reports the stored address
+  // (disconnected, or switched to a different account). The interval is only
+  // created when an address is set, so no polling runs while disconnected.
+  useEffect(() => {
+    if (!address) return;
+
+    const interval = setInterval(async () => {
+      const res = await getWalletAddress();
+      if (!res.ok || res.value !== address) {
+        setAddress(null);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [address]);
+
   const connect = useCallback(async () => {
     setConnecting(true);
     try {

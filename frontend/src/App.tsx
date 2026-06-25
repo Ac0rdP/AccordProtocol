@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Link,
   Route,
@@ -41,8 +41,6 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const { proposals, owners, ownerAddresses, stats, loading, error, refresh } =
-    useContract(wallet.address);
   const {
     proposals,
     owners,
@@ -56,6 +54,16 @@ export default function App() {
 
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
+
+  // If the wallet is disconnected (e.g. externally, from the Freighter popup)
+  // while a transaction is in flight, the pending request can never resolve.
+  // Clear the pending state and surface an error instead of a stuck banner.
+  useEffect(() => {
+    if (!wallet.address && txPending) {
+      setTxPending(false);
+      setTxError("Wallet disconnected. Please reconnect and try again.");
+    }
+  }, [wallet.address, txPending]);
 
   const activeProposals = proposals.filter((proposal) =>
     ["pending", "ready"].includes(proposal.status),
@@ -105,8 +113,6 @@ export default function App() {
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
       patch: {
-        approvals: newApprovals,
-        status: newStatus,
         approvals,
         status,
         userHasApproved: true,
