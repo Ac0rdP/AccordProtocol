@@ -8,11 +8,10 @@ import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { NotFoundPage } from "./pages/NotFoundPage";
-
-type Page = "dashboard" | "history" | "settings" | "owners";
+import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
@@ -20,6 +19,11 @@ const NAV_ITEMS = [
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
 ];
+
+type OptimisticPatch = {
+  id: number;
+  patch: Partial<Proposal>;
+};
 
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
@@ -38,6 +42,7 @@ export default function App() {
     loading,
     error,
     refresh,
+    optimisticUpdate,
   } = useContract(wallet.address);
 
   useEventPolling(refresh, 5000);
@@ -52,7 +57,11 @@ export default function App() {
   const showReadOnlyBanner = Boolean(
     wallet.address && !loading && !error && !isOwner
   );
-  async function withTx(fn: () => Promise<void>) {
+
+  async function withTx(
+    fn: () => Promise<void>,
+    optimisticPatch?: OptimisticPatch
+  ) {
     if (!wallet.address) {
       await wallet.connect();
       return;
@@ -76,27 +85,51 @@ export default function App() {
   }
 
   const handleApprove = (id: number) => {
-    const proposal = proposals.find((p) => p.id === id);
-    if (!proposal) return withTx(() => approveProposal(wallet.address!, id));
-    const newApprovals = proposal.approvals + 1;
-    const newStatus: ProposalStatus =
-      newApprovals >= proposal.threshold && proposal.status === "pending"
-        ? "ready"
-        : proposal.status;
+    const proposal = proposals.find((candidate) => candidate.id === id);
+    if (!proposal) {
+      return withTx(() => approveProposal(wallet.address!, id));
+    }
+
+    const approvals = proposal.approvals + 1;
+    const status = approvals >= proposal.threshold ? "ready" : proposal.status;
+
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
-      patch: { approvals: newApprovals, status: newStatus, userHasApproved: true },
+      patch: {
+        approvals,
+        status,
+        userHasApproved: true,
+      },
     });
   };
 
   const handleExecute = (id: number) =>
     withTx(() => executeProposal(wallet.address!, id), {
       id,
-      patch: { status: "executed" as ProposalStatus },
+      patch: { status: "executed" },
     });
 
-  const handleRevoke = (id: number) =>
-    withTx(() => revokeProposal(wallet.address!, id));
+  const handleRevoke = (id: number) => {
+    const proposal = proposals.find((candidate) => candidate.id === id);
+    if (!proposal) {
+      return withTx(() => revokeProposal(wallet.address!, id));
+    }
+
+    const approvals = Math.max(proposal.approvals - 1, 0);
+    const status =
+      approvals >= proposal.threshold && proposal.status === "ready"
+        ? "ready"
+        : "pending";
+
+    return withTx(() => revokeProposal(wallet.address!, id), {
+      id,
+      patch: {
+        approvals,
+        status,
+        userHasApproved: false,
+      },
+    });
+  };
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
@@ -112,7 +145,10 @@ export default function App() {
     <div className="min-h-screen bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
         <div className="mx-auto flex max-w-4xl items-center justify-between">
-          <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+          <Link
+            to="/"
+            className="flex items-center gap-3 transition-opacity hover:opacity-80"
+          >
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-xs font-bold text-black">
               A
             </div>
@@ -127,8 +163,9 @@ export default function App() {
               <Link
                 key={label}
                 to={to}
-                className={`rounded-lg px-3 py-1.5 text-sm capitalize transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
-                  location.pathname === to || (to === "/app" && location.pathname === "/app/")
+                className={`rounded-lg px-3 py-1.5 text-sm capitalize transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400 ${
+                  location.pathname === to ||
+                  (to === "/app" && location.pathname === "/app/")
                     ? "bg-zinc-800 text-white"
                     : "text-zinc-500 hover:text-zinc-300"
                 }`}
@@ -143,7 +180,7 @@ export default function App() {
               href="https://www.freighter.app"
               target="_blank"
               rel="noopener noreferrer"
-              className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-500 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             >
               Install Freighter
             </a>
@@ -151,7 +188,7 @@ export default function App() {
             <button
               type="button"
               onClick={wallet.disconnect}
-              className="rounded-lg bg-zinc-800 px-4 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="rounded-lg bg-zinc-800 px-4 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             >
               {shortenAddr(wallet.address)}
             </button>
@@ -160,7 +197,7 @@ export default function App() {
               type="button"
               onClick={wallet.connect}
               disabled={wallet.connecting}
-              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
             >
               {wallet.connecting ? "Connecting…" : "Connect Wallet"}
             </button>
@@ -186,8 +223,10 @@ export default function App() {
         )}
 
         {wallet.networkMismatch && (
-          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-amber-400">
-            Your wallet network does not match this app. Expected network: {import.meta.env.VITE_NETWORK_PASSPHRASE}. Switch Freighter network to continue.
+          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+            Your wallet network does not match this app. Expected network:{" "}
+            {import.meta.env.VITE_NETWORK_PASSPHRASE}. Switch Freighter network to
+            continue.
           </div>
         )}
 
@@ -225,8 +264,8 @@ export default function App() {
             <h1 className="text-2xl font-semibold">Freighter wallet required</h1>
             <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
               Freighter is the supported browser extension for signing Stellar
-              transactions in Accord. Install it to connect a wallet and use
-              the app.
+              transactions in Accord. Install it to connect a wallet and use the
+              app.
             </p>
             <a
               href="https://www.freighter.app"
@@ -237,35 +276,6 @@ export default function App() {
               Install Freighter
             </a>
           </div>
-        ) : loading ? (
-          <div className="py-16 text-center text-sm text-zinc-500">
-            Loading contract data…
-          </div>
-        ) : page === "dashboard" ? (
-          <DashboardPage
-            activeProposals={activeProposals}
-            owners={owners}
-            dashboardStats={stats}
-            walletAddress={wallet.address}
-            onApprove={handleApprove}
-            onExecute={handleExecute}
-            onRevoke={handleRevoke}
-            onCreateProposal={() => setShowCreate(true)}
-            error={null}
-            loading={loading}
-          />
-        ) : page === "history" ? (
-          <HistoryPage proposals={proposals} onApprove={handleApprove} />
-        ) : page === "owners" ? (
-          <OwnersPage
-            owners={owners}
-            threshold={parseInt(
-              stats.find((s) => s.label === "Threshold")?.value.split(" ")[0] || "0"
-            )}
-            totalOwners={owners.length}
-          />
-        ) : page === "settings" ? (
-          <SettingsPage stats={stats} />
         ) : (
           <Routes>
             <Route

@@ -3,8 +3,9 @@
 extern crate std;
 
 use super::*;
+use std::format;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
-use soroban_sdk::{token, Address, BytesN, Env, IntoVal, String, Vec};
+use soroban_sdk::{token, xdr, Address, BytesN, Env, IntoVal, String, Vec};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -433,7 +434,9 @@ fn create_proposal_category_in_event() {
     assert!(!contract_events.events().is_empty());
 
     // The first event is the ProposalCreatedEvent; check its category field.
-    let (_, _, event_data) = contract_events.events().first().unwrap();
+    let event_data = match &contract_events.events().first().unwrap().body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
     let event: ProposalCreatedEvent = event_data.into_val(&env);
     assert_eq!(event.category, ProposalCategory::Ops);
 }
@@ -1004,6 +1007,7 @@ fn full_lifecycle_5of5() {
         &token_client.address,
         &str(&env, "Full lifecycle 5of5"),
         &DEADLINE,
+        &ProposalCategory::Transfer,
     );
     assert_eq!(
         client.get_proposal(&id).status,

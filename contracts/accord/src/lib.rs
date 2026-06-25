@@ -284,7 +284,7 @@ fn read_active_count(env: &Env) -> u32 {
     let next_id = env.storage().instance().get(&next_id_key()).unwrap_or(1_u64);
     let mut active: u32 = 0;
     for id in 1..next_id {
-        if let Ok(mut proposal) = read_proposal(env, id) {
+        if let Ok(proposal) = read_proposal(env, id) {
             // derive_status does not persist; we only count current derived active ones
             let status = derive_status(env, &proposal);
             if matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
@@ -543,6 +543,7 @@ impl AccordContract {
             kind: ProposalKind::AddOwner(new_owner),
             ready_at: 0,
             threshold,
+            category: ProposalCategory::Other,
         };
         write_proposal(&env, &proposal);
         write_active_count(&env, active + 1);
@@ -553,6 +554,7 @@ impl AccordContract {
                 id,
                 proposer,
                 threshold,
+                category: ProposalCategory::Other,
             },
         );
 
@@ -627,6 +629,7 @@ impl AccordContract {
             kind: ProposalKind::RemoveOwner(owner_to_remove),
             ready_at: 0,
             threshold,
+            category: ProposalCategory::Other,
         };
         write_proposal(&env, &proposal);
         write_active_count(&env, active + 1);
@@ -637,6 +640,7 @@ impl AccordContract {
                 id,
                 proposer,
                 threshold,
+                category: ProposalCategory::Other,
             },
         );
 
@@ -699,6 +703,7 @@ impl AccordContract {
             kind: ProposalKind::ChangeThreshold(new_threshold),
             ready_at: 0,
             threshold,
+            category: ProposalCategory::Other,
         };
         write_proposal(&env, &proposal);
         write_active_count(&env, active + 1);
@@ -709,6 +714,7 @@ impl AccordContract {
                 id,
                 proposer,
                 threshold,
+                category: ProposalCategory::Other,
             },
         );
 
@@ -921,9 +927,10 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Bulk-sweeps a batch of proposals, marking each expired one as `Expired`
-    /// and decrementing the active-proposal counter once per proposal swept.
-    /// Non-existent IDs and non-expired proposals are silently skipped.
+    /// Bulk-sweeps a batch of proposals by counting which IDs currently derive
+    /// to `Expired` and refreshing the active-proposal counter if needed.
+    /// Expired status is derived at read time, so no per-proposal write-back is
+    /// required here. Non-existent IDs and non-expired proposals are skipped.
     /// Only owners may call this function.
     ///
     /// Returns the number of proposals actually swept.
@@ -938,19 +945,20 @@ impl AccordContract {
         let mut swept: u32 = 0;
 
         for id in ids.iter() {
-            let mut proposal = match read_proposal(&env, id) {
+            let proposal = match read_proposal(&env, id) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
 
             if matches!(derive_status(&env, &proposal), ProposalStatus::Expired) {
-                proposal.status = ProposalStatus::Expired;
-                write_proposal(&env, &proposal);
-                let active = read_active_count(&env);
-                if active > 0 {
-                    write_active_count(&env, active - 1);
-                }
                 swept = swept.saturating_add(1);
+            }
+        }
+
+        if swept > 0 {
+            let active = read_active_count(&env);
+            if active > 0 {
+                write_active_count(&env, active.saturating_sub(swept));
             }
         }
 

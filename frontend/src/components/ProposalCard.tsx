@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Proposal } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
-import { Copy, Check } from "lucide-react";
+import { Check, Copy, Link2 } from "lucide-react";
 
 type ProposalCardProps = {
   proposal: Proposal;
@@ -21,27 +21,54 @@ export function ProposalCard({
 }: ProposalCardProps) {
   const connected = !!walletAddress;
   const showApprove = proposal.status === "pending" && !proposal.userHasApproved;
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedProposer, setCopiedProposer] = useState(false);
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
 
-  // Logic to copy the address to clipboard and show a temporary "copied/checked" icon
-  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copiedLink) return;
+    const timeout = window.setTimeout(() => setCopiedLink(false), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [copiedLink]);
+
+  useEffect(() => {
+    if (!copiedProposer) return;
+    const timeout = window.setTimeout(() => setCopiedProposer(false), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [copiedProposer]);
+
+  useEffect(() => {
+    if (proposal.status !== "ready") {
+      setAwaitingConfirmation(false);
+    }
+  }, [proposal.status]);
 
   const copyAddress = async (address: string) => {
     try {
       await navigator.clipboard.writeText(address);
-      setCopied(true);
-
-      setTimeout(() => {
-        setCopied(false);
-      }, 2000);
+      setCopiedProposer(true);
     } catch (err) {
       console.error("Failed to copy:", err);
+    }
+  };
+
+  const copyProposalLink = async () => {
+    try {
+      const proposalUrl = new URL(
+        `/proposals/${proposal.id}`,
+        window.location.origin
+      ).toString();
+      await navigator.clipboard.writeText(proposalUrl);
+      setCopiedLink(true);
+    } catch (err) {
+      console.error("Failed to copy proposal link:", err);
     }
   };
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
       <div className="flex items-start justify-between mb-4">
-        <div>  
+        <div>
           <p className="text-xs text-zinc-500 font-mono mb-1">
             Proposal #{proposal.id}
           </p>
@@ -61,10 +88,15 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => copyAddress(proposal.proposer)}
-              className="text-zinc-500 hover:text-zinc-700 transition-colors cursor-pointer focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
-              title={copied ? "Copied!" : "Copy address"}
+              aria-label={
+                copiedProposer
+                  ? `Proposer address copied for proposal #${proposal.id}`
+                  : `Copy proposer address for proposal #${proposal.id}`
+              }
+              className="rounded text-zinc-500 transition-colors hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              title={copiedProposer ? "Copied" : "Copy address"}
             >
-              {copied ? (
+              {copiedProposer ? (
                 <Check size={16} className="text-green-500" />
               ) : (
                 <Copy size={16} />
@@ -77,7 +109,26 @@ export function ProposalCard({
             </p>
           )}
         </div>
-        <StatusBadge status={proposal.status} />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={copyProposalLink}
+            aria-label={
+              copiedLink
+                ? `Proposal link copied for proposal #${proposal.id}`
+                : `Copy proposal link for proposal #${proposal.id}`
+            }
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-800 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            title={copiedLink ? "Link copied" : "Copy proposal link"}
+          >
+            {copiedLink ? (
+              <Check size={16} className="text-emerald-400" />
+            ) : (
+              <Link2 size={16} />
+            )}
+          </button>
+          <StatusBadge status={proposal.status} />
+        </div>
       </div>
 
       <div className="flex items-center justify-between mt-4">
@@ -111,7 +162,6 @@ export function ProposalCard({
           {connected && proposal.status === "ready" && !awaitingConfirmation && (
             <button
               type="button"
-              onClick={() => onExecute(proposal.id)}
               aria-label={`Execute proposal #${proposal.id}`}
               className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               onClick={() => setAwaitingConfirmation(true)}

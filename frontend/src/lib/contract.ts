@@ -48,15 +48,79 @@ function mapStatus(raw: unknown): ProposalStatus {
   return "pending";
 }
 
+function safeBigInt(value: unknown): bigint {
+  try {
+    if (
+      typeof value === "bigint" ||
+      typeof value === "number" ||
+      typeof value === "string" ||
+      typeof value === "boolean"
+    ) {
+      return BigInt(value);
+    }
+    return 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+function mapKindDetails(kind: unknown): Pick<Proposal, "to" | "amount" | "token"> {
+  if (!kind || typeof kind !== "object") {
+    return {
+      to: "Unknown",
+      amount: "0",
+      token: "Unknown",
+    };
+  }
+
+  const [variant, payload] = Object.entries(kind as Record<string, unknown>)[0] ?? [];
+  const normalizedVariant = variant?.toLowerCase() ?? "";
+  const values = Array.isArray(payload) ? payload : [payload];
+
+  switch (normalizedVariant) {
+    case "transfer":
+      return {
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: stroopsToDisplay(safeBigInt(values[1])),
+        token: shortenAddr(String(values[2] ?? "Unknown")),
+      };
+    case "addowner":
+      return {
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: "Add owner",
+      };
+    case "removeowner":
+      return {
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: "Remove owner",
+      };
+    case "changethreshold":
+      return {
+        to: `${values[0] ?? "Unknown"} approvals`,
+        amount: "—",
+        token: "Threshold",
+      };
+    default:
+      return {
+        to: "Unknown",
+        amount: "0",
+        token: "Unknown",
+      };
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProposal(raw: any, threshold: number): Proposal {
   const rawDeadline = BigInt(raw.deadline);
+  const details = mapKindDetails(raw.kind);
+
   return {
     id: Number(raw.id),
-    to: shortenAddr(String(raw.to)),
-    amount: stroopsToDisplay(BigInt(raw.amount)),
-    token: shortenAddr(String(raw.token)),
+    to: details.to,
+    amount: details.amount,
+    token: details.token,
     description: String(raw.description),
     approvals: Number(raw.approvals),
     threshold,
@@ -109,7 +173,7 @@ export async function getProposal(id: number): Promise<Proposal> {
 export async function hasApproved(
   walletAddress: string,
   proposalId: number
-  ): Promise<boolean> {
+): Promise<boolean> {
   const val = await simulateView("has_approved", [
     nativeToScVal(walletAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),

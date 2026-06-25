@@ -31,7 +31,14 @@ export function DashboardPage({
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [sortByDeadline, setSortByDeadline] = useState(false);
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const prevReadyCount = useRef(readyCount);
+
+  const displayedProposals = [...activeProposals].sort((left, right) => {
+    if (!sortByDeadline) return right.id - left.id;
+    return left.deadlineTs - right.deadlineTs;
+  });
 
   useEffect(() => {
     if (readyCount > prevReadyCount.current) {
@@ -40,6 +47,10 @@ export function DashboardPage({
     prevReadyCount.current = readyCount;
   }, [readyCount]);
 
+  useEffect(() => {
+    setDismissedError(null);
+  }, [error]);
+
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
@@ -47,14 +58,14 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
-       
-         {(error) && !loading && (
+
+      {error && !loading && dismissedError !== error && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
             <span>{error}</span>
             <button
               type="button"
               onClick={() => {
-               
+                setDismissedError(error);
               }}
               className="underline hover:text-red-300 ml-4 shrink-0 focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
             >
@@ -108,7 +119,7 @@ export function DashboardPage({
         ) : activeProposals.length === 0 ? (
           <div className="text-center py-16 text-zinc-500 text-sm">
             <p className="font-semibold mb-2">No active proposals</p>
-
+            <p>Create a new proposal to start the approval flow.</p>
           </div>
         ) : (
           displayedProposals.map((proposal) => (

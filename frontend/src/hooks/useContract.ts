@@ -81,7 +81,7 @@ export function useContract(walletAddress: string | null): ContractState {
         setOwners(
           ownerAddrs.map((addr, i) => ({
             address: `${addr.slice(0, 6)}...${addr.slice(-4)}`,
-            label: i === 0 ? "You" : `Signer ${i + 1}`,
+            label: addr === walletAddress ? "You" : `Signer ${i + 1}`,
           }))
         );
 
@@ -116,5 +116,14 @@ export function useContract(walletAddress: string | null): ContractState {
     };
   }, [tick, walletAddress]);
 
-  return { proposals, owners, ownerAddresses, stats, loading, error, refresh };
+  return {
+    proposals,
+    owners,
+    ownerAddresses,
+    stats,
+    loading,
+    error,
+    refresh,
+    optimisticUpdate,
+  };
 }

@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, describe, test, expect, beforeEach } from "vitest";
 import type { Proposal } from "../types/accord";
@@ -27,8 +27,7 @@ const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   threshold: 2,
   status: "pending",
   deadline: "Jun 24, 2026",
-  createdAt: "2026-06-24",
-  proposer: "GBXGJZUFVB2F3J2Y5B4S4V6JWYD2H4O3T7XQZT5XKV6S2J5N6Z2Z2Z2Z",
+  deadlineTs: 1782259200,
   createdAt: "proposal #42",
   proposer: "GPROPO...SER1",
   userHasApproved: false,
@@ -38,6 +37,12 @@ const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
 describe("ProposalCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   test("shows Approve for a pending proposal when wallet is connected", () => {
@@ -51,7 +56,7 @@ describe("ProposalCard", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.getByText("Approve")).toBeTruthy();
   });
 
   test("shows Connect & Approve for a pending proposal without a wallet", () => {
@@ -65,7 +70,7 @@ describe("ProposalCard", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Connect & Approve" })).toBeTruthy();
+    expect(screen.getByText("Connect & Approve")).toBeTruthy();
   });
 
   test("shows Execute for a ready proposal and hides Approve", () => {
@@ -79,8 +84,8 @@ describe("ProposalCard", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Execute" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByText("Execute")).toBeTruthy();
+    expect(screen.queryByText("Approve")).toBeNull();
   });
 
   test.each(["executed", "expired"] as const)(
@@ -96,9 +101,9 @@ describe("ProposalCard", () => {
         />
       );
 
-      expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Execute" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Connect & Approve" })).toBeNull();
+      expect(screen.queryByText("Approve")).toBeNull();
+      expect(screen.queryByText("Execute")).toBeNull();
+      expect(screen.queryByText("Connect & Approve")).toBeNull();
     }
   );
 
@@ -116,9 +121,44 @@ describe("ProposalCard", () => {
       />
     );
 
-    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await user.click(screen.getByRole("button", { name: /approve proposal/i }));
 
     expect(onApprove).toHaveBeenCalledTimes(1);
     expect(onApprove).toHaveBeenCalledWith(42);
+  });
+
+  test("copies the direct proposal URL and shows temporary feedback", async () => {
+    vi.useFakeTimers();
+
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+      />
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy proposal link/i }));
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/proposals/42`
+    );
+    expect(
+      screen.getByRole("button", { name: /proposal link copied/i })
+    ).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(
+      screen.getByRole("button", { name: /copy proposal link/i })
+    ).toBeTruthy();
+    vi.useRealTimers();
   });
 });

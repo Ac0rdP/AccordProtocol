@@ -6,11 +6,18 @@ const proposalCache = new Map<number, Proposal>();
 
 export function useProposal(id: number) {
   const [proposal, setProposal] = useState<Proposal | null>(() => proposalCache.get(id) || null);
-  const [loading, setLoading] = useState(!proposalCache.has(id));
+  const [loading, setLoading] = useState(id > 0 && !proposalCache.has(id));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
+    if (!Number.isInteger(id) || id <= 0) {
+      setProposal(null);
+      setLoading(false);
+      setError("Invalid proposal identifier");
+      return;
+    }
 
     if (proposalCache.has(id)) {
       setProposal(proposalCache.get(id)!);
