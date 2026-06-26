@@ -8,6 +8,7 @@ const TOKEN_ADDRESSES: Record<string, string> = {
   USDC: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
   EURC: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
 };
+const MAX_DESCRIPTION_LEN = 300;
 
 type Props = {
   walletAddress: string | null;
@@ -271,9 +272,19 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
             <input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              maxLength={MAX_DESCRIPTION_LEN}
               placeholder="What is this payment for?"
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
             />
+            <p
+              className={`mt-1 text-right text-xs ${
+                description.length >= MAX_DESCRIPTION_LEN
+                  ? "text-red-400"
+                  : "text-zinc-500"
+              }`}
+            >
+              {description.length} / {MAX_DESCRIPTION_LEN}
+            </p>
           </div>
 
           <div>
