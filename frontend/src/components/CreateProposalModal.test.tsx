@@ -98,10 +98,67 @@ describe("CreateProposalModal", () => {
     const submitBtn = screen.getByText("Submit Proposal");
     fireEvent.click(submitBtn);
 
+    expect(screen.getByText("Preview Proposal")).toBeDefined();
+    expect(createProposal).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Confirm & Submit"));
+
     await waitFor(() => {
       expect(createProposal).toHaveBeenCalled();
       expect(defaultProps.onSubmitted).toHaveBeenCalled();
     });
+  });
+
+  it("shows a preview with entered values before submitting", () => {
+    render(<CreateProposalModal {...defaultProps} />);
+    fillRequiredFields();
+
+    const deadlineInput = document.querySelector(
+      'input[type="date"]'
+    ) as HTMLInputElement;
+    const expectedDeadline = new Date(
+      `${deadlineInput.value}T00:00:00`
+    ).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+
+    fireEvent.click(screen.getByText("Submit Proposal"));
+
+    expect(screen.getByText("Preview Proposal")).toBeDefined();
+    expect(screen.getByText("GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC")).toBeDefined();
+    expect(screen.getByText("10 XLM")).toBeDefined();
+    expect(screen.getByText("Test payment")).toBeDefined();
+    expect(screen.getByText(expectedDeadline)).toBeDefined();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  it("Back returns to the form with entered values preserved", () => {
+    render(<CreateProposalModal {...defaultProps} />);
+    fillRequiredFields();
+
+    fireEvent.click(screen.getByText("Submit Proposal"));
+    fireEvent.click(screen.getByText("Back"));
+
+    expect(screen.queryByText("Preview Proposal")).toBeNull();
+    expect(screen.getByPlaceholderText("G...")).toHaveValue(
+      "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC"
+    );
+    expect(screen.getByPlaceholderText("0.00")).toHaveValue(10);
+    expect(screen.getByPlaceholderText("What is this payment for?")).toHaveValue(
+      "Test payment"
+    );
+  });
+
+  it("Close button works from the preview step", () => {
+    render(<CreateProposalModal {...defaultProps} />);
+    fillRequiredFields();
+
+    fireEvent.click(screen.getByText("Submit Proposal"));
+    fireEvent.click(screen.getByText("✕"));
+
+    expect(defaultProps.onClose).toHaveBeenCalled();
   });
 
   it("Connected wallet opens modal and shows Proposer field", () => {
