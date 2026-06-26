@@ -143,11 +143,11 @@ export function DashboardPage({
               key={owner.address}
               className="flex items-center justify-between px-4 py-3"
             >
-              <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
                   {owner.label[0]}
                 </div>
-                <span className="font-mono text-sm text-zinc-300">
+                <span className="font-mono text-sm text-zinc-300 truncate max-w-[180px] sm:max-w-xs">
                   {owner.address}
                 </span>
               </div>

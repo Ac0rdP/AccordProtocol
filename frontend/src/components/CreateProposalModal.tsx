@@ -177,7 +177,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
       }}
       className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
     >
-      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md">
+      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-white font-semibold text-lg">New Proposal</h2>
           <button
