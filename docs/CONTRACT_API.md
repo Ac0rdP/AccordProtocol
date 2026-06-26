@@ -210,6 +210,26 @@ Returns `true` if `owner` has approved `proposal_id`.
 
 ---
 
+## XDR Type Reference
+
+When calling contract functions from JavaScript, each parameter must be converted to the XDR `SCVal` format that the Soroban RPC expects. The Stellar SDK provides `nativeToScVal` for encoding and `scValToNative` for decoding.
+
+> **Important:** `u64` and `i128` values exceed JavaScript's safe integer range (`Number.MAX_SAFE_INTEGER` = 2⁵³ − 1). They **must** be passed as JavaScript `BigInt` — not `Number`. Using `Number` silently truncates the value.
+
+| Rust Type | SCVal Variant | Build with `nativeToScVal` | Decode with `scValToNative` |
+|-----------|---------------|----------------------------|-----------------------------|
+| `Address` | `ScVal::Address` | `nativeToScVal(address, { type: 'address' })` | `scValToNative(scval)` → `"G…"` string |
+| `Vec<T>` | `ScVal::Vec` | `nativeToScVal(array, { type: 'vec' })` | `scValToNative(scval)` → JavaScript `Array` |
+| `u32` | `ScVal::U32` | `nativeToScVal(n, { type: 'u32' })` | `scValToNative(scval)` → JavaScript `Number` |
+| `u64` | `ScVal::U64` | `nativeToScVal(BigInt(n), { type: 'u64' })` | `scValToNative(scval)` → JavaScript `BigInt` |
+| `i128` | `ScVal::I128` | `nativeToScVal(BigInt(n), { type: 'i128' })` | `scValToNative(scval)` → JavaScript `BigInt` |
+| `String` | `ScVal::String` | `nativeToScVal(s, { type: 'string' })` | `scValToNative(scval)` → JavaScript `String` |
+| `bool` | `ScVal::Bool` | `nativeToScVal(b, { type: 'bool' })` | `scValToNative(scval)` → JavaScript `Boolean` |
+| `Proposal` | `ScVal::Map` | N/A (output only) | `scValToNative(scval)` → plain JavaScript object whose field names match the `Proposal` struct in [ARCHITECTURE.md §3](../ARCHITECTURE.md#3-storage-layout-soroban) |
+| `()` (unit) | `ScVal::Void` | N/A (no input) | `scValToNative(scval)` → `undefined` |
+
+---
+
 ## Event Payloads
 
 ### `ProposalCreatedEvent`
