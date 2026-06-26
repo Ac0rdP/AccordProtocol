@@ -89,6 +89,24 @@ pub struct ProposalExecutedEvent {
     pub executor: Address,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GuardianSetEvent {
+    pub guardian: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FrozenEvent {
+    pub guardian: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UnfrozenEvent {
+    pub approvers: Vec<Address>,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +138,8 @@ pub enum ContractError {
     TimeLockActive = 23,
     WouldBreakThreshold = 24,
     OwnerNotFound = 25,
+    ContractFrozen = 26,
+    NoGuardian = 27,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -154,6 +174,14 @@ fn active_count_key() -> Symbol {
 
 fn timelock_key() -> Symbol {
     symbol_short!("TLOCK")
+}
+
+fn guardian_key() -> Symbol {
+    symbol_short!("GUARD")
+}
+
+fn frozen_key() -> Symbol {
+    symbol_short!("FROZEN")
 }
 
 // ─── TTL Constants ───────────────────────────────────────────────────────────
@@ -301,6 +329,34 @@ fn write_active_count(env: &Env, count: u32) {
     bump_instance(env);
 }
 
+fn read_guardian(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&guardian_key())
+}
+
+fn write_guardian(env: &Env, guardian: &Address) {
+    env.storage().instance().set(&guardian_key(), guardian);
+    bump_instance(env);
+}
+
+fn is_frozen_state(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&frozen_key())
+        .unwrap_or(false)
+}
+
+fn write_frozen(env: &Env, frozen: bool) {
+    env.storage().instance().set(&frozen_key(), &frozen);
+    bump_instance(env);
+}
+
+fn require_not_frozen(env: &Env) -> Result<(), ContractError> {
+    if is_frozen_state(env) {
+        return Err(ContractError::ContractFrozen);
+    }
+    Ok(())
+}
+
 // ─── Business Logic Helpers ──────────────────────────────────────────────────
 
 fn require_owner(env: &Env, address: &Address) -> Result<(), ContractError> {
@@ -423,6 +479,7 @@ impl AccordContract {
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_owner(&env, &proposer)?;
+        require_not_frozen(&env)?;
 
         if amount < MIN_AMOUNT {
             return Err(ContractError::InvalidAmount);
@@ -496,6 +553,7 @@ impl AccordContract {
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_owner(&env, &proposer)?;
+        require_not_frozen(&env)?;
 
         let owners = read_owners(&env)?;
         for owner in owners.iter() {
@@ -576,6 +634,7 @@ impl AccordContract {
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_owner(&env, &proposer)?;
+        require_not_frozen(&env)?;
 
         let owners = read_owners(&env)?;
         let threshold = read_threshold(&env)?;
@@ -661,6 +720,7 @@ impl AccordContract {
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_owner(&env, &proposer)?;
+        require_not_frozen(&env)?;
 
         let owners = read_owners(&env)?;
 
@@ -838,6 +898,7 @@ impl AccordContract {
     ) -> Result<(), ContractError> {
         executor.require_auth();
         require_owner(&env, &executor)?;
+        require_not_frozen(&env)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
 
@@ -1047,6 +1108,112 @@ impl AccordContract {
     /// Returns whether `owner` has approved `proposal_id`.
     pub fn has_approved(env: Env, proposal_id: u64, owner: Address) -> bool {
         read_approval(&env, proposal_id, &owner)
+    }
+
+    // ─── Guardian ─────────────────────────────────────────────────────────────
+
+    /// Assigns or replaces the guardian address. Requires at least `threshold`
+    /// distinct owners in `approvers` to co-sign, preventing any single owner
+    /// from installing a guardian unilaterally.
+    pub fn set_guardian(
+        env: Env,
+        approvers: Vec<Address>,
+        new_guardian: Address,
+    ) -> Result<(), ContractError> {
+        let threshold = read_threshold(&env)?;
+
+        if approvers.len() < threshold {
+            return Err(ContractError::ThresholdNotMet);
+        }
+
+        for i in 0..approvers.len() {
+            for j in (i + 1)..approvers.len() {
+                if approvers.get(i).unwrap() == approvers.get(j).unwrap() {
+                    return Err(ContractError::DuplicateOwner);
+                }
+            }
+        }
+
+        for approver in approvers.iter() {
+            approver.require_auth();
+            require_owner(&env, &approver)?;
+        }
+
+        write_guardian(&env, &new_guardian);
+
+        env.events().publish(
+            (symbol_short!("guard_set"),),
+            GuardianSetEvent {
+                guardian: new_guardian,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Immediately freezes the contract, blocking new proposals and execution.
+    /// Only the current guardian may call this.
+    pub fn freeze(env: Env, guardian: Address) -> Result<(), ContractError> {
+        guardian.require_auth();
+
+        let stored = read_guardian(&env).ok_or(ContractError::NoGuardian)?;
+        if stored != guardian {
+            return Err(ContractError::Unauthorized);
+        }
+
+        write_frozen(&env, true);
+
+        env.events().publish(
+            (symbol_short!("frozen"),),
+            FrozenEvent { guardian },
+        );
+
+        Ok(())
+    }
+
+    /// Resumes normal operation after a freeze. Requires at least `threshold`
+    /// distinct owners in `approvers` to co-sign, so no individual can thaw a
+    /// frozen contract alone.
+    pub fn unfreeze(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        let threshold = read_threshold(&env)?;
+
+        if approvers.len() < threshold {
+            return Err(ContractError::ThresholdNotMet);
+        }
+
+        for i in 0..approvers.len() {
+            for j in (i + 1)..approvers.len() {
+                if approvers.get(i).unwrap() == approvers.get(j).unwrap() {
+                    return Err(ContractError::DuplicateOwner);
+                }
+            }
+        }
+
+        for approver in approvers.iter() {
+            approver.require_auth();
+            require_owner(&env, &approver)?;
+        }
+
+        write_frozen(&env, false);
+
+        env.events().publish(
+            (symbol_short!("unfrozen"),),
+            UnfrozenEvent {
+                approvers: approvers.clone(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns whether the contract is currently frozen.
+    pub fn is_frozen(env: Env) -> bool {
+        is_frozen_state(&env)
+    }
+
+    /// Returns the current guardian address, or `None` if no guardian is set.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        read_guardian(&env)
     }
 
     // ─── Upgrade ─────────────────────────────────────────────────────────────
