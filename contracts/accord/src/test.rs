@@ -992,7 +992,7 @@ fn create_proposal_rejects_at_limit() {
             &recipient,
             &1_000_000_i128,
             &token_client.address,
-            &str(&env, &format!("Proposal {}", i)),
+            &str(&env, "Proposal"),
             &DEADLINE,
         );
     }

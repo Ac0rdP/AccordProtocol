@@ -145,3 +145,93 @@ https://lab.stellar.org/smart-contracts/contract-explorer?contractId=YOUR_CONTRA
 ## Re-deploying
 
 The contract does not support upgradeability in the current version (planned roadmap item). To deploy a new version, deploy a fresh contract instance and re-initialize with the same owners.
+
+---
+
+## Mainnet Deployment
+
+### Pre-flight Checks
+
+Before deploying to mainnet, verify the following:
+
+- [ ] All tests pass: `cargo test`
+- [ ] WASM binary built in release mode: `stellar contract build`
+- [ ] Deployer account funded with sufficient XLM
+- [ ] Owners and threshold agreed upon and addresses verified
+- [ ] Contract code audited and reviewed
+
+### Deploy to Mainnet
+
+```bash
+stellar network use mainnet
+
+# Upload WASM
+stellar contract upload \
+  --network mainnet \
+  --source-account accord-deployer \
+  --wasm target/wasm32v1-none/release/accord.wasm
+
+# Deploy contract
+stellar contract deploy \
+  --network mainnet \
+  --source-account accord-deployer \
+  --wasm target/wasm32v1-none/release/accord.wasm
+```
+
+### Initialize on Mainnet
+
+```bash
+stellar contract invoke \
+  --network mainnet \
+  --source-account accord-deployer \
+  --id CONTRACT_ID \
+  -- initialize \
+  --owners '["OWNER_1","OWNER_2","OWNER_3"]' \
+  --threshold 2
+```
+
+### Fund the Multisig with XLM and USDC
+
+```bash
+# Fund with XLM (native SAC on mainnet)
+stellar contract invoke \
+  --network mainnet \
+  --source-account accord-deployer \
+  --id CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC \
+  -- transfer \
+  --from accord-deployer \
+  --to CONTRACT_ID \
+  --amount 1000000000
+
+# Fund with USDC (mainnet USDC SAC)
+stellar contract invoke \
+  --network mainnet \
+  --source-account accord-deployer \
+  --id CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7EJJUD \
+  -- transfer \
+  --from accord-deployer \
+  --to CONTRACT_ID \
+  --amount 1000000000
+```
+
+### Verify the Deployment
+
+Check the contract on the mainnet explorer:
+C
+### Mainnet Environment Variables
+
+```bash
+VITE_CONTRACT_ADDRESS=YOUR_CONTRACT_ID
+VITE_SOROBAN_RPC_URL=https://soroban-mainnet.stellar.org
+VITE_NETWORK_PASSPHRASE=Public Global Stellar Network ; September 2015
+```
+
+### Current Mainnet Deployment
+
+| Field | Value |
+|-------|-------|
+| Contract ID | _(fill in after deploy)_ |
+| Network | Mainnet |
+| WASM hash | _(printed by deploy script)_ |
+| Deploy tx | _(printed by deploy script)_ |
+| Explorer | `https://stellar.expert/explorer/public` |

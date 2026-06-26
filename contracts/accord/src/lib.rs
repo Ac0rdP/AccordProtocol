@@ -1,4 +1,5 @@
 #![no_std]
+pub mod validate;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
@@ -273,11 +274,10 @@ fn write_active_count(env: &Env, count: u32) {
 // ─── Business Logic Helpers ──────────────────────────────────────────────────
 
 fn require_owner(env: &Env, address: &Address) -> Result<(), ContractError> {
+    // Issue #86: optimized with early exit on first match
     let owners = read_owners(env)?;
-    for owner in owners.iter() {
-        if owner == *address {
-            return Ok(());
-        }
+    if owners.contains(address) {
+        return Ok(());
     }
     Err(ContractError::Unauthorized)
 }
