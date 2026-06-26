@@ -1321,10 +1321,12 @@ fn active_count_stays_accurate_after_execute() {
     client.approve(&owner_a, &1);
     client.approve(&owner_b, &1);
     client.execute(&owner_c, &1);
+    assert_eq!(client.get_proposal(&1).status, ProposalStatus::Executed);
 
     client.approve(&owner_a, &2);
     client.approve(&owner_b, &2);
     client.execute(&owner_c, &2);
+    assert_eq!(client.get_proposal(&2).status, ProposalStatus::Executed);
 
     // Now we should be able to create 2 more proposals
     let id51 = client.create_proposal(
@@ -1389,9 +1391,11 @@ fn active_count_stays_accurate_after_expire() {
     // Advance time past the short deadline
     set_timestamp(&env, short_deadline + 1);
 
-    // Execute the expired proposals
+    // Calling execute on expired proposals returns ProposalExpired and frees the active slot.
     assert_eq!(client.try_execute(&owner_a, &1), Err(Ok(ContractError::ProposalExpired)));
+    assert_eq!(client.get_proposal(&1).status, ProposalStatus::Expired);
     assert_eq!(client.try_execute(&owner_a, &2), Err(Ok(ContractError::ProposalExpired)));
+    assert_eq!(client.get_proposal(&2).status, ProposalStatus::Expired);
 
     // Now we should be able to create 2 more proposals
     let id51 = client.create_proposal(&owner_a, &recipient, &1_000_000_i128, &token_client.address, &str(&env, "New 1"), &long_deadline, &ProposalCategory::Transfer);
@@ -1428,10 +1432,11 @@ fn active_count_stays_accurate_mixed() {
         Err(Ok(ContractError::TooManyActiveProposals))
     );
 
-    // Execute proposal 2 (long deadline)
+    // Execute proposal 2 (long deadline) — frees one active slot.
     client.approve(&owner_a, &2);
     client.approve(&owner_b, &2);
     client.execute(&owner_c, &2);
+    assert_eq!(client.get_proposal(&2).status, ProposalStatus::Executed);
 
     // Create 1 new proposal (long deadline)
     let id51 = client.create_proposal(&owner_a, &recipient, &1_000_000_i128, &token_client.address, &str(&env, "New 1"), &long_deadline, &ProposalCategory::Transfer);
@@ -1440,8 +1445,9 @@ fn active_count_stays_accurate_mixed() {
     // Advance time past the short deadline
     set_timestamp(&env, short_deadline + 1);
 
-    // Execute the expired proposal 1
+    // Calling execute on expired proposal 1 returns ProposalExpired and frees its active slot.
     assert_eq!(client.try_execute(&owner_a, &1), Err(Ok(ContractError::ProposalExpired)));
+    assert_eq!(client.get_proposal(&1).status, ProposalStatus::Expired);
 
     // Create 1 new proposal (long deadline)
     let id52 = client.create_proposal(&owner_a, &recipient, &1_000_000_i128, &token_client.address, &str(&env, "New 2"), &long_deadline, &ProposalCategory::Transfer);
