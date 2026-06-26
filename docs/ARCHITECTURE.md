@@ -249,7 +249,96 @@ create_proposal()
   revoke() can transition Ready → Pending at any point before execute().
 ```
 
-## 5. Event Schema
+## 5. Approve & Execute Flows
+
+### 5.1 Approve Flow
+
+The approve flow begins when an owner clicks Approve on a proposal card. The frontend constructs the contract call, the wallet signs it, the SDK simulates the transaction against the Soroban RPC and then submits it, and the contract validates, records the vote, and emits an event.
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract
+       |                |               |               |               |               |
+       | (1) Click      |               |               |               |               |
+       |    Approve      |               |               |               |               |
+       |--------------->|               |               |               |               |
+       |                | (2) Build tx  |               |               |               |
+       |                |-------------->|               |               |               |
+       |                |               | (3) Sign      |               |               |
+       |                |               |-------------->|               |               |
+       |                |               |               | (4) simulate  |               |
+       |                |               |               |   transaction |               |
+       |                |               |               |-------------->|               |
+       |                |               |               | (5) OK        |               |
+       |                |               |               |<--------------|               |
+       |                |               |               | (6) submit    |               |
+       |                |               |               |-------------->|               |
+       |                |               |               |               | (7) approve() |
+       |                |               |               |               |-------------->|
+       |                |               |               |               |               |  require_auth
+       |                |               |               |               |               |  require_owner
+       |                |               |               |               |               |  read_proposal
+       |                |               |               |               |               |  derive_status
+       |                |               |               |               |               |  read_approval
+       |                |               |               |               |               |  write_approval
+       |                |               |               |               |               |  inc approvals
+       |                |               |               |               |               |  check threshold
+       |                |               |               |               |               |  set ready_at
+       |                |               |               |               |               |  write_proposal
+       |                |               |               |               |               |  emit approved
+       |                |               |               |               |<--------------| (8) result
+       |                |               |               |<--------------|               |
+       |                |<--------------|               |               |               |
+       |<---------------|               |               |               |               |
+       | (9) re-fetch   |               |               |               |               |
+       |     proposal   |               |               |               |               |
+```
+
+> **Most common failure point:** The proposal may expire between the time the owner clicks approve and the transaction lands. If `derive_status` returns `Expired`, the call reverts with `ProposalExpired`. Frontends should check `proposal.deadline` against the current ledger timestamp and disable the approve button for expired proposals.
+
+### 5.2 Execute Flow
+
+The execute flow is triggered when an owner clicks Execute on a proposal that has reached Ready status. It follows the same simulate-and-submit pattern as approve, but the contract additionally enforces the time-lock delay and makes a cross-contract transfer call to the token contract.
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract   Token Contract
+       |                |               |               |               |               |               |
+       | (1) Click      |               |               |               |               |               |
+       |    Execute     |               |               |               |               |               |
+       |--------------->|               |               |               |               |               |
+       |                | (2) Build tx  |               |               |               |               |
+       |                |-------------->|               |               |               |               |
+       |                |               | (3) Sign      |               |               |               |
+       |                |               |-------------->|               |               |               |
+       |                |               |               | (4) simulate  |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               | (5) OK        |               |               |
+       |                |               |               |<--------------|               |               |
+       |                |               |               | (6) submit    |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               |               | (7) execute() |               |
+       |                |               |               |               |-------------->|               |
+       |                |               |               |               |               | require_auth  |
+       |                |               |               |               |               | require_owner |
+       |                |               |               |               |               | read_proposal |
+       |                |               |               |               |               | derive_status |
+       |                |               |               |               |               | check Ready   |
+       |                |               |               |               |               | check timelock|
+       |                |               |               |               |               | (8) transfer  |
+       |                |               |               |               |               |-------------->|
+       |                |               |               |               |               |<--------------| OK
+       |                |               |               |               |               | status=Exec'd |
+       |                |               |               |               |               | emit executed |
+       |                |               |               |               |<--------------| (9) result    |
+       |                |               |               |<--------------|               |               |
+       |                |<--------------|               |               |               |               |
+       |<---------------|               |               |               |               |               |
+       | (10) re-fetch  |               |               |               |               |               |
+       |      proposal  |               |               |               |               |               |
+```
+
+> **Most common failure point:** The Accord contract's token balance may be insufficient to cover the transfer amount. The token contract's `transfer` call fails and the execute call reverts with `TransferFailed`. Frontends should check the contract's token balance before enabling the execute button.
+
+## 6. Event Schema
 
 The contract emits events using `env.events().publish()`. Each Soroban event has two components that external consumers must understand:
 
@@ -302,14 +391,14 @@ For long-term event history, use one of the following:
 
 See issue #103 and the TTL documentation in Section 3 for context on how on-chain data persistence works more broadly.
 
-## 6. Frontend Polling Strategy
+## 7. Frontend Polling Strategy
 
 1. Load current proposals on mount, then poll every 15-30s for active proposals.
 2. After a confirmed transaction (approve, execute), re-fetch the affected proposal immediately for optimistic UI.
 3. Deduplicate events by `(ledger, topic, data-hash)`.
 4. Back off on RPC failure: 1s → 2s → 4s, cap at 30s.
 
-## 7. Token Handling
+## 8. Token Handling
 
 All token amounts are stored and transferred in the token's **smallest unit** (stroops for XLM: 1 stroop = 0.0000001 XLM). Use `BigInt` in the frontend — never `Number` for on-chain amounts.
 
@@ -322,7 +411,7 @@ Frontend utilities should live in `frontend/src/lib/soroban.ts`:
 - `toBaseUnit(amount: string, decimals: number): bigint`
 - `fromBaseUnit(amount: bigint, decimals: number): string`
 
-## 8. Related Documents
+## 9. Related Documents
 
 | Document | Description |
 |----------|-------------|

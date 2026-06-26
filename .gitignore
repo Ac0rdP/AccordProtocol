@@ -7,3 +7,4 @@ target
 .env
 # Private runbooks — keep local only
 UPGRADE.md
+fix.md
