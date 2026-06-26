@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type RefObject } from "react";
 import { createProposal, estimateCreateProposalFee } from "../lib/submit";
 import { displayToStroops } from "../lib/soroban";
 import { StrKey } from "@stellar/stellar-sdk";
@@ -13,6 +13,8 @@ type Props = {
   walletAddress: string | null;
   onClose: () => void;
   onSubmitted: () => void;
+  /** Ref to the button that triggered this modal — focus is returned to it on close. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 };
 
 function truncateAddress(address: string | null) {
@@ -20,7 +22,7 @@ function truncateAddress(address: string | null) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
-export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Props) {
+export function CreateProposalModal({ walletAddress, onClose, onSubmitted, triggerRef }: Props) {
   const defaultDeadline = () => {
     const d = new Date();
     d.setDate(d.getDate() + 7);
@@ -41,26 +43,73 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
   const [feeError, setFeeError] = useState(false);
 
   const recipientInputRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
+  // Initial focus: move to the recipient input on mount.
+  // On unmount, restore focus to the triggering element (or whatever was active before).
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null;
     if (recipientInputRef.current) {
       recipientInputRef.current.focus();
     }
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      if (previousActiveElement && typeof previousActiveElement.focus === "function") {
+      // Prefer the explicit trigger ref; fall back to whatever had focus before mount.
+      if (triggerRef?.current && typeof triggerRef.current.focus === "function") {
+        triggerRef.current.focus();
+      } else if (previousActiveElement && typeof previousActiveElement.focus === "function") {
         previousActiveElement.focus();
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Focus trap: confine Tab / Shift+Tab within the modal; Escape closes it.
+  useEffect(() => {
+    const modal = modalRef.current;
+    if (!modal) return;
+
+    const FOCUSABLE_SELECTORS =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (e.key !== "Tab") return;
+
+      const focusable = Array.from(
+        modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS),
+      ).filter((el) => !el.closest('[aria-hidden="true"]'));
+
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        // Shift+Tab: wrap backward from first → last
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        // Tab: wrap forward from last → first
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    modal.addEventListener("keydown", handleKeyDown);
+    return () => modal.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   const canCalculateFee = Boolean(
@@ -170,16 +219,18 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
 
   return (
     <div
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          onClose();
-        }
-      }}
       className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      aria-hidden="true"
     >
-      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md">
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md"
+      >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-white font-semibold text-lg">New Proposal</h2>
+          <h2 id="modal-title" className="text-white font-semibold text-lg">New Proposal</h2>
           <button
             type="button"
             onClick={onClose}

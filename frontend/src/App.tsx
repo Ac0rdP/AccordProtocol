@@ -77,11 +77,13 @@ export default function App() {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  // Return focus to the New Proposal trigger when modal closes
+  // Return focus to the New Proposal trigger when modal transitions from open → closed
+  const wasShowCreateRef = useRef(false);
   useEffect(() => {
-    if (!showCreate) {
+    if (!showCreate && wasShowCreateRef.current) {
       newProposalButtonRef.current?.focus();
     }
+    wasShowCreateRef.current = showCreate;
   }, [showCreate]);
 
   useEffect(() => {
@@ -403,6 +405,7 @@ export default function App() {
                   onExecute={handleExecute}
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
+                  createProposalButtonRef={newProposalButtonRef}
                   loading={loading}
                   error={error}
                 />
