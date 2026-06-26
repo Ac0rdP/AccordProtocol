@@ -1,6 +1,6 @@
 # Development Setup
 
-This guide walks through setting up Accord Protocol for local development on macOS, Linux, and Windows (WSL2).
+This guide walks through setting up Accord Protocol for local development on macOS, Linux, and Windows.
 
 ---
 
@@ -85,7 +85,44 @@ npm run lint   # ESLint
 
 ---
 
-## 6. Contract Setup
+## 6. Connecting Freighter
+
+The Accord frontend uses the [Freighter](https://freighter.app) browser extension wallet to sign transactions. Install and configure it before interacting with proposals.
+
+### Install Freighter
+
+- **Chrome / Brave / Edge**: Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/freighter/ejadnnkphdlanekannbhbpgkgepknjcf)
+- **Firefox**: Install from the [Firefox Add-ons store](https://addons.mozilla.org/en-US/firefox/addon/freighter/)
+
+After installing, create a new wallet or import an existing one by following the extension's onboarding flow.
+
+### Switch to Testnet
+
+1. Click the Freighter icon in your browser toolbar.
+2. Open **Settings** (gear icon) → **Network**.
+3. Select **Testnet** from the dropdown.
+4. The icon badge should now read **TESTNET**.
+
+> The Accord frontend only connects to Testnet. If Freighter is set to Mainnet or Pubnet the app will not detect the wallet.
+
+### Confirm the Connection
+
+1. Start the frontend: `cd frontend && npm run dev`
+2. Open `http://localhost:5173` in your browser.
+3. Freighter should prompt you to approve a connection. If not, click **Connect Wallet** in the app header.
+4. Once connected, your public key (G…) appears in the header.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Freighter not detected by the app | Reload the page. Ensure Freighter has permission to access `localhost` (Chrome: extension icon → right-click → **Inspect popup** → check console for errors; ensure **Allow access to file URLs** is enabled in extension settings). |
+| Wrong network selected | Open Freighter → Settings → Network → switch to **Testnet**. The app will ignore connections on Mainnet or Pubnet. |
+| Extension not appearing after install | Restart your browser. Freighter requires Chrome 88+, Firefox 109+, or any Chromium-based browser; it does not support Safari or mobile browsers. |
+
+---
+
+## 7. Contract Setup
 
 From the **repository root**:
 
@@ -101,7 +138,7 @@ cd contracts/accord && cargo test
 
 ---
 
-## 7. Local Soroban Node (optional)
+## 8. Local Soroban Node (optional)
 
 A `docker-compose.yml` at the repo root starts a standalone Soroban node:
 
@@ -116,7 +153,7 @@ Update `.env` to point `SOROBAN_RPC_URL` at `http://localhost:8000` when develop
 
 ---
 
-## 8. Create a Deployer Identity
+## 9. Create a Deployer Identity
 
 The Stellar CLI uses local key aliases (no browser extension needed for deployment):
 
@@ -134,9 +171,23 @@ stellar keys fund accord-deployer --network testnet
 
 Or use [Friendbot](https://friendbot.stellar.org/?addr=YOUR_PUBLIC_KEY) directly.
 
+### Fund a Freighter Wallet on Testnet
+
+If you are a regular user (not deploying contracts), fund your Freighter wallet via Friendbot instead:
+
+1. Copy your Freighter wallet address (the `G…` public key displayed in the extension).
+2. Open the following URL in your browser, replacing `G…` with your address:
+   ```
+   https://friendbot.stellar.org?addr=G…
+   ```
+3. Friendbot returns a JSON response with a `"hash"` field — this is the transaction hash of the funding operation.
+4. Your wallet now has **10,000 test XLM**. Check the balance in Freighter.
+
+> The CLI `stellar keys fund` command is for deployer identities. Regular users should always use the Friendbot URL above. Friendbot is rate-limited to one request per 60 seconds per IP.
+
 ---
 
-## 9. Verify Your Setup
+## 10. Verify Your Setup
 
 ```bash
 # From repo root
@@ -150,11 +201,24 @@ If both commands succeed, your environment is ready. See [`docs/DEPLOYMENT.md`](
 
 ---
 
-## Windows (WSL2) Notes
+## Windows
+
+You can develop on Windows using either **WSL2** (recommended) or a **native Windows** setup.
+
+### WSL2 (recommended)
 
 - Run all commands inside a WSL2 terminal (Ubuntu recommended).
 - Docker Desktop for Windows with WSL2 integration enabled is required for the local node.
 - Node.js and Rust should be installed inside WSL2, not on the Windows host.
+
+### Windows Native (PowerShell or Git Bash)
+
+- **Rust**: Download and run `rustup-init.exe` from [rustup.rs](https://rustup.rs), then follow the standard installer prompts.
+- **Node.js**: Download the LTS installer from [nodejs.org](https://nodejs.org) or install via `winget install OpenJS.NodeJS.LTS`.
+- **Stellar CLI**: Open a terminal and run `cargo install stellar-cli`. The Rust WASM target (`wasm32v1-none`) is added automatically by the Stellar CLI installer on Windows — if it is not, run `rustup target add wasm32v1-none` manually.
+- **Docker**: Optional. Skip if you are using a remote Testnet RPC endpoint (the default). Docker Desktop for Windows is only required if you want a local Soroban node.
+
+> **Known limitations:** The local Soroban node (Docker) is not well-tested on Windows native. If you encounter issues, switch to WSL2 or use the remote Testnet.
 
 ---
 

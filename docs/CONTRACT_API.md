@@ -3,6 +3,18 @@
 All amounts are in the token's smallest unit (stroops for XLM-derived tokens).
 All deadlines are Unix timestamps (seconds since epoch).
 
+### Token Amounts and Decimals
+
+All `amount` fields in function parameters and event data use the token's smallest unit. The table below lists the conventions for common tokens:
+
+| Token | Decimals | Smallest Unit | Conversion Formula |
+|-------|----------|--------------|-------------------|
+| **XLM** | 7 | stroop | `human_amount × 10⁷ = on_chain_amount` |
+| **USDC** | 7 | micro-dollar | `human_amount × 10⁷ = on_chain_amount` |
+| **EURC** | 7 | micro-euro | `human_amount × 10⁷ = on_chain_amount` |
+
+To convert a human-readable amount to the value passed to the contract: multiply by `10^decimals`. Every `amount` field — both in function parameters and event data — uses this smallest-unit representation (see the [Event Payloads](#event-payloads) section for per-field annotations).
+
 ---
 
 ## `initialize`
@@ -210,9 +222,47 @@ Returns `true` if `owner` has approved `proposal_id`.
 
 ---
 
+## XDR Type Reference
+
+When calling contract functions from JavaScript, each parameter must be converted to the XDR `SCVal` format that the Soroban RPC expects. The Stellar SDK provides `nativeToScVal` for encoding and `scValToNative` for decoding.
+
+> **Important:** `u64` and `i128` values exceed JavaScript's safe integer range (`Number.MAX_SAFE_INTEGER` = 2⁵³ − 1). They **must** be passed as JavaScript `BigInt` — not `Number`. Using `Number` silently truncates the value.
+
+| Rust Type | SCVal Variant | Build with `nativeToScVal` | Decode with `scValToNative` |
+|-----------|---------------|----------------------------|-----------------------------|
+| `Address` | `ScVal::Address` | `nativeToScVal(address, { type: 'address' })` | `scValToNative(scval)` → `"G…"` string |
+| `Vec<T>` | `ScVal::Vec` | `nativeToScVal(array, { type: 'vec' })` | `scValToNative(scval)` → JavaScript `Array` |
+| `u32` | `ScVal::U32` | `nativeToScVal(n, { type: 'u32' })` | `scValToNative(scval)` → JavaScript `Number` |
+| `u64` | `ScVal::U64` | `nativeToScVal(BigInt(n), { type: 'u64' })` | `scValToNative(scval)` → JavaScript `BigInt` |
+| `i128` | `ScVal::I128` | `nativeToScVal(BigInt(n), { type: 'i128' })` | `scValToNative(scval)` → JavaScript `BigInt` |
+| `String` | `ScVal::String` | `nativeToScVal(s, { type: 'string' })` | `scValToNative(scval)` → JavaScript `String` |
+| `bool` | `ScVal::Bool` | `nativeToScVal(b, { type: 'bool' })` | `scValToNative(scval)` → JavaScript `Boolean` |
+| `Proposal` | `ScVal::Map` | N/A (output only) | `scValToNative(scval)` → plain JavaScript object whose field names match the `Proposal` struct in [ARCHITECTURE.md §3](../ARCHITECTURE.md#3-storage-layout-soroban) |
+| `()` (unit) | `ScVal::Void` | N/A (no input) | `scValToNative(scval)` → `undefined` |
+
+---
+
 ## Event Payloads
 
+Each Soroban event has an ordered **topics array** followed by a **data payload**. The contract address is implicitly prepended as the first element of the topics array by the network. The remainder is published explicitly by the contract via `env.events().publish((symbol,), data)`.
+
 ### `ProposalCreatedEvent`
+
+**Topics:**
+| Index | Value | XDR Type |
+|-------|-------|----------|
+| 0 | Contract address (implicit) | `ScVal::Address` |
+| 1 | `"created"` | `ScVal::Symbol` |
+
+**Data fields:**
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `u64` | `ScVal::U64` | Unique proposal ID assigned by the counter |
+| `proposer` | `Address` | `ScVal::Address` | Owner who created the proposal |
+| `to` | `Address` | `ScVal::Address` | Recipient address of the transfer |
+| `amount` | `i128` | `ScVal::I128` | Transfer amount (see [Token Amounts](#token-amounts-and-decimals)) |
+| `threshold` | `u32` | `ScVal::U32` | Approval threshold in effect at creation |
+
 ```rust
 struct ProposalCreatedEvent {
     id: u64,
@@ -224,6 +274,21 @@ struct ProposalCreatedEvent {
 ```
 
 ### `ProposalApprovedEvent`
+
+**Topics:**
+| Index | Value | XDR Type |
+|-------|-------|----------|
+| 0 | Contract address (implicit) | `ScVal::Address` |
+| 1 | `"approved"` | `ScVal::Symbol` |
+
+**Data fields:**
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `u64` | `ScVal::U64` | Proposal ID that received the approval |
+| `approver` | `Address` | `ScVal::Address` | Owner who approved |
+| `approvals` | `u32` | `ScVal::U32` | Running total of approvals after this vote |
+| `threshold` | `u32` | `ScVal::U32` | Approval threshold at vote time |
+
 ```rust
 struct ProposalApprovedEvent {
     id: u64,
@@ -234,6 +299,20 @@ struct ProposalApprovedEvent {
 ```
 
 ### `ProposalRevokedEvent`
+
+**Topics:**
+| Index | Value | XDR Type |
+|-------|-------|----------|
+| 0 | Contract address (implicit) | `ScVal::Address` |
+| 1 | `"revoked"` | `ScVal::Symbol` |
+
+**Data fields:**
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `u64` | `ScVal::U64` | Proposal ID the approval was revoked from |
+| `approver` | `Address` | `ScVal::Address` | Owner who revoked their approval |
+| `approvals` | `u32` | `ScVal::U32` | Remaining approval count after the revoke |
+
 ```rust
 struct ProposalRevokedEvent {
     id: u64,
@@ -243,6 +322,21 @@ struct ProposalRevokedEvent {
 ```
 
 ### `ProposalExecutedEvent`
+
+**Topics:**
+| Index | Value | XDR Type |
+|-------|-------|----------|
+| 0 | Contract address (implicit) | `ScVal::Address` |
+| 1 | `"executed"` | `ScVal::Symbol` |
+
+**Data fields:**
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `u64` | `ScVal::U64` | Proposal ID that was executed |
+| `executor` | `Address` | `ScVal::Address` | Owner who triggered the execution |
+| `to` | `Address` | `ScVal::Address` | Recipient of the transferred tokens |
+| `amount` | `i128` | `ScVal::I128` | Transferred amount (see [Token Amounts](#token-amounts-and-decimals)) |
+
 ```rust
 struct ProposalExecutedEvent {
     id: u64,
