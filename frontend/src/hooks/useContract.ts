@@ -6,6 +6,7 @@ import {
   getTotalProposals,
   mapProposal,
   hasApproved,
+  getApprovers,
 } from "../lib/contract";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 
@@ -63,15 +64,18 @@ export function useContract(walletAddress: string | null): ContractState {
 
         const proposalsWithApproval = await Promise.all(
           mapped.map(async (p) => {
+
+            const approverAddresses = await getApprovers(p.id);
+
             if (!walletAddress) {
-              return { ...p, userHasApproved: false };
+              return { ...p, userHasApproved: false, approverAddresses };
             }
             try {
               const approved = await hasApproved(walletAddress, p.id);
-              return { ...p, userHasApproved: approved };
+              return { ...p, userHasApproved: approved, approverAddresses };
             } catch (err) {
               console.error(`Failed to fetch approval for ${p.id}`, err);
-              return { ...p, userHasApproved: false };
+              return { ...p, userHasApproved: false, approverAddresses };
             }
           })
         );

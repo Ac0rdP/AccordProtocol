@@ -130,6 +130,7 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     createdAt: `proposal #${Number(raw.id)}`,
     proposer: shortenAddr(String(raw.proposer)),
     userHasApproved: false,
+    approverAddresses: [],
   };
 }
 
@@ -207,5 +208,25 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
   } catch (err) {
     console.error("Failed to get contract events:", err);
     return fromLedger;
+  }
+}
+
+export async function getApprovers(proposalId: number): Promise<string[]> {
+  try {
+    const owners = await getOwners();
+    
+    // Check all owners in parallel
+    const checks = await Promise.all(
+      owners.map(async (owner) => {
+        const approved = await hasApproved(owner, proposalId);
+        return { owner, approved };
+      })
+    );
+
+    // Keep only the ones who approved
+    return checks.filter((c) => c.approved).map((c) => c.owner);
+  } catch (error) {
+    console.error(`Failed to get approvers for proposal ${proposalId}:`, error);
+    return [];
   }
 }

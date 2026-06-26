@@ -319,32 +319,6 @@ export default function App() {
           <div className="py-16 text-center text-sm text-zinc-500">
             Loading contract data…
           </div>
-        ) : page === "dashboard" ? (
-          <DashboardPage
-            activeProposals={activeProposals}
-            owners={owners}
-            dashboardStats={stats}
-            walletAddress={wallet.address}
-            onApprove={handleApprove}
-            onExecute={handleExecute}
-            onRevoke={handleRevoke}
-            onCreateProposal={() => setShowCreate(true)}
-            error={null}
-            loading={loading}
-          />
-        ) : page === "history" ? (
-          <HistoryPage proposals={proposals} onApprove={handleApprove} />
-        ) : page === "owners" ? (
-          <OwnersPage
-            owners={owners}
-            threshold={parseInt(
-              stats.find((s) => s.label === "Threshold")?.value.split(" ")[0] ||
-                "0",
-            )}
-            totalOwners={owners.length}
-          />
-        ) : page === "settings" ? (
-          <SettingsPage stats={stats} />
         ) : (
           <Routes>
             <Route
@@ -389,7 +363,7 @@ export default function App() {
           </Routes>
         )}
       </main>
-
+      
       {showCreate && (
         <CreateProposalModal
           walletAddress={wallet.address}
