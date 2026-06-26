@@ -9,15 +9,16 @@ Read the [README](../README.md) and [Architecture](./ARCHITECTURE.md) for produc
 ## Table of Contents
 
 1. [Ways to contribute](#ways-to-contribute)
-2. [Development setup](#development-setup)
-3. [Finding work](#finding-work)
-4. [Contribution workflow](#contribution-workflow)
-5. [Branching and commits](#branching-and-commits)
-6. [Coding standards](#coding-standards)
-7. [Testing](#testing)
-8. [Documentation](#documentation)
-9. [Security](#security)
-10. [License](#license)
+2. [Glossary](./GLOSSARY.md)
+3. [Development setup](#development-setup)
+4. [Finding work](#finding-work)
+5. [Contribution workflow](#contribution-workflow)
+6. [Branching and commits](#branching-and-commits)
+7. [Coding standards](#coding-standards)
+8. [Testing](#testing)
+9. [Documentation](#documentation)
+10. [Security](#security)
+11. [License](#license)
 
 ---
 
@@ -39,14 +40,14 @@ This checklist is designed for first-time contributors to help you get started q
 
 ## Ways to Contribute
 
-| Area | Examples |
-|------|----------|
-| **Contract** | Proposal lifecycle improvements, owner rotation, spending limits, gas optimizations |
-| **Frontend** | Freighter wallet integration, real-time event feed, mobile UI, accessibility |
-| **Testing** | Additional contract tests, property-based tests, E2E UI tests |
-| **Documentation** | Diagrams, video walkthroughs, API reference improvements |
-| **Reviews** | Thoughtful PR reviews with concrete suggestions |
-| **Infrastructure** | CI improvements, Dependabot config, deployment scripts |
+| Area               | Examples                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| **Contract**       | Proposal lifecycle improvements, owner rotation, spending limits, gas optimizations |
+| **Frontend**       | Freighter wallet integration, real-time event feed, mobile UI, accessibility        |
+| **Testing**        | Additional contract tests, property-based tests, E2E UI tests                       |
+| **Documentation**  | Diagrams, video walkthroughs, API reference improvements                            |
+| **Reviews**        | Thoughtful PR reviews with concrete suggestions                                     |
+| **Infrastructure** | CI improvements, Dependabot config, deployment scripts                              |
 
 ---
 
@@ -81,14 +82,14 @@ See [`docs/SETUP.md`](./SETUP.md) for a step-by-step guide across macOS, Linux, 
 
 ### Branch Naming
 
-| Prefix | Use Case | Example |
-|--------|----------|---------|
-| `feat/` | New feature | `feat/freighter-wallet` |
-| `fix/` | Bug fix | `fix/approval-counter` |
-| `contract/` | Contract changes | `contract/proposal-expiry` |
-| `docs/` | Documentation | `docs/architecture-diagram` |
-| `chore/` | Config, CI, tooling | `chore/dependabot-config` |
-| `test/` | Tests only | `test/execute-edge-cases` |
+| Prefix      | Use Case            | Example                     |
+| ----------- | ------------------- | --------------------------- |
+| `feat/`     | New feature         | `feat/freighter-wallet`     |
+| `fix/`      | Bug fix             | `fix/approval-counter`      |
+| `contract/` | Contract changes    | `contract/proposal-expiry`  |
+| `docs/`     | Documentation       | `docs/architecture-diagram` |
+| `chore/`    | Config, CI, tooling | `chore/dependabot-config`   |
+| `test/`     | Tests only          | `test/execute-edge-cases`   |
 
 ### Commit Messages
 
@@ -99,6 +100,7 @@ See [`docs/SETUP.md`](./SETUP.md) for a step-by-step guide across macOS, Linux, 
 ### Pull Request Description
 
 Include:
+
 1. **What** changed (high level)
 2. **Why** it was needed — link the issue (`Fixes #N` or `Refs #N`)
 3. **How to verify** — commands run, screenshots for UI changes
