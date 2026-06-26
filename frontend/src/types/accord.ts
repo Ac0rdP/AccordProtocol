@@ -14,6 +14,7 @@ export type Proposal = {
   createdAt: string;
   proposer: string;
   userHasApproved: boolean;
+  approverAddresses: string[];
 };
 
 export type Owner = {

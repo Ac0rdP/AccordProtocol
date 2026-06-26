@@ -132,7 +132,11 @@ export function ProposalCard({
       </div>
 
       <div className="flex items-center justify-between mt-4">
-        <ApprovalBar approvals={proposal.approvals} threshold={proposal.threshold} />
+        <ApprovalBar 
+          approvals={proposal.approvals} 
+          threshold={proposal.threshold} 
+          approverAddresses={proposal.approverAddresses}
+        />
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-zinc-600">{proposal.createdAt}</span>
