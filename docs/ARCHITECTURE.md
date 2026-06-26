@@ -35,19 +35,19 @@
 
 ## 2. Contract ↔ Frontend Data Mapping
 
-| Contract Function | Purpose | Frontend Caller |
-|---|---|---|
-| `initialize(owners, threshold)` | One-shot init — sets owners and M-of-N threshold | Deployment script only |
-| `create_proposal(proposer, to, amount, token, description, deadline)` | Creates a transfer proposal | Proposal creation form |
-| `approve(approver, proposal_id)` | Owner casts an approval vote | Proposal card approve button |
-| `revoke(approver, proposal_id)` | Owner withdraws their approval | Proposal card revoke button |
-| `execute(executor, proposal_id)` | Executes a Ready proposal, transfers tokens | Proposal card execute button |
-| `get_proposal(proposal_id)` | Reads a single proposal | Proposal detail page |
-| `get_proposals_paged(offset, limit)` | Paginated proposal list | Dashboard list |
-| `get_owners()` | Returns owner list | Settings / owners panel |
-| `get_threshold()` | Returns approval threshold | Dashboard header stat |
-| `is_owner(address)` | Checks ownership for a connected wallet | Wallet-connected gating |
-| `has_approved(proposal_id, owner)` | Per-owner approval flag | Approval bar UI |
+| Contract Function                                                     | Purpose                                          | Frontend Caller              |
+| --------------------------------------------------------------------- | ------------------------------------------------ | ---------------------------- |
+| `initialize(owners, threshold)`                                       | One-shot init — sets owners and M-of-N threshold | Deployment script only       |
+| `create_proposal(proposer, to, amount, token, description, deadline)` | Creates a transfer proposal                      | Proposal creation form       |
+| `approve(approver, proposal_id)`                                      | Owner casts an approval vote                     | Proposal card approve button |
+| `revoke(approver, proposal_id)`                                       | Owner withdraws their approval                   | Proposal card revoke button  |
+| `execute(executor, proposal_id)`                                      | Executes a Ready proposal, transfers tokens      | Proposal card execute button |
+| `get_proposal(proposal_id)`                                           | Reads a single proposal                          | Proposal detail page         |
+| `get_proposals_paged(offset, limit)`                                  | Paginated proposal list                          | Dashboard list               |
+| `get_owners()`                                                        | Returns owner list                               | Settings / owners panel      |
+| `get_threshold()`                                                     | Returns approval threshold                       | Dashboard header stat        |
+| `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
+| `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
 
 ## 3. Storage Layout (Soroban)
 
@@ -55,13 +55,13 @@
 
 All instance-storage keys share **one** `LedgerEntry` (the contract instance). The TTL bump and threshold apply to that single shared entry; all keys expire together.
 
-| Key | Type | Description | TTL — bump / threshold (ledgers) |
-|-----|------|-------------|----------------------------------|
-| `INIT` | `bool` | Initialization guard | 518,400 / 17,280 |
-| `THRESH` | `u32` | Approval threshold | 518,400 / 17,280 |
-| `NEXT` | `u64` | Monotonic proposal ID counter | 518,400 / 17,280 |
-| `ACTCNT` | `u32` | Active proposal count (budget guard) | 518,400 / 17,280 |
-| `TLOCK` | `u64` | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280 |
+| Key      | Type   | Description                               | TTL — bump / threshold (ledgers) |
+| -------- | ------ | ----------------------------------------- | -------------------------------- |
+| `INIT`   | `bool` | Initialization guard                      | 518,400 / 17,280                 |
+| `THRESH` | `u32`  | Approval threshold                        | 518,400 / 17,280                 |
+| `NEXT`   | `u64`  | Monotonic proposal ID counter             | 518,400 / 17,280                 |
+| `ACTCNT` | `u32`  | Active proposal count (budget guard)      | 518,400 / 17,280                 |
+| `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
 
 **Instance entry cost**: all five keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
 
@@ -69,13 +69,14 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 
 Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 
-| Key | Type | Description | TTL — bump / threshold (ledgers) | Approx. cost (XLM / 30 days) |
-|-----|------|-------------|----------------------------------|-------------------------------|
-| `OWNERS` | `Vec<Address>` | Fixed owner set (max 20 addresses) | 518,400 / 17,280 | ~0.052 XLM |
-| `("PROP", id)` | `Proposal` | Per-proposal state | 518,400 / 17,280 | ~0.052 XLM |
-| `("APPR", id, owner)` | `bool` | Per-owner approval flag per proposal | 518,400 / 17,280 | ~0.052 XLM |
+| Key                   | Type           | Description                          | TTL — bump / threshold (ledgers) | Approx. cost (XLM / 30 days) |
+| --------------------- | -------------- | ------------------------------------ | -------------------------------- | ---------------------------- |
+| `OWNERS`              | `Vec<Address>` | Fixed owner set (max 20 addresses)   | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("PROP", id)`        | `Proposal`     | Per-proposal state                   | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("APPR", id, owner)` | `bool`         | Per-owner approval flag per proposal | 518,400 / 17,280                 | ~0.052 XLM                   |
 
 ### Proposal Struct Fields
+
 ```
 id            u64
 proposer      Address
@@ -96,20 +97,20 @@ Accord uses two patterns:
 
 **Singleton keys** — short uppercase abbreviations for values that exist exactly once per deployed contract:
 
-| Key | Full meaning |
-|-----|-------------|
-| `INIT` | Initialization guard |
-| `THRESH` | Approval threshold (M in M-of-N) |
-| `NEXT` | Monotonic proposal ID counter |
+| Key      | Full meaning                        |
+| -------- | ----------------------------------- |
+| `INIT`   | Initialization guard                |
+| `THRESH` | Approval threshold (M in M-of-N)    |
+| `NEXT`   | Monotonic proposal ID counter       |
 | `ACTCNT` | Count of currently active proposals |
-| `TLOCK` | Time-lock delay in seconds |
-| `OWNERS` | Owner address list |
+| `TLOCK`  | Time-lock delay in seconds          |
+| `OWNERS` | Owner address list                  |
 
 **Tuple keys** — two- or three-part tuples for per-entity records, where the first element is a short symbol namespace:
 
-| Tuple | Description |
-|-------|-------------|
-| `("PROP", id)` | Proposal record keyed by proposal ID (u64) |
+| Tuple                 | Description                                             |
+| --------------------- | ------------------------------------------------------- |
+| `("PROP", id)`        | Proposal record keyed by proposal ID (u64)              |
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
@@ -125,10 +126,10 @@ For a **5-of-7 multisig** (7 owners, all casting a vote), one proposal creates a
 
 The protocol enforces two caps that bound worst-case total storage:
 
-| Cap | Value | Rationale |
-|-----|-------|-----------|
+| Cap                                   | Value        | Rationale                                       |
+| ------------------------------------- | ------------ | ----------------------------------------------- |
 | Active-proposal limit (`ACTCNT` ≤ 50) | 50 proposals | Bounds simultaneous persistent proposal entries |
-| Owner list limit | 20 owners | Bounds approval entries per proposal |
+| Owner list limit                      | 20 owners    | Bounds approval entries per proposal            |
 
 **Worst-case total persistent entries**: 50 proposals × (1 proposal entry + 20 approval entries) = **1,050 entries** at ~0.052 XLM each ≈ **~54.6 XLM per 30-day bump cycle**.
 
@@ -142,7 +143,7 @@ Accord uses a **threshold-and-bump** pattern rather than a fixed-expiry TTL for 
 
 2. **The one-day threshold prevents unnecessary writes.** If an entry's remaining TTL already exceeds the threshold (17,280 ledgers ≈ 1 day), `extend_ttl` is a no-op — no ledger storage is written and no rent is charged for that call. This keeps routine transaction costs low for frequently-accessed entries.
 
-3. **The 30-day bump provides a generous safety margin.** When the TTL *is* below the threshold, it is pushed forward 518,400 ledgers (≈ 30 days). Even a contract that goes completely unused for three weeks will not lose on-chain state.
+3. **The 30-day bump provides a generous safety margin.** When the TTL _is_ below the threshold, it is pushed forward 518,400 ledgers (≈ 30 days). Even a contract that goes completely unused for three weeks will not lose on-chain state.
 
 A **fixed-expiry** model (e.g. "entries expire at a predetermined ledger") would require either a privileged renewal transaction sent on a strict schedule or acceptance that entries disappear on a known date — both are operationally fragile for a multisig holding real funds. The threshold-and-bump pattern ties entry lifetime to actual usage rather than to a calendar.
 
@@ -154,59 +155,60 @@ Soroban charges rent based on entry size and TTL extension length (CAP-0046-08):
 rent_fee_stroops = ceil(entry_size_bytes / 1024) × fee_rate_1kb × delta_ledgers
 ```
 
-| Parameter | Assumed value | Source |
-|-----------|--------------|--------|
-| `fee_rate_1kb` | ~1 stroop / 1 KB / ledger | Stellar network config (verify current value via `soroban_rpc.getFeeStats` or Stellar Horizon) |
-| `delta_ledgers` | 518,400 (full 30-day bump) | Worst case — entry TTL fully expired before access |
-| `("PROP", id)` entry size | ~396 bytes (100-char description) | XDR field sum below; 300-char max adds ~200 bytes, still rounds to 1 KB |
-| `("APPR", id, owner)` entry size | ~144 bytes | XDR field sum below |
+| Parameter                        | Assumed value                     | Source                                                                                         |
+| -------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `fee_rate_1kb`                   | ~1 stroop / 1 KB / ledger         | Stellar network config (verify current value via `soroban_rpc.getFeeStats` or Stellar Horizon) |
+| `delta_ledgers`                  | 518,400 (full 30-day bump)        | Worst case — entry TTL fully expired before access                                             |
+| `("PROP", id)` entry size        | ~396 bytes (100-char description) | XDR field sum below; 300-char max adds ~200 bytes, still rounds to 1 KB                        |
+| `("APPR", id, owner)` entry size | ~144 bytes                        | XDR field sum below                                                                            |
 
 **XDR byte breakdown — `("PROP", id)` Proposal entry (100-char description):**
 
-| Field | XDR bytes |
-|-------|-----------|
-| Key (`"PROP"` symbol + u64 id) | 16 |
-| `id` (u64) | 8 |
-| `proposer` (Address) | 44 |
-| `description` (String, 100 chars) | 108 |
-| `deadline` (u64) | 8 |
-| `approvals` (u32) | 4 |
-| `status` (enum) | 4 |
-| `kind` (Transfer: discriminant + Address + i128 + Address) | 108 |
-| `ready_at` (u64) | 8 |
-| `threshold` (u32) | 4 |
-| `category` (enum) | 4 |
-| LedgerEntry framing and metadata | ~80 |
-| **Total** | **~396 bytes → 1 KB billed** |
+| Field                                                      | XDR bytes                    |
+| ---------------------------------------------------------- | ---------------------------- |
+| Key (`"PROP"` symbol + u64 id)                             | 16                           |
+| `id` (u64)                                                 | 8                            |
+| `proposer` (Address)                                       | 44                           |
+| `description` (String, 100 chars)                          | 108                          |
+| `deadline` (u64)                                           | 8                            |
+| `approvals` (u32)                                          | 4                            |
+| `status` (enum)                                            | 4                            |
+| `kind` (Transfer: discriminant + Address + i128 + Address) | 108                          |
+| `ready_at` (u64)                                           | 8                            |
+| `threshold` (u32)                                          | 4                            |
+| `category` (enum)                                          | 4                            |
+| LedgerEntry framing and metadata                           | ~80                          |
+| **Total**                                                  | **~396 bytes → 1 KB billed** |
 
 **XDR byte breakdown — `("APPR", id, owner)` approval entry:**
 
-| Field | XDR bytes |
-|-------|-----------|
-| Key (`"APPR"` symbol + u64 + Address) | 60 |
-| Value (`bool`) | 4 |
-| LedgerEntry framing and metadata | ~80 |
-| **Total** | **~144 bytes → 1 KB billed** |
+| Field                                 | XDR bytes                    |
+| ------------------------------------- | ---------------------------- |
+| Key (`"APPR"` symbol + u64 + Address) | 60                           |
+| Value (`bool`)                        | 4                            |
+| LedgerEntry framing and metadata      | ~80                          |
+| **Total**                             | **~144 bytes → 1 KB billed** |
 
 **Cost summary — one proposal at full 30-day bump:**
 
-| Entry | Billed size | Stroops | XLM |
-|-------|-------------|---------|-----|
-| `("PROP", id)` | 1 KB | 518,400 | ~0.052 |
-| `("APPR", id, owner)` per approver | 1 KB | 518,400 | ~0.052 |
-| **3-of-5 multisig (3 approvers)** | — | — | **~0.208** |
+| Entry                              | Billed size | Stroops | XLM        |
+| ---------------------------------- | ----------- | ------- | ---------- |
+| `("PROP", id)`                     | 1 KB        | 518,400 | ~0.052     |
+| `("APPR", id, owner)` per approver | 1 KB        | 518,400 | ~0.052     |
+| **3-of-5 multisig (3 approvers)**  | —           | —       | **~0.208** |
 
 > These figures use a fee rate of 1 stroop/KB/ledger. Verify the current network value before capacity-planning large deployments; the rate is adjustable via Stellar governance.
 
 ### Bump-on-Access Strategy and Configuration
 
 The contract defines the following TTL values for its storage entries:
+
 - **`INSTANCE_BUMP`**: 518,400 ledgers (≈ 30 days)
 - **`INSTANCE_THRESHOLD`**: 17,280 ledgers (≈ 1 day)
 - **`PERSISTENT_BUMP`**: 518,400 ledgers (≈ 30 days)
 - **`PERSISTENT_THRESHOLD`**: 17,280 ledgers (≈ 1 day)
 
-**Instance storage** bumps on mutating calls, extending the lifetime of the core contract state (`INIT`, `THRESH`, `NEXT`, `ACTCNT`, `TLOCK`). 
+**Instance storage** bumps on mutating calls, extending the lifetime of the core contract state (`INIT`, `THRESH`, `NEXT`, `ACTCNT`, `TLOCK`).
 **Persistent storage** bumps per-entry on read or write, meaning that each proposal and approval entry maintains its own independent TTL.
 
 > **Guidance Note**: The bump target must account for the 90-day maximum proposal duration. While the default bump is only 30 days (`518,400` ledgers), this 30-day bump functions correctly only because entries are re-bumped upon access. A proposal with a 90-day deadline will not expire prematurely as long as it is interacted with (read or written) at least once every 30 days.
@@ -214,7 +216,7 @@ The contract defines the following TTL values for its storage entries:
 Every read or write of a storage entry calls `extend_ttl` with a **threshold** and a **bump**:
 
 - **Threshold** (17,280 ledgers ≈ 1 day): if the entry's remaining TTL already exceeds this value no extension is triggered and no rent is charged on that call.
-- **Bump** (518,400 ledgers ≈ 30 days): when the TTL *is* below the threshold, expiry is pushed to `current_ledger + bump`.
+- **Bump** (518,400 ledgers ≈ 30 days): when the TTL _is_ below the threshold, expiry is pushed to `current_ledger + bump`.
 
 This means rent is paid at most once per day per entry rather than on every transaction, keeping routine call costs low.
 
@@ -343,18 +345,19 @@ The execute flow is triggered when an owner clicks Execute on a proposal that ha
 The contract emits events using `env.events().publish()`. Each Soroban event has two components that external consumers must understand:
 
 **Event envelope structure:**
+
 - **Contract address** — the deployed Accord contract ID, which Soroban attaches implicitly to every event. External consumers use this as a first-level filter to select only events from a specific deployment.
 - **Topic string** — a short symbol published explicitly by the contract (`"created"`, `"approved"`, `"revoked"`, `"executed"`). This is the second filter consumers apply to select a specific event type.
 - **Data payload** — a typed struct carrying the event details, as described in the table below.
 
 The contract address plus one topic string together uniquely identify a stream of events from a specific action type on a specific deployment.
 
-| Topics | Data Type | Consumer |
-|--------|-----------|----------|
-| `("created",)` | `ProposalCreatedEvent { id, proposer, to, amount, threshold }` | Proposal feed |
+| Topics          | Data Type                                                      | Consumer            |
+| --------------- | -------------------------------------------------------------- | ------------------- |
+| `("created",)`  | `ProposalCreatedEvent { id, proposer, to, amount, threshold }` | Proposal feed       |
 | `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold }` | Approval bar update |
-| `("revoked",)` | `ProposalRevokedEvent { id, approver, approvals }` | Approval bar update |
-| `("executed",)` | `ProposalExecutedEvent { id, executor, to, amount }` | Execution history |
+| `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals }`             | Approval bar update |
+| `("executed",)` | `ProposalExecutedEvent { id, executor, to, amount }`           | Execution history   |
 
 ### Indexing Accord Events
 
@@ -386,6 +389,7 @@ Services such as [Mercury](https://mercurydata.app) subscribe to contract events
 Soroban events are stored as part of ledger close metadata and are only available from standard RPC nodes for a **limited number of ledgers** (the exact window depends on the node operator's configuration — typically 17,280 ledgers, approximately one day on Testnet). Events older than this window are permanently unavailable from a standard node.
 
 For long-term event history, use one of the following:
+
 - A **self-hosted archival Soroban node** configured with `DISABLE_TX_META_EXPIRY=true` (or equivalent) to retain all historical ledger metadata.
 - A **third-party indexing service** such as Mercury, which maintains its own persistent event store.
 
@@ -402,21 +406,22 @@ See issue #103 and the TTL documentation in Section 3 for context on how on-chai
 
 All token amounts are stored and transferred in the token's **smallest unit** (stroops for XLM: 1 stroop = 0.0000001 XLM). Use `BigInt` in the frontend — never `Number` for on-chain amounts.
 
-| Token Amount | Stroops |
-|---|---|
-| 1.0 XLM | 10,000,000 |
-| 100.5 XLM | 1,005,000,000 |
+| Token Amount | Stroops       |
+| ------------ | ------------- |
+| 1.0 XLM      | 10,000,000    |
+| 100.5 XLM    | 1,005,000,000 |
 
 Frontend utilities should live in `frontend/src/lib/soroban.ts`:
+
 - `toBaseUnit(amount: string, decimals: number): bigint`
 - `fromBaseUnit(amount: bigint, decimals: number): string`
 
 ## 9. Related Documents
 
-| Document | Description |
-|----------|-------------|
-| [DESIGN.md](DESIGN.md) | Design decisions — why the protocol is built the way it is |
-| [docs/guides/connecting-your-wallet.md](guides/connecting-your-wallet.md) | End-user guide: Freighter setup and Testnet funding |
-| [docs/guides/reading-the-dashboard.md](guides/reading-the-dashboard.md) | End-user guide: proposal list, status badges, and approval bar |
-| [CONTRACT_API.md](CONTRACT_API.md) | Full contract function reference |
-| [SETUP.md](SETUP.md) | Developer setup and deployment instructions |
+| Document                                                                  | Description                                                    |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| [DESIGN.md](DESIGN.md)                                                    | Design decisions — why the protocol is built the way it is     |
+| [docs/guides/connecting-your-wallet.md](guides/connecting-your-wallet.md) | End-user guide: Freighter setup and Testnet funding            |
+| [docs/guides/reading-the-dashboard.md](guides/reading-the-dashboard.md)   | End-user guide: proposal list, status badges, and approval bar |
+| [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
+| [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
