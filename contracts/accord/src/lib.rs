@@ -29,6 +29,9 @@ pub enum ProposalKind {
     RemoveOwner(Address),
     /// ChangeThreshold(new_threshold)
     ChangeThreshold(u32),
+    /// SetSpendingLimit(owner, token, limit) — per-owner cap on the amount that
+    /// `owner` may propose for `token`. A limit of 0 blocks that token entirely.
+    SetSpendingLimit(Address, Address, i128),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,6 +143,7 @@ pub enum ContractError {
     OwnerNotFound = 25,
     ContractFrozen = 26,
     NoGuardian = 27,
+    SpendingLimitExceeded = 28,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -182,6 +186,10 @@ fn guardian_key() -> Symbol {
 
 fn frozen_key() -> Symbol {
     symbol_short!("FROZEN")
+}
+
+fn spending_limit_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
+    (symbol_short!("SLIMIT"), owner.clone(), token.clone())
 }
 
 // ─── TTL Constants ───────────────────────────────────────────────────────────
@@ -304,6 +312,23 @@ fn read_approval(env: &Env, proposal_id: u64, owner: &Address) -> bool {
 fn write_approval(env: &Env, proposal_id: u64, owner: &Address, approved: bool) {
     let key = approval_key(proposal_id, owner);
     env.storage().persistent().set(&key, &approved);
+    bump_persistent(env, &key);
+}
+
+/// Reads the per-owner spending limit for a token. Returns `None` when no limit
+/// is set, meaning the owner is unrestricted for that token.
+fn read_spending_limit(env: &Env, owner: &Address, token: &Address) -> Option<i128> {
+    let key = spending_limit_key(owner, token);
+    let limit: Option<i128> = env.storage().persistent().get(&key);
+    if limit.is_some() {
+        bump_persistent(env, &key);
+    }
+    limit
+}
+
+fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128) {
+    let key = spending_limit_key(owner, token);
+    env.storage().persistent().set(&key, &limit);
     bump_persistent(env, &key);
 }
 
@@ -505,6 +530,14 @@ impl AccordContract {
             return Err(ContractError::InvalidRecipient);
         }
 
+        // Enforce the proposer's per-token spending limit, if one is configured.
+        // Absent key means unlimited; a stored limit (including 0) is a hard cap.
+        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+            if amount > limit {
+                return Err(ContractError::SpendingLimitExceeded);
+            }
+        }
+
         let active = read_active_count(&env);
         if active >= MAX_ACTIVE_PROPOSALS {
             return Err(ContractError::TooManyActiveProposals);
@@ -599,6 +632,78 @@ impl AccordContract {
             approvals: 0,
             status: ProposalStatus::Pending,
             kind: ProposalKind::AddOwner(new_owner),
+            ready_at: 0,
+            threshold,
+            category: ProposalCategory::Other,
+        };
+        write_proposal(&env, &proposal);
+        write_active_count(&env, active + 1);
+
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to set (or change) a per-owner spending limit for a
+    /// token. The limit caps the amount `owner` may propose for `token`; a limit
+    /// of 0 blocks that token for that owner. Enforced in `create_proposal`.
+    pub fn create_spending_limit_proposal(
+        env: Env,
+        proposer: Address,
+        owner: Address,
+        token: Address,
+        limit: i128,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        if limit < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let active = read_active_count(&env);
+        if active >= MAX_ACTIVE_PROPOSALS {
+            return Err(ContractError::TooManyActiveProposals);
+        }
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::SetSpendingLimit(owner, token, limit),
             ready_at: 0,
             threshold,
             category: ProposalCategory::Other,
@@ -967,6 +1072,9 @@ impl AccordContract {
                 env.storage().instance().set(&threshold_key(), new_threshold);
                 bump_instance(&env);
             }
+            ProposalKind::SetSpendingLimit(owner, token, limit) => {
+                write_spending_limit(&env, owner, token, *limit);
+            }
         }
 
         proposal.status = ProposalStatus::Executed;
@@ -1080,6 +1188,12 @@ impl AccordContract {
     /// Returns all current owners.
     pub fn get_owners(env: Env) -> Result<Vec<Address>, ContractError> {
         read_owners(&env)
+    }
+
+    /// Returns the spending limit for an (owner, token) pair, or `None` if no
+    /// limit is set (the owner is unrestricted for that token).
+    pub fn get_spending_limit(env: Env, owner: Address, token: Address) -> Option<i128> {
+        read_spending_limit(&env, &owner, &token)
     }
 
     /// Returns the current approval threshold.

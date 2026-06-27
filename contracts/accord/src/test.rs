@@ -6,6 +6,7 @@ use super::*;
 use std::format;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
 use soroban_sdk::{token, xdr, Address, BytesN, Env, IntoVal, String, Vec};
+use proptest::prelude::*;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1650,4 +1651,144 @@ fn create_add_owner_proposal_rejects_at_max_owners() {
         ),
         Err(Ok(ContractError::InvalidOwners))
     );
+}
+
+// ─── Spending Limits (issue #41) ───────────────────────────────────────────────
+
+#[test]
+fn spending_limit_full_lifecycle() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit: i128 = 1_000_000;
+
+    // No limit initially: unrestricted.
+    assert_eq!(
+        client.get_spending_limit(&owner_a, &token_client.address),
+        None
+    );
+
+    // Set a limit for owner_a via the multisig flow: propose, approve, execute.
+    let id = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &limit,
+        &str(&env, "Cap owner_a at 1,000,000"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    assert_eq!(
+        client.get_spending_limit(&owner_a, &token_client.address),
+        Some(limit)
+    );
+
+    // A proposal at the limit succeeds.
+    let within = client.create_proposal(
+        &owner_a,
+        &Address::generate(&env),
+        &limit,
+        &token_client.address,
+        &str(&env, "Within limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert!(within > 0);
+
+    // A proposal over the limit is rejected.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &(limit + 1),
+            &token_client.address,
+            &str(&env, "Over limit"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+}
+
+#[test]
+fn proposer_without_limit_is_unrestricted() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    // No limit configured for owner_a, so a large amount is allowed.
+    let id = client.create_proposal(
+        &owner_a,
+        &Address::generate(&env),
+        &1_000_000_000_i128,
+        &token_client.address,
+        &str(&env, "Large amount, no limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(id, 1);
+}
+
+// ─── Property Tests (issue #55) ─────────────────────────────────────────────────
+
+proptest! {
+    // Soroban builds a fresh Env per case, so keep the case count modest.
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// A proposal's approval count must never exceed the number of distinct
+    /// owners, regardless of owner count or threshold. After every owner approves
+    /// once, `approvals` equals the owner count, and a repeat approval by an
+    /// existing owner is rejected rather than pushing the count higher.
+    #[test]
+    fn approval_count_never_exceeds_owner_count(
+        owner_count in 1u32..=20u32,
+        threshold_seed in 1u32..=20u32,
+    ) {
+        // Derive a threshold in 1..=owner_count from the independent seed.
+        let threshold = (threshold_seed - 1) % owner_count + 1;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let mut owners = Vec::new(&env);
+        for _ in 0..owner_count {
+            owners.push_back(Address::generate(&env));
+        }
+        client.initialize(&owners, &threshold, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let id = client.create_proposal(
+            &owners.get(0).unwrap(),
+            &Address::generate(&env),
+            &1_000_000_i128,
+            &token_client.address,
+            &str(&env, "invariant proposal"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+
+        // Every owner approves exactly once.
+        for owner in owners.iter() {
+            client.approve(&owner, &id);
+        }
+
+        let proposal = client.get_proposal(&id);
+        prop_assert_eq!(proposal.approvals, owner_count);
+        prop_assert!(proposal.approvals <= owner_count);
+
+        // A duplicate approval by an existing owner cannot push the count higher.
+        let first = owners.get(0).unwrap();
+        prop_assert_eq!(
+            client.try_approve(&first, &id),
+            Err(Ok(ContractError::AlreadyApproved))
+        );
+    }
 }
