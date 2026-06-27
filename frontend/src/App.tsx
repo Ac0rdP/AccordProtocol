@@ -428,7 +428,28 @@ export default function App() {
               }
             />
             <Route path="settings" element={<SettingsPage stats={stats} />} />
-            <Route path="proposals/:id" element={<ProposalDetailPage />} />
+            <Route
+              path="/proposals/:id"
+              element={
+                <ProposalDetailPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                />
+              }
+            />
+            <Route
+              path="proposals/:id"
+              element={
+                <ProposalDetailPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                />
+              }
+            />
             <Route
               path="*"
               element={<NotFoundPage onGoHome={() => navigate("/app")} />}

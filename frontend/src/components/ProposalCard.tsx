@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Proposal } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
@@ -72,9 +73,12 @@ export function ProposalCard({
           <p className="text-xs text-zinc-500 font-mono mb-1">
             Proposal #{proposal.id}
           </p>
-          <p className="text-white font-semibold">
+          <Link
+            to={`/proposals/${proposal.id}`}
+            className="font-semibold text-white transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+          >
             Send {proposal.amount} {proposal.token}
-          </p>
+          </Link>
           <p className="text-zinc-500 text-sm font-mono mt-0.5">
             →{" "}
             <span className="inline-block max-w-[180px] truncate align-bottom">
@@ -111,6 +115,12 @@ export function ProposalCard({
               {proposal.description}
             </p>
           )}
+          <Link
+            to={`/proposals/${proposal.id}`}
+            className="mt-2 inline-flex text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+          >
+            View details
+          </Link>
         </div>
         <div className="flex items-center gap-2">
           <button

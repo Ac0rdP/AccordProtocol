@@ -1,6 +1,7 @@
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { vi, describe, test, expect, beforeEach } from "vitest";
 import type { Proposal } from "../types/accord";
 import { ProposalCard } from "./ProposalCard";
@@ -31,8 +32,35 @@ const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   createdAt: "proposal #42",
   proposer: "GPROPO...SER1",
   userHasApproved: false,
+  approverAddresses: [],
   ...overrides,
 });
+
+function renderProposalCard({
+  proposal = baseProposal(),
+  walletAddress = "GCONNECTED123",
+  onApprove = vi.fn(),
+  onExecute = vi.fn(),
+  onRevoke = vi.fn(),
+}: {
+  proposal?: Proposal;
+  walletAddress?: string | null;
+  onApprove?: (id: number) => void;
+  onExecute?: (id: number) => void;
+  onRevoke?: (id: number) => void;
+} = {}) {
+  return render(
+    <MemoryRouter>
+      <ProposalCard
+        proposal={proposal}
+        walletAddress={walletAddress}
+        onApprove={onApprove}
+        onExecute={onExecute}
+        onRevoke={onRevoke}
+      />
+    </MemoryRouter>
+  );
+}
 
 describe("ProposalCard", () => {
   beforeEach(() => {
@@ -46,43 +74,19 @@ describe("ProposalCard", () => {
   });
 
   test("shows Approve for a pending proposal when wallet is connected", () => {
-    render(
-      <ProposalCard
-        proposal={baseProposal()}
-        walletAddress="GCONNECTED123"
-        onApprove={vi.fn()}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard();
 
     expect(screen.getByText("Approve")).toBeTruthy();
   });
 
   test("shows Connect & Approve for a pending proposal without a wallet", () => {
-    render(
-      <ProposalCard
-        proposal={baseProposal()}
-        walletAddress={null}
-        onApprove={vi.fn()}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard({ walletAddress: null });
 
     expect(screen.getByText("Connect & Approve")).toBeTruthy();
   });
 
   test("shows Execute for a ready proposal and hides Approve", () => {
-    render(
-      <ProposalCard
-        proposal={baseProposal({ status: "ready" })}
-        walletAddress="GCONNECTED123"
-        onApprove={vi.fn()}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard({ proposal: baseProposal({ status: "ready" }) });
 
     expect(screen.getByText("Execute")).toBeTruthy();
     expect(screen.queryByText("Approve")).toBeNull();
@@ -91,15 +95,7 @@ describe("ProposalCard", () => {
   test.each(["executed", "expired"] as const)(
     "hides action buttons for %s proposals",
     (status) => {
-      render(
-        <ProposalCard
-          proposal={baseProposal({ status })}
-          walletAddress="GCONNECTED123"
-          onApprove={vi.fn()}
-          onExecute={vi.fn()}
-          onRevoke={vi.fn()}
-        />
-      );
+      renderProposalCard({ proposal: baseProposal({ status }) });
 
       expect(screen.queryByText("Approve")).toBeNull();
       expect(screen.queryByText("Execute")).toBeNull();
@@ -111,15 +107,7 @@ describe("ProposalCard", () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();
 
-    render(
-      <ProposalCard
-        proposal={baseProposal()}
-        walletAddress="GCONNECTED123"
-        onApprove={onApprove}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard({ onApprove });
 
     await user.click(screen.getByRole("button", { name: /approve proposal/i }));
 
@@ -127,18 +115,23 @@ describe("ProposalCard", () => {
     expect(onApprove).toHaveBeenCalledWith(42);
   });
 
+  test("links to the proposal detail page", () => {
+    renderProposalCard();
+
+    expect(screen.getByRole("link", { name: "Send 100 USDC" })).toHaveAttribute(
+      "href",
+      "/proposals/42"
+    );
+    expect(screen.getByRole("link", { name: "View details" })).toHaveAttribute(
+      "href",
+      "/proposals/42"
+    );
+  });
+
   test("copies the direct proposal URL and shows temporary feedback", async () => {
     vi.useFakeTimers();
 
-    render(
-      <ProposalCard
-        proposal={baseProposal()}
-        walletAddress="GCONNECTED123"
-        onApprove={vi.fn()}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard();
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /copy proposal link/i }));
