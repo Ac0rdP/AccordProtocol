@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Link,
   Route,
@@ -38,6 +38,11 @@ export default function App() {
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("theme") as "dark" | "light" | null) ?? "dark",
+  );
+  // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
+  const newProposalButtonRef = useRef<HTMLButtonElement>(null);
 
   const wallet = useWallet();
   const navigate = useNavigate();
@@ -61,6 +66,26 @@ export default function App() {
   // If the wallet is disconnected (e.g. externally, from the Freighter popup)
   // while a transaction is in flight, the pending request can never resolve.
   // Clear the pending state and surface an error instead of a stuck banner.
+  // Sync dark/light class on <html> and persist to localStorage
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "dark") {
+      root.classList.add("dark");
+    } else {
+      root.classList.remove("dark");
+    }
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
+  // Return focus to the New Proposal trigger when modal transitions from open → closed
+  const wasShowCreateRef = useRef(false);
+  useEffect(() => {
+    if (!showCreate && wasShowCreateRef.current) {
+      newProposalButtonRef.current?.focus();
+    }
+    wasShowCreateRef.current = showCreate;
+  }, [showCreate]);
+
   useEffect(() => {
     if (!wallet.address && txPending) {
       setTxPending(false);
@@ -172,10 +197,14 @@ export default function App() {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
   }
 
+  function toggleTheme() {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  }
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <header className="border-b border-zinc-800 px-6 py-4">
-        <div className="mx-auto flex max-w-4xl items-center justify-between">
+    <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
           <Link
             to="/"
             className="flex items-center gap-3 transition-opacity hover:opacity-80"
@@ -204,6 +233,49 @@ export default function App() {
                 {label}
               </Link>
             ))}
+
+            {/* Dark / Light mode toggle */}
+            <button
+              type="button"
+              id="theme-toggle"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              className="ml-1 rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:hover:bg-zinc-800"
+            >
+              {theme === "dark" ? (
+                /* Sun icon — shown in dark mode to switch to light */
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+                </svg>
+              ) : (
+                /* Moon icon — shown in light mode to switch to dark */
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                  aria-hidden="true"
+                >
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              )}
+            </button>
           </nav>
 
           {!wallet.installed ? (
@@ -236,7 +308,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-6 py-8">
+      <main className="mx-auto max-w-4xl px-4 sm:px-6 py-8">
         {isStale && !loading && (
           <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400 font-medium">
             Data may be out of date — last updated over 60 seconds ago.
@@ -333,6 +405,7 @@ export default function App() {
                   onExecute={handleExecute}
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
+                  createProposalButtonRef={newProposalButtonRef}
                   loading={loading}
                   error={error}
                 />
@@ -369,6 +442,7 @@ export default function App() {
           walletAddress={wallet.address}
           onClose={() => setShowCreate(false)}
           onSubmitted={refresh}
+          triggerRef={newProposalButtonRef}
         />
       )}
     </div>

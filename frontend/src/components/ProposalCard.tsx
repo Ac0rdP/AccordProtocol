@@ -67,8 +67,8 @@ export function ProposalCard({
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
-      <div className="flex items-start justify-between mb-4">
-        <div>
+      <div className="flex items-start justify-between mb-4 gap-2">
+        <div className="min-w-0 flex-1">
           <p className="text-xs text-zinc-500 font-mono mb-1">
             Proposal #{proposal.id}
           </p>
@@ -76,7 +76,10 @@ export function ProposalCard({
             Send {proposal.amount} {proposal.token}
           </p>
           <p className="text-zinc-500 text-sm font-mono mt-0.5">
-            → {proposal.to}
+            →{" "}
+            <span className="inline-block max-w-[180px] truncate align-bottom">
+              {proposal.to}
+            </span>
           </p>
           {/* The proposer's address */}
           <div className="flex items-center gap-2 mt-0.5">

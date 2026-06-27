@@ -194,31 +194,39 @@ Returns `true` if `owner` has approved `proposal_id`.
 
 ---
 
-## Error Codes
+## Error Reference
 
-| Code | Value | Meaning |
-|------|-------|---------|
-| `AlreadyInitialized` | 1 | `initialize` was already called |
-| `NotInitialized` | 2 | Contract has not been initialized |
-| `Unauthorized` | 3 | Caller is not an owner |
-| `InvalidThreshold` | 4 | threshold = 0 or threshold > owner count |
-| `InvalidOwners` | 5 | Empty or oversized owner list |
-| `ProposalNotFound` | 6 | No proposal exists with that ID |
-| `ProposalNotActive` | 7 | Proposal is Executed, Expired, or Revoked |
-| `AlreadyApproved` | 8 | Owner already approved this proposal |
-| `NotApproved` | 9 | Owner has not approved — cannot revoke |
-| `ThresholdNotMet` | 10 | Approvals < threshold — cannot execute |
-| `ProposalExpired` | 11 | Deadline has passed |
-| `InvalidAmount` | 12 | Amount < 1 |
-| `InvalidDeadline` | 13 | Deadline ≤ current ledger timestamp |
-| `InvalidToken` | 14 | Token address does not implement Soroban token interface |
-| `TransferFailed` | 15 | On-chain token transfer failed (check contract balance) |
-| `EmptyDescription` | 16 | Description is empty |
-| `DescriptionTooLong` | 17 | Description exceeds 300 characters |
-| `TooManyActiveProposals` | 18 | Active proposal count reached limit (50) |
-| `DuplicateOwner` | 19 | Duplicate address in owner list |
-| `ArithmeticError` | 20 | Integer overflow |
-| `InvalidDuration` | 21 | Deadline more than 90 days in the future |
+The table below maps every `ContractError` discriminant to its cause and the recommended remediation. All codes are `u32` values encoded as `ScVal::Error` in XDR responses.
+
+| Code | Variant Name | Cause / Description | Recommended Action |
+|------|--------------|--------------------|--------------------|
+| 1 | `AlreadyInitialized` | `initialize` was called on a contract instance that has already been set up. The `INIT` storage flag is already `true`. | Deploy a fresh contract instance; do not call `initialize` twice on the same address. |
+| 2 | `NotInitialized` | A function that requires contract state (threshold, owners) was invoked before `initialize` completed successfully. | Call `initialize` first and confirm the transaction is finalized on-chain before calling any other function. |
+| 3 | `Unauthorized` | The caller's address is not present in the current owner list, or the guardian address did not match when calling `freeze`. | Ensure the signing address is a registered owner. For `freeze`, ensure the address matches the stored guardian. |
+| 4 | `InvalidThreshold` | The proposed threshold is either `0` or exceeds the current owner count (`threshold > owners.len()`). Thrown by `initialize` and `create_change_threshold_proposal`. | Supply a threshold in the range `[1, owners.len()]`. |
+| 5 | `InvalidOwners` | The owner list passed to `initialize` is empty, or `create_add_owner_proposal` was called when the owner count is already at the maximum of **20** (`MAX_OWNERS = 20`). | Provide 1–20 unique owner addresses. If the cap is reached, remove an owner before adding another. |
+| 6 | `ProposalNotFound` | No proposal record exists in persistent storage for the given `proposal_id`. | Verify the ID with `get_total_proposals` and confirm the proposal was created on the correct network/contract. |
+| 7 | `ProposalNotActive` | The proposal's derived status is `Executed`, `Expired`, or `Revoked` — any terminal state that blocks further `approve`, `revoke`, or `execute` calls. | Check the proposal status via `get_proposal` before acting. Expired proposals can only be swept via `cancel_expired`. |
+| 8 | `AlreadyApproved` | The calling owner has already cast an approval for this proposal (the approval flag in persistent storage is `true`). | Use `revoke` first to withdraw the prior approval, then re-approve if needed. |
+| 9 | `NotApproved` | `revoke` was called by an owner who has not yet approved the proposal (approval flag is `false` or absent). | Only call `revoke` after successfully calling `approve` for the same proposal. |
+| 10 | `ThresholdNotMet` | `execute` was called on a proposal whose approval count is still below the required threshold. Also raised by `set_guardian`, `unfreeze`, and `upgrade` when the `approvers` list contains fewer entries than the current threshold. | Gather the required number of owner approvals before executing. Check the current threshold via `get_threshold`. |
+| 11 | `ProposalExpired` | The ledger timestamp has surpassed the proposal's `deadline`. Raised by `execute` when it detects expiry; the proposal status is persisted as `Expired` and the active-proposal counter is decremented. | Create a new proposal with a fresh deadline. Use `cancel_expired` to sweep stale IDs and free the active-proposal slot. |
+| 12 | `InvalidAmount` | The `amount` field in `create_proposal` is less than **1** stroop (`MIN_AMOUNT = 1`). Negative and zero values are both rejected. | Pass a positive integer ≥ 1 in the token's smallest unit. For XLM this is stroops (1 XLM = 10,000,000 stroops). |
+| 13 | `InvalidDeadline` | The `deadline` timestamp is ≤ the current ledger timestamp at the time the proposal creation transaction is processed. | Set a deadline strictly in the future. Account for block-time variance by adding a buffer of at least a few minutes. |
+| 14 | `InvalidToken` | The address passed as `token` does not implement the Soroban token interface — specifically, at least one of `decimals()`, `symbol()`, or `name()` failed when probed. | Use a verified SEP-41 token address. On Testnet, use the canonical XLM, USDC, or EURC addresses listed in the frontend constants. |
+| 15 | `TransferFailed` | The on-chain `token.transfer(contract_address, recipient, amount)` call failed, typically because the contract does not hold sufficient token balance. | Fund the contract with the required token balance before executing the proposal, then retry `execute`. |
+| 16 | `EmptyDescription` | The `description` field is an empty string (length = 0). Checked in all four proposal-creation functions. | Provide a non-empty, human-readable description of the proposal's intent. |
+| 17 | `DescriptionTooLong` | The `description` field exceeds **300 characters** (`MAX_DESCRIPTION_LEN = 300`). Checked in all four proposal-creation functions. | Trim the description to 300 characters or fewer before submitting. |
+| 18 | `TooManyActiveProposals` | The number of proposals currently in `Pending` or `Ready` status has reached the cap of **50** (`MAX_ACTIVE_PROPOSALS = 50`). New proposals cannot be created until existing ones are executed or expired. | Execute or sweep at least one active proposal using `execute` or `cancel_expired`, then retry creation. |
+| 19 | `DuplicateOwner` | Two or more identical addresses appear in the owner list during `initialize`, or an address being added via `create_add_owner_proposal` already exists in the current owner list. Also checked in `set_guardian`, `unfreeze`, and `upgrade` for duplicate approver addresses. | Deduplicate all address lists before submitting. |
+| 20 | `ArithmeticError` | An integer overflow occurred — for example, the internal proposal ID counter wrapped when incrementing past `u64::MAX`, or an `approvals` counter underflowed during `checked_sub`. This is a safety guard that should never trigger in normal operation. | If encountered, contact the contract maintainers; this indicates an edge case at extreme scale. |
+| 21 | `InvalidDuration` | The gap between the current ledger timestamp and the `deadline` exceeds **7,776,000 seconds** (90 days, `MAX_PROPOSAL_DURATION`). Checked in all four proposal-creation functions. | Set a deadline no more than 90 days in the future from the current time. |
+| 22 | `InvalidRecipient` | The `to` address in `create_proposal` is the contract's own address (`env.current_contract_address()`). Self-transfers are explicitly rejected to prevent accidental fund loops. | Supply an external recipient address. The contract cannot transfer tokens to itself. |
+| 23 | `TimeLockActive` | `execute` was called before the time-lock delay has elapsed since the proposal first reached `Ready` status (`now < ready_at + time_lock_delay`). Only raised when a non-zero `time_lock_delay` was set during `initialize`. | Wait until `ready_at + time_lock_delay` has passed. Query `get_time_lock_delay` to determine the required wait period. |
+| 24 | `WouldBreakThreshold` | `create_remove_owner_proposal` was rejected because executing the removal would leave fewer owners than the current threshold (`owners.len() <= threshold`). | Lower the threshold first via `create_change_threshold_proposal`, then remove the owner, or ensure the owner count exceeds the threshold before attempting removal. |
+| 25 | `OwnerNotFound` | The address supplied to `create_remove_owner_proposal` as `owner_to_remove` is not present in the current owner list. | Verify the address is a registered owner with `is_owner` or `get_owners` before submitting a removal proposal. |
+| 26 | `ContractFrozen` | The contract's frozen flag is `true`. `create_proposal`, `create_add_owner_proposal`, `create_remove_owner_proposal`, `create_change_threshold_proposal`, and `execute` are all blocked while frozen. | The guardian must call `freeze` (already done if this error appears). Only `unfreeze` (requiring threshold co-signers) can restore normal operation. |
+| 27 | `NoGuardian` | `freeze` was called but no guardian address has been stored in the contract (the `GUARD` storage key is absent). | Call `set_guardian` with threshold-many owner approvers to register a guardian address before attempting to freeze. |
 
 ---
 
