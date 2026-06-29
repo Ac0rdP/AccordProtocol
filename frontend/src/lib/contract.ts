@@ -211,6 +211,52 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
   }
 }
 
+async function simulateContractView(
+  contractId: string,
+  fn: string,
+  args: xdr.ScVal[] = []
+): Promise<xdr.ScVal> {
+  const account = await server.getAccount(SIM_SOURCE);
+  const contract = new Contract(contractId);
+  const tx = new TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(fn, ...args))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim)) {
+    const err = sim as rpc.Api.SimulateTransactionErrorResponse;
+    throw new Error(`${fn}: ${err.error ?? "simulation failed"}`);
+  }
+  return (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
+}
+
+export async function getContractXlmBalance(): Promise<string> {
+  const account = await server.getAccount(CONTRACT_ID);
+  const stroops = BigInt(account.balance);
+  return stroopsToDisplay(stroops);
+}
+
+export async function getContractUsdcBalance(): Promise<string> {
+  const usdcToken = import.meta.env.VITE_USDC_TOKEN_ADDRESS as string;
+  if (!usdcToken) return "N/A";
+  try {
+    const val = await simulateContractView(usdcToken, "balance", [
+      nativeToScVal(CONTRACT_ID, { type: "address" }),
+    ]);
+    const raw = scValToNative(val);
+    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+      return stroopsToDisplay(BigInt(raw));
+    }
+    return "0";
+  } catch {
+    return "—";
+  }
+}
+
 export async function getApprovers(proposalId: number): Promise<string[]> {
   try {
     const owners = await getOwners();

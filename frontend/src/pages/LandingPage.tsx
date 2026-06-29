@@ -86,7 +86,7 @@ export function LandingPage() {
   return (
     <div className="min-h-screen bg-zinc-950 text-white selection:bg-emerald-500/30 overflow-x-hidden scroll-smooth">
       {/* Hero Section */}
-      <section className="relative min-h-[90vh] flex flex-col items-center justify-center px-6 overflow-hidden pt-20">
+      <section data-testid="hero-section" className="relative min-h-[90vh] flex flex-col items-center justify-center px-6 overflow-hidden pt-20">
         <div className="absolute inset-0 -z-10">
           <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-emerald-500/10 rounded-full blur-[140px]" />
           <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-emerald-500/10 rounded-full blur-[140px]" />
