@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type RefObject } from "react";
 import { createProposal, estimateCreateProposalFee } from "../lib/submit";
 import { displayToStroops } from "../lib/soroban";
 import { StrKey } from "@stellar/stellar-sdk";
@@ -8,11 +8,14 @@ const TOKEN_ADDRESSES: Record<string, string> = {
   USDC: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
   EURC: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
 };
+const MAX_DESCRIPTION_LEN = 300;
 
 type Props = {
   walletAddress: string | null;
   onClose: () => void;
   onSubmitted: () => void;
+  /** Ref to the button that triggered this modal — focus is returned to it on close. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 };
 
 type ProposalStep = "form" | "preview";
@@ -31,6 +34,7 @@ function formatDeadline(deadline: string) {
 }
 
 export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Props) {
+export function CreateProposalModal({ walletAddress, onClose, onSubmitted, triggerRef }: Props) {
   const defaultDeadline = () => {
     const d = new Date();
     d.setDate(d.getDate() + 7);
@@ -52,26 +56,73 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
   const [feeError, setFeeError] = useState(false);
 
   const recipientInputRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
 
+  // Initial focus: move to the recipient input on mount.
+  // On unmount, restore focus to the triggering element (or whatever was active before).
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null;
     if (recipientInputRef.current) {
       recipientInputRef.current.focus();
     }
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      if (previousActiveElement && typeof previousActiveElement.focus === "function") {
+      // Prefer the explicit trigger ref; fall back to whatever had focus before mount.
+      if (triggerRef?.current && typeof triggerRef.current.focus === "function") {
+        triggerRef.current.focus();
+      } else if (previousActiveElement && typeof previousActiveElement.focus === "function") {
         previousActiveElement.focus();
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Focus trap: confine Tab / Shift+Tab within the modal; Escape closes it.
+  useEffect(() => {
+    const modal = modalRef.current;
+    if (!modal) return;
+
+    const FOCUSABLE_SELECTORS =
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+
+      if (e.key !== "Tab") return;
+
+      const focusable = Array.from(
+        modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS),
+      ).filter((el) => !el.closest('[aria-hidden="true"]'));
+
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        // Shift+Tab: wrap backward from first → last
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        // Tab: wrap forward from last → first
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    modal.addEventListener("keydown", handleKeyDown);
+    return () => modal.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   const canCalculateFee = Boolean(
@@ -196,16 +247,18 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
 
   return (
     <div
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          onClose();
-        }
-      }}
       className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      aria-hidden="true"
     >
-      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md">
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md"
+      >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-white font-semibold text-lg">New Proposal</h2>
+          <h2 id="modal-title" className="text-white font-semibold text-lg">New Proposal</h2>
           <button
             type="button"
             onClick={onClose}
@@ -250,6 +303,56 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted }: Pro
                 />
                 {recipientTouched && !StrKey.isValidEd25519PublicKey(to.trim()) && (
                   <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs text-zinc-400 block mb-1.5">
+              Description
+            </label>
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={MAX_DESCRIPTION_LEN}
+              placeholder="What is this payment for?"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+            />
+            <p
+              className={`mt-1 text-right text-xs ${
+                description.length >= MAX_DESCRIPTION_LEN
+                  ? "text-red-400"
+                  : "text-zinc-500"
+              }`}
+            >
+              {description.length} / {MAX_DESCRIPTION_LEN}
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs text-zinc-400 block mb-1.5">
+              Deadline
+            </label>
+            <input
+              type="date"
+              value={deadline}
+              onChange={(e) => setDeadline(e.target.value)}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+            />
+          </div>
+
+          {canCalculateFee && (
+            <div className="flex items-center justify-between bg-zinc-800/50 p-3 rounded-lg border border-zinc-700/50">
+              <div className="text-sm">
+                {feeLoading ? (
+                  <span className="text-zinc-400">Estimating fee…</span>
+                ) : feeError ? (
+                  <span className="text-red-400">Could not estimate fee</span>
+                ) : feeEstimate !== null ? (
+                  <span className="text-zinc-300">
+                    Estimated fee: <span className="text-white font-mono">~{feeEstimate.toFixed(7)} XLM</span>
+                  </span>
+                ) : (
+                  <span className="text-zinc-500">No estimate yet</span>
                 )}
               </div>
 

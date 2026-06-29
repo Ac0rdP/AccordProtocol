@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Proposal } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
@@ -67,16 +68,22 @@ export function ProposalCard({
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
-      <div className="flex items-start justify-between mb-4">
-        <div>
+      <div className="flex items-start justify-between mb-4 gap-2">
+        <div className="min-w-0 flex-1">
           <p className="text-xs text-zinc-500 font-mono mb-1">
             Proposal #{proposal.id}
           </p>
-          <p className="text-white font-semibold">
+          <Link
+            to={`/proposals/${proposal.id}`}
+            className="font-semibold text-white transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+          >
             Send {proposal.amount} {proposal.token}
-          </p>
+          </Link>
           <p className="text-zinc-500 text-sm font-mono mt-0.5">
-            → {proposal.to}
+            →{" "}
+            <span className="inline-block max-w-[180px] truncate align-bottom">
+              {proposal.to}
+            </span>
           </p>
           {/* The proposer's address */}
           <div className="flex items-center gap-2 mt-0.5">
@@ -108,6 +115,12 @@ export function ProposalCard({
               {proposal.description}
             </p>
           )}
+          <Link
+            to={`/proposals/${proposal.id}`}
+            className="mt-2 inline-flex text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+          >
+            View details
+          </Link>
         </div>
         <div className="flex items-center gap-2">
           <button

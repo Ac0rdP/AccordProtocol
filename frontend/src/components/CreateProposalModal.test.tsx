@@ -1,5 +1,6 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CreateProposalModal } from "./CreateProposalModal";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { estimateCreateProposalFee, createProposal } from "../lib/submit";
@@ -63,6 +64,23 @@ describe("CreateProposalModal", () => {
     render(<CreateProposalModal {...defaultProps} />);
     fillRequiredFields();
     expect(screen.getByText("Calculate fee")).toBeDefined();
+  });
+
+  it("shows description count, caps input at 300 characters, and marks the limit in red", async () => {
+    render(<CreateProposalModal {...defaultProps} />);
+
+    const descriptionInput = screen.getByPlaceholderText(
+      "What is this payment for?"
+    ) as HTMLInputElement;
+
+    expect(screen.getByText("0 / 300")).toBeDefined();
+    expect(descriptionInput.maxLength).toBe(300);
+
+    await userEvent.type(descriptionInput, "a".repeat(301));
+
+    expect(descriptionInput.value).toHaveLength(300);
+    expect(screen.queryByText("301 / 300")).toBeNull();
+    expect(screen.getByText("300 / 300").className).toContain("text-red-400");
   });
 
   it("Clicking button shows 'Estimating fee…' and successful simulation displays estimated XLM fee", async () => {
