@@ -20,9 +20,17 @@ pub enum ProposalStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct Transfer {
+    pub to: Address,
+    pub token: Address,
+    pub amount: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub enum ProposalKind {
-    /// Transfer(to, amount, token)
-    Transfer(Address, i128, Address),
+    /// Transfer(transfers)
+    Transfer(Vec<Transfer>),
     /// AddOwner(new_owner)
     AddOwner(Address),
     /// RemoveOwner(owner_to_remove)
@@ -66,6 +74,7 @@ pub struct ProposalCreatedEvent {
     pub proposer: Address,
     pub threshold: u32,
     pub category: ProposalCategory,
+    pub transfers: Vec<Transfer>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +99,7 @@ pub struct ProposalRevokedEvent {
 pub struct ProposalExecutedEvent {
     pub id: u64,
     pub executor: Address,
+    pub transfers: Vec<Transfer>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -483,21 +493,17 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Creates a new transfer proposal.
+    /// Creates a new transfer proposal with one or more asset transfers.
     ///
     /// # Arguments
     /// * `proposer` - Owner proposing the transfer. Must authorize.
-    /// * `to` - Recipient address. Must not be the contract's own address.
-    /// * `amount` - Amount in the token's smallest unit. Must be > 0.
-    /// * `token` - Token contract address implementing the Soroban token interface.
+    /// * `transfers` - Asset transfers to execute (1-3). Each must have a valid token and amount ≥ 1.
     /// * `description` - Human-readable description (max 300 chars).
     /// * `deadline` - Unix timestamp after which the proposal expires.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
-        to: Address,
-        amount: i128,
-        token: Address,
+        transfers: Vec<Transfer>,
         description: String,
         deadline: u64,
         category: ProposalCategory,
@@ -506,9 +512,48 @@ impl AccordContract {
         require_owner(&env, &proposer)?;
         require_not_frozen(&env)?;
 
-        if amount < MIN_AMOUNT {
+        let transfers_len = transfers.len();
+        if transfers_len == 0 || transfers_len > 3 {
             return Err(ContractError::InvalidAmount);
         }
+
+        for transfer in transfers.iter() {
+            if transfer.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            validate_token(&env, &transfer.token)?;
+            if transfer.to == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+
+        {
+            let mut checked_tokens: Vec<Address> = Vec::new(&env);
+            let mut checked_totals: Vec<i128> = Vec::new(&env);
+            for transfer in transfers.iter() {
+                let mut found = false;
+                for i in 0..checked_tokens.len() {
+                    if checked_tokens.get(i).unwrap() == transfer.token {
+                        let total = checked_totals.get(i).unwrap() + transfer.amount;
+                        checked_totals.set(i, total);
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    checked_tokens.push_back(transfer.token.clone());
+                    checked_totals.push_back(transfer.amount);
+                }
+            }
+            for i in 0..checked_tokens.len() {
+                if let Some(limit) = read_spending_limit(&env, &proposer, &checked_tokens.get(i).unwrap()) {
+                    if checked_totals.get(i).unwrap() > limit {
+                        return Err(ContractError::SpendingLimitExceeded);
+                    }
+                }
+            }
+        }
+
         if description.is_empty() {
             return Err(ContractError::EmptyDescription);
         }
@@ -522,20 +567,6 @@ impl AccordContract {
         }
         if deadline - now > MAX_PROPOSAL_DURATION {
             return Err(ContractError::InvalidDuration);
-        }
-
-        validate_token(&env, &token)?;
-
-        if to == env.current_contract_address() {
-            return Err(ContractError::InvalidRecipient);
-        }
-
-        // Enforce the proposer's per-token spending limit, if one is configured.
-        // Absent key means unlimited; a stored limit (including 0) is a hard cap.
-        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
-            if amount > limit {
-                return Err(ContractError::SpendingLimitExceeded);
-            }
         }
 
         let active = read_active_count(&env);
@@ -555,7 +586,7 @@ impl AccordContract {
             deadline,
             approvals: 0,
             status: ProposalStatus::Pending,
-            kind: ProposalKind::Transfer(to, amount, token),
+            kind: ProposalKind::Transfer(transfers.clone()),
             ready_at: 0,
             threshold,
             category: category.clone(),
@@ -570,6 +601,7 @@ impl AccordContract {
                 proposer,
                 threshold,
                 category,
+                transfers,
             },
         );
 
@@ -1041,12 +1073,14 @@ impl AccordContract {
 
         // Dispatch on proposal kind.
         match &proposal.kind {
-            ProposalKind::Transfer(to, amount, token) => {
-                if token::Client::new(&env, token)
-                    .try_transfer(&env.current_contract_address(), to, amount)
-                    .is_err()
-                {
-                    return Err(ContractError::TransferFailed);
+            ProposalKind::Transfer(transfers) => {
+                for transfer in transfers.iter() {
+                    if token::Client::new(&env, &transfer.token)
+                        .try_transfer(&env.current_contract_address(), &transfer.to, &transfer.amount)
+                        .is_err()
+                    {
+                        return Err(ContractError::TransferFailed);
+                    }
                 }
             }
             ProposalKind::AddOwner(new_owner) => {
@@ -1085,11 +1119,17 @@ impl AccordContract {
             write_active_count(&env, active - 1);
         }
 
+        let transfers = match &proposal.kind {
+            ProposalKind::Transfer(transfers) => transfers.clone(),
+            _ => Vec::new(&env),
+        };
+
         env.events().publish(
             (symbol_short!("executed"),),
             ProposalExecutedEvent {
                 id: proposal_id,
                 executor,
+                transfers,
             },
         );
 
