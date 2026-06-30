@@ -2,8 +2,8 @@
 pub mod validate;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
-    Env, IntoVal, String, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    IntoVal, String, Symbol, Val, Vec,
 };
 
 // ─── Data Types ─────────────────────────────────────────────────────────────
@@ -118,6 +118,13 @@ pub struct FrozenEvent {
 #[contracttype]
 pub struct UnfrozenEvent {
     pub approvers: Vec<Address>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UpgradeExecutedEvent {
+    pub caller: Address,
+    pub new_wasm_hash: BytesN<32>,
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -283,7 +290,11 @@ fn read_owners(env: &Env) -> Result<Vec<Address>, ContractError> {
 }
 
 fn read_next_id(env: &Env) -> u64 {
-    let id = env.storage().instance().get(&next_id_key()).unwrap_or(1_u64);
+    let id = env
+        .storage()
+        .instance()
+        .get(&next_id_key())
+        .unwrap_or(1_u64);
     bump_instance(env);
     id
 }
@@ -345,7 +356,11 @@ fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128
 fn read_active_count(env: &Env) -> u32 {
     // Recompute active proposals (Pending + Ready) to ensure expired/ executed
     // proposals are not counted, guarding against any missed decrements.
-    let next_id = env.storage().instance().get(&next_id_key()).unwrap_or(1_u64);
+    let next_id = env
+        .storage()
+        .instance()
+        .get(&next_id_key())
+        .unwrap_or(1_u64);
     let mut active: u32 = 0;
     for id in 1..next_id {
         if let Ok(proposal) = read_proposal(env, id) {
@@ -425,9 +440,7 @@ fn derive_status(env: &Env, proposal: &Proposal) -> ProposalStatus {
 fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractError> {
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
-    if client.try_decimals().is_err()
-        || client.try_symbol().is_err()
-        || client.try_name().is_err()
+    if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
     {
         return Err(ContractError::InvalidToken);
     }
@@ -486,7 +499,9 @@ impl AccordContract {
         bump_persistent(&env, &key);
 
         env.storage().instance().set(&threshold_key(), &threshold);
-        env.storage().instance().set(&timelock_key(), &time_lock_delay);
+        env.storage()
+            .instance()
+            .set(&timelock_key(), &time_lock_delay);
         env.storage().instance().set(&init_key(), &true);
         bump_instance(&env);
 
@@ -922,11 +937,7 @@ impl AccordContract {
     ///
     /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
     /// Records `ready_at` the first time the threshold is crossed.
-    pub fn approve(
-        env: Env,
-        approver: Address,
-        proposal_id: u64,
-    ) -> Result<(), ContractError> {
+    pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
         require_owner(&env, &approver)?;
 
@@ -978,11 +989,7 @@ impl AccordContract {
     ///
     /// The proposal status is recalculated after the revoke: if approvals fall below
     /// threshold the status transitions back to `Pending`.
-    pub fn revoke(
-        env: Env,
-        approver: Address,
-        proposal_id: u64,
-    ) -> Result<(), ContractError> {
+    pub fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
         require_owner(&env, &approver)?;
 
@@ -1028,11 +1035,7 @@ impl AccordContract {
     ///
     /// Enforces the time-lock delay: execution is blocked until `ready_at + time_lock_delay`
     /// has elapsed.
-    pub fn execute(
-        env: Env,
-        executor: Address,
-        proposal_id: u64,
-    ) -> Result<(), ContractError> {
+    pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
         executor.require_auth();
         require_owner(&env, &executor)?;
         require_not_frozen(&env)?;
@@ -1059,11 +1062,7 @@ impl AccordContract {
         }
 
         // Time-lock enforcement.
-        let time_lock_delay: u64 = env
-            .storage()
-            .instance()
-            .get(&timelock_key())
-            .unwrap_or(0);
+        let time_lock_delay: u64 = env.storage().instance().get(&timelock_key()).unwrap_or(0);
         if time_lock_delay > 0 {
             let now = env.ledger().timestamp();
             if now < proposal.ready_at.saturating_add(time_lock_delay) {
@@ -1103,7 +1102,9 @@ impl AccordContract {
                 bump_persistent(&env, &key);
             }
             ProposalKind::ChangeThreshold(new_threshold) => {
-                env.storage().instance().set(&threshold_key(), new_threshold);
+                env.storage()
+                    .instance()
+                    .set(&threshold_key(), new_threshold);
                 bump_instance(&env);
             }
             ProposalKind::SetSpendingLimit(owner, token, limit) => {
@@ -1143,11 +1144,7 @@ impl AccordContract {
     /// Only owners may call this function.
     ///
     /// Returns the number of proposals actually swept.
-    pub fn cancel_expired(
-        env: Env,
-        caller: Address,
-        ids: Vec<u64>,
-    ) -> Result<u32, ContractError> {
+    pub fn cancel_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
         caller.require_auth();
         require_owner(&env, &caller)?;
 
@@ -1243,10 +1240,7 @@ impl AccordContract {
 
     /// Returns the time-lock delay in seconds. A value of 0 means no delay.
     pub fn get_time_lock_delay(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&timelock_key())
-            .unwrap_or(0)
+        env.storage().instance().get(&timelock_key()).unwrap_or(0)
     }
 
     /// Returns the total number of proposals ever created.
@@ -1317,10 +1311,8 @@ impl AccordContract {
 
         write_frozen(&env, true);
 
-        env.events().publish(
-            (symbol_short!("frozen"),),
-            FrozenEvent { guardian },
-        );
+        env.events()
+            .publish((symbol_short!("frozen"),), FrozenEvent { guardian });
 
         Ok(())
     }
@@ -1407,7 +1399,18 @@ impl AccordContract {
             require_owner(&env, &approver)?;
         }
 
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        let caller = approvers.get(0).unwrap();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        env.events().publish(
+            (symbol_short!("upgraded"),),
+            UpgradeExecutedEvent {
+                caller,
+                new_wasm_hash,
+            },
+        );
+
         Ok(())
     }
 }
