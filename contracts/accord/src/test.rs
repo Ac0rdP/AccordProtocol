@@ -24,6 +24,16 @@ fn str(env: &Env, s: &str) -> String {
 const NOW: u64 = 1_000;
 const DEADLINE: u64 = NOW + 86_400; // +1 day
 
+fn t(env: &Env, to: &Address, amount: i128, token: &Address) -> Vec<Transfer> {
+    let mut transfers = Vec::new(env);
+    transfers.push_back(Transfer {
+        to: to.clone(),
+        token: token.clone(),
+        amount,
+    });
+    transfers
+}
+
 /// Sets up an env with 3 owners, a threshold, and a funded token.
 /// Time-lock delay is 0 (no delay).
 fn setup(
@@ -194,18 +204,14 @@ fn create_proposal_returns_sequential_ids() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id1 = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "First"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
     let id2 = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &2_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 2_000_000, &token_client.address),
         &str(&env, "Second"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -221,9 +227,7 @@ fn create_proposal_rejects_non_owner() {
     assert_eq!(
         client.try_create_proposal(
             &non_owner,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, "Unauthorized"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -238,9 +242,7 @@ fn create_proposal_rejects_zero_amount() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &0_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 0, &token_client.address),
             &str(&env, "Zero"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -255,9 +257,7 @@ fn create_proposal_rejects_past_deadline() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, "Stale"),
             &(NOW - 1),
             &ProposalCategory::Transfer,
@@ -272,9 +272,7 @@ fn create_proposal_rejects_empty_description() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, ""),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -291,9 +289,7 @@ fn create_proposal_rejects_invalid_token() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &invalid_token,
+            &t(&env, &Address::generate(&env), 1_000_000, &invalid_token),
             &str(&env, "Bad token"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -307,9 +303,7 @@ fn create_proposal_accepts_valid_token() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Valid token"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -326,9 +320,7 @@ fn description_boundary() {
     let description_300 = "a".repeat(300);
     let result_300 = client.try_create_proposal(
         &owner_a,
-        &recipient,
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &recipient, 1_000_000, &token_client.address),
         &str(&env, &description_300),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -340,9 +332,7 @@ fn description_boundary() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, &description_301),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -358,9 +348,7 @@ fn create_proposal_emits_created_event() {
     let amount: i128 = 5_000_000;
     let _id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Grant"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -382,9 +370,7 @@ fn create_proposal_rejects_contract_as_recipient() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &client.address,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &client.address, 1_000_000, &token_client.address),
             &str(&env, "Self-send"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -400,9 +386,7 @@ fn create_proposal_stores_payroll_category() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Monthly salaries"),
         &DEADLINE,
         &ProposalCategory::Payroll,
@@ -415,9 +399,7 @@ fn create_proposal_stores_grant_category() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Developer grant"),
         &DEADLINE,
         &ProposalCategory::Grant,
@@ -431,9 +413,7 @@ fn create_proposal_category_in_event() {
     let recipient = Address::generate(&env);
     let _id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &recipient, 1_000_000, &token_client.address),
         &str(&env, "Ops budget"),
         &DEADLINE,
         &ProposalCategory::Ops,
@@ -458,9 +438,7 @@ fn approve_increments_count_and_sets_flag() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(3);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -477,9 +455,7 @@ fn approve_transitions_pending_to_ready() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -495,9 +471,7 @@ fn approve_rejects_double_approve() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -514,9 +488,7 @@ fn approve_rejects_non_owner() {
     let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -565,9 +537,7 @@ fn revoke_decrements_count_and_clears_flag() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -583,9 +553,7 @@ fn revoke_transitions_ready_back_to_pending() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -602,9 +570,7 @@ fn revoke_rejects_when_not_previously_approved() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -622,9 +588,7 @@ fn revoke_allows_reapprove() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -641,9 +605,7 @@ fn has_approved_returns_false_after_revoke() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -663,9 +625,7 @@ fn execute_transfers_tokens_to_recipient() {
     let amount: i128 = 50_000_000;
     let id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Bonus"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -683,9 +643,7 @@ fn execute_rejects_when_threshold_not_met() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Short"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -702,9 +660,7 @@ fn execute_rejects_non_owner() {
     let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -722,9 +678,7 @@ fn execute_rejects_already_executed() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -745,9 +699,7 @@ fn execute_emits_executed_event() {
     let amount: i128 = 10_000_000;
     let id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Event"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -772,9 +724,7 @@ fn proposal_shows_expired_after_deadline() {
     let deadline = NOW + 3_600;
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Short window"),
         &deadline,
         &ProposalCategory::Transfer,
@@ -789,9 +739,7 @@ fn approve_rejects_expired_proposal() {
     let deadline = NOW + 3_600;
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Expiring"),
         &deadline,
         &ProposalCategory::Transfer,
@@ -809,9 +757,7 @@ fn execute_rejects_expired_even_if_approved() {
     let deadline = NOW + 3_600;
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Approved but expired"),
         &deadline,
         &ProposalCategory::Transfer,
@@ -831,9 +777,7 @@ fn expired_status_takes_priority_over_ready() {
     let deadline = NOW + 3_600;
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Ready then expired"),
         &deadline,
         &ProposalCategory::Transfer,
@@ -870,9 +814,7 @@ fn get_proposals_paged_returns_correct_window() {
     for _ in 0..5_u32 {
         client.create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, "Batch"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -892,9 +834,7 @@ fn get_proposals_paged_returns_empty_beyond_offset() {
     for _ in 0..3_u32 {
         client.create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, "Test"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -910,27 +850,21 @@ fn get_total_proposals_counts_all_ever_created() {
     // Create 3 proposals
     let id1 = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Proposal 1"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
     let id2 = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Proposal 2"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
     let _id3 = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Proposal 3"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -956,9 +890,7 @@ fn full_lifecycle_2of3() {
 
     let id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Full lifecycle"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1013,9 +945,7 @@ fn full_lifecycle_5of5() {
 
     let id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Full lifecycle 5of5"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1072,9 +1002,7 @@ fn execute_fails_when_balance_insufficient() {
     let amount: i128 = 1_000_000;
     let id = client.create_proposal(
         &owner_a,
-        &recipient,
-        &amount,
-        &token_client.address,
+        &t(&env, &recipient, amount, &token_client.address),
         &str(&env, "Insufficient balance"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1099,9 +1027,7 @@ fn create_proposal_rejects_at_limit() {
     for i in 0..50 {
         client.create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, &format!("Proposal {}", i)),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -1112,9 +1038,7 @@ fn create_proposal_rejects_at_limit() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, "51st proposal"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -1133,9 +1057,7 @@ fn create_proposal_rejects_deadline_at_now() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &Address::generate(&env),
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
             &str(&env, "Deadline at now"),
             &NOW, // exactly the current timestamp
             &ProposalCategory::Transfer,
@@ -1149,9 +1071,7 @@ fn get_approvers_returns_only_approved_addresses() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(3);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1171,9 +1091,7 @@ fn get_approvers_returns_empty_when_none_have_approved() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1188,9 +1106,7 @@ fn get_approvers_excludes_revoked_approval() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(3);
     let id = client.create_proposal(
         &owner_a,
-        &Address::generate(&env),
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
         &str(&env, "Pay"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1315,9 +1231,7 @@ fn active_count_stays_accurate_after_execute() {
     for _ in 0..50 {
         client.create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, "Fill"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -1328,9 +1242,7 @@ fn active_count_stays_accurate_after_execute() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, "Overflow"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -1352,18 +1264,14 @@ fn active_count_stays_accurate_after_execute() {
     // Now we should be able to create 2 more proposals
     let id51 = client.create_proposal(
         &owner_a,
-        &recipient,
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &recipient, 1_000_000, &token_client.address),
         &str(&env, "New 1"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
     let id52 = client.create_proposal(
         &owner_a,
-        &recipient,
-        &1_000_000_i128,
-        &token_client.address,
+        &t(&env, &recipient, 1_000_000, &token_client.address),
         &str(&env, "New 2"),
         &DEADLINE,
         &ProposalCategory::Transfer,
@@ -1375,9 +1283,7 @@ fn active_count_stays_accurate_after_execute() {
     assert_eq!(
         client.try_create_proposal(
             &owner_a,
-            &recipient,
-            &1_000_000_i128,
-            &token_client.address,
+            &t(&env, &recipient, 1_000_000, &token_client.address),
             &str(&env, "Overflow 2"),
             &DEADLINE,
             &ProposalCategory::Transfer,
@@ -1847,4 +1753,310 @@ fn create_add_owner_proposal_rejects_at_max_owners() {
         ),
         Err(Ok(ContractError::InvalidOwners))
     );
+}
+
+// ─── Spending Limits (issue #41) ───────────────────────────────────────────────
+
+#[test]
+fn spending_limit_full_lifecycle() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit: i128 = 1_000_000;
+
+    // No limit initially: unrestricted.
+    assert_eq!(
+        client.get_spending_limit(&owner_a, &token_client.address),
+        None
+    );
+
+    // Set a limit for owner_a via the multisig flow: propose, approve, execute.
+    let id = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &limit,
+        &str(&env, "Cap owner_a at 1,000,000"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    assert_eq!(
+        client.get_spending_limit(&owner_a, &token_client.address),
+        Some(limit)
+    );
+
+    // A proposal at the limit succeeds.
+    let within = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), limit, &token_client.address),
+        &str(&env, "Within limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert!(within > 0);
+
+    // A proposal over the limit is rejected.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), (limit + 1), &token_client.address),
+            &str(&env, "Over limit"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+}
+
+#[test]
+fn proposer_without_limit_is_unrestricted() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    // No limit configured for owner_a, so a large amount is allowed.
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000_000, &token_client.address),
+        &str(&env, "Large amount, no limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(id, 1);
+}
+
+// ─── Property Tests (issue #55) ─────────────────────────────────────────────────
+
+proptest! {
+    // Soroban builds a fresh Env per case, so keep the case count modest.
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// A proposal's approval count must never exceed the number of distinct
+    /// owners, regardless of owner count or threshold. After every owner approves
+    /// once, `approvals` equals the owner count, and a repeat approval by an
+    /// existing owner is rejected rather than pushing the count higher.
+    #[test]
+    fn approval_count_never_exceeds_owner_count(
+        owner_count in 1u32..=20u32,
+        threshold_seed in 1u32..=20u32,
+    ) {
+        // Derive a threshold in 1..=owner_count from the independent seed.
+        let threshold = (threshold_seed - 1) % owner_count + 1;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let mut owners = Vec::new(&env);
+        for _ in 0..owner_count {
+            owners.push_back(Address::generate(&env));
+        }
+        client.initialize(&owners, &threshold, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let id = client.create_proposal(
+            &owners.get(0).unwrap(),
+            &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+            &str(&env, "invariant proposal"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+
+        // Every owner approves exactly once.
+        for owner in owners.iter() {
+            client.approve(&owner, &id);
+        }
+
+        let proposal = client.get_proposal(&id);
+        prop_assert_eq!(proposal.approvals, owner_count);
+        prop_assert!(proposal.approvals <= owner_count);
+
+        // A duplicate approval by an existing owner cannot push the count higher.
+        let first = owners.get(0).unwrap();
+        prop_assert_eq!(
+            client.try_approve(&first, &id),
+            Err(Ok(ContractError::AlreadyApproved))
+        );
+    }
+}
+
+// ─── Multi-Transfer ────────────────────────────────────────────────────────────
+
+#[test]
+fn multi_transfer_success() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let amount1: i128 = 50_000_000;
+    let amount2: i128 = 30_000_000;
+
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer {
+        to: recipient1.clone(),
+        token: token_client.address.clone(),
+        amount: amount1,
+    });
+    transfers.push_back(Transfer {
+        to: recipient2.clone(),
+        token: token_client.address.clone(),
+        amount: amount2,
+    });
+
+    let id = client.create_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "Multi-transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    let before1 = token_client.balance(&recipient1);
+    let before2 = token_client.balance(&recipient2);
+
+    client.execute(&owner_c, &id);
+
+    assert_eq!(token_client.balance(&recipient1) - before1, amount1);
+    assert_eq!(token_client.balance(&recipient2) - before2, amount2);
+    assert_eq!(
+        client.get_proposal(&id).status,
+        ProposalStatus::Executed
+    );
+}
+
+#[test]
+fn multi_transfer_failure_atomic() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipient3 = Address::generate(&env);
+    let amount: i128 = 10_000_000;
+
+    let token_admin2 = Address::generate(&env);
+    let token_id2 = env.register_stellar_asset_contract_v2(token_admin2);
+    let token2_client = token::Client::new(&env, &token_id2.address());
+
+    // Contract has no balance for token2, so the second transfer will fail.
+
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer {
+        to: recipient1.clone(),
+        token: token_client.address.clone(),
+        amount,
+    });
+    transfers.push_back(Transfer {
+        to: recipient2.clone(),
+        token: token2_client.address.clone(),
+        amount,
+    });
+    transfers.push_back(Transfer {
+        to: recipient3.clone(),
+        token: token_client.address.clone(),
+        amount,
+    });
+
+    let id = client.create_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "Atomic failure"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    let before1 = token_client.balance(&recipient1);
+    let before2 = token_client.balance(&recipient2);
+    let before3 = token_client.balance(&recipient3);
+    let before_contract = token_client.balance(&client.address);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    // Balances must remain unchanged after the failed atomic execution.
+    assert_eq!(token_client.balance(&recipient1), before1);
+    assert_eq!(token_client.balance(&recipient2), before2);
+    assert_eq!(token_client.balance(&recipient3), before3);
+    assert_eq!(token_client.balance(&client.address), before_contract);
+}
+
+#[test]
+fn create_proposal_rejects_invalid_transfer_count() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    // Empty transfer list should be rejected.
+    let empty: Vec<Transfer> = Vec::new(&env);
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &empty,
+            &str(&env, "Empty transfers"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+
+    // More than 3 transfers should be rejected.
+    let mut too_many = Vec::new(&env);
+    for _ in 0..4 {
+        too_many.push_back(Transfer {
+            to: Address::generate(&env),
+            token: token_client.address.clone(),
+            amount: 1_000_000,
+        });
+    }
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &too_many,
+            &str(&env, "Too many transfers"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+
+    // Exactly 1 and 3 should succeed (boundary check).
+    let mut one = Vec::new(&env);
+    one.push_back(Transfer {
+        to: Address::generate(&env),
+        token: token_client.address.clone(),
+        amount: 1_000_000,
+    });
+    assert!(client.try_create_proposal(
+        &owner_a,
+        &one,
+        &str(&env, "One transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    ).is_ok());
+
+    let mut three = Vec::new(&env);
+    for _ in 0..3 {
+        three.push_back(Transfer {
+            to: Address::generate(&env),
+            token: token_client.address.clone(),
+            amount: 1_000_000,
+        });
+    }
+    assert!(client.try_create_proposal(
+        &owner_a,
+        &three,
+        &str(&env, "Three transfers"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    ).is_ok());
 }

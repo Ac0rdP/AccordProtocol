@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
@@ -13,6 +13,8 @@ type DashboardPageProps = {
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
+  /** Ref forwarded from App.tsx to enable focus-return after modal close */
+  createProposalButtonRef?: RefObject<HTMLButtonElement | null>;
   loading: boolean;
   error: string | null;
 };
@@ -26,6 +28,7 @@ export function DashboardPage({
   onExecute,
   onRevoke,
   onCreateProposal,
+  createProposalButtonRef,
   loading,
   error,
 }: DashboardPageProps) {
@@ -101,6 +104,7 @@ export function DashboardPage({
             Expiring first
           </label>
           <button
+            ref={createProposalButtonRef}
             type="button"
             onClick={onCreateProposal}
             className="text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
@@ -143,11 +147,11 @@ export function DashboardPage({
               key={owner.address}
               className="flex items-center justify-between px-4 py-3"
             >
-              <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
                   {owner.label[0]}
                 </div>
-                <span className="font-mono text-sm text-zinc-300">
+                <span className="font-mono text-sm text-zinc-300 truncate max-w-[180px] sm:max-w-xs">
                   {owner.address}
                 </span>
               </div>

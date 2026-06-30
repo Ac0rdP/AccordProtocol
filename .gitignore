@@ -8,3 +8,7 @@ target
 # Private runbooks — keep local only
 UPGRADE.md
 fix.md
+
+# Property-test snapshots are non-deterministic (random inputs each run), so they
+# churn on every run and should not be committed.
+contracts/accord/test_snapshots/test/approval_count_never_exceeds_owner_count.*.json
