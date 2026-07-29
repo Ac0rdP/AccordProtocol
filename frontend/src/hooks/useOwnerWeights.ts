@@ -16,6 +16,8 @@ export function useOwnerWeights(ownerAddresses: string[]) {
     error: null,
   });
 
+  const serializedAddresses = ownerAddresses.join(",");
+
   useEffect(() => {
     let cancelled = false;
     if (ownerAddresses.length === 0) {
@@ -70,9 +72,9 @@ export function useOwnerWeights(ownerAddresses: string[]) {
 
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
     };
-  }, [ownerAddresses]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serializedAddresses]);
 
   return state;
 }

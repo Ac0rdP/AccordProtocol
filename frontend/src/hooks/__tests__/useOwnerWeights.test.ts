@@ -1,122 +1,70 @@
-import { act, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import * as contract from "../../lib/contract";
-import { useOwnerWeights } from "../useOwnerWeights";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
+// Mock the heavy Stellar SDK globally to avoid high memory overhead during test execution
+vi.mock("@stellar/stellar-sdk", () => ({}));
 vi.mock("../../lib/contract", () => ({
   getOwnerWeights: vi.fn(),
 }));
 
-const intervalMs = 5000;
+import { renderHook, waitFor } from "@testing-library/react";
+import * as contract from "../../lib/contract";
+import { useOwnerWeights } from "../useOwnerWeights";
+
 const initialWeights = [
   { address: "GOWNER111", weight: 4 },
   { address: "GOWNER222", weight: 6 },
 ];
-const refreshedWeights = [
-  { address: "GOWNER111", weight: 3 },
-  { address: "GOWNER222", weight: 7 },
-];
 
 describe("useOwnerWeights", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     vi.clearAllMocks();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
   });
 
   test("fetches owner weights on mount", async () => {
     vi.mocked(contract.getOwnerWeights).mockResolvedValueOnce(initialWeights);
 
-    const { result } = renderHook(() => useOwnerWeights(intervalMs));
+    const { result } = renderHook(() => useOwnerWeights(["GOWNER111", "GOWNER222"]));
 
-    expect(result.current).toEqual({
-      ownerWeights: [],
-      loading: true,
-      error: null,
-    });
+    expect(result.current.loading).toBe(true);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(result.current.loading).toBe(false);
     });
 
     expect(contract.getOwnerWeights).toHaveBeenCalledTimes(1);
-    expect(result.current.ownerWeights).toEqual(initialWeights);
+    expect(result.current.weights).toEqual({
+      GOWNER111: 4,
+      GOWNER222: 6,
+    });
+    expect(result.current.totalWeight).toBe(10);
     expect(result.current.error).toBeNull();
   });
 
-  test("refreshes owner weights on an interval", async () => {
-    vi.mocked(contract.getOwnerWeights)
-      .mockResolvedValueOnce(initialWeights)
-      .mockResolvedValueOnce(refreshedWeights);
+  test("handles empty ownerAddresses", async () => {
+    const { result } = renderHook(() => useOwnerWeights([]));
 
-    const { result } = renderHook(() => useOwnerWeights(intervalMs));
-
-    await vi.waitFor(() => {
-      expect(result.current.ownerWeights).toEqual(initialWeights);
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
     });
 
-    act(() => {
-      vi.advanceTimersByTime(intervalMs);
-    });
-
-    await vi.waitFor(() => {
-      expect(contract.getOwnerWeights).toHaveBeenCalledTimes(2);
-      expect(result.current.ownerWeights).toEqual(refreshedWeights);
-    });
-
-    expect(result.current.loading).toBe(false);
+    expect(contract.getOwnerWeights).not.toHaveBeenCalled();
+    expect(result.current.weights).toEqual({});
+    expect(result.current.totalWeight).toBe(0);
     expect(result.current.error).toBeNull();
   });
 
-  test("keeps cached owner weights when a refresh fails", async () => {
-    const refreshError = new Error("RPC unavailable");
-    vi.mocked(contract.getOwnerWeights)
-      .mockResolvedValueOnce(initialWeights)
-      .mockRejectedValueOnce(refreshError);
+  test("handles error on fetch", async () => {
+    const fetchError = new Error("RPC unavailable");
+    vi.mocked(contract.getOwnerWeights).mockRejectedValueOnce(fetchError);
 
-    const { result } = renderHook(() => useOwnerWeights(intervalMs));
+    const { result } = renderHook(() => useOwnerWeights(["GOWNER111"]));
 
-    await vi.waitFor(() => {
-      expect(result.current.ownerWeights).toEqual(initialWeights);
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
     });
 
-    act(() => {
-      vi.advanceTimersByTime(intervalMs);
-    });
-
-    await vi.waitFor(() => {
-      expect(contract.getOwnerWeights).toHaveBeenCalledTimes(2);
-      expect(result.current.error).toBe("RPC unavailable");
-    });
-
-    expect(result.current.ownerWeights).toEqual(initialWeights);
-    expect(result.current.loading).toBe(false);
-    expect(console.error).toHaveBeenCalledWith(
-      "Failed to fetch owner weights",
-      refreshError,
-    );
-  });
-
-  test("stops refreshing after unmount", async () => {
-    vi.mocked(contract.getOwnerWeights).mockResolvedValueOnce(initialWeights);
-
-    const { result, unmount } = renderHook(() => useOwnerWeights(intervalMs));
-
-    await vi.waitFor(() => {
-      expect(result.current.ownerWeights).toEqual(initialWeights);
-    });
-
-    unmount();
-
-    act(() => {
-      vi.advanceTimersByTime(intervalMs);
-    });
-
-    expect(contract.getOwnerWeights).toHaveBeenCalledTimes(1);
+    expect(result.current.error).toBe("RPC unavailable");
+    expect(result.current.weights).toEqual({});
+    expect(result.current.totalWeight).toBe(0);
   });
 });

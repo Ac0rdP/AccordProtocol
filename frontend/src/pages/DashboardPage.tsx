@@ -47,7 +47,7 @@ export function DashboardPage({
 
   // Compute owner weights and quorum weight for weight-based UI
   const ownerAddresses = owners.map((o) => o.address);
-  const { weights, totalWeight, loading: weightsLoading } = useOwnerWeights(ownerAddresses);
+  const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
   const [quorumWeight, setQuorumWeight] = useState<number>(0);
 
   useEffect(() => {

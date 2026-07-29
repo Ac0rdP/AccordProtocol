@@ -25,6 +25,7 @@ const KIND_LABELS: Record<ProposalKind, { title: string; badge: string }> = {
   remove_owner: { title: "Remove Owner", badge: "Governance" },
   change_threshold: { title: "Change Threshold", badge: "Governance" },
   set_spending_limit: { title: "Set Spending Limit", badge: "Spending Limit" },
+  change_owner_weight: { title: "Change Owner Weight", badge: "Governance" },
 };
 
 // Colour palette per category, mirroring the pill styling used by StatusBadge.

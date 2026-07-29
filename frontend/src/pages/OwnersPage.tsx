@@ -3,7 +3,6 @@ import { getRequiredQuorumWeight, getSpendingLimit } from "../lib/contract";
 import { createSpendingLimitProposal } from "../lib/submit";
 import {
   displayToStroops,
-  stroopsToDisplay,
   shortenAddr,
 } from "../lib/soroban";
 import { StrKey } from "@stellar/stellar-sdk";
@@ -56,7 +55,7 @@ export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  totalOwners,
+  totalOwners: _totalOwners,
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
@@ -66,8 +65,8 @@ export function OwnersPage({
     loading: weightsLoading,
     error: weightsError,
   } = useOwnerWeights(ownerAddresses);
-  const [spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
-  const [limitsLoading, setLimitsLoading] = useState(true);
+  const [_spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
+  const [_limitsLoading, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [sortByWeightDesc, setSortByWeightDesc] = useState(false);
   const [filterMode, setFilterMode] = useState<"all" | "above" | "below">(
@@ -209,17 +208,7 @@ export function OwnersPage({
       return owner.percentage < thresholdVal;
     });
 
-  function formatLimit(
-    limit: bigint,
-    symbol: string,
-  ): { text: string; variant: "unrestricted" | "zero" | "configured" } {
-    if (limit < 0n) return { text: "Unrestricted", variant: "unrestricted" };
-    if (limit === 0n) return { text: `0 ${symbol}`, variant: "zero" };
-    return {
-      text: `${stroopsToDisplay(limit)} ${symbol}`,
-      variant: "configured",
-    };
-  }
+
 
   async function handleCreateSpendingLimit() {
     if (!walletAddress) {
