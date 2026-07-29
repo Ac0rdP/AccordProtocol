@@ -2,6 +2,7 @@ import React from "react";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
+import { getWeightCapPct, getRequiredQuorumWeight, getSpendingLimit } from "../lib/contract";
 import type { Owner } from "../types/accord";
 import { OwnersPage } from "./OwnersPage";
 
@@ -15,6 +16,9 @@ vi.mock("../lib/contract", () => ({
 }));
 
 const mockUseOwnerWeights = vi.mocked(useOwnerWeights);
+const mockGetWeightCapPct = vi.mocked(getWeightCapPct);
+const mockGetRequiredQuorumWeight = vi.mocked(getRequiredQuorumWeight);
+const mockGetSpendingLimit = vi.mocked(getSpendingLimit);
 
 const ownerAddresses = ["GOWNER111", "GOWNER222"];
 const owners: Owner[] = [
@@ -28,7 +32,6 @@ function renderOwnersPage() {
       owners={owners}
       ownerAddresses={ownerAddresses}
       threshold={5}
-      totalOwners={owners.length}
     />,
   );
 }
@@ -36,9 +39,12 @@ function renderOwnersPage() {
 describe("OwnersPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetWeightCapPct.mockResolvedValue(50);
+    mockGetRequiredQuorumWeight.mockResolvedValue(10);
+    mockGetSpendingLimit.mockResolvedValue(-1n);
   });
 
-  test("shows weighted quorum and each owner voting share", () => {
+  test("shows weighted quorum and each owner voting share", async () => {
     mockUseOwnerWeights.mockReturnValue({
       weights: { GOWNER111: 5, GOWNER222: 15 },
       totalWeight: 20,

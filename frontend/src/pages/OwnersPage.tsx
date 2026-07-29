@@ -47,7 +47,6 @@ type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
-  totalOwners: number;
   walletAddress: string | null;
   onProposalSubmitted: () => void;
 };
@@ -56,7 +55,6 @@ export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  totalOwners,
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
@@ -185,6 +183,13 @@ export function OwnersPage({
       cancelled = true;
     };
   }, [ownerAddresses]);
+
+  const hasOwnerWeights = totalWeight > 0;
+  const ownerWeightsLoading = weightsLoading;
+  const weightsUnavailable = !weightsLoading && totalWeight === 0;
+  const weightsStale = false;
+  const ownerCountLabel = `${ownerAddresses.length} ${ownerAddresses.length === 1 ? "owner" : "owners"}`;
+  const quorumPercent = totalWeight > 0 ? ((threshold / totalWeight) * 100).toFixed(1) : "0";
 
   const visibleOwners = owners
     .map((owner, idx) => {

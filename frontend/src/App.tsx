@@ -463,7 +463,6 @@ export default function App() {
                   owners={owners}
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
-                  totalOwners={owners.length}
                   walletAddress={wallet.address}
                   onProposalSubmitted={refresh}
                 />
