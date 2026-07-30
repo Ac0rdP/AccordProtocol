@@ -470,6 +470,76 @@ The same panel also serves as a diagnostic tool: if an execute call fails with `
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
 
+## 11. Owner-Authorization Check Resource Cost
+
+Every authorized call into the contract (`approve`, `revoke`, `execute`, and each governance proposal creation) loads the entire `OWNERS` persistent entry (an `Address → u32` weight map) and looks up the caller's weight. This section measures the CPU instruction and memory cost of that check at the maximum owner count (`MAX_OWNERS = 20`) compared to a single-owner baseline.
+
+### Benchmark Methodology
+
+Two benchmark tests live in `contracts/accord/src/test.rs`:
+
+- **`benchmark_owner_check_cpu_and_memory`** — Calls `env.budget().reset_unlimited()`, initializes a contract with 1 owner (then separately with 20 owners), calls `get_owner_weight` (which exercises the same `require_owner_and_weight` code path), and records `cpu_instruction_cost()` and `memory_bytes_cost()` deltas.
+- **`benchmark_approve_cost_20_owners`** — Initializes a contract with 20 owners, creates a proposal, calls `approve` with a second owner, and records the full call cost.
+
+Both tests use `env.mock_all_auths()` and run with an unlimited budget to avoid budget-exhaustion interference during setup. The budget is reset just before the measured operation so only the operation's own cost is captured.
+
+### Results: Owner-Authorization Check (`get_owner_weight`)
+
+| Owner count | CPU instructions | Memory bytes |
+|-------------|-----------------|--------------|
+| 1           | 47,958          | 24,477       |
+| 20          | 89,998          | 55,035       |
+| **Delta**   | **42,040**      | **30,558**   |
+
+The delta (20 − 1) isolates the cost attributable to deserializing and iterating the larger owner map: approximately **2,212 CPU instructions and 1,608 memory bytes per additional owner**.
+
+### Results: Full `approve` Call (20 owners)
+
+| Scenario | CPU instructions | Memory bytes |
+|----------|-----------------|--------------|
+| `approve` at 20 owners | 280,920 | 145,205 |
+
+### Comparison Against Soroban Mainnet Limits
+
+Soroban's per-invocation resource limits on mainnet are **600,000,000 CPU instructions** and **41,943,040 memory bytes** (40 MiB).
+
+| Scenario | CPU | % of limit | Memory | % of limit |
+|---|---|---|---|---|
+| Owner check (20 owners) | 89,998 | 0.0150% | 55,035 | 0.1312% |
+| Full `approve` (20 owners) | 280,920 | 0.0468% | 145,205 | 0.3462% |
+
+### Full Budget Breakdown (20 owners)
+
+**Owner check (`get_owner_weight`):**
+```
+Cpu limit: 18446744073709551615; used: 89998
+Mem limit: 18446744073709551615; used: 55035
+
+CostType                           cpu_insns      mem_bytes
+MemAlloc                           22682          8727
+MemCpy                             7487           0
+MemCmp                             7898           0
+VisitObject                        7991           0
+ValSer                             40202          46308
+```
+
+**Full `approve` call:**
+```
+Cpu limit: 18446744073709551615; used: 280920
+Mem limit: 18446744073709551615; used: 145205
+
+CostType                           cpu_insns      mem_bytes
+MemAlloc                           88299          46535
+```
+
+### Conclusion
+
+**The owner-authorization check stays well within Soroban's per-invocation resource budget at the maximum owner count of 20.** The check consumes roughly 0.015% of the CPU budget and 0.13% of the memory budget. Even the full `approve` call (which includes the owner check plus proposal loading, approval recording, and event emission) consumes only 0.047% of CPU and 0.35% of memory.
+
+No follow-up action is required. The owner-map lookup does not pose a resource-limit risk, and the headroom is sufficient for the rest of each entrypoint's business logic.
+
+> **Note**: These measurements were obtained running Rust natively in test mode (not compiled to WASM). Soroban SDK's own documentation notes that CPU and memory costs are *likely to be underestimated* when running natively compared to actual WASM execution. The true WASM costs may be higher, but given the large headroom (less than 1% of limits), this margin of error does not change the conclusion.
+
 ## Security Note: Governance Controls vs Spending Limits
 
 **Spending limits and voting weights are strictly independent.**

@@ -5980,7 +5980,7 @@ fn get_owner_weights_returns_all_owners_at_max_capacity() {
     client.initialize(&owners, &weights, &1, &0);
 
     let result = client.get_owner_weights();
-    assert_eq!(result.len(), MAX_OWNERS as usize);
+    assert_eq!(result.len(), MAX_OWNERS);
     let mut sum: u32 = 0;
     for entry in result.iter() {
         sum = sum.checked_add(entry.weight).unwrap();
@@ -7219,4 +7219,171 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
     // transitions it back down correctly too.
     client.revoke(&owner_b, &id);
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
+}
+
+// ─── Owner-Authorization Check Resource Cost Benchmark ─────────────────────
+
+const CPU_LIMIT_MAINNET: u64 = 600_000_000;
+const MEM_LIMIT_MAINNET: u64 = 41_943_040;
+
+fn setup_n_owners(
+    env: &Env,
+    count: u32,
+) -> (AccordContractClient<'static>, Vec<Address>) {
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(env, &contract_id);
+
+    let mut owners = Vec::new(env);
+    for _ in 0..count {
+        owners.push_back(Address::generate(env));
+    }
+
+    let mut weights = Vec::new(env);
+    for _ in 0..count {
+        weights.push_back(1_u32);
+    }
+
+    client.initialize(&owners, &weights, &1, &0);
+    (client, owners)
+}
+
+#[test]
+fn benchmark_owner_check_cpu_and_memory() {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    env.budget().reset_unlimited();
+
+    // ── Baseline: 1 owner ──────────────────────────────────────────────
+    let (client_1, owners_1) = setup_n_owners(&env, 1);
+    let owner_1 = owners_1.get(0).unwrap();
+
+    env.budget().reset_unlimited();
+    let cpu_before = env.budget().cpu_instruction_cost();
+    let mem_before = env.budget().memory_bytes_cost();
+    let _ = client_1.get_owner_weight(&owner_1);
+    let cpu_1 = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
+    let mem_1 = env.budget().memory_bytes_cost().saturating_sub(mem_before);
+
+    // ── Max owners: 20 ─────────────────────────────────────────────────
+    let (client_20, owners_20) = setup_n_owners(&env, 20);
+    let owner_20 = owners_20.get(0).unwrap();
+
+    env.budget().reset_unlimited();
+    let cpu_before = env.budget().cpu_instruction_cost();
+    let mem_before = env.budget().memory_bytes_cost();
+    let _ = client_20.get_owner_weight(&owner_20);
+    let cpu_20 = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
+    let mem_20 = env.budget().memory_bytes_cost().saturating_sub(mem_before);
+
+    // ── Report ─────────────────────────────────────────────────────────
+    std::println!();
+    std::println!("=== Owner-Authorization Check Resource Cost ===");
+    std::println!(
+        " 1 owner — CPU: {:>12} instructions, Memory: {:>10} bytes",
+        cpu_1, mem_1
+    );
+    std::println!(
+        "20 owners — CPU: {:>12} instructions, Memory: {:>10} bytes",
+        cpu_20, mem_20
+    );
+    std::println!(" Delta    — CPU: {:>12}, Memory: {:>10}", cpu_20.saturating_sub(cpu_1), mem_20.saturating_sub(mem_1));
+    std::println!();
+    std::println!(
+        "CPU usage at 20 owners: {:.4}% of mainnet limit ({} instructions)",
+        (cpu_20 as f64 / CPU_LIMIT_MAINNET as f64) * 100.0,
+        CPU_LIMIT_MAINNET
+    );
+    std::println!(
+        "Mem usage at 20 owners: {:.4}% of mainnet limit ({} bytes)",
+        (mem_20 as f64 / MEM_LIMIT_MAINNET as f64) * 100.0,
+        MEM_LIMIT_MAINNET
+    );
+
+    // Confirm we are well within mainnet resource bounds.
+    assert!(
+        cpu_20 < CPU_LIMIT_MAINNET,
+        "CPU cost {} exceeds mainnet limit of {}",
+        cpu_20,
+        CPU_LIMIT_MAINNET
+    );
+    assert!(
+        mem_20 < MEM_LIMIT_MAINNET,
+        "Memory cost {} exceeds mainnet limit of {}",
+        mem_20,
+        MEM_LIMIT_MAINNET
+    );
+
+    std::println!();
+    std::println!("=== Full Budget Breakdown (20 owners) ===");
+    std::println!("{}", env.cost_estimate().budget());
+}
+
+#[test]
+fn benchmark_approve_cost_20_owners() {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    env.budget().reset_unlimited();
+
+    // Prepare a token for proposals.
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client = token::Client::new(&env, &token_id.address());
+    let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+    // ── Setup: 20 owners, threshold = 10 ───────────────────────────────
+    let (client, owners) = setup_n_owners(&env, 20);
+    token_sac.mint(&client.address, &1_000_000_000_000_i128);
+
+    let owner_a = owners.get(0).unwrap();
+    let owner_b = owners.get(1).unwrap();
+
+    // Create a proposal that both owners will approve.
+    let recipient = Address::generate(&env);
+    let proposal_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000_000, &token_client.address),
+        &str(&env, "Benchmark approve"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // Record cost before and after approve.
+    env.budget().reset_unlimited();
+    let cpu_before = env.budget().cpu_instruction_cost();
+    let mem_before = env.budget().memory_bytes_cost();
+    let _ = client.approve(&owner_b, &proposal_id);
+    let cpu_approve = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
+    let mem_approve = env.budget().memory_bytes_cost().saturating_sub(mem_before);
+
+    std::println!();
+    std::println!("=== Approve Call Resource Cost (20 owners) ===");
+    std::println!(
+        " approve — CPU: {:>12} instructions, Memory: {:>10} bytes",
+        cpu_approve, mem_approve
+    );
+    std::println!(
+        "CPU usage: {:.4}% of mainnet limit",
+        (cpu_approve as f64 / CPU_LIMIT_MAINNET as f64) * 100.0
+    );
+    std::println!(
+        "Mem usage: {:.4}% of mainnet limit",
+        (mem_approve as f64 / MEM_LIMIT_MAINNET as f64) * 100.0
+    );
+
+    std::println!();
+    std::println!("=== Full Budget Breakdown (approve, 20 owners) ===");
+    std::println!("{}", env.cost_estimate().budget());
+
+    assert!(
+        cpu_approve < CPU_LIMIT_MAINNET,
+        "approve CPU cost {} exceeds mainnet limit",
+        cpu_approve
+    );
+    assert!(
+        mem_approve < MEM_LIMIT_MAINNET,
+        "approve memory cost {} exceeds mainnet limit",
+        mem_approve
+    );
 }
