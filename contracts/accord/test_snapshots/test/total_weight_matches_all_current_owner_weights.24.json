@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 7,
+    "address": 11,
     "nonce": 0,
     "mux_id": 0
   },
@@ -146,6 +146,18 @@
         }
       ]
     ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
@@ -455,19 +467,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "create_change_weight_proposal",
+              "function_name": "create_add_owner_proposal",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "u32": 1
-                },
-                {
-                  "string": "fuzz weight"
+                  "string": "fuzz add"
                 },
                 {
                   "u64": "87400"
@@ -527,6 +536,7 @@
     [],
     [],
     [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
@@ -540,7 +550,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
                   "string": "fuzz add"
@@ -604,6 +614,7 @@
     [],
     [],
     [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
@@ -611,16 +622,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "create_remove_owner_proposal",
+              "function_name": "create_add_owner_proposal",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "string": "fuzz remove"
+                  "string": "fuzz add"
                 },
                 {
                   "u64": "87400"
@@ -680,6 +691,9 @@
     [],
     [],
     [],
+    [],
+    [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
@@ -687,19 +701,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "create_change_weight_proposal",
+              "function_name": "create_add_owner_proposal",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
                 },
                 {
-                  "u32": 2
-                },
-                {
-                  "string": "fuzz weight"
+                  "string": "fuzz add"
                 },
                 {
                   "u64": "87400"
@@ -770,16 +781,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "create_remove_owner_proposal",
+              "function_name": "create_add_owner_proposal",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
                 },
                 {
-                  "string": "fuzz remove"
+                  "string": "fuzz add"
                 },
                 {
                   "u64": "87400"
@@ -878,7 +889,55 @@
                   },
                   {
                     "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
+                  },
+                  {
+                    "key": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
                     },
                     "val": {
                       "u32": 1
@@ -1707,7 +1766,7 @@
                       "symbol": "description"
                     },
                     "val": {
-                      "string": "fuzz weight"
+                      "string": "fuzz add"
                     }
                   },
                   {
@@ -1725,13 +1784,10 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "ChangeOwnerWeight"
+                          "symbol": "AddOwner"
                         },
                         {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                        },
-                        {
-                          "u32": 1
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                         }
                       ]
                     }
@@ -1854,7 +1910,7 @@
                           "symbol": "AddOwner"
                         },
                         {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                         }
                       ]
                     }
@@ -1956,7 +2012,7 @@
                       "symbol": "description"
                     },
                     "val": {
-                      "string": "fuzz remove"
+                      "string": "fuzz add"
                     }
                   },
                   {
@@ -1974,10 +2030,10 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "RemoveOwner"
+                          "symbol": "AddOwner"
                         },
                         {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                         }
                       ]
                     }
@@ -2079,7 +2135,7 @@
                       "symbol": "description"
                     },
                     "val": {
-                      "string": "fuzz weight"
+                      "string": "fuzz add"
                     }
                   },
                   {
@@ -2097,13 +2153,10 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "ChangeOwnerWeight"
+                          "symbol": "AddOwner"
                         },
                         {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                        },
-                        {
-                          "u32": 2
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
                         }
                       ]
                     }
@@ -2205,7 +2258,7 @@
                       "symbol": "description"
                     },
                     "val": {
-                      "string": "fuzz remove"
+                      "string": "fuzz add"
                     }
                   },
                   {
@@ -2223,10 +2276,10 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "RemoveOwner"
+                          "symbol": "AddOwner"
                         },
                         {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
                         }
                       ]
                     }
@@ -2343,7 +2396,7 @@
                         "symbol": "TWEIGHT"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 8
                       }
                     }
                   ]

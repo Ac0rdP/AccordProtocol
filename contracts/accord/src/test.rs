@@ -724,15 +724,36 @@ fn get_proposal_approval_progress_returns_live_counts_and_total_owner_weight() {
     );
 
     let progress = client.get_proposal_approval_progress(&id);
-    assert_eq!(progress, (0, 2, 3));
+    assert_eq!(
+        progress,
+        ProposalApprovalProgress {
+            approval_weight: 0,
+            quorum_weight: 2,
+            total_weight: 3,
+        }
+    );
 
     client.approve(&owner_a, &id);
     let progress = client.get_proposal_approval_progress(&id);
-    assert_eq!(progress, (1, 2, 3));
+    assert_eq!(
+        progress,
+        ProposalApprovalProgress {
+            approval_weight: 1,
+            quorum_weight: 2,
+            total_weight: 3,
+        }
+    );
 
     client.approve(&owner_b, &id);
     let progress = client.get_proposal_approval_progress(&id);
-    assert_eq!(progress, (2, 2, 3));
+    assert_eq!(
+        progress,
+        ProposalApprovalProgress {
+            approval_weight: 2,
+            quorum_weight: 2,
+            total_weight: 3,
+        }
+    );
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
 }
 
@@ -2766,8 +2787,8 @@ fn change_weight_proposal_rejects_non_owner_and_leaves_state_unchanged() {
     let id = client.create_change_weight_proposal(
         &owner_a,
         &owner_b,
-        &5,
-        &str(&env, "Change owner_b weight to 5"),
+        &2,
+        &str(&env, "Change owner_b weight to 2"),
         &DEADLINE,
     );
     assert!(id > 0);
@@ -4133,3 +4154,356 @@ fn changing_weight_does_not_affect_spending_limit() {
         Some(10000)
     );
 }
+
+// ─── Recurring Payment Views and Maintenance Tests ─────────────────────────
+
+fn save_recurring_schedule(env: &Env, contract_id: &Address, schedule: &RecurringPayment) {
+    env.as_contract(contract_id, || {
+        let key = recurring_payment_key(schedule.id);
+        env.storage().persistent().set(&key, schedule);
+        let next_id = read_next_recurring_id(env);
+        if schedule.id >= next_id {
+            write_next_recurring_id(env, schedule.id + 1);
+        }
+    });
+}
+
+#[test]
+fn test_get_recurring_payment_found_and_not_found() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let contract_id = client.address.clone();
+
+    // Query non-existent ID
+    assert_eq!(
+        client.try_get_recurring_payment(&999),
+        Err(Ok(ContractError::RecurringPaymentNotFound))
+    );
+
+    // Save active schedule that has expired (end_time in past)
+    let now = env.ledger().timestamp();
+    let schedule = RecurringPayment {
+        id: 1,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now - 1000,
+        end_time: now - 100,
+        interval_secs: 300,
+        cliff_time: 0,
+        amount_per_period: 100,
+        total_amount: 500,
+        total_disbursed: 200,
+        last_disbursed_at: now - 500,
+        total_cap: 500,
+        max_disbursements: 5,
+        disbursements_made: 2,
+        is_paused: false,
+        is_cancelled: false,
+    };
+    save_recurring_schedule(&env, &contract_id, &schedule);
+
+    // Read back - status should be freshly derived as Completed
+    let fetched = client.get_recurring_payment(&1);
+    assert_eq!(fetched.id, 1);
+    assert_eq!(fetched.status, RecurringStatus::Completed);
+}
+
+#[test]
+fn test_sweep_completed_recurring() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+    let contract_id = client.address.clone();
+    let now = env.ledger().timestamp();
+
+    // Schedule 1: Completed via past end_time
+    let schedule1 = RecurringPayment {
+        id: 1,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now - 1000,
+        end_time: now - 10,
+        interval_secs: 100,
+        cliff_time: 0,
+        amount_per_period: 50,
+        total_amount: 500,
+        total_disbursed: 500,
+        last_disbursed_at: now - 50,
+        total_cap: 500,
+        max_disbursements: 10,
+        disbursements_made: 10,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    // Schedule 2: Active (future end_time)
+    let schedule2 = RecurringPayment {
+        id: 2,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now,
+        end_time: now + 5000,
+        interval_secs: 100,
+        cliff_time: 0,
+        amount_per_period: 50,
+        total_amount: 500,
+        total_disbursed: 0,
+        last_disbursed_at: 0,
+        total_cap: 500,
+        max_disbursements: 10,
+        disbursements_made: 0,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    save_recurring_schedule(&env, &contract_id, &schedule1);
+    save_recurring_schedule(&env, &contract_id, &schedule2);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(1);
+    ids.push_back(2);
+
+    // Non-owner cannot sweep
+    assert_eq!(
+        client.try_sweep_completed_recurring(&non_owner, &ids),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    // Owner sweeps: only schedule 1 is Completed, so swept count is 1
+    let swept = client.sweep_completed_recurring(&owner_a, &ids);
+    assert_eq!(swept, 1);
+}
+
+#[test]
+fn test_get_next_disbursement_time() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let contract_id = client.address.clone();
+    let now = env.ledger().timestamp();
+
+    // Active Fixed schedule
+    let schedule_fixed = RecurringPayment {
+        id: 1,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now,
+        end_time: now + 10000,
+        interval_secs: 86400,
+        cliff_time: 0,
+        amount_per_period: 100,
+        total_amount: 1000,
+        total_disbursed: 100,
+        last_disbursed_at: now,
+        total_cap: 1000,
+        max_disbursements: 10,
+        disbursements_made: 1,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    // Active LinearVesting schedule without prior disbursement
+    let schedule_linear = RecurringPayment {
+        id: 2,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::LinearVesting,
+        status: RecurringStatus::Active,
+        start_time: now,
+        end_time: now + 86400 * 10,
+        interval_secs: 86400,
+        cliff_time: 86400 * 2,
+        amount_per_period: 0,
+        total_amount: 10000,
+        total_disbursed: 0,
+        last_disbursed_at: 0,
+        total_cap: 10000,
+        max_disbursements: 0,
+        disbursements_made: 0,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    // Completed schedule
+    let schedule_completed = RecurringPayment {
+        id: 3,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Completed,
+        start_time: 100,
+        end_time: 500,
+        interval_secs: 100,
+        cliff_time: 0,
+        amount_per_period: 10,
+        total_amount: 100,
+        total_disbursed: 100,
+        last_disbursed_at: 500,
+        total_cap: 100,
+        max_disbursements: 10,
+        disbursements_made: 10,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    save_recurring_schedule(&env, &contract_id, &schedule_fixed);
+    save_recurring_schedule(&env, &contract_id, &schedule_linear);
+    save_recurring_schedule(&env, &contract_id, &schedule_completed);
+
+    // Fixed: last_disbursed_at + interval_secs
+    assert_eq!(client.get_next_disbursement_time(&1), now + 86400);
+
+    // Linear: start_time + cliff_time
+    assert_eq!(client.get_next_disbursement_time(&2), now + 86400 * 2);
+
+    // Terminated: 0
+    assert_eq!(client.get_next_disbursement_time(&3), 0);
+}
+
+#[test]
+fn test_get_claimable_amount() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let contract_id = client.address.clone();
+    let now = env.ledger().timestamp();
+
+    // Fixed schedule eligible now
+    let schedule_fixed = RecurringPayment {
+        id: 1,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now - 200,
+        end_time: now + 10000,
+        interval_secs: 100,
+        cliff_time: 0,
+        amount_per_period: 250,
+        total_amount: 1000,
+        total_disbursed: 0,
+        last_disbursed_at: now - 200,
+        total_cap: 1000,
+        max_disbursements: 4,
+        disbursements_made: 0,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    // Linear vesting schedule 50% vested
+    let start_time = now - 500;
+    let end_time = now + 500;
+    let schedule_linear = RecurringPayment {
+        id: 2,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::LinearVesting,
+        status: RecurringStatus::Active,
+        start_time,
+        end_time,
+        interval_secs: 1000,
+        cliff_time: 100,
+        amount_per_period: 0,
+        total_amount: 1000,
+        total_disbursed: 200,
+        last_disbursed_at: now - 200,
+        total_cap: 1000,
+        max_disbursements: 0,
+        disbursements_made: 0,
+        is_paused: false,
+        is_cancelled: false,
+    };
+
+    // Paused schedule
+    let schedule_paused = RecurringPayment {
+        id: 3,
+        proposer: owner_a.clone(),
+        recipient: Address::generate(&env),
+        token: Address::generate(&env),
+        kind: ScheduleKind::Fixed,
+        status: RecurringStatus::Active,
+        start_time: now - 200,
+        end_time: now + 10000,
+        interval_secs: 100,
+        cliff_time: 0,
+        amount_per_period: 250,
+        total_amount: 1000,
+        total_disbursed: 0,
+        last_disbursed_at: now - 200,
+        total_cap: 1000,
+        max_disbursements: 4,
+        disbursements_made: 0,
+        is_paused: true,
+        is_cancelled: false,
+    };
+
+    save_recurring_schedule(&env, &contract_id, &schedule_fixed);
+    save_recurring_schedule(&env, &contract_id, &schedule_linear);
+    save_recurring_schedule(&env, &contract_id, &schedule_paused);
+
+    // Fixed claimable: 250
+    assert_eq!(client.get_claimable_amount(&1), 250);
+
+    // Linear claimable: 50% of 1000 = 500 vested, minus 200 disbursed = 300
+    assert_eq!(client.get_claimable_amount(&2), 300);
+
+    // Paused claimable: 0
+    assert_eq!(client.get_claimable_amount(&3), 0);
+}
+
+#[test]
+fn test_get_recurring_payments_paged() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let contract_id = client.address.clone();
+    let now = env.ledger().timestamp();
+
+    // Create 25 schedules
+    for id in 1..=25 {
+        let schedule = RecurringPayment {
+            id,
+            proposer: owner_a.clone(),
+            recipient: Address::generate(&env),
+            token: Address::generate(&env),
+            kind: ScheduleKind::Fixed,
+            status: RecurringStatus::Active,
+            start_time: now,
+            end_time: now + 10000,
+            interval_secs: 100,
+            cliff_time: 0,
+            amount_per_period: 10,
+            total_amount: 100,
+            total_disbursed: 0,
+            last_disbursed_at: 0,
+            total_cap: 100,
+            max_disbursements: 10,
+            disbursements_made: 0,
+            is_paused: false,
+            is_cancelled: false,
+        };
+        save_recurring_schedule(&env, &contract_id, &schedule);
+    }
+
+    // Page 1 (offset 0, limit 10) -> returns 10 items
+    let page1 = client.get_recurring_payments_paged(&0, &10);
+    assert_eq!(page1.len(), 10);
+    assert_eq!(page1.get(0).unwrap().id, 1);
+    assert_eq!(page1.get(9).unwrap().id, 10);
+
+    // Limit cap at 20 (request limit 50) -> returns 20 items
+    let page_capped = client.get_recurring_payments_paged(&0, &50);
+    assert_eq!(page_capped.len(), 20);
+
+    // Overflow protection on offset + limit
+    let page_overflow = client.get_recurring_payments_paged(&u64::MAX, &10);
+    assert_eq!(page_overflow.len(), 0);
+}
+
