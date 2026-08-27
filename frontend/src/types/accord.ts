@@ -107,6 +107,7 @@ export type RecurringSchedule = {
   interval?: number;
   totalDisbursed: string;
   status: RecurringScheduleStatus;
+  kind?: RecurringKind;
   cliff?: number | string;
   endDate?: number | string;
   cap?: string;

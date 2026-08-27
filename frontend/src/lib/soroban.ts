@@ -89,7 +89,7 @@ export function formatInterval(seconds: number | bigint | string): string {
   if (isNaN(s) || s <= 0) return "—";
   if (s === 86400) return "Daily";
   if (s === 604800) return "Weekly";
-  if (s === 2592000 || s === 2629743 || s === 2629800 || s === 2592000) return "Monthly";
+  if (s === 2592000 || s === 2629743 || s === 2629800) return "Monthly";
   if (s === 31536000) return "Yearly";
   if (s % 86400 === 0) {
     const days = s / 86400;
@@ -104,5 +104,18 @@ export function formatInterval(seconds: number | bigint | string): string {
     return mins === 1 ? "1 min" : `Every ${mins} mins`;
   }
   return `Every ${s}s`;
+}
+
+export function formatCountdown(targetMs: number): string {
+  const diff = targetMs - Date.now();
+  if (diff <= 0) return "Due now";
+  const totalSecs = Math.floor(diff / 1000);
+  const days = Math.floor(totalSecs / 86400);
+  const hours = Math.floor((totalSecs % 86400) / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  if (days > 0) return `next in ${days}d ${hours}h`;
+  if (hours > 0) return `next in ${hours}h ${mins}m`;
+  if (mins > 0) return `next in ${mins}m`;
+  return "next in <1m";
 }
 

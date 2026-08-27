@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
 import {
@@ -17,6 +17,89 @@ const TABS: { key: StatusFilter; label: string }[] = [
 ];
 
 const PAGE_SIZE = 20;
+const TIMELINE_HORIZON_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
+type TimelineEntry = {
+  date: Date;
+  dateLabel: string;
+  scheduleId: number;
+  amount: string;
+  token?: string;
+  recipient: string;
+};
+
+function buildTimeline(schedules: RecurringSchedule[]): TimelineEntry[] {
+  const now = Date.now();
+  const horizon = now + TIMELINE_HORIZON_MS;
+  const entries: TimelineEntry[] = [];
+
+  for (const s of schedules) {
+    if (s.status !== "active") continue;
+    if (s.nextDisbursementTs === undefined || s.interval === undefined) continue;
+
+    let ts = s.nextDisbursementTs;
+    while (ts <= horizon) {
+      if (ts >= now) {
+        const d = new Date(ts);
+        entries.push({
+          date: d,
+          dateLabel: d.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          }),
+          scheduleId: s.id,
+          amount: s.amount,
+          token: s.token,
+          recipient: s.recipient,
+        });
+      }
+      ts += s.interval * 1000;
+    }
+  }
+
+  entries.sort((a, b) => a.date.getTime() - b.date.getTime());
+  return entries;
+}
+
+function DisbursementTimeline({ schedules }: { schedules: RecurringSchedule[] }) {
+  const entries = useMemo(() => buildTimeline(schedules), [schedules]);
+
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 mb-4">
+      <h3 className="text-sm font-semibold text-zinc-300 mb-3">Upcoming Disbursements</h3>
+      <div className="relative">
+        <div className="absolute left-3 top-0 bottom-0 w-px bg-zinc-800" />
+        <div className="space-y-3">
+          {entries.slice(0, 20).map((entry, i) => (
+            <div key={`${entry.scheduleId}-${i}`} className="flex items-start gap-3 pl-1">
+              <div className="relative z-10 mt-1.5">
+                <div className="h-2 w-2 rounded-full bg-emerald-500" />
+              </div>
+              <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-xs text-zinc-400">{entry.dateLabel}</span>
+                  <span className="text-xs text-zinc-600 mx-1.5">·</span>
+                  <span className="text-xs text-zinc-500">Schedule #{entry.scheduleId}</span>
+                </div>
+                <div className="text-xs text-zinc-300 shrink-0">
+                  {entry.amount} {entry.token ?? ""}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {entries.length > 20 && (
+          <p className="text-xs text-zinc-600 mt-2 pl-6">
+            + {entries.length - 20} more upcoming disbursements
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function RecurringPage({
   walletAddress,
@@ -77,6 +160,8 @@ export function RecurringPage({
     ? schedules
     : schedules.filter((s) => s.status === activeTab);
 
+  const activeSchedules = schedules.filter((s) => s.status === "active");
+
   return (
     <>
       <div className="flex items-center justify-between mb-4">
@@ -100,6 +185,10 @@ export function RecurringPage({
           ))}
         </div>
       </div>
+
+      {!loading && activeSchedules.length > 0 && (
+        <DisbursementTimeline schedules={activeSchedules} />
+      )}
 
       <div className="space-y-3">
         {loading ? (

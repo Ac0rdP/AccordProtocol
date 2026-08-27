@@ -1001,6 +1001,20 @@ function mapRecurringSchedule(raw: any): RecurringSchedule {
   const capRaw = raw.cap ?? (raw.total_cap != null && Number(safeBigInt(raw.total_cap)) > 0 ? raw.total_cap : null);
   const cap = capRaw != null ? stroopsToDisplay(safeBigInt(capRaw)) : undefined;
 
+  const rawKind = raw.kind ?? raw.payment_kind;
+  let kind: RecurringKind | undefined;
+  if (rawKind !== undefined) {
+    let key: string;
+    if (typeof rawKind === "string") {
+      key = rawKind;
+    } else if (rawKind && typeof rawKind === "object") {
+      key = Object.keys(rawKind as object)[0] ?? "FixedAmountPerPeriod";
+    } else {
+      key = "FixedAmountPerPeriod";
+    }
+    kind = key.toLowerCase() === "linearvesting" ? "linear_vesting" : "fixed_amount_per_period";
+  }
+
   // Compute next disbursement timestamp (ms) for countdown display.
   const lastDisbursedAt = Number(safeBigInt(raw.last_disbursed_at ?? 0));
   const periodsDisbursed = Number(raw.periods_disbursed ?? 0);
@@ -1031,6 +1045,7 @@ function mapRecurringSchedule(raw: any): RecurringSchedule {
     interval: intervalSecs > 0 ? intervalSecs : undefined,
     totalDisbursed,
     status: mapRecurringStatus(raw.status),
+    kind,
     cliff:
       raw.cliff != null && Number(safeBigInt(raw.cliff)) > 0
         ? Number(safeBigInt(raw.cliff))
