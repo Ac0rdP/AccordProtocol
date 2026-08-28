@@ -389,9 +389,6 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "u32": 1
-                },
-                {
                   "string": "Add owner_d"
                 },
                 {
@@ -855,30 +852,6 @@
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
               "key": {
-                "symbol": "ACTIDS"
-              },
-              "durability": "persistent",
-              "val": {
-                "vec": [
-                  {
-                    "u64": "1"
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 518400
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-              "key": {
                 "symbol": "OWNERS"
               },
               "durability": "persistent",
@@ -946,7 +919,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 1
+                "bool": true
               }
             }
           },
@@ -976,7 +949,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 1
+                "bool": true
               }
             }
           },
@@ -1006,7 +979,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 1
+                "bool": true
               }
             }
           },
@@ -1036,7 +1009,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 1
+                "bool": true
               }
             }
           },
@@ -1066,7 +1039,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 1
+                "bool": true
               }
             }
           },
@@ -1096,7 +1069,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 2
+                "bool": true
               }
             }
           },
@@ -1124,14 +1097,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "approval_weight"
-                    },
-                    "val": {
-                      "u32": 2
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "approvals"
@@ -1286,14 +1251,6 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "approval_weight"
-                    },
-                    "val": {
-                      "u32": 2
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "approvals"
                     },
                     "val": {
@@ -1420,14 +1377,6 @@
                 "map": [
                   {
                     "key": {
-                      "symbol": "approval_weight"
-                    },
-                    "val": {
-                      "u32": 3
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "approvals"
                     },
                     "val": {
@@ -1481,9 +1430,6 @@
                         },
                         {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                        },
-                        {
-                          "u32": 1
                         }
                       ]
                     }
@@ -1552,7 +1498,7 @@
                         "symbol": "ACTCNT"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
