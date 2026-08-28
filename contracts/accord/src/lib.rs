@@ -105,6 +105,17 @@ pub enum ProposalKind {
     PauseRecurringPayment(u64),
     /// ResumeRecurringPayment(schedule_id)
     ResumeRecurringPayment(u64),
+    /// ModifyRecurringPayment(params)
+    ModifyRecurringPayment(ModifyRecurringParams),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ModifyRecurringParams {
+    pub schedule_id: u64,
+    pub new_amount: Option<i128>,
+    pub new_interval_secs: Option<u64>,
+    pub new_end_time: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -301,6 +312,18 @@ pub struct RecurringPaymentPausedEvent {
 pub struct RecurringPaymentResumedEvent {
     pub id: u64,
     pub caller: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPaymentModifiedEvent {
+    pub schedule_id: u64,
+    pub previous_amount: i128,
+    pub new_amount: i128,
+    pub previous_interval: u64,
+    pub new_interval: u64,
+    pub previous_end_time: u64,
+    pub new_end_time: u64,
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -2546,6 +2569,51 @@ impl AccordContract {
                     },
                 );
             }
+            ProposalKind::ModifyRecurringPayment(params) => {
+                let mut schedule = read_recurring_payment(&env, params.schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
+                }
+
+                let previous_amount = schedule.amount;
+                let previous_interval = schedule.interval_secs;
+                let previous_end_time = schedule.end_time;
+
+                if let Some(amt) = params.new_amount {
+                    if amt < MIN_AMOUNT {
+                        return Err(ContractError::InvalidAmount);
+                    }
+                    schedule.amount = amt;
+                }
+                if let Some(inv) = params.new_interval_secs {
+                    if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&inv) {
+                        return Err(ContractError::InvalidInterval);
+                    }
+                    schedule.interval_secs = inv;
+                }
+                if let Some(end_t) = params.new_end_time {
+                    if end_t <= schedule.start_time {
+                        return Err(ContractError::InvalidDeadline);
+                    }
+                    schedule.end_time = end_t;
+                }
+
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_mod"),),
+                    RecurringPaymentModifiedEvent {
+                        schedule_id: params.schedule_id,
+                        previous_amount,
+                        new_amount: schedule.amount,
+                        previous_interval,
+                        new_interval: schedule.interval_secs,
+                        previous_end_time,
+                        new_end_time: schedule.end_time,
+                    },
+                );
+            }
         }
 
         proposal.status = ProposalStatus::Executed;
@@ -2844,6 +2912,91 @@ impl AccordContract {
         let id = read_next_id(&env);
 
         let p_kind = ProposalKind::ResumeRecurringPayment(schedule_id);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: p_kind,
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Ops,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Ops,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+            },
+        );
+
+        Ok(id)
+    }
+
+    pub fn create_modify_recurring_proposal(
+        env: Env,
+        proposer: Address,
+        schedule_id: u64,
+        new_amount: Option<i128>,
+        new_interval_secs: Option<u64>,
+        new_end_time: Option<u64>,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner_and_weight(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        let schedule = read_recurring_payment(&env, schedule_id)?;
+        let status = derive_recurring_status(&env, &schedule);
+        if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+            return Err(ContractError::ScheduleTerminal);
+        }
+
+        if let Some(amt) = new_amount {
+            if amt < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+        }
+        if let Some(inv) = new_interval_secs {
+            if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&inv) {
+                return Err(ContractError::InvalidInterval);
+            }
+        }
+        if let Some(end_t) = new_end_time {
+            if end_t <= schedule.start_time {
+                return Err(ContractError::InvalidDeadline);
+            }
+        }
+
+        validate_description(&description)?;
+        validate_deadline(&env, deadline)?;
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let p_kind = ProposalKind::ModifyRecurringPayment(ModifyRecurringParams {
+            schedule_id,
+            new_amount,
+            new_interval_secs,
+            new_end_time,
+        });
 
         let proposal = Proposal {
             id,
