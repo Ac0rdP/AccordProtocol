@@ -8295,5 +8295,68 @@ fn recurring_disbursement_attributes_spent_to_schedule_proposer() {
     assert_eq!(tracker_after.spent, amount);
 }
 
+// ── Issue #456: Error Variants and Checked Schedule Arithmetic ──────────────
+
+#[test]
+fn recurring_payment_error_variants_and_checked_arithmetic() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // 1. Non-existent schedule returns RecurringPaymentNotFound
+    assert_eq!(
+        client.try_disburse_recurring(&999_u64),
+        Err(Ok(ContractError::RecurringPaymentNotFound))
+    );
+
+    // 2. Creation with invalid interval (below MIN_INTERVAL_SECS = 60) returns InvalidInterval
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_a,
+            &recipient,
+            &token_client.address,
+            &1_000_000_i128,
+            &10_u64, // invalid < 60
+            &NOW,
+            &(NOW + 86400),
+            &0_u64,
+            &10_000_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Bad interval"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::InvalidInterval))
+    );
+
+    // 3. Disburse before interval elapses returns RecurringIntervalNotElapsed
+    let interval = 3600_u64;
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &1_000_000_i128,
+        &interval,
+        &NOW,
+        &(NOW + 86400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Interval test"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    // Attempt disburse before due_at (due_at = NOW + interval)
+    set_timestamp(&env, NOW + 100);
+    assert_eq!(
+        client.try_disburse_recurring(&1_u64),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
+    );
+}
+
+
 
 
