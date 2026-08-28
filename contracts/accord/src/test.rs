@@ -6522,4 +6522,42 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
 }
 
+// ─── Recurring schedule terminal-status guards ─────────────────────────────
+
+#[test]
+fn cancelled_recurring_schedule_cannot_disburse() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    let id = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+        &60,
+        &5,
+        &str(&env, "Cancelled schedule"),
+    );
+
+    client.cancel_recurring_schedule(&owner_a, &id);
+
+    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
+}
+
+#[test]
+fn completed_recurring_schedule_cannot_disburse() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    let id = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+        &60,
+        &1,
+        &str(&env, "One-off schedule"),
+    );
+
+    // First disburse should succeed and mark Completed (occurrences == 1)
+    client.disburse_recurring(&id);
+
+    // A subsequent disburse must be rejected.
+    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
+}
+
 

@@ -109,6 +109,27 @@ pub struct ProposalCreatedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub enum RecurringStatus {
+    Active,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringSchedule {
+    pub id: u64,
+    pub proposer: Address,
+    pub transfers: Vec<Transfer>,
+    pub interval_secs: u64,
+    pub last_disbursed_at: u64,
+    pub remaining_occurrences: u32,
+    pub status: RecurringStatus,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct ProposalApprovedEvent {
     pub id: u64,
     pub approver: Address,
@@ -259,6 +280,15 @@ fn next_id_key() -> Symbol {
 
 fn proposal_key(id: u64) -> (Symbol, u64) {
     (symbol_short!("PROP"), id)
+}
+
+// Recurring schedules
+fn recurring_next_key() -> Symbol {
+    symbol_short!("RNEXT")
+}
+
+fn recurring_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("RSCH"), id)
 }
 
 fn approval_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
@@ -462,6 +492,38 @@ fn read_next_id(env: &Env) -> u64 {
 fn write_next_id(env: &Env, id: u64) {
     env.storage().instance().set(&next_id_key(), &id);
     bump_instance(env);
+}
+
+fn read_recurring_next_id(env: &Env) -> u64 {
+    let id = env
+        .storage()
+        .instance()
+        .get(&recurring_next_key())
+        .unwrap_or(1_u64);
+    bump_instance(env);
+    id
+}
+
+fn write_recurring_next_id(env: &Env, id: u64) {
+    env.storage().instance().set(&recurring_next_key(), &id);
+    bump_instance(env);
+}
+
+fn read_recurring_schedule(env: &Env, id: u64) -> Result<RecurringSchedule, ContractError> {
+    let key = recurring_key(id);
+    let s: RecurringSchedule = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ContractError::ProposalNotFound)?;
+    bump_persistent(env, &key);
+    Ok(s)
+}
+
+fn write_recurring_schedule(env: &Env, s: &RecurringSchedule) {
+    let key = recurring_key(s.id);
+    env.storage().persistent().set(&key, s);
+    bump_persistent(env, &key);
 }
 
 fn read_proposal(env: &Env, id: u64) -> Result<Proposal, ContractError> {
@@ -843,6 +905,92 @@ impl AccordContract {
             },
         );
 
+        Ok(())
+    }
+
+    /// Create a recurring schedule for periodic disbursements.
+    pub fn create_recurring_schedule(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        interval_secs: u64,
+        occurrences: u32,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner_and_weight(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        if transfers.len() == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        for transfer in transfers.iter() {
+            if transfer.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            validate_token(&env, &transfer.token)?;
+            if transfer.to == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+        if occurrences == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let id = read_recurring_next_id(&env);
+        let next = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_recurring_next_id(&env, next);
+
+        let schedule = RecurringSchedule {
+            id,
+            proposer: proposer.clone(),
+            transfers: transfers.clone(),
+            interval_secs,
+            last_disbursed_at: 0,
+            remaining_occurrences: occurrences,
+            status: RecurringStatus::Active,
+            description,
+        };
+        write_recurring_schedule(&env, &schedule);
+        Ok(id)
+    }
+
+    /// Cancel a recurring schedule (owner-only action).
+    pub fn cancel_recurring_schedule(
+        env: Env,
+        caller: Address,
+        id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        require_owner_and_weight(&env, &caller)?;
+        let mut s = read_recurring_schedule(&env, id)?;
+        s.status = RecurringStatus::Cancelled;
+        write_recurring_schedule(&env, &s);
+        Ok(())
+    }
+
+    /// Disburse a recurring schedule (permissionless crank). Reject if schedule
+    /// is in a terminal status (Cancelled or Completed) or called too early.
+    pub fn disburse_recurring(env: Env, id: u64) -> Result<(), ContractError> {
+        let mut s = read_recurring_schedule(&env, id)?;
+        if !matches!(s.status, RecurringStatus::Active) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        let now = env.ledger().timestamp();
+        if s.last_disbursed_at != 0 && now < s.last_disbursed_at.saturating_add(s.interval_secs) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        s.last_disbursed_at = now;
+        if s.remaining_occurrences > 0 {
+            s.remaining_occurrences = s.remaining_occurrences.saturating_sub(1);
+        }
+        if s.remaining_occurrences == 0 {
+            s.status = RecurringStatus::Completed;
+        }
+        write_recurring_schedule(&env, &s);
         Ok(())
     }
 
