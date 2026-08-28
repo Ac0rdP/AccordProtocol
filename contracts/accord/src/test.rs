@@ -8122,3 +8122,133 @@ fn test_get_recurring_payments_paged() {
     assert_eq!(empty_page.len(), 0);
 }
 
+// ── Issue #458: Dual MAX_ACTIVE_RECURRING Cap Enforcement ────────────────────
+
+#[test]
+fn create_recurring_proposal_rejects_when_max_active_recurring_reached() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Fill MAX_ACTIVE_RECURRING slots (MAX_ACTIVE_RECURRING = 10)
+    for _ in 0..MAX_ACTIVE_RECURRING {
+        let create_id = client.create_recurring_proposal(
+            &owner_a,
+            &recipient,
+            &token_client.address,
+            &1_000_000_i128,
+            &3600_u64,
+            &NOW,
+            &(NOW + 86400),
+            &0_u64,
+            &10_000_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Fill slot"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        );
+        client.approve(&owner_a, &create_id);
+        client.approve(&owner_b, &create_id);
+        client.execute(&owner_c, &create_id);
+    }
+
+    assert_eq!(client.get_active_recurring_count(), MAX_ACTIVE_RECURRING);
+
+    // Creating 11th proposal fails at creation time
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_a,
+            &recipient,
+            &token_client.address,
+            &1_000_000_i128,
+            &3600_u64,
+            &NOW,
+            &(NOW + 86400),
+            &0_u64,
+            &10_000_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Exceed cap"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::TooManyActiveRecurring))
+    );
+}
+
+#[test]
+fn concurrent_create_recurring_proposals_rejected_at_execute_time() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Fill MAX_ACTIVE_RECURRING - 1 slots (9 slots filled)
+    for _ in 0..(MAX_ACTIVE_RECURRING - 1) {
+        let create_id = client.create_recurring_proposal(
+            &owner_a,
+            &recipient,
+            &token_client.address,
+            &1_000_000_i128,
+            &3600_u64,
+            &NOW,
+            &(NOW + 86400),
+            &0_u64,
+            &10_000_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Fill slot"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        );
+        client.approve(&owner_a, &create_id);
+        client.approve(&owner_b, &create_id);
+        client.execute(&owner_c, &create_id);
+    }
+
+    assert_eq!(client.get_active_recurring_count(), MAX_ACTIVE_RECURRING - 1);
+
+    // Create 2 proposals concurrently (both pass creation check since active count is 9 < 10)
+    let prop1 = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &1_000_000_i128,
+        &3600_u64,
+        &NOW,
+        &(NOW + 86400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Prop 1"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    let prop2 = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &1_000_000_i128,
+        &3600_u64,
+        &NOW,
+        &(NOW + 86400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Prop 2"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+
+    client.approve(&owner_a, &prop1);
+    client.approve(&owner_b, &prop1);
+    client.approve(&owner_a, &prop2);
+    client.approve(&owner_b, &prop2);
+
+    // First proposal executes successfully (active count becomes 10)
+    client.execute(&owner_c, &prop1);
+    assert_eq!(client.get_active_recurring_count(), MAX_ACTIVE_RECURRING);
+
+    // Second proposal execution is rejected at execute-time
+    assert_eq!(
+        client.try_execute(&owner_c, &prop2),
+        Err(Ok(ContractError::TooManyActiveRecurring))
+    );
+}
+
+

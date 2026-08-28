@@ -325,6 +325,9 @@ pub enum ContractError {
     RecurringPaymentNotFound = 32,
     RecurringPaymentNotDue = 33,
     RecurringPaymentComplete = 34,
+    RecurringPaymentInactive = 35,
+    RecurringIntervalNotElapsed = 36,
+    TooManyActiveRecurring = 37,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1501,6 +1504,11 @@ impl AccordContract {
         require_owner(&env, &proposer)?;
         require_not_frozen(&env)?;
 
+        let active = read_active_recurring_count(&env);
+        if active >= MAX_ACTIVE_RECURRING {
+            return Err(ContractError::TooManyActiveRecurring);
+        }
+
         validate_recurring_payment(
             &env, &recipient, amount, &token, interval, start, &cliff, &end, &cap,
         )?;
@@ -1527,11 +1535,23 @@ impl AccordContract {
             periods_disbursed: 0,
         };
         write_recurring_payment(&env, &schedule);
+        write_active_recurring_count(
+            &env,
+            active
+                .checked_add(1)
+                .ok_or(ContractError::ArithmeticError)?,
+        );
 
         Ok(id)
     }
 
     /// Disburses one due period for a recurring payment schedule.
+    ///
+    /// Non-retroactive pause/resume policy:
+    /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
+    /// When resumed, the schedule continues from its pre-pause `last_disbursed_at`, requiring
+    /// a full interval to elapse before the next disbursement. Missed periods during pause are
+    /// not retroactively granted.
     pub fn disburse_recurring(
         env: Env,
         caller: Address,
@@ -1542,11 +1562,17 @@ impl AccordContract {
         require_not_frozen(&env)?;
 
         let mut schedule = read_recurring_payment(&env, schedule_id)?;
+
+        // Paused schedules cannot disburse and must not mutate state or advance last_disbursed_at
+        if schedule.status == RecurringStatus::Paused {
+            return Err(ContractError::RecurringPaymentInactive);
+        }
+
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
         if now < due_at {
-            return Err(ContractError::RecurringPaymentNotDue);
+            return Err(ContractError::RecurringIntervalNotElapsed);
         }
         if let Some(end_at) = schedule.end {
             if due_at > end_at || now > end_at {
@@ -1575,6 +1601,23 @@ impl AccordContract {
         {
             return Err(ContractError::TransferFailed);
         }
+
+        // Attribute each disbursement to the schedule's original proposer in the spent tracker
+        let tracker = read_spent_tracker(&env, &schedule.proposer, &schedule.token);
+        let epoch = if tracker.epoch == 0 {
+            now
+        } else {
+            tracker.epoch
+        };
+        let spent = if now > epoch.saturating_add(SPENDING_WINDOW) {
+            schedule.amount
+        } else {
+            tracker
+                .spent
+                .checked_add(schedule.amount)
+                .ok_or(ContractError::ArithmeticError)?
+        };
+        write_spent_tracker(&env, &schedule.proposer, &schedule.token, &SpentTracker { spent, epoch });
 
         schedule.last_disbursed_at = now;
         schedule.total_disbursed = projected_total;
@@ -2637,181 +2680,6 @@ impl AccordContract {
         );
 
         Ok(id)
-    }
-
-    /// Executes a `Ready` proposal. For transfer proposals, tokens are sent to the recipient.
-    /// For governance proposals (AddOwner, RemoveOwner, ChangeThreshold), the corresponding
-    /// state change is applied. Only owners may execute.
-    ///
-    /// Enforces the time-lock delay: execution is blocked until `ready_at + time_lock_delay`
-    /// has elapsed.
-    pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
-        executor.require_auth();
-        require_owner(&env, &executor)?;
-        require_not_frozen(&env)?;
-
-        let mut schedule = read_recurring_payment(&env, schedule_id)?;
-        if schedule.status != RecurringStatus::Active {
-            return Err(ContractError::ScheduleNotActive);
-        }
-
-        let now = env.ledger().timestamp();
-        if now < schedule.start_time {
-            return Err(ContractError::DisbursementTooEarly);
-        }
-
-        if schedule.cliff_time > 0 && now < schedule.cliff_time {
-            return Err(ContractError::DisbursementTooEarly);
-        }
-
-        // Time-lock enforcement.
-        let time_lock_delay: u64 = env.storage().instance().get(&timelock_key()).unwrap_or(0);
-        if time_lock_delay > 0 {
-            let now = env.ledger().timestamp();
-            if now < proposal.ready_at.saturating_add(time_lock_delay) {
-                return Err(ContractError::TimeLockActive);
-            }
-            write_recurring_payment(&env, &schedule);
-            return Err(ContractError::ScheduleEnded);
-        }
-
-        let claimable = match schedule.kind {
-            RecurringKind::FixedAmountPerPeriod => {
-                if schedule.last_disbursed_at > 0 && now < schedule.last_disbursed_at.saturating_add(schedule.interval_secs) {
-                    return Err(ContractError::DisbursementTooEarly);
-                }
-                let mut amt = schedule.amount;
-                if schedule.total_cap > 0 {
-                    let remaining = schedule.total_cap.saturating_sub(schedule.total_disbursed);
-                    if remaining <= 0 {
-                        schedule.status = RecurringStatus::Completed;
-                        let active = read_active_recurring_count(&env);
-                        if active > 0 {
-                            write_active_recurring_count(&env, active - 1);
-                        }
-                        write_recurring_payment(&env, &schedule);
-                        return Err(ContractError::ScheduleEnded);
-                    }
-                    if amt > remaining {
-                        amt = remaining;
-                    }
-                }
-                amt
-            }
-            ProposalKind::ChangeThreshold(new_threshold) => {
-                env.storage()
-                    .instance()
-                    .set(&threshold_key(), new_threshold);
-                bump_instance(&env);
-            }
-        };
-
-        if claimable <= 0 {
-            return Err(ContractError::DisbursementTooEarly);
-        }
-
-        let token_client = token::Client::new(&env, &schedule.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &schedule.recipient,
-            &claimable,
-        );
-
-        schedule.total_disbursed = schedule.total_disbursed.saturating_add(claimable);
-        schedule.last_disbursed_at = now;
-
-        if schedule.total_cap > 0 && schedule.total_disbursed >= schedule.total_cap {
-            schedule.status = RecurringStatus::Completed;
-            let active = read_active_recurring_count(&env);
-            if active > 0 {
-                write_active_recurring_count(&env, active - 1);
-            }
-        } else if schedule.end_time > 0 && now >= schedule.end_time {
-            schedule.status = RecurringStatus::Completed;
-            let active = read_active_recurring_count(&env);
-            if active > 0 {
-                write_active_recurring_count(&env, active - 1);
-            }
-        }
-
-        write_recurring_payment(&env, &schedule);
-
-        env.events().publish(
-            (symbol_short!("r_disb"),),
-            RecurringPaymentDisbursedEvent {
-                id: schedule.id,
-                recipient: schedule.recipient.clone(),
-                amount: claimable,
-                total_disbursed: schedule.total_disbursed,
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Bulk-sweeps a batch of proposals by counting which IDs currently derive
-    /// to `Expired` and refreshing the active-proposal counter if needed.
-    /// Expired status is derived at read time, so no per-proposal write-back is
-    /// required here. Non-existent IDs and non-expired proposals are skipped.
-    /// Only owners may call this function.
-    ///
-    /// Returns the number of proposals actually swept.
-    pub fn cancel_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
-        caller.require_auth();
-        require_owner(&env, &caller)?;
-
-        let mut swept: u32 = 0;
-
-        for id in ids.iter() {
-            let proposal = match read_proposal(&env, id) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            if matches!(derive_status(&env, &proposal), ProposalStatus::Expired) {
-                swept = swept.saturating_add(1);
-            }
-        }
-
-        match schedule.kind {
-            RecurringKind::FixedAmountPerPeriod => {
-                if schedule.last_disbursed_at > 0 && now < schedule.last_disbursed_at.saturating_add(schedule.interval_secs) {
-                    return Ok(0);
-                }
-                let mut amt = schedule.amount;
-                if schedule.total_cap > 0 {
-                    let remaining = schedule.total_cap.saturating_sub(schedule.total_disbursed);
-                    if remaining <= 0 {
-                        return Ok(0);
-                    }
-                    if amt > remaining {
-                        amt = remaining;
-                    }
-                }
-                Ok(amt)
-            }
-            RecurringKind::LinearVesting => {
-                if schedule.end_time <= schedule.start_time || schedule.total_cap <= 0 {
-                    return Ok(0);
-                }
-                let total_duration = schedule.end_time - schedule.start_time;
-                let elapsed = if now >= schedule.end_time {
-                    total_duration
-                } else {
-                    now - schedule.start_time
-                };
-                let vested = (schedule.total_cap as u128)
-                    .checked_mul(elapsed as u128)
-                    .unwrap_or(0)
-                    / (total_duration as u128);
-                let vested = vested as i128;
-                let claimable = vested.saturating_sub(schedule.total_disbursed);
-                if claimable <= 0 {
-                    return Ok(0);
-                }
-                Ok(claimable)
-            }
-        }
     }
 
     /// Returns a single recurring payment schedule by ID with a freshly derived status.
