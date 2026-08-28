@@ -8488,6 +8488,61 @@ fn pause_and_resume_recurring_payment_proposals() {
     );
 }
 
+// ── Issue #452: Cancel Recurring Payment Proposal Kind ──
+
+#[test]
+fn cancel_recurring_payment_proposal_transitions_to_cancelled() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    let interval = 3600_u64;
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Schedule for cancel test"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    let schedule_id = 1_u64;
+    assert_eq!(client.get_recurring_payment(&schedule_id).status, RecurringStatus::Active);
+
+    // Create and execute Cancel proposal
+    let cancel_prop_id = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &str(&env, "Cancel schedule 1"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_prop_id);
+    client.approve(&owner_b, &cancel_prop_id);
+    client.execute(&owner_c, &cancel_prop_id);
+
+    assert_eq!(client.get_recurring_payment(&schedule_id).status, RecurringStatus::Cancelled);
+
+    assert_eq!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_a,
+            &schedule_id,
+            &str(&env, "Cancel again"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ScheduleAlreadyCancelled))
+    );
+}
+
 
 
 

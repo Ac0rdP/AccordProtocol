@@ -2481,8 +2481,12 @@ impl AccordContract {
             }
             ProposalKind::CancelRecurringPayment(schedule_id) => {
                 let mut schedule = read_recurring_payment(&env, *schedule_id)?;
-                if schedule.status == RecurringStatus::Cancelled {
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled {
                     return Err(ContractError::ScheduleAlreadyCancelled);
+                }
+                if status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
                 }
 
                 if schedule.status == RecurringStatus::Active || schedule.status == RecurringStatus::Paused {
@@ -2700,8 +2704,12 @@ impl AccordContract {
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
-        if schedule.status == RecurringStatus::Cancelled {
+        let status = derive_recurring_status(&env, &schedule);
+        if status == RecurringStatus::Cancelled {
             return Err(ContractError::ScheduleAlreadyCancelled);
+        }
+        if status == RecurringStatus::Completed {
+            return Err(ContractError::ScheduleTerminal);
         }
 
         validate_description(&description)?;
