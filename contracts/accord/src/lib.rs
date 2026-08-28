@@ -1655,6 +1655,11 @@ impl AccordContract {
         read_spending_limit(&env, &owner, &token)
     }
 
+    /// Returns the current spent tracker for an owner and token.
+    pub fn get_spent_tracker(env: Env, owner: Address, token: Address) -> SpentTracker {
+        read_spent_tracker(&env, &owner, &token)
+    }
+
     /// Creates a proposal to add a new owner to the multisig.
     pub fn create_add_owner_proposal(
         env: Env,
