@@ -180,4 +180,40 @@ describe("ProposalCard", () => {
     expect(screen.getByText("Owner GOWNER...R111")).toBeTruthy();
     expect(screen.getByText("New weight: 25")).toBeTruthy();
   });
+
+  describe("All-weights-equal-to-1 regression suite", () => {
+    test("approval count and progress match flat count expectations when all weights are 1", () => {
+      renderProposalCard({
+        proposal: baseProposal({
+          approvals: 1,
+          threshold: 2,
+          approvalWeight: 1,
+          quorumWeight: 2,
+          totalWeight: 3,
+          status: "pending",
+        }),
+      });
+
+      expect(screen.getByText("1 / 2 weight")).toBeTruthy();
+      expect(screen.getByText("Approve")).toBeTruthy();
+      expect(screen.queryByText("Execute")).toBeNull();
+    });
+
+    test("transitions to Ready and shows Execute when approval weight reaches quorum weight in flat 1-weight setup", () => {
+      renderProposalCard({
+        proposal: baseProposal({
+          approvals: 2,
+          threshold: 2,
+          approvalWeight: 2,
+          quorumWeight: 2,
+          totalWeight: 3,
+          status: "ready",
+        }),
+      });
+
+      expect(screen.getByText("2 / 2 weight")).toBeTruthy();
+      expect(screen.getByText("Execute")).toBeTruthy();
+      expect(screen.queryByText("Approve")).toBeNull();
+    });
+  });
 });
