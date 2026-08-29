@@ -130,6 +130,26 @@ pub struct RecurringSchedule {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct RecurringPayment {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount_per_period: i128,
+    pub interval_secs: u64,
+    pub start_time: u64,
+    pub end_time: Option<u64>,
+    pub cliff_time: Option<u64>,
+    pub total_cap: Option<i128>,
+    pub last_disbursed_at: u64,
+    pub total_disbursed: i128,
+    pub periods_disbursed: u32,
+    pub status: RecurringStatus,
+    pub proposer: Address,
+    pub category: ProposalCategory,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct ProposalApprovedEvent {
     pub id: u64,
     pub approver: Address,

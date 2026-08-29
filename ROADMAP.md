@@ -8,7 +8,34 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 
 ---
 
-## v0.2.0 — Governance and usability
+## v0.2.0 — Weighted governance
+
+**Theme:** Transform voting from flat approval counts to per-owner weighted governance, allowing multisigs with asymmetric voting power and governance versioning.
+
+**Targeted features:**
+
+- Per-owner voting weights (each owner can have a distinct weight, not just a binary vote)
+- Quorum weight calculation (proposals require a threshold expressed as total weight, not approval count)
+- Governance versioning and migration (support upgrading flat multisigs to weighted)
+- Weight history and changelog (track ownership and weight changes for audit)
+- Weighted approval visibility (display cumulative weight and quorum progress on proposals)
+
+**Acceptance criteria:**
+
+- [ ] `initialize` and weighted `set_owner_weight` functions work correctly with per-owner weights
+- [ ] `create_proposal` accepts a quorum_weight and correctly snapshots total weight at creation
+- [ ] `approve` and `revoke` correctly track cumulative weight and transition proposal status based on weight
+- [ ] `migrate_to_weighted_governance` migrates a flat contract to weighted (assigning weight=1 to all owners)
+- [ ] `is_governance_migrated`, `get_total_weight`, and `get_owner_weight` queries work correctly
+- [ ] Proposal events (`ProposalCreatedEvent`, `ProposalApprovedEvent`) include weight fields
+- [ ] All contract tests pass (`stellar contract test`)
+- [ ] Frontend displays cumulative weight, quorum weight, and total weight in proposal details
+- [ ] Frontend lint and build pass (`npm run lint && npm run build`)
+- [ ] GLOSSARY.md defines quorum weight, total weight, weighted approval, and governance version
+
+---
+
+## v0.3.0 — Governance and usability
 
 **Theme:** Expand the proposal lifecycle so multisigs can govern themselves (add/remove owners, change thresholds) and make the frontend more usable for day-to-day treasury operations.
 
@@ -77,3 +104,8 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 - [ ] Documentation covers all contract functions, frontend workflows, and deployment steps
 - [ ] No known critical or high-severity vulnerabilities remain open
 - [ ] The project has at least three external contributors who have merged PRs
+
+
+
+
+

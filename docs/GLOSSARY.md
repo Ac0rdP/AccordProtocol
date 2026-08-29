@@ -119,3 +119,19 @@ See also: [Architecture §3](./ARCHITECTURE.md#3-storage-layout-soroban).
 **Deadline**
 A deadline is the Unix timestamp (seconds since epoch) after which a proposal can no longer be approved or executed, and is instead treated as `Expired`. A new proposal's deadline must be in the future and within a bounded window, and the contract checks it against the current ledger's timestamp rather than wall-clock time on any one machine.
 See also: [Contract API — create_proposal](./CONTRACT_API.md#create_proposal).
+
+**Governance version**
+Governance version marks whether a deployed Accord contract uses flat (M-of-N approval count) or weighted (per-owner weight sum) voting logic. The `is_governance_migrated` query returns `false` for flat and `true` for weighted. A multisig deployed before weighted governance was added must call `migrate_to_weighted_governance` to transition to the new model.
+See also: [DEPLOYMENT.md — Migrating to Weighted Governance](./DEPLOYMENT.md#migrating-to-weighted-governance).
+
+**Quorum weight**
+Quorum weight is the minimum total voting weight required for a proposal to transition from `Pending` to `Ready`, enabling execution. Unlike the flat M-of-N threshold (an approval count), quorum weight is expressed as a sum of per-owner weights and is snapshotted when the proposal is created so that ownership or weight changes after creation do not retroactively alter the proposal's approval requirement.
+See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle).
+
+**Total weight**
+Total weight is the sum of all current owner weights in the contract. It determines the ceiling for all future quorum weights — a proposed quorum weight must never exceed total weight. When owners are added or removed, or their individual weights are changed, total weight updates to reflect the new ownership composition.
+See also: [Deployment — Migrating to Weighted Governance](./DEPLOYMENT.md#migrating-to-weighted-governance).
+
+**Weighted approval**
+Weighted approval is the voting model where each owner has a distinct voting weight (rather than each owner having an equal vote), and a proposal reaches quorum when the sum of approving owners' weights meets or exceeds the proposal's quorum_weight. This enables asymmetric governance structures, such as giving founders larger voting power while still requiring multisig approval.
+See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle).
