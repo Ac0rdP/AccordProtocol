@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`GovernanceImpactBadge > renders critical impact badge 1`] = `
+<span
+  aria-label="Governance Impact: critical"
+  class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-red-500/10 text-red-400 border-red-500/20"
+  role="status"
+>
+  Governance Impact: critical
+</span>
+`;
+
+exports[`GovernanceImpactBadge > renders high impact badge 1`] = `
+<span
+  aria-label="Governance Impact: high"
+  class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-orange-500/10 text-orange-400 border-orange-500/20"
+  role="status"
+>
+  Governance Impact: high
+</span>
+`;
+
+exports[`GovernanceImpactBadge > renders low impact badge 1`] = `
+<span
+  aria-label="Governance Impact: low"
+  class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-blue-500/10 text-blue-400 border-blue-500/20"
+  role="status"
+>
+  Governance Impact: low
+</span>
+`;
+
+exports[`GovernanceImpactBadge > renders medium impact badge 1`] = `
+<span
+  aria-label="Governance Impact: medium"
+  class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/20"
+  role="status"
+>
+  Governance Impact: medium
+</span>
+`;
