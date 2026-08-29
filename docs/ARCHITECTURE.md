@@ -400,6 +400,94 @@ The execute flow is triggered when an owner clicks Execute on a proposal that ha
 
 > **Most common failure point:** The Accord contract's token balance may be insufficient to cover the transfer amount. The token contract's `transfer` call fails and the execute call reverts with `TransferFailed`. Frontends should check the contract's token balance before enabling the execute button.
 
+### 5.3 Weighted Approve & Execute Flow
+
+The weighted flow differs from the flat model in two key ways: each approval contributes the owner's individual voting weight rather than a count of 1, and execution re-validates that the accumulated approval weight meets the snapshotted quorum weight. The approve step records the approver's effective (delegation-aware) weight so that `revoke` can later reverse precisely the same amount.
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract
+       |                |               |               |               |               |
+       | (1) Click      |               |               |               |               |
+       |    Approve      |               |               |               |               |
+       |--------------->|               |               |               |               |
+       |                | (2) Build tx  |               |               |               |
+       |                |-------------->|               |               |               |
+       |                |               | (3) Sign      |               |               |
+       |                |               |-------------->|               |               |
+       |                |               |               | (4) simulate  |               |
+       |                |               |               |   transaction |               |
+       |                |               |               |-------------->|               |
+       |                |               |               | (5) OK        |               |
+       |                |               |               |<--------------|               |
+       |                |               |               | (6) submit    |               |
+       |                |               |               |-------------->|               |
+       |                |               |               |               | (7) approve() |
+       |                |               |               |               |-------------->|
+       |                |               |               |               |               |  require_auth
+       |                |               |               |               |               |  load_owner_weight
+       |                |               |               |               |               |  read_proposal
+       |                |               |               |               |               |  derive_status
+       |                |               |               |               |               |  read_approval
+       |                |               |               |               |               |  compute_effective_weight
+       |                |               |               |               |               |  write_approval_weight
+       |                |               |               |               |               |  add weight to approvals
+       |                |               |               |               |               |  check approvals >= quorum
+       |                |               |               |               |               |  set ready_at
+       |                |               |               |               |               |  write_proposal
+       |                |               |               |               |               |  emit approved
+       |                |               |               |               |<--------------| (8) result
+       |                |               |               |<--------------|               |
+       |                |<--------------|               |               |               |
+       |<---------------|               |               |               |               |
+       | (9) re-fetch   |               |               |               |               |
+       |     proposal   |               |               |               |               |
+```
+
+> **Weighted key difference:** The flat approve flow checks `approvals >= threshold` (where each approval counts as 1). The weighted flow loads the approver's raw weight from the `OWNERS` map, computes effective (delegation-aware) weight, stores that exact value for later revocation, and adds it to the cumulative `approval_weight`. The proposal transitions to `Ready` when `approval_weight >= quorum_weight` — the quorum weight was snapshotted at proposal creation from the contract's total weight threshold.
+
+The weighted execute flow mirrors the flat flow's simulate-and-submit pattern, but re-validates the quorum at execution time against the snapshotted `quorum_weight` rather than an owner count:
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract   Token Contract
+       |                |               |               |               |               |               |
+       | (1) Click      |               |               |               |               |               |
+       |    Execute     |               |               |               |               |               |
+       |--------------->|               |               |               |               |               |
+       |                | (2) Build tx  |               |               |               |               |
+       |                |-------------->|               |               |               |               |
+       |                |               | (3) Sign      |               |               |               |
+       |                |               |-------------->|               |               |               |
+       |                |               |               | (4) simulate  |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               | (5) OK        |               |               |
+       |                |               |               |<--------------|               |               |
+       |                |               |               | (6) submit    |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               |               | (7) execute() |               |
+       |                |               |               |               |-------------->|               |
+       |                |               |               |               |               | require_auth  |
+       |                |               |               |               |               | require_owner |
+       |                |               |               |               |               | read_proposal |
+       |                |               |               |               |               | derive_status |
+       |                |               |               |               |               | check Ready   |
+       |                |               |               |               |               | check approvals >=
+       |                |               |               |               |               |   quorum_weight|
+       |                |               |               |               |               | check timelock|
+       |                |               |               |               |               | (8) transfer  |
+       |                |               |               |               |               |-------------->|
+       |                |               |               |               |               |<--------------| OK
+       |                |               |               |               |               | status=Exec'd |
+       |                |               |               |               |               | emit executed |
+       |                |               |               |               |<--------------| (9) result    |
+       |                |               |               |<--------------|               |               |
+       |                |<--------------|               |               |               |               |
+       |<---------------|               |               |               |               |               |
+       | (10) re-fetch  |               |               |               |               |               |
+       |      proposal  |               |               |               |               |               |
+```
+
+> **Weighted key difference:** The flat execute flow checks `approvals >= threshold` (owner count). The weighted flow checks `proposal.approvals >= proposal.quorum_weight` — the quorum weight was snapshotted at proposal creation. If the contract's threshold has been changed since the proposal was created, the snapshotted quorum_weight is unaffected; the proposal's requirement is frozen at creation time.
+
 ## 6. Recurring & Scheduled Payments
 
 The contract supports automated, recurring payroll and token vesting schedules via the `CreateRecurringPayment` proposal kind. Once a recurring schedule is proposed and approved by the multisig owners, it is registered on-chain. Payouts are then disbursed incrementally according to the schedule's configuration.
