@@ -953,8 +953,69 @@ When calling contract functions from JavaScript, each parameter must be converte
 | `i128` | `ScVal::I128` | `nativeToScVal(BigInt(n), { type: 'i128' })` | `scValToNative(scval)` → JavaScript `BigInt` |
 | `String` | `ScVal::String` | `nativeToScVal(s, { type: 'string' })` | `scValToNative(scval)` → JavaScript `String` |
 | `bool` | `ScVal::Bool` | `nativeToScVal(b, { type: 'bool' })` | `scValToNative(scval)` → JavaScript `Boolean` |
-| `Proposal` | `ScVal::Map` | N/A (output only) | `scValToNative(scval)` → plain JavaScript object whose field names match the `Proposal` struct in [ARCHITECTURE.md §3](../ARCHITECTURE.md#3-storage-layout-soroban) |
+| `Proposal` | `ScVal::Map` | N/A (output only) | `scValToNative(scval)` → object with the fields below (see also [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-storage-layout-soroban)) |
+| `OwnerWeight` | `ScVal::Map` | N/A (output only) | `{ owner: "G…", weight: number }` |
+| `ProposalKind` | `ScVal::Vec` / enum | Built by the SDK when forming governance calls | Discriminated union — variants listed below |
 | `()` (unit) | `ScVal::Void` | N/A (no input) | `scValToNative(scval)` → `undefined` |
+
+### `Proposal` fields (weighted governance)
+
+Decoded `Proposal` maps include these weight-related fields alongside the rest of the proposal state:
+
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `quorum_weight` | `u32` | `ScVal::U32` | Absolute weight this proposal must accumulate to become `Ready`. Snapshotted from `THRESH` / `get_required_quorum_weight()` at creation. |
+| `approval_weight` | `u32` | `ScVal::U32` | Cumulative effective weight from owners who have approved so far. |
+| `approvals` | `u32` | `ScVal::U32` | Same running total as `approval_weight` (legacy field name retained for compatibility; both are updated together in `approve` / `revoke`). |
+| `kind` | `ProposalKind` | enum / nested vals | Action this proposal will perform when executed (see variants below). |
+
+```rust
+struct Proposal {
+    id: u64,
+    proposer: Address,
+    description: String,
+    deadline: u64,
+    approvals: u32,
+    approval_weight: u32,
+    status: ProposalStatus,
+    kind: ProposalKind,
+    ready_at: u64,
+    quorum_weight: u32,
+    category: ProposalCategory,
+}
+```
+
+### `ProposalKind` variants
+
+| Variant | Payload | Purpose |
+|---------|---------|---------|
+| `Transfer` | `Vec<Transfer>` | Multi-asset treasury transfer |
+| `AddOwner` | `(Address, u32)` | Add owner with initial weight |
+| `RemoveOwner` | `Address` | Remove an owner |
+| `ChangeThreshold` | `u32` | Change the quorum threshold (absolute weight) |
+| `SetSpendingLimit` | `(Address, Address, i128)` | Per-owner per-token spending limit |
+| `ChangeOwnerWeight` | `(Address /* target_owner */, u32 /* new_weight */)` | Update an existing owner's voting weight (must be ≥ 1; use `RemoveOwner` instead of zeroing) |
+| `CreateRecurringPayment` | `CreateRecurringParams` | Create a recurring payment schedule |
+| `CancelRecurringPayment` | `u64` | Cancel schedule by id |
+| `PauseRecurringPayment` | `u64` | Pause schedule by id |
+| `ResumeRecurringPayment` | `u64` | Resume a paused schedule |
+| `ModifyRecurringPayment` | `ModifyRecurringParams` | Adjust schedule parameters |
+
+```rust
+enum ProposalKind {
+    Transfer(Vec<Transfer>),
+    AddOwner(Address, u32),
+    RemoveOwner(Address),
+    ChangeThreshold(u32),
+    SetSpendingLimit(Address, Address, i128),
+    ChangeOwnerWeight(Address, u32),
+    CreateRecurringPayment(CreateRecurringParams),
+    CancelRecurringPayment(u64),
+    PauseRecurringPayment(u64),
+    ResumeRecurringPayment(u64),
+    ModifyRecurringPayment(ModifyRecurringParams),
+}
+```
 
 ---
 
