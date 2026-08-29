@@ -79,15 +79,18 @@ Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 ### Proposal Struct Fields
 
 ```
-id            u64
-proposer      Address
-to            Address
-amount        i128          (token's native unit — stroop for XLM-derived tokens)
-token         Address       (Soroban token contract)
-description   String        (max 300 chars)
-deadline      u64           (Unix timestamp)
-approvals     u32
-status        ProposalStatus
+id               u64
+proposer         Address
+description      String        (max 300 chars)
+deadline         u64           (Unix timestamp)
+approvals        u32           (cumulative approval weight; kept in sync with approval_weight)
+approval_weight  u32           (cumulative approval weight credited from approvers)
+status           ProposalStatus
+kind             ProposalKind  (Transfer | AddOwner | RemoveOwner | ChangeThreshold |
+                                SetSpendingLimit | ChangeOwnerWeight | recurring variants)
+ready_at         u64           (ledger time when quorum was first reached; 0 if not yet)
+quorum_weight    u32           (threshold snapshotted at proposal creation)
+category         ProposalCategory
 ```
 
 ### Key Naming Conventions
@@ -238,6 +241,54 @@ When an entry's TTL reaches zero the Stellar network **permanently deletes** it 
 - Deletion of the contract instance entry (`INIT`, `THRESH`, `NEXT`, `ACTCNT`, `TLOCK`) bricks the entire contract; a fresh deployment and re-initialisation is the only recovery.
 
 For long-lived multisigs, ensure at least one on-chain call touches the contract within every 30-day window (for example, a periodic `get_threshold` call) to keep the instance alive.
+
+## Weighted Governance Model
+
+Accord Protocol evolved from a flat M-of-N approval count into **weighted governance**: each owner carries an individual voting weight, proposals become `Ready` when accumulated approval weight meets a snapshotted quorum, and the contract maintains a total-weight counter that must always equal the sum of current owner weights.
+
+### Weighted data model
+
+| Concept | Where it lives | Meaning |
+|---------|----------------|---------|
+| Per-owner weight | Persistent `OWNERS` map (`Address → u32`) | Each registered owner's raw voting weight (`MIN_OWNER_WEIGHT`..=`MAX_OWNER_WEIGHT`) |
+| Total weight | Instance key `TWGT` (`u32`) | Running sum of all owner weights; updated on initialize, add/remove owner, and `ChangeOwnerWeight` |
+| Threshold / required quorum | Instance key `THRESH` (`u32`) | Absolute weight a **new** proposal must reach; also returned by `get_required_quorum_weight` |
+| Proposal quorum | `Proposal.quorum_weight` | Copy of the threshold at **proposal creation** — frozen for that proposal's lifetime |
+| Proposal approval progress | `Proposal.approvals` / `Proposal.approval_weight` | Cumulative effective weight from owners who have approved (delegation-aware at approve time) |
+| Per-approver contribution | Persistent `("APPR", id, owner)` weight | Weight credited when that owner approved, so `revoke` can subtract the same amount |
+
+Bounds enforced by the contract:
+
+- Per-owner weight: `1` … `100_000`
+- Max owners: `20` → theoretical max total weight `2_000_000`
+- Default single-owner cap for `ChangeOwnerWeight`: **50%** of resulting total weight (`MAX_SINGLE_OWNER_WEIGHT_PCT`)
+
+Read paths for operators and frontends: `get_owner_weight`, `get_owner_weights`, `get_total_weight`, `get_required_quorum_weight`, `get_proposal_approval_progress`.
+
+### Quorum computation and approval accumulation
+
+1. **At creation** — Every proposal-creation entrypoint reads the current threshold and stores it as `quorum_weight` on the new `Proposal`. It also emits `total_weight_at_creation` on the `created` event so auditors can reconstruct context even after later ownership changes. Changing `THRESH` afterward does **not** rewrite existing proposals' `quorum_weight`.
+
+2. **On approve** — The contract loads the approver's raw weight from `OWNERS`, computes **effective weight** (raw ± active delegations), records that value under `("APPR", id, owner)`, and adds it to both `approvals` and `approval_weight`.
+
+3. **Ready transition** — `derive_status` marks a proposal `Ready` when `approvals >= quorum_weight` (and the deadline has not passed). The same comparison gates `execute`.
+
+4. **On revoke** — The stored per-approver weight is subtracted from the cumulative totals so a weight change after approve cannot leave inconsistent counters.
+
+Invariant operators must preserve: **sum(`get_owner_weights`) == `get_total_weight`**. Governance executions that would leave any active proposal's `quorum_weight` unreachable (`WouldBreakQuorum`) are rejected.
+
+### How this differs from flat M-of-N
+
+| | Flat M-of-N (original) | Weighted governance (current) |
+|--|------------------------|-------------------------------|
+| Owner vote | Every approval counts as `1` | Each approval contributes that owner's weight |
+| Threshold meaning | “M distinct owners must approve” | “At least `threshold` weight must approve” |
+| Owner storage | List of addresses | Map of address → weight |
+| Ready condition | `approval_count >= M` | `approval_weight >= quorum_weight` |
+| Changing power | Add/remove owners only | Also `ChangeOwnerWeight(target, new_weight)` |
+| Equal weights | Native model | Still supported: set every weight to `1` and `threshold = M` — behaviour matches classical M-of-N |
+
+**Equal weights reduce to the old model.** A 2-of-3 multisig with weights `[1, 1, 1]` and threshold `2` still needs any two owners. Skewed weights (for example `[5, 3, 2]` with threshold `6`) let larger stakeholders carry more influence while still requiring coalition approvals when no single owner meets quorum alone. Legacy deployments that predate weights can call `migrate_to_weighted_governance` once (after upgrading WASM) to assign weight `1` to every existing owner.
 
 ## 4. Proposal Lifecycle
 
