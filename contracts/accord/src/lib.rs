@@ -326,6 +326,39 @@ pub struct RecurringPaymentModifiedEvent {
     pub new_end_time: u64,
 }
 
+/// Emitted when a recurring payment schedule is created through the execution
+/// of a `CreateRecurringPayment` proposal. Carries the full set of schedule
+/// parameters so that indexers and frontends can reconstruct the schedule from
+/// the event log alone without querying contract state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPaymentCreatedEvent {
+    /// The new schedule's ID, assigned sequentially at creation time.
+    pub id: u64,
+    /// The owner whose proposal was executed to create this schedule.
+    pub proposer: Address,
+    /// The address that will receive each period's disbursement.
+    pub recipient: Address,
+    /// The token contract address used for disbursements.
+    pub token: Address,
+    /// The amount transferred per period.
+    pub amount: i128,
+    /// The minimum number of seconds that must elapse between disbursements.
+    pub interval_secs: u64,
+    /// The earliest timestamp at which the first disbursement may occur.
+    pub start_time: u64,
+    /// Optional hard end timestamp; disbursements after this point are rejected.
+    pub end_time: u64,
+    /// Optional cliff timestamp; the first disbursement is not due until this
+    /// time even if `start_time` has already passed.
+    pub cliff_time: u64,
+    /// Optional cumulative cap; disbursements stop once `total_disbursed` would
+    /// exceed this value.
+    pub total_cap: i128,
+    /// The schedule's disbursement kind (fixed-amount or linear-vesting).
+    pub kind: RecurringKind,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1591,6 +1624,20 @@ impl AccordContract {
     }
 
     /// Disburses one due period for a recurring payment schedule.
+    ///
+    /// **Catch-up policy: one period per call.**
+    /// If multiple intervals have elapsed since the last disbursement (e.g.
+    /// because no one cranked the schedule, or because it was paused for
+    /// several intervals), each call to `disburse_recurring` transfers exactly
+    /// one period's amount. The caller must invoke this function once per
+    /// missed period to "catch up". The alternative — disbursing all missed
+    /// periods in a single call — was rejected because it would allow a single
+    /// transaction to drain an arbitrarily large share of the contract's
+    /// treasury, making the disbursement cost unpredictable and opening a
+    /// denial-of-service vector if the accumulated debt is large enough to
+    /// exhaust the transaction's resource budget. One-period-per-call keeps
+    /// each call's cost bounded and gives the multisig owners the opportunity
+    /// to cancel or pause a misbehaving schedule between periods.
     ///
     /// Non-retroactive pause/resume policy:
     /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
