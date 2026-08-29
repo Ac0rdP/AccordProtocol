@@ -40,8 +40,11 @@ jobs:
         run: |
           stellar contract build --release
 
-      - name: Run recurring-payment tests
-        run: cargo test -- recurring -- --nocapture
+      - name: Run contract test suite (flat weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=flat cargo test -- --nocapture
+
+      - name: Run contract test suite (skewed weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=skewed cargo test -- --nocapture
 
       - name: Generate wasm-manifest.json
         run: |
