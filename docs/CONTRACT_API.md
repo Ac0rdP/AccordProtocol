@@ -206,6 +206,11 @@ Returns proposal progress values needed for frontend rendering.
 
 **Errors:** `NotInitialized`, `ProposalNotFound`
 
+```js
+const [approvals, quorum, totalWeight] = await contract.call("get_proposal_approval_progress", nativeToScVal(BigInt(proposalId), { type: "u64" }));
+// approvals: Number, quorum: Number, totalWeight: Number
+```
+
 ---
 
 ## `get_proposals_paged`
@@ -246,6 +251,10 @@ fn get_total_weight(env: Env) -> u32
 
 Returns the current total-weight counter — the sum of all registered owners' individual voting weights. This value is updated automatically when owners are added, removed, or re-weighted. Read-only; no authorization required.
 
+```js
+const totalWeight = await contract.call("get_total_weight"); // Number
+```
+
 ---
 
 ## `get_required_quorum_weight`
@@ -259,6 +268,10 @@ Returns the quorum weight a newly created proposal would currently be assigned �
 Frontends should call this before rendering a "create proposal" screen so they can display the required quorum to the user before any transaction is submitted. The function is read-only and has no side effects.
 
 **Errors:** `NotInitialized`
+
+```js
+const quorumWeight = await contract.call("get_required_quorum_weight"); // Number
+```
 
 ---
 
@@ -291,6 +304,10 @@ fn get_owner_weight(env: Env, owner: Address) -> Result<u32, ContractError>
 Returns the current voting weight for `owner`. The weight reflects the owner's individual contribution to quorum calculations. Read-only; no authorization required.
 
 **Errors:** `NotInitialized`, `OwnerNotFound` (if `owner` is not a current owner)
+
+```js
+const weight = await contract.call("get_owner_weight", nativeToScVal(owner, { type: "address" })); // Number
+```
 
 ---
 
@@ -462,6 +479,47 @@ await submitOwnerCall(
     "create_change_threshold_proposal",
     nativeToScVal(proposer, { type: "address" }),
     nativeToScVal(newThreshold, { type: "u32" }),
+    nativeToScVal(description, { type: "string" }),
+    nativeToScVal(BigInt(deadline), { type: "u64" }),
+  ),
+  proposerKeypair,
+);
+```
+
+### `create_change_weight_proposal`
+
+```rust
+fn create_change_weight_proposal(
+    env: Env,
+    proposer: Address,
+    target_owner: Address,
+    new_weight: u32,
+    description: String,
+    deadline: u64,
+) -> Result<u64, ContractError>
+```
+
+Proposes changing an existing owner's voting weight. The new weight must be within `[MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT]` and must not exceed the configured single-owner weight cap (default 50% of the resulting total weight). Zero is never a valid weight — use `create_remove_owner_proposal` instead. Returns the new proposal ID.
+
+| Parameter | Type | Constraints |
+|-----------|------|-------------|
+| `proposer` | `Address` | Must be an owner. Must authorize. |
+| `target_owner` | `Address` | Must be a current owner. |
+| `new_weight` | `u32` | `MIN_OWNER_WEIGHT` ≤ `new_weight` ≤ `MAX_OWNER_WEIGHT` |
+| `description` | `String` | 1–300 characters |
+| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+
+**Emits:** `("created",)` → `ProposalCreatedEvent` (proposal creation); on execution `("c_wgt",)` → `OwnerWeightChangedEvent`.
+
+**Errors:** `Unauthorized`, `ContractFrozen`, `OwnerNotFound`, `InvalidWeight`, `WeightBelowMinimum`, `SingleOwnerWeightCapExceeded`, `EmptyDescription`, `DescriptionTooLong`, `InvalidDeadline`, `InvalidDuration`, `TooManyActiveProposals`
+
+```js
+await submitOwnerCall(
+  contract.call(
+    "create_change_weight_proposal",
+    nativeToScVal(proposer, { type: "address" }),
+    nativeToScVal(targetOwner, { type: "address" }),
+    nativeToScVal(newWeight, { type: "u32" }),
     nativeToScVal(description, { type: "string" }),
     nativeToScVal(BigInt(deadline), { type: "u64" }),
   ),
@@ -921,13 +979,12 @@ The table below maps every `ContractError` discriminant to its cause and the rec
 | 26 | `ContractFrozen` | The contract's frozen flag is `true`. `create_proposal`, `create_add_owner_proposal`, `create_remove_owner_proposal`, `create_change_threshold_proposal`, and `execute` are all blocked while frozen. | The guardian must call `freeze` (already done if this error appears). Only `unfreeze` (requiring threshold co-signers) can restore normal operation. |
 | 27 | `NoGuardian` | `freeze` was called but no guardian address has been stored in the contract (the `GUARD` storage key is absent). | Call `set_guardian` with distinct owner co-signers whose combined weight reaches threshold. |
 | 28 | `SpendingLimitExceeded` | The proposer's aggregate amount for a token in `create_proposal` exceeds the per-owner spending limit stored for that `(owner, token)` pair. Raised only when a limit has been set; unrestricted owners are unaffected. | Lower the proposal amount so it fits under the limit, or raise/clear the limit via the spending-limit governance path before retrying. |
-| 34 | `WouldBreakQuorum` | A proposal creation or owner weight modification was rejected because total remaining weight would fall below threshold, or executing the weight change would leave an active (`Pending` or `Ready`) proposal's required quorum weight unreachable (`active_proposal.quorum_weight > new_total_weight`). | Lower the threshold first via `create_change_threshold_proposal`, wait for active proposals to complete or expire, or ensure remaining total weight is sufficient to satisfy all active proposal quorums. |
-
 | 29 | `InvalidWeight` | An owner weight supplied to `initialize` or `create_change_weight_proposal` is above the maximum allowed value (`MAX_OWNER_WEIGHT`). | Use a weight within the allowed range. |
 | 30 | `WeightBelowMinimum` | An owner weight supplied to `initialize` or `create_change_weight_proposal` is below the minimum allowed value (`MIN_OWNER_WEIGHT`). Zero is never a valid weight. | Use a positive weight. To revoke voting rights, use `create_remove_owner_proposal` instead of setting weight to zero. |
 | 31 | `SingleOwnerWeightCapExceeded` | A `ChangeOwnerWeight` proposal was rejected because the `new_weight` would give the `target_owner` a share of the resulting total weight greater than the configured maximum (default 50%). | Choose a lower `new_weight` that respects the cap, or have a quorum of owners deliberately raise the cap via `set_max_single_owner_weight_pct`. |
 | 32 | `TargetOwnerNoLongerExists` | A `ChangeOwnerWeight` proposal was executed, but the `target_owner` had been removed from the multisig between proposal creation and execution. | This is an expected guard for an edge case. The proposal has no effect. A new proposal would be needed to change the weight of a current owner. |
 | 33 | `AlreadyMigrated` | `migrate_to_weighted_governance` was called on a contract that already has per-owner weights, either from initialization or a prior migration. The call is rejected to prevent accidental state changes. | Do not call `migrate_to_weighted_governance` again. The contract is already using the weighted governance model. |
+| 34 | `WouldBreakQuorum` | A proposal creation or owner weight modification was rejected because total remaining weight would fall below threshold, or executing the weight change would leave an active (`Pending` or `Ready`) proposal's required quorum weight unreachable (`active_proposal.quorum_weight > new_total_weight`). | Lower the threshold first via `create_change_threshold_proposal`, wait for active proposals to complete or expire, or ensure remaining total weight is sufficient to satisfy all active proposal quorums. |
 | 39 | `RecurringPaymentNotFound` | No recurring-payment schedule exists for the given `schedule_id` (`RECUR` persistent key missing, `lib.rs:608`). Thrown by `get_recurring_payment`, `get_claimable_amount`, `disburse_recurring`, and `create_cancel_recurring_proposal`. | Verify the ID with `get_active_recurring_count` and `get_recurring_payment`; confirm the schedule was created on the correct contract/network and has not been pruned. |
 | 40 | `InvalidInterval` | The `interval_secs` supplied to `create_recurring_proposal` is outside `[60, 31536000]` (`MIN_INTERVAL_SECS=60` / `MAX_INTERVAL_SECS=31536000`, `lib.rs:589`). | Pass an interval between 1 minute (60s) and 1 year (31536000s). |
 | 41 | `ScheduleNotActive` | `disburse_recurring` was called for a schedule whose `status != Active` (`lib.rs:2664` — `Paused`, `Completed`, or `Cancelled`). Also returned when trying to disburse after cancellation. | Check `get_recurring_payment(...).status` is `Active` before calling `disburse_recurring`; only `Active` schedules are disbursable. |
@@ -1132,6 +1189,33 @@ struct ProposalExecutedEvent {
     executor: Address,
     to: Address,
     amount: i128,
+}
+```
+
+### `OwnerWeightChangedEvent`
+
+Emitted when a `ChangeOwnerWeight` proposal is **executed** and the target owner's voting weight is updated (`lib.rs:2448` topic `c_wgt`).
+
+**Topics:**
+| Index | Value | XDR Type |
+|-------|-------|----------|
+| 0 | Contract address (implicit) | `ScVal::Address` |
+| 1 | `"c_wgt"` | `ScVal::Symbol` |
+
+**Data fields:**
+| Field | Rust Type | XDR SCVal Type | Description |
+|-------|-----------|----------------|-------------|
+| `owner` | `Address` | `ScVal::Address` | The owner whose voting weight was changed |
+| `old_weight` | `u32` | `ScVal::U32` | The owner's voting weight before the change |
+| `new_weight` | `u32` | `ScVal::U32` | The owner's voting weight after the change |
+| `new_total_weight` | `u32` | `ScVal::U32` | The resulting sum of all owner weights after the change |
+
+```rust
+struct OwnerWeightChangedEvent {
+    owner: Address,
+    old_weight: u32,
+    new_weight: u32,
+    new_total_weight: u32,
 }
 ```
 
