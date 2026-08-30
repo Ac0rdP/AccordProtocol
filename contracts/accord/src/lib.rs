@@ -2522,7 +2522,7 @@ impl AccordContract {
                     cliff_time: params.cliff_time,
                     total_cap: params.total_cap,
                     total_disbursed: 0,
-                    last_disbursed_at: 0,
+                    last_disbursed_at: params.start_time,
                     status: RecurringStatus::Active,
                     kind: params.kind.clone(),
                     category: proposal.category.clone(),
