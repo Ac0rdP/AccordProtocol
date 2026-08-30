@@ -1,7 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 pub mod validate;
-use validate::{validate_deadline, validate_description};
+use validate::{validate_deadline, validate_description, validate_recurring_schedule};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -1663,22 +1663,29 @@ impl AccordContract {
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
+        if schedule.cliff_time > 0 && now < schedule.cliff_time {
+            return Err(ContractError::RecurringPaymentNotDue);
+        }
+
         if now < due_at {
             return Err(ContractError::RecurringIntervalNotElapsed);
         }
-        if let Some(end_at) = schedule.end {
-            if due_at > end_at || now > end_at {
-                return Err(ContractError::RecurringPaymentComplete);
-            }
+
+        if schedule.end_time > 0 && (due_at > schedule.end_time || now > schedule.end_time) {
+            schedule.status = RecurringStatus::Completed;
+            write_recurring_payment(&env, &schedule);
+            return Err(ContractError::RecurringPaymentComplete);
         }
+
         let projected_total = schedule
             .total_disbursed
             .checked_add(schedule.amount)
             .ok_or(ContractError::ArithmeticError)?;
-        if let Some(total_cap) = schedule.cap {
-            if projected_total > total_cap {
-                return Err(ContractError::RecurringPaymentComplete);
-            }
+
+        if schedule.total_cap > 0 && projected_total > schedule.total_cap {
+            schedule.status = RecurringStatus::Completed;
+            write_recurring_payment(&env, &schedule);
+            return Err(ContractError::RecurringPaymentComplete);
         }
 
         let token_client = token::Client::new(&env, &schedule.token);
@@ -1713,10 +1720,10 @@ impl AccordContract {
 
         schedule.last_disbursed_at = now;
         schedule.total_disbursed = projected_total;
-        schedule.periods_disbursed = schedule
-            .periods_disbursed
-            .checked_add(1)
-            .ok_or(ContractError::ArithmeticError)?;
+        
+        if schedule.total_cap > 0 && schedule.total_disbursed >= schedule.total_cap {
+            schedule.status = RecurringStatus::Completed;
+        }
         write_recurring_payment(&env, &schedule);
 
         env.events().publish(
@@ -1727,7 +1734,7 @@ impl AccordContract {
                 token: schedule.token.clone(),
                 amount: schedule.amount,
                 total_disbursed: schedule.total_disbursed,
-                periods_disbursed: schedule.periods_disbursed,
+                periods_disbursed: (schedule.total_disbursed / schedule.amount) as u32,
             },
         );
 
@@ -2522,7 +2529,7 @@ impl AccordContract {
                     cliff_time: params.cliff_time,
                     total_cap: params.total_cap,
                     total_disbursed: 0,
-                    last_disbursed_at: 0,
+                    last_disbursed_at: params.start_time,
                     status: RecurringStatus::Active,
                     kind: params.kind.clone(),
                     category: proposal.category.clone(),
@@ -2751,6 +2758,7 @@ impl AccordContract {
         }
         validate_description(&description)?;
         validate_deadline(&env, deadline)?;
+        validate_recurring_schedule(start_time, cliff_time, end_time, total_cap, amount)?;
 
         if read_active_recurring_count(&env) >= MAX_ACTIVE_RECURRING {
             return Err(ContractError::TooManyActiveRecurring);
@@ -2758,6 +2766,16 @@ impl AccordContract {
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
+
+        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+            let already_spent = effective_spent(&env, &proposer, &token);
+            let cumulative = amount
+                .checked_add(already_spent)
+                .ok_or(ContractError::ArithmeticError)?;
+            if cumulative > limit.limit {
+                return Err(ContractError::SpendingLimitExceeded);
+            }
+        }
 
         let p_kind = ProposalKind::CreateRecurringPayment(CreateRecurringParams {
             recipient,

@@ -36,3 +36,24 @@ pub fn validate_recipient(env: &Env, recipient: &Address) -> Result<(), Contract
     }
     Ok(())
 }
+
+pub fn validate_recurring_schedule(
+    start_time: u64,
+    cliff_time: u64,
+    end_time: u64,
+    total_cap: i128,
+    amount_per_period: i128,
+) -> Result<(), ContractError> {
+    if end_time > 0 {
+        if end_time <= start_time {
+            return Err(ContractError::InvalidSchedule);
+        }
+        if cliff_time > 0 && cliff_time > end_time {
+            return Err(ContractError::InvalidSchedule);
+        }
+    }
+    if total_cap > 0 && total_cap < amount_per_period {
+        return Err(ContractError::InvalidCap);
+    }
+    Ok(())
+}
