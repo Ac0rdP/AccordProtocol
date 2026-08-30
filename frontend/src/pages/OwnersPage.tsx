@@ -365,7 +365,10 @@ export function OwnersPage({
       </div>
 
       {/* Weight Distribution Chart */}
-      <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div
+        data-testid="weight-distribution-chart"
+        className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-5"
+      >
         <h2 className="text-sm font-medium text-zinc-400 mb-3">
           Voting Weight Distribution
         </h2>
