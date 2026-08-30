@@ -1,7 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 pub mod validate;
-use validate::{validate_deadline, validate_description};
+use validate::{validate_deadline, validate_description, validate_recurring_schedule};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -2751,6 +2751,7 @@ impl AccordContract {
         }
         validate_description(&description)?;
         validate_deadline(&env, deadline)?;
+        validate_recurring_schedule(start_time, cliff_time, end_time, total_cap, amount)?;
 
         if read_active_recurring_count(&env) >= MAX_ACTIVE_RECURRING {
             return Err(ContractError::TooManyActiveRecurring);
