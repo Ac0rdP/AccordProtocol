@@ -9,6 +9,7 @@ import {
 import type {
   Delegation,
   OwnerDelegations,
+  OwnerWeightChangeEvent,
   Proposal,
   ProposalCategory,
   ProposalEvent,
@@ -170,15 +171,13 @@ function mapKindDetails(
         amount: "0",
         token: "Unknown",
       };
-    default:
-      return { kind: "transfer", to: "Unknown", amount: "0", token: "Unknown" };
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mapProposal(raw: any, threshold: number): Proposal {
   const rawDeadline = BigInt(raw.deadline);
-  const mapped = mapKind(raw.kind);
+  const details = mapKindDetails(raw.kind);
 
   return {
     id: Number(raw.id),
@@ -977,114 +976,107 @@ export async function getDueRecurring(): Promise<RecurringSchedule[]> {
     if (s.nextDisbursementTs !== undefined) return now >= s.nextDisbursementTs;
     return true;
   });
-
-// ─── Recurring Payment read wrappers ────────────────────────────────────────
-
-function mapRecurringStatus(raw: unknown): RecurringScheduleStatus {
-  let key = "";
-  if (typeof raw === "string") {
-    key = raw.toLowerCase();
-  } else if (raw && typeof raw === "object") {
-    key = (Object.keys(raw as object)[0] ?? "").toLowerCase();
-  }
-  if (key === "paused") return "paused";
-  if (key === "completed") return "completed";
-  if (key === "cancelled" || key === "canceled") return "cancelled";
-  return "active";
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapRecurringSchedule(raw: any): RecurringSchedule {
-  const intervalSecs = Number(safeBigInt(raw.interval ?? raw.interval_secs ?? 0));
-  const amount = stroopsToDisplay(safeBigInt(raw.amount ?? 0));
-  const totalDisbursed = stroopsToDisplay(safeBigInt(raw.total_disbursed ?? 0));
-  const capRaw = raw.cap ?? (raw.total_cap != null && Number(safeBigInt(raw.total_cap)) > 0 ? raw.total_cap : null);
-  const cap = capRaw != null ? stroopsToDisplay(safeBigInt(capRaw)) : undefined;
+// ─── Owner weight-change events ─────────────────────────────────────────────
 
-  const rawKind = raw.kind ?? raw.payment_kind;
-  let kind: RecurringKind | undefined;
-  if (rawKind !== undefined) {
-    let key: string;
-    if (typeof rawKind === "string") {
-      key = rawKind;
-    } else if (rawKind && typeof rawKind === "object") {
-      key = Object.keys(rawKind as object)[0] ?? "FixedAmountPerPeriod";
-    } else {
-      key = "FixedAmountPerPeriod";
-    }
-    kind = key.toLowerCase() === "linearvesting" ? "linear_vesting" : "fixed_amount_per_period";
-  }
-
-  // Compute next disbursement timestamp (ms) for countdown display.
-  const lastDisbursedAt = Number(safeBigInt(raw.last_disbursed_at ?? 0));
-  const periodsDisbursed = Number(raw.periods_disbursed ?? 0);
-  let nextDisbursementTs: number | undefined;
-  if (intervalSecs > 0) {
-    const startSecs = Number(safeBigInt(raw.start ?? raw.start_time ?? 0));
-    const cliffSecs =
-      raw.cliff != null && Number(safeBigInt(raw.cliff)) > 0
-        ? Number(safeBigInt(raw.cliff))
-        : raw.cliff_time != null && Number(safeBigInt(raw.cliff_time)) > 0
-        ? Number(safeBigInt(raw.cliff_time))
-        : undefined;
-
-    if (periodsDisbursed === 0) {
-      const firstAt = cliffSecs != null && cliffSecs > startSecs ? cliffSecs : startSecs;
-      nextDisbursementTs = firstAt * 1000;
-    } else if (lastDisbursedAt > 0) {
-      nextDisbursementTs = (lastDisbursedAt + intervalSecs) * 1000;
-    }
-  }
-
-  return {
-    id: Number(safeBigInt(raw.id ?? 0)),
-    recipient: String(raw.recipient ?? ""),
-    amount,
-    token: raw.token ? String(raw.token) : undefined,
-    cadence: intervalSecs > 0 ? formatInterval(intervalSecs) : undefined,
-    interval: intervalSecs > 0 ? intervalSecs : undefined,
-    totalDisbursed,
-    status: mapRecurringStatus(raw.status),
-    kind,
-    cliff:
-      raw.cliff != null && Number(safeBigInt(raw.cliff)) > 0
-        ? Number(safeBigInt(raw.cliff))
-        : raw.cliff_time != null && Number(safeBigInt(raw.cliff_time)) > 0
-        ? Number(safeBigInt(raw.cliff_time))
-        : undefined,
-    endDate:
-      raw.end != null && Number(safeBigInt(raw.end)) > 0
-        ? Number(safeBigInt(raw.end))
-        : raw.end_time != null && Number(safeBigInt(raw.end_time)) > 0
-        ? Number(safeBigInt(raw.end_time))
-        : undefined,
-    cap,
-    nextDisbursementTs,
-    description: raw.description ? String(raw.description) : undefined,
-  };
-}
-
-export async function getRecurringPayment(scheduleId: number): Promise<RecurringSchedule> {
-  const val = await simulateView("get_recurring_payment", [
-    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
-  ]);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return mapRecurringSchedule(scValToNative(val) as any);
-}
-
-export async function getRecurringPaymentsPaged(
-  offset: number,
-  limit: number
-): Promise<RecurringSchedule[]> {
+/**
+ * Fetches the most recent owner-weight-change (`c_wgt`) events emitted by the
+ * contract, newest first. Returns an empty list if the events can't be read so
+ * callers can render a graceful fallback.
+ */
+export async function getOwnerWeightChangeEvents(
+  limit = 5,
+): Promise<OwnerWeightChangeEvent[]> {
   try {
-    const val = await simulateView("get_recurring_payments_paged", [
-      nativeToScVal(BigInt(offset), { type: "u64" }),
-      nativeToScVal(limit, { type: "u32" }),
-    ]);
-    const raw = scValToNative(val);
-    if (!Array.isArray(raw)) return [];
-    return raw.map(mapRecurringSchedule).filter((s): s is RecurringSchedule => s !== null);
-  } catch {
+    let startLedger = 1;
+    try {
+      const latest = await getLatestLedger();
+      startLedger = Math.max(1, latest - 10000);
+    } catch {
+      startLedger = 1;
+    }
+
+    const res = await server.getEvents({
+      startLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [CONTRACT_ID],
+        },
+      ],
+      limit: 100,
+    });
+
+    const changes: OwnerWeightChangeEvent[] = [];
+
+    if (res.events && Array.isArray(res.events)) {
+      for (const rawEv of res.events) {
+        try {
+          const rawTopic = Array.isArray(rawEv.topic) ? rawEv.topic : [rawEv.topic];
+          const topics = rawTopic.map(parseScVal);
+          const firstTopic = String(topics[0] ?? "").toLowerCase();
+          const secondTopic =
+            topics.length > 1 ? String(topics[1] ?? "").toLowerCase() : "";
+
+          const nativeValue = parseScVal(rawEv.value) as Record<string, unknown> | null;
+
+          let eventType = resolveEventType(firstTopic, secondTopic);
+          if (!eventType && nativeValue && typeof nativeValue === "object") {
+            const innerType = String(
+              nativeValue.event ?? nativeValue.type ?? "",
+            ).toLowerCase();
+            eventType = resolveEventType(innerType, "");
+          }
+
+          if (eventType !== "owner_weight_changed" || !nativeValue) continue;
+
+          const owner = String(
+            nativeValue.owner ??
+              nativeValue.target ??
+              nativeValue.target_owner ??
+              "",
+          );
+          if (!owner) continue;
+
+          const oldWeight = Number(
+            nativeValue.old_weight ??
+              nativeValue.oldWeight ??
+              nativeValue.previous_weight ??
+              0,
+          );
+          const newWeight = Number(
+            nativeValue.new_weight ??
+              nativeValue.newWeight ??
+              nativeValue.weight ??
+              0,
+          );
+          const rawTotal =
+            nativeValue.new_total_weight ??
+            nativeValue.newTotalWeight ??
+            nativeValue.new_total;
+
+          changes.push({
+            owner,
+            oldWeight,
+            newWeight,
+            newTotalWeight:
+              rawTotal !== undefined && rawTotal !== null
+                ? Number(rawTotal)
+                : undefined,
+            ledger: rawEv.ledger,
+            timestamp: formatEventTimestamp(rawEv.ledgerClosedAt, rawEv.ledger),
+          });
+        } catch (evErr) {
+          console.warn("Failed to parse weight-change event record:", evErr);
+        }
+      }
+    }
+
+    changes.sort((a, b) => (b.ledger ?? 0) - (a.ledger ?? 0));
+    return changes.slice(0, Math.max(0, limit));
+  } catch (err) {
+    console.error("Failed to fetch owner weight-change events:", err);
     return [];
   }
 }
@@ -1096,14 +1088,4 @@ export async function getTotalRecurringPayments(): Promise<number> {
   } catch {
     return 0;
   }
-}
-
-  const val = await simulateView("get_recurring_payments_paged", [
-    nativeToScVal(BigInt(offset), { type: "u64" }),
-    nativeToScVal(limit, { type: "u32" }),
-  ]);
-  const raw = scValToNative(val);
-  if (!Array.isArray(raw)) return [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (raw as any[]).map((item) => mapRecurringSchedule(item));
 }
