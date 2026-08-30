@@ -4,7 +4,7 @@ import type { Proposal, ProposalCategory, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
 import { Check, Copy, Link2 } from "lucide-react";
-import { shortenAddr } from "../lib/soroban";
+import { shortenAddr, formatWeightPercent } from "../lib/soroban";
 
 type ProposalCardProps = {
   proposal: Proposal;
@@ -13,6 +13,12 @@ type ProposalCardProps = {
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
   ownerWeights?: Record<string, number>;
+  /** Live approval weight accumulated so far (sum of approvers' weights) */
+  approvalWeight?: number;
+  /** Required quorum weight; overrides proposal.quorumWeight if provided */
+  quorumWeight?: number;
+  /** Total voting power of all owners; overrides proposal.totalWeight if provided */
+  totalWeight?: number;
 };
 
 const KIND_LABELS: Record<Exclude<ProposalKind, "recurring">, { title: string; badge: string }> & {
@@ -35,7 +41,13 @@ const CATEGORY_STYLES: Record<ProposalCategory, string> = {
   Other: "bg-zinc-800 text-zinc-400",
 };
 
-function KindSummary({ proposal }: { proposal: Proposal }) {
+type KindSummaryProps = {
+  proposal: Proposal;
+  /** Full-address → weight map; needed for change_owner_weight before/after display */
+  ownerWeights?: Record<string, number>;
+};
+
+function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
   switch (proposal.kind) {
     case "transfer":
       return (
@@ -81,17 +93,83 @@ function KindSummary({ proposal }: { proposal: Proposal }) {
           </p>
         </>
       );
-    case "change_owner_weight":
+    case "change_owner_weight": {
+      const newWeight = Number(proposal.amount);
+      const quorumWeight = proposal.quorumWeight ?? 0;
+      const totalWeight = proposal.totalWeight ?? 0;
+
+      // Find the full address whose shortened form matches proposal.to
+      const fullAddress =
+        Object.keys(ownerWeights).find(
+          (addr) => shortenAddr(addr) === proposal.to
+        ) ?? null;
+      const currentWeight = fullAddress !== null ? (ownerWeights[fullAddress] ?? 0) : null;
+
+      // Projected total after the change
+      const projectedTotal =
+        currentWeight !== null
+          ? totalWeight - currentWeight + newWeight
+          : totalWeight;
+
+      // Quorum as a fraction of total stays the same but weight value shifts
+      const quorumPctOfTotal =
+        totalWeight > 0 ? quorumWeight / totalWeight : 0;
+      const projectedQuorum = Math.round(quorumPctOfTotal * projectedTotal);
+
       return (
         <>
-          <p className="mt-0.5 font-mono text-sm text-zinc-500">
-            Owner {proposal.to}
+          {/* Primary "from X to Y" line */}
+          <p className="mt-0.5 text-sm text-zinc-300">
+            Change{" "}
+            <span className="font-mono">{proposal.to}</span>
+            {"'s weight from "}
+            <span className="font-semibold text-zinc-200">
+              {currentWeight !== null ? currentWeight : "?"}
+            </span>
+            {" to "}
+            <span className="font-semibold text-emerald-400">{newWeight}</span>
           </p>
-          <p className="text-sm text-zinc-500">
-            New weight: {proposal.amount}
-          </p>
+
+          {/* Before/after quorum impact */}
+          {quorumWeight > 0 && totalWeight > 0 && (
+            <div className="mt-2 rounded-lg border border-zinc-700/60 bg-zinc-800/40 px-3 py-2 text-xs space-y-1">
+              <p className="text-zinc-400 font-medium uppercase tracking-wide text-[10px] mb-1">
+                Quorum Impact
+              </p>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-zinc-500">Current quorum</p>
+                  <p className="text-zinc-300 font-mono">
+                    {quorumWeight} wt
+                    <span className="text-zinc-500 ml-1">
+                      ({formatWeightPercent(quorumWeight, totalWeight)})
+                    </span>
+                  </p>
+                </div>
+                <span className="text-zinc-600">→</span>
+                <div className="text-right">
+                  <p className="text-zinc-500">After change</p>
+                  <p
+                    className={`font-mono ${
+                      projectedQuorum > quorumWeight
+                        ? "text-amber-400"
+                        : projectedQuorum < quorumWeight
+                        ? "text-sky-400"
+                        : "text-zinc-300"
+                    }`}
+                  >
+                    {projectedQuorum} wt
+                    <span className="text-zinc-500 ml-1">
+                      ({formatWeightPercent(projectedQuorum, projectedTotal)})
+                    </span>
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       );
+    }
     case "recurring":
       return (
         <p className="mt-0.5 text-sm text-zinc-500">
@@ -113,6 +191,9 @@ export function ProposalCard({
   onExecute,
   onRevoke,
   ownerWeights = {},
+  approvalWeight: propApprovalWeight,
+  quorumWeight: propQuorumWeight,
+  totalWeight: propTotalWeight,
 }: ProposalCardProps) {
   const connected = !!walletAddress;
   const showApprove = proposal.status === "pending" && !proposal.userHasApproved;
@@ -120,6 +201,16 @@ export function ProposalCard({
   const [copiedProposer, setCopiedProposer] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   const labels = KIND_LABELS[proposal.kind];
+
+  // Merge live weight props into the proposal so KindSummary and ApprovalBar
+  // always receive the most up-to-date values (DashboardPage computes these
+  // from the live useOwnerWeights hook).
+  const effectiveProposal: Proposal = {
+    ...proposal,
+    approvalWeight: propApprovalWeight ?? proposal.approvalWeight ?? 0,
+    quorumWeight: propQuorumWeight ?? proposal.quorumWeight ?? proposal.threshold,
+    totalWeight: propTotalWeight ?? proposal.totalWeight ?? 0,
+  };
 
   useEffect(() => {
     if (!copiedLink) return;
@@ -175,7 +266,7 @@ export function ProposalCard({
             </span>
           </div>
 
-          <KindSummary proposal={proposal} />
+          <KindSummary proposal={effectiveProposal} ownerWeights={ownerWeights} />
 
           <div className="flex items-center gap-2 mt-0.5">
             <div className="flex items-center gap-2">
@@ -269,9 +360,9 @@ export function ProposalCard({
             bar reflects the original approval requirement even if owner weights
             change after the proposal is created. */}
         <ApprovalBar
-          approvalWeight={proposal.approvalWeight ?? 0}
-          quorumWeight={proposal.quorumWeight ?? proposal.threshold}
-          totalWeight={proposal.totalWeight ?? 0}
+          approvalWeight={effectiveProposal.approvalWeight ?? 0}
+          quorumWeight={effectiveProposal.quorumWeight ?? effectiveProposal.threshold}
+          totalWeight={effectiveProposal.totalWeight ?? 0}
         />
 
         <div className="flex items-center gap-2">
