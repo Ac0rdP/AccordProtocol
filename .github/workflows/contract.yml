@@ -41,8 +41,11 @@ jobs:
         run: |
           stellar contract build --release
 
-      - name: Run recurring-payment tests
-        run: cargo test -- recurring -- --nocapture
+      - name: Run contract test suite (flat weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=flat cargo test -- --nocapture
+
+      - name: Run contract test suite (skewed weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=skewed cargo test -- --nocapture
 
       - name: Generate wasm-manifest.json
         run: |
@@ -81,8 +84,13 @@ jobs:
           try:
               lib_rs = open("contracts/accord/src/lib.rs", encoding="utf-8").read()
               supports_recurring_payments = "RecurringPayment" in lib_rs and "disburse_recurring" in lib_rs
+              supports_weighted_governance = (
+                  "get_owner_weight" in lib_rs
+                  and ("change_owner_weight" in lib_rs or "migrate_to_weighted_governance" in lib_rs)
+              )
           except FileNotFoundError:
               supports_recurring_payments = False
+              supports_weighted_governance = False
 
           manifest = {
               "wasm_file": os.path.basename(wasm_path),
@@ -94,6 +102,7 @@ jobs:
               .replace("+00:00", "Z"),
               "soroban_sdk_version": soroban_sdk_version,
               "supports_recurring_payments": supports_recurring_payments,
+              "supports_weighted_governance": supports_weighted_governance,
           }
 
           with open("wasm-manifest.json", "w", encoding="utf-8") as out:

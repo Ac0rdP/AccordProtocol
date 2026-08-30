@@ -83,15 +83,23 @@ fn setup_with_timelock(
     owners.push_back(owner_b.clone());
     owners.push_back(owner_c.clone());
 
+    let fixture = std::env::var("ACCORD_WEIGHT_FIXTURE")
+        .or_else(|_| std::env::var("WEIGHT_FIXTURE"))
+        .unwrap_or_default();
+
     let mut weights = Vec::new(&env);
-    weights.push_back(1);
-    weights.push_back(1);
-    weights.push_back(1);
-    let mut weights = Vec::new(&env);
-    for _ in 0..owners.len() {
-        weights.push_back(1);
-    }
-    client.initialize(&owners, &weights, &threshold, &time_lock_delay);
+    let effective_threshold = if fixture == "skewed" {
+        weights.push_back(5);
+        weights.push_back(3);
+        weights.push_back(2);
+        if threshold == 2 { 6 } else { threshold * 3 }
+    } else {
+        for _ in 0..owners.len() {
+            weights.push_back(1);
+        }
+        threshold
+    };
+    client.initialize(&owners, &weights, &effective_threshold, &time_lock_delay);
 
     // Fund the multisig contract so it can pay out proposals.
     token_sac.mint(&contract_id, &1_000_000_000_000_i128);

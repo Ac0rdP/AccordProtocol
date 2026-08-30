@@ -1,17 +1,33 @@
 import React from "react";
 
-type ApprovalBarProps = {
-  approvalWeight: number; // current accumulated approval weight
-  quorumWeight: number; // required quorum weight
-  totalWeight: number; // total voting power
+export type ApprovalBarProps = {
+  approvalWeight?: number; // current accumulated approval weight
+  quorumWeight?: number; // required quorum weight
+  totalWeight?: number; // total voting power
+  approvals?: number;
+  threshold?: number;
+  approverAddresses?: string[];
   label?: string;
 };
 
-export const ApprovalBar = React.memo(function ApprovalBar({ approvalWeight, quorumWeight, totalWeight, label }: ApprovalBarProps) {
+export const ApprovalBar = React.memo(function ApprovalBar({
+  approvalWeight: rawApprovalWeight,
+  quorumWeight: rawQuorumWeight,
+  totalWeight: rawTotalWeight,
+  approvals,
+  threshold,
+  label,
+}: ApprovalBarProps) {
+  const approvalWeight = rawApprovalWeight ?? approvals ?? 0;
+  const quorumWeight = rawQuorumWeight ?? threshold ?? 0;
+  const totalWeight = rawTotalWeight ?? quorumWeight;
+
   const percentOfQuorum = quorumWeight > 0 ? Math.min((approvalWeight / quorumWeight) * 100, 100) : 0;
   const quorumTickPct = totalWeight > 0 ? Math.min((quorumWeight / totalWeight) * 100, 100) : 0;
 
-  const ariaLabel = label ?? `Approval weight ${approvalWeight} of required quorum ${quorumWeight}. ${Math.round(percentOfQuorum)} percent of quorum achieved.`;
+  const ariaLabel =
+    label ??
+    `Approval weight ${approvalWeight} of required quorum ${quorumWeight}. ${Math.round(percentOfQuorum)} percent of quorum achieved.`;
 
   return (
     <div className="flex items-center gap-3 w-full" aria-label={ariaLabel}>
@@ -39,4 +55,3 @@ export const ApprovalBar = React.memo(function ApprovalBar({ approvalWeight, quo
     </div>
   );
 });
-
