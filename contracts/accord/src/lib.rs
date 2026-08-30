@@ -2760,6 +2760,16 @@ impl AccordContract {
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
 
+        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+            let already_spent = effective_spent(&env, &proposer, &token);
+            let cumulative = amount
+                .checked_add(already_spent)
+                .ok_or(ContractError::ArithmeticError)?;
+            if cumulative > limit.limit {
+                return Err(ContractError::SpendingLimitExceeded);
+            }
+        }
+
         let p_kind = ProposalKind::CreateRecurringPayment(CreateRecurringParams {
             recipient,
             token,
