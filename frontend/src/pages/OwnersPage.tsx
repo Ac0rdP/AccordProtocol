@@ -48,6 +48,7 @@ type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
+  totalWeight: number;
   walletAddress: string | null;
   onProposalSubmitted: () => void;
 };
@@ -56,6 +57,7 @@ export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
+  totalWeight,
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
@@ -74,18 +76,8 @@ export function OwnersPage({
   const [_spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
   const [_limitsLoading, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [sortByWeightDesc, setSortByWeightDesc] = useState(false);
-  const [filterMode, setFilterMode] = useState<"all" | "above" | "below">(
-    "all",
-  );
-  const [shareThreshold, setShareThreshold] = useState("0");
-
-  // Quorum simulator state
-  const [selectedAddresses, setSelectedAddresses] = useState<Set<string>>(
-    new Set(),
-  );
-  const [requiredQuorumWeight, setRequiredQuorumWeight] = useState(0);
-  const [quorumLoading, setQuorumLoading] = useState(true);
+  const [showWeightForm, setShowWeightForm] = useState(false);
+  const [weightTargetOwner, setWeightTargetOwner] = useState<string>("");
 
   // Spending limit proposal form state
   const [slOwner, setSlOwner] = useState("");
@@ -285,217 +277,10 @@ export function OwnersPage({
   return (
     <>
       <div className="mb-8">
-        <h1 className="mb-2 text-2xl font-semibold">Multisig Owners</h1>
-        <div className="space-y-1 text-sm text-zinc-400">
-          <p>
-            {hasOwnerWeights
-              ? `Requires ${threshold} of ${totalWeight} voting weight`
-              : `Requires ${threshold} voting weight`}
-          </p>
-          <p>
-            {ownerWeightsLoading
-              ? `Loading voting power across ${ownerCountLabel}...`
-              : weightsUnavailable
-                ? "Voting power unavailable; owners remain visible."
-                : `${quorumPercent}% of voting power must approve.`}
-          </p>
-          {weightsStale && (
-            <p className="text-amber-400">Voting weights may be stale.</p>
-          )}
-          {weightsUnavailable && (
-            <p className="text-amber-400">Voting weights unavailable.</p>
-          )}
-        </div>
-      </div>
-
-      {/* Quorum Simulator */}
-      <div className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-medium text-zinc-400">
-            Quorum Simulator
-          </h2>
-          {selectedCount > 0 && (
-            <button
-              type="button"
-              onClick={resetSelection}
-              className="text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
-            >
-              Reset selection
-            </button>
-          )}
-        </div>
-
-        {quorumLoading ? (
-          <div className="h-5 bg-zinc-800 animate-pulse rounded-lg w-full" />
-        ) : selectedCount === 0 ? (
-          <p className="text-xs text-zinc-500">
-            Select owners below to check if their combined weight meets the
-            quorum requirement.
-          </p>
-        ) : (
-          <div className="flex items-center gap-3">
-            <div className="flex-1">
-              <p className="text-sm text-zinc-300">
-                <span className="font-medium text-zinc-100">
-                  {selectedCount}
-                </span>{" "}
-                owner{selectedCount !== 1 ? "s" : ""} selected &mdash; combined
-                weight{" "}
-                <span className="font-mono font-medium text-zinc-100">
-                  {selectedWeight}
-                </span>{" "}
-                of{" "}
-                <span className="font-mono font-medium text-zinc-100">
-                  {requiredQuorumWeight}
-                </span>{" "}
-                required
-              </p>
-            </div>
-            <div
-              className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium ${
-                quorumMet
-                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                  : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-              }`}
-            >
-              {quorumMet ? "Quorum met" : "Quorum not met"}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Weight Distribution Chart */}
-      <div
-        data-testid="weight-distribution-chart"
-        className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-5"
-      >
-        <h2 className="text-sm font-medium text-zinc-400 mb-3">
-          Voting Weight Distribution
-        </h2>
-        {weightsLoading ? (
-          <div className="h-6 bg-zinc-800 animate-pulse rounded-lg w-full" />
-        ) : ownerAddresses.length === 0 ? (
-          <div className="h-6 bg-zinc-850 rounded-lg flex items-center justify-center text-xs text-zinc-500">
-            No voting power registered.
-          </div>
-        ) : (
-          <div>
-            <div
-              role="region"
-              aria-label={`Voting weight distribution across ${ownerAddresses.length} owners, total weight ${totalWeight}`}
-              className="flex h-6 rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 w-full mb-3"
-            >
-              {ownerAddresses.map((addr, idx) => {
-                const weight = weights[addr] ?? 1;
-                const pct = totalWeight > 0 ? (weight / totalWeight) * 100 : 0;
-                const ownerInfo = owners.find((o) => o.address === addr) || {
-                  label: `Signer ${idx + 1}`,
-                  address: addr,
-                };
-                const labelText = `${ownerInfo.label} (${addr.slice(0, 6)}...${addr.slice(-4)})`;
-                const titleStr = `${labelText}: weight ${weight} (${pct.toFixed(1)}%)`;
-
-                if (pct <= 0) return null;
-
-                return (
-                  <div
-                    key={addr}
-                    title={titleStr}
-                    style={{ width: `${pct}%` }}
-                    className={`${CHART_COLORS[idx % CHART_COLORS.length]} h-full transition-all duration-300 relative group cursor-pointer hover:brightness-110`}
-                    tabIndex={0}
-                    role="img"
-                    aria-label={titleStr}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                      }
-                    }}
-                  />
-                );
-              })}
-            </div>
-            {/* Legend */}
-            <div className="flex flex-wrap gap-x-4 gap-y-2 mt-2">
-              {ownerAddresses.map((addr, idx) => {
-                const weight = weights[addr] ?? 1;
-                const pct = totalWeight > 0 ? (weight / totalWeight) * 100 : 0;
-                const ownerInfo = owners.find((o) => o.address === addr) || {
-                  label: `Signer ${idx + 1}`,
-                  address: addr,
-                };
-                const legendLabel = `${ownerInfo.label} ${addr.slice(0, 6)}…${addr.slice(-4)}: ${weight} weight (${pct.toFixed(0)}%)`;
-                return (
-                  <div
-                    key={addr}
-                    className="flex items-center gap-1.5 text-xs text-zinc-400"
-                    aria-label={legendLabel}
-                  >
-                    <span
-                      aria-hidden
-                      className={`w-2.5 h-2.5 rounded-full ${CHART_COLORS[idx % CHART_COLORS.length]}`}
-                    />
-                    <span className="font-medium text-zinc-300">
-                      {ownerInfo.label}
-                    </span>
-                    <span className="font-mono text-zinc-500">
-                      ({addr.slice(0, 6)}…{addr.slice(-4)})
-                    </span>
-                    <span className="font-medium text-zinc-300">
-                      ({weight} w, {pct.toFixed(0)}%)
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-6">
-        <label className="flex items-center gap-2 text-sm text-zinc-400 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={sortByWeightDesc}
-            onChange={(e) => setSortByWeightDesc(e.target.checked)}
-            className="accent-emerald-500"
-          />
-          Weight descending
-        </label>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <label className="text-sm text-zinc-400 flex flex-col gap-1.5">
-            <span>Show owners</span>
-            <select
-              value={filterMode}
-              onChange={(e) =>
-                setFilterMode(e.target.value as "all" | "above" | "below")
-              }
-              aria-label="Show owners"
-              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
-            >
-              <option value="all">All</option>
-              <option value="above">Above</option>
-              <option value="below">Below</option>
-            </select>
-          </label>
-
-          <label className="text-sm text-zinc-400 flex flex-col gap-1.5">
-            <span>Share threshold (%)</span>
-            <input
-              id="share-threshold"
-              type="number"
-              min="0"
-              max="100"
-              step="1"
-              value={shareThreshold}
-              onChange={(e) => setShareThreshold(e.target.value)}
-              aria-label="Share threshold"
-              disabled={filterMode === "all"}
-              className="w-28 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:ring-2 focus:ring-zinc-400 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-            />
-          </label>
-        </div>
+        <h1 className="text-2xl font-semibold mb-2">Multisig Owners</h1>
+        <p className="text-zinc-400 text-sm">
+          Requires {threshold} of {totalWeight} voting weight
+        </p>
       </div>
 
       {/* Owners list with checkboxes and spending limits */}
