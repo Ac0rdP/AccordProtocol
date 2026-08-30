@@ -1663,22 +1663,29 @@ impl AccordContract {
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
+        if schedule.cliff_time > 0 && now < schedule.cliff_time {
+            return Err(ContractError::RecurringPaymentNotDue);
+        }
+
         if now < due_at {
             return Err(ContractError::RecurringIntervalNotElapsed);
         }
-        if let Some(end_at) = schedule.end {
-            if due_at > end_at || now > end_at {
-                return Err(ContractError::RecurringPaymentComplete);
-            }
+
+        if schedule.end_time > 0 && (due_at > schedule.end_time || now > schedule.end_time) {
+            schedule.status = RecurringStatus::Completed;
+            write_recurring_payment(&env, &schedule);
+            return Err(ContractError::RecurringPaymentComplete);
         }
+
         let projected_total = schedule
             .total_disbursed
             .checked_add(schedule.amount)
             .ok_or(ContractError::ArithmeticError)?;
-        if let Some(total_cap) = schedule.cap {
-            if projected_total > total_cap {
-                return Err(ContractError::RecurringPaymentComplete);
-            }
+
+        if schedule.total_cap > 0 && projected_total > schedule.total_cap {
+            schedule.status = RecurringStatus::Completed;
+            write_recurring_payment(&env, &schedule);
+            return Err(ContractError::RecurringPaymentComplete);
         }
 
         let token_client = token::Client::new(&env, &schedule.token);
@@ -1713,10 +1720,10 @@ impl AccordContract {
 
         schedule.last_disbursed_at = now;
         schedule.total_disbursed = projected_total;
-        schedule.periods_disbursed = schedule
-            .periods_disbursed
-            .checked_add(1)
-            .ok_or(ContractError::ArithmeticError)?;
+        
+        if schedule.total_cap > 0 && schedule.total_disbursed >= schedule.total_cap {
+            schedule.status = RecurringStatus::Completed;
+        }
         write_recurring_payment(&env, &schedule);
 
         env.events().publish(
@@ -1727,7 +1734,7 @@ impl AccordContract {
                 token: schedule.token.clone(),
                 amount: schedule.amount,
                 total_disbursed: schedule.total_disbursed,
-                periods_disbursed: schedule.periods_disbursed,
+                periods_disbursed: (schedule.total_disbursed / schedule.amount) as u32,
             },
         );
 
