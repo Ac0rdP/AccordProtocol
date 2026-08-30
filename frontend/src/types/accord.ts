@@ -15,7 +15,8 @@ export type Proposal = {
   id: number;
   kind: ProposalKind;
   to: string;
-  amount: string;
+  amount: string;      // formatted: "5,000"
+  rawAmount: string;   // <-- SABO: "50000000000" raw stroops
   token: string;
   description: string;
   approvals: number;
@@ -128,4 +129,3 @@ export type OwnerDelegations = {
   outgoing: Delegation | null;
   incoming: Delegation[];
 };
-
