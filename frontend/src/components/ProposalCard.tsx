@@ -47,6 +47,14 @@ function KindSummary({ proposal }: { proposal: Proposal }) {
           <p className="text-sm text-zinc-300">
             Send {proposal.amount} {proposal.token}
           </p>
+          
+          {/* NAN NE RAWAMOUNT */}
+          {proposal.rawAmount && proposal.rawAmount !== "-" && (
+            <p className="mt-0.5 font-mono text-xs text-zinc-600">
+              Raw: {proposal.rawAmount} stroops
+            </p>
+          )}
+          
           <p className="mt-0.5 font-mono text-sm text-zinc-500">
             To {proposal.to}
           </p>
@@ -78,7 +86,14 @@ function KindSummary({ proposal }: { proposal: Proposal }) {
           </p>
           <p className="text-sm text-zinc-500">
             Limit {proposal.amount} for {proposal.token}
+                   <p className="text-sm text-zinc-500">
+            Limit {proposal.amount} for {proposal.token}
           </p>
+          {proposal.rawAmount && proposal.rawAmount!== "-" && (
+            <p className="font-mono text-xs text-zinc-600">
+              Raw: {proposal.rawAmount}
+            </p>
+          )}
         </>
       );
     case "change_owner_weight":
@@ -99,7 +114,6 @@ function KindSummary({ proposal }: { proposal: Proposal }) {
         </p>
       );
     default: {
-      // exhaustive check
       const _: never = proposal.kind;
       return null;
     }
@@ -114,8 +128,8 @@ export function ProposalCard({
   onRevoke,
   ownerWeights = {},
 }: ProposalCardProps) {
-  const connected = !!walletAddress;
-  const showApprove = proposal.status === "pending" && !proposal.userHasApproved;
+  const connected =!!walletAddress;
+  const showApprove = proposal.status === "pending" &&!proposal.userHasApproved;
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedProposer, setCopiedProposer] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
@@ -134,7 +148,7 @@ export function ProposalCard({
   }, [copiedProposer]);
 
   useEffect(() => {
-    if (proposal.status !== "ready") {
+    if (proposal.status!== "ready") {
       setAwaitingConfirmation(false);
     }
   }, [proposal.status]);
@@ -162,7 +176,7 @@ export function ProposalCard({
   };
 
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
+    <div className="bg-zinc-900 border-zinc-800 rounded-xl p-4 hover:border-zinc-700 transition-colors">
       <div className="flex items-start justify-between mb-4">
         <div>
           <p className="text-xs text-zinc-500 font-mono mb-1">
@@ -170,7 +184,7 @@ export function ProposalCard({
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-white font-semibold">{labels.title}</p>
-            <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+            <span className="rounded-md border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
               {labels.badge}
             </span>
           </div>
@@ -202,13 +216,13 @@ export function ProposalCard({
               onClick={() => copyAddress(proposal.proposer)}
               aria-label={
                 copiedProposer
-                  ? `Proposer address copied for proposal #${proposal.id}`
+                ? `Proposer address copied for proposal #${proposal.id}`
                   : `Copy proposer address for proposal #${proposal.id}`
               }
               className="rounded text-zinc-500 transition-colors hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-              title={copiedProposer ? "Copied" : "Copy address"}
+              title={copiedProposer? "Copied" : "Copy address"}
             >
-              {copiedProposer ? (
+              {copiedProposer? (
                 <Check size={16} className="text-green-500" />
               ) : (
                 <Copy size={16} />
@@ -236,13 +250,13 @@ export function ProposalCard({
             onClick={copyProposalLink}
             aria-label={
               copiedLink
-                ? `Proposal link copied for proposal #${proposal.id}`
+              ? `Proposal link copied for proposal #${proposal.id}`
                 : `Copy proposal link for proposal #${proposal.id}`
             }
             className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-800 text-zinc-400 transition-colors hover:border-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            title={copiedLink ? "Link copied" : "Copy proposal link"}
+            title={copiedLink? "Link copied" : "Copy proposal link"}
           >
-            {copiedLink ? (
+            {copiedLink? (
               <Check size={16} className="text-emerald-400" />
             ) : (
               <Link2 size={16} />
@@ -253,7 +267,7 @@ export function ProposalCard({
               role="note"
               aria-label={`Category: ${proposal.category}`}
               className={`text-xs px-2 py-0.5 rounded-full font-mono capitalize ${
-                CATEGORY_STYLES[proposal.category] ?? "bg-zinc-800 text-zinc-400"
+                CATEGORY_STYLES[proposal.category]?? "bg-zinc-800 text-zinc-400"
               }`}
             >
               {proposal.category}
@@ -264,14 +278,10 @@ export function ProposalCard({
       </div>
 
       <div className="flex items-center justify-between mt-4">
-        {/* ApprovalBar uses the proposal's snapshotted quorumWeight fixed at
-            creation time — not the live totalWeight. This ensures the progress
-            bar reflects the original approval requirement even if owner weights
-            change after the proposal is created. */}
         <ApprovalBar
-          approvalWeight={proposal.approvalWeight ?? 0}
-          quorumWeight={proposal.quorumWeight ?? proposal.threshold}
-          totalWeight={proposal.totalWeight ?? 0}
+          approvalWeight={proposal.approvalWeight?? 0}
+          quorumWeight={proposal.quorumWeight?? proposal.threshold}
+          totalWeight={proposal.totalWeight?? 0}
         />
 
         <div className="flex items-center gap-2">
@@ -283,12 +293,12 @@ export function ProposalCard({
               onClick={() => onApprove(proposal.id)}
               aria-label={
                 connected
-                  ? `Approve proposal #${proposal.id}`
+                ? `Approve proposal #${proposal.id}`
                   : `Connect and approve proposal #${proposal.id}`
               }
               className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
-              {connected ? "Approve" : "Connect & Approve"}
+              {connected? "Approve" : "Connect & Approve"}
             </button>
           )}
 
@@ -305,7 +315,7 @@ export function ProposalCard({
               </button>
             )}
 
-          {connected && proposal.status === "ready" && !awaitingConfirmation && (
+          {connected && proposal.status === "ready" &&!awaitingConfirmation && (
             <button
               type="button"
               aria-label={`Execute proposal #${proposal.id}`}
