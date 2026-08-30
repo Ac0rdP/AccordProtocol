@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { getWeightCapPct, getRequiredQuorumWeight, getSpendingLimit } from "../lib/contract";
@@ -10,7 +10,12 @@ vi.mock("../hooks/useOwnerWeights", () => ({
   useOwnerWeights: vi.fn(),
 }));
 
+vi.mock("../lib/submit", () => ({
+  createSpendingLimitProposal: vi.fn(),
+}));
+
 vi.mock("../lib/contract", () => ({
+  getWeightCapPct: vi.fn().mockResolvedValue(50),
   getRequiredQuorumWeight: vi.fn().mockResolvedValue(15),
   getSpendingLimit: vi.fn().mockResolvedValue(-1n),
 }));
@@ -59,8 +64,8 @@ describe("OwnersPage", () => {
       .toBeInTheDocument();
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
     expect(screen.getByText(/GOWNER\.\.\.R111/)).toBeInTheDocument();
-    expect(screen.getByText(/Weight 5/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Weight 15/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Raw 5/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Raw 15/).length).toBeGreaterThan(0);
     expect(screen.getByText("25.0% of voting power must approve.")).toBeInTheDocument();
   });
 
@@ -101,5 +106,36 @@ describe("OwnersPage", () => {
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Signer 2").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Weight unavailable")).toHaveLength(2);
+  });
+
+  test("renders a sole owner's complete voting share and reaches quorum with their approval", async () => {
+    const soleOwnerAddress = "GSOLEOWNER";
+    mockUseOwnerWeights.mockReturnValue({
+      weights: { [soleOwnerAddress]: 100 },
+      totalWeight: 100,
+      loading: false,
+      error: null,
+    });
+    mockGetRequiredQuorumWeight.mockResolvedValue(100);
+
+    render(
+      <OwnersPage
+        owners={[{ address: "GSOLE...WNER", label: "Sole Owner", weight: 100 }]}
+        ownerAddresses={[soleOwnerAddress]}
+        threshold={100}
+        walletAddress={null}
+        onProposalSubmitted={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByText("100.0% of voting power must approve."))
+      .toBeInTheDocument();
+    expect(screen.getAllByText(/100\.0% of voting power/)).toHaveLength(2);
+    expect(screen.getByRole("img", { name: /weight 100 \(100\.0%\)/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Sole Owner for quorum simulation" }));
+
+    expect(await screen.findByText("Quorum met")).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/i)).not.toBeInTheDocument();
   });
 });
