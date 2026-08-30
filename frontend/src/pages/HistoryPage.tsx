@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Proposal, ProposalStatus } from "../types/accord";
+import type { Proposal, ProposalCategory, ProposalStatus, RecurringSchedule } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import {
   getProposalsPaged,
@@ -7,8 +7,10 @@ import {
   getThreshold,
   mapProposal,
 } from "../lib/contract";
+import { formatInterval } from "../lib/soroban";
 
 type Filter = "all" | ProposalStatus;
+type CategoryFilter = "all" | ProposalCategory;
 
 const TABS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
@@ -19,14 +21,26 @@ const TABS: { key: Filter; label: string }[] = [
   { key: "revoked", label: "Revoked" },
 ];
 
+const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
+  { key: "all", label: "All Categories" },
+  { key: "transfer", label: "Transfer" },
+  { key: "payroll", label: "Payroll" },
+  { key: "grant", label: "Grant" },
+  { key: "ops", label: "Ops" },
+  { key: "other", label: "Other" },
+];
+
 export function HistoryPage({
   proposals,
   onApprove,
+  recurringSchedules = [],
 }: {
   proposals: Proposal[];
   onApprove: (id: number) => void;
+  recurringSchedules?: RecurringSchedule[];
 }) {
   const [activeTab, setActiveTab] = useState<Filter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [proposerFilter, setProposerFilter] = useState("");
   const [displayedProposals, setDisplayedProposals] = useState<Proposal[]>(proposals);
@@ -86,6 +100,7 @@ export function HistoryPage({
 
   const filteredProposals = displayedProposals
     .filter((p) => activeTab === "all" || p.status === activeTab)
+    .filter((p) => categoryFilter === "all" || p.category === categoryFilter)
     .filter((p) =>
       p.description.toLowerCase().includes(searchTerm.toLowerCase())
     )
@@ -96,17 +111,34 @@ export function HistoryPage({
     );
 
   const hasExecutedProposals = displayedProposals.some((p) => p.status === "executed");
+  const hasRecurringSchedules = recurringSchedules.length > 0;
+  const canExportCSV = hasExecutedProposals || hasRecurringSchedules;
 
   const handleExportCSV = () => {
     const executed = displayedProposals.filter((p) => p.status === "executed");
-    if (executed.length === 0) return;
+    if (!canExportCSV) return;
 
-    const headers = ["ID", "Amount", "Token", "Recipient", "Date"];
-    const rows = executed.map(
-      (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}"`
-    );
+    const sections: string[] = [];
 
-    const csvContent = [headers.join(","), ...rows].join("\n");
+    if (executed.length > 0) {
+      const headers = ["ID", "Amount", "Token", "Recipient", "Date"];
+      const rows = executed.map(
+        (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}"`
+      );
+      sections.push([headers.join(","), ...rows].join("\n"));
+    }
+
+    if (hasRecurringSchedules) {
+      const scheduleHeaders = ["Schedule ID", "Recipient", "Amount", "Cadence", "Total Disbursed"];
+      const scheduleRows = recurringSchedules.map((s) => {
+        const cadence = s.cadence ?? (s.interval !== undefined ? formatInterval(s.interval) : "—");
+        return `${s.id},"${s.recipient}","${s.amount}","${cadence}","${s.totalDisbursed}"`;
+      });
+      const scheduleSection = ["Recurring Schedules", scheduleHeaders.join(","), ...scheduleRows].join("\n");
+      sections.push(scheduleSection);
+    }
+
+    const csvContent = sections.join("\n\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -123,7 +155,7 @@ export function HistoryPage({
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Proposal History</h2>
         <div className="flex items-center gap-3">
-          {hasExecutedProposals && (
+          {canExportCSV && (
             <button
               onClick={handleExportCSV}
               className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center gap-2"
@@ -134,6 +166,18 @@ export function HistoryPage({
               Export CSV
             </button>
           )}
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value as CategoryFilter)}
+            aria-label="Filter by category"
+            className="text-xs px-3 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg capitalize transition-colors hover:text-white focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            {CATEGORY_OPTIONS.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 rounded-lg">
           {TABS.map((tab) => (
             <button
@@ -193,7 +237,7 @@ export function HistoryPage({
       <div className="space-y-3">
         {filteredProposals.length === 0 ? (
           <p className="text-zinc-600 text-sm py-8 text-center">
-            {searchTerm || proposerFilter
+            {searchTerm || proposerFilter || categoryFilter !== "all"
               ? "No proposals match your search"
               : `No ${activeTab === "all" ? "" : `${activeTab} `}proposals found`}
           </p>

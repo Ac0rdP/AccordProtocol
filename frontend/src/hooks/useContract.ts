@@ -8,7 +8,8 @@ import {
   mapProposal,
   hasApproved,
   getApprovers,
-  getOwnerWeight,
+  getRecurringPayments,
+  computeMonthlyOutflow,
 } from "../lib/contract";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 
@@ -103,6 +104,17 @@ export function useContract(walletAddress: string | null): ContractState {
         ).length;
         const executed = proposalsWithApproval.filter((p) => p.status === "executed").length;
 
+        let recurringOutflow = "";
+        try {
+          const schedules = await getRecurringPayments();
+          if (!cancelled) {
+            const monthly = computeMonthlyOutflow(schedules);
+            recurringOutflow = monthly > 0 ? `$${monthly.toFixed(2)}` : "$0.00";
+          }
+        } catch {
+          recurringOutflow = "N/A";
+        }
+
         setStats([
           {
             label: "Threshold",
@@ -112,6 +124,7 @@ export function useContract(walletAddress: string | null): ContractState {
           { label: "Active", value: String(active), sub: "proposals" },
           { label: "Total", value: String(total), sub: "proposals created" },
           { label: "Executed", value: String(executed), sub: "all time" },
+          { label: "Recurring Outflows", value: recurringOutflow || "$0.00", sub: "per month" },
         ]);
         
         if (!cancelled) {

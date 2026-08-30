@@ -1,8 +1,25 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import type { DashboardStat, Owner, Proposal } from "../types/accord";
+import { useEffect, useRef, useState } from "react";
+import { Plus, Repeat2 } from "lucide-react";
+import type {
+  DashboardStat,
+  Owner,
+  OwnerWeightChangeEvent,
+  Proposal,
+  RecurringSchedule,
+} from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { useOwnerWeights } from "../hooks/useOwnerWeights";
+import {
+  getRequiredQuorumWeight,
+  getDueRecurring,
+  getOwnerWeightChangeEvents,
+} from "../lib/contract";
+import { shortenAddr } from "../lib/soroban";
+
+const RECENT_WEIGHT_CHANGES = 5;
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -13,8 +30,8 @@ type DashboardPageProps = {
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
-  /** Ref forwarded from App.tsx to enable focus-return after modal close */
-  createProposalButtonRef?: RefObject<HTMLButtonElement | null>;
+  onCreateRecurringPayment: () => void;
+  recurringButtonRef?: React.RefObject<HTMLButtonElement | null>;
   loading: boolean;
   error: string | null;
 };
@@ -28,7 +45,8 @@ export function DashboardPage({
   onExecute,
   onRevoke,
   onCreateProposal,
-  createProposalButtonRef,
+  onCreateRecurringPayment,
+  recurringButtonRef,
   loading,
   error,
 }: DashboardPageProps) {
@@ -36,12 +54,60 @@ export function DashboardPage({
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
+  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
     if (!sortByDeadline) return right.id - left.id;
     return left.deadlineTs - right.deadlineTs;
   });
+
+  // Compute owner weights and quorum weight for weight-based UI
+  const ownerAddresses = owners.map((o) => o.address);
+  const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
+  const [quorumWeight, setQuorumWeight] = useState<number>(0);
+
+  useEffect(() => {
+    let active = true;
+    getRequiredQuorumWeight()
+      .then((w) => {
+        if (active) setQuorumWeight(w);
+      })
+      .catch(() => {
+        /* noop */
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getDueRecurring()
+      .then((schedules) => {
+        if (active) setDueSchedules(schedules);
+      })
+      .catch(() => {
+        /* noop */
+      });
+    return () => { active = false; };
+  }, []);
+
+  // Recent owner voting-weight changes, newest first.
+  useEffect(() => {
+    let active = true;
+    getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
+      .then((events) => {
+        if (active) setWeightChanges(events);
+      })
+      .catch(() => {
+        /* noop — feed falls back to its empty state */
+      })
+      .finally(() => {
+        if (active) setWeightChangesLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (readyCount > prevReadyCount.current) {
@@ -56,11 +122,63 @@ export function DashboardPage({
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         {dashboardStats.map((s) => (
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
+
+      <GovernanceHealthWidget
+        weights={weights}
+        totalWeight={totalWeight}
+        loading={loading}
+      />
+
+      {dueSchedules.length > 0 && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
+          <h3 className="font-semibold text-sm mb-3">
+            Due for disbursement
+            <span className="ml-2 text-xs text-zinc-500 font-normal">
+              {dueSchedules.length} {dueSchedules.length === 1 ? "schedule" : "schedules"}
+            </span>
+          </h3>
+          <div className="space-y-2">
+            {dueSchedules.map((schedule) => (
+              <div
+                key={schedule.id}
+                className="flex items-center justify-between rounded-lg bg-zinc-800/50 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <span className="text-sm text-white font-medium">
+                    {schedule.amount} {schedule.token ?? ""}
+                  </span>
+                  <span className="text-xs text-zinc-500 ml-2">
+                    Schedule #{schedule.id}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Disburse schedule ${schedule.id} now`}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 shrink-0 ml-3"
+                >
+                  Disburse now
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {dueSchedules.length === 0 && !loading && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
+          <h3 className="font-semibold text-sm text-zinc-400 mb-1">
+            Due for disbursement
+          </h3>
+          <p className="text-xs text-zinc-600">
+            No schedules are currently due for disbursement.
+          </p>
+        </div>
+      )}
 
       {error && !loading && dismissedError !== error && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
@@ -104,12 +222,22 @@ export function DashboardPage({
             Expiring first
           </label>
           <button
-            ref={createProposalButtonRef}
             type="button"
             onClick={onCreateProposal}
-            className="text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
           >
-            + New
+            <Plus size={14} />
+            New
+          </button>
+          <button
+            ref={recurringButtonRef}
+            type="button"
+            onClick={onCreateRecurringPayment}
+            aria-label="Create recurring payment"
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            <Repeat2 size={14} />
+            Recurring
           </button>
         </div>
       </div>
@@ -126,17 +254,64 @@ export function DashboardPage({
             <p>Create a new proposal to start the approval flow.</p>
           </div>
         ) : (
-          displayedProposals.map((proposal) => (
-            <ProposalCard
-              key={proposal.id}
-              proposal={proposal}
-              walletAddress={walletAddress}
-              onApprove={onApprove}
-              onExecute={onExecute}
-              onRevoke={onRevoke}
-            />
-          ))
+          displayedProposals.map((proposal) => {
+            // Sum approval weight by summing known owner weights for approver addresses
+            const approvalWeight = (proposal.approverAddresses || []).reduce((acc, addr) => acc + (weights[addr] ?? 0), 0);
+            return (
+              <ProposalCard
+                key={proposal.id}
+                proposal={proposal}
+                walletAddress={walletAddress}
+                onApprove={onApprove}
+                onExecute={onExecute}
+                onRevoke={onRevoke}
+                approvalWeight={approvalWeight}
+                quorumWeight={quorumWeight}
+                totalWeight={totalWeight}
+                ownerWeights={weights}
+              />
+            );
+          })
         )}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="font-semibold mb-4">Recent Weight Changes</h2>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
+          {weightChangesLoading ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              Loading recent weight changes…
+            </div>
+          ) : weightChanges.length === 0 ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              No voting-weight changes recorded yet.
+            </div>
+          ) : (
+            weightChanges.map((change, index) => (
+              <div
+                key={`${change.owner}-${change.ledger ?? "x"}-${index}`}
+                className="flex items-center justify-between px-4 py-3 gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+                    {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm text-zinc-300 truncate">
+                      {shortenAddr(change.owner)}
+                    </p>
+                    <p className="text-xs text-zinc-500">{change.timestamp}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
+                  <span className="text-zinc-500">{change.oldWeight}</span>
+                  <span aria-hidden className="text-zinc-600">→</span>
+                  <span className="text-emerald-400">{change.newWeight}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="mt-8">

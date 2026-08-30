@@ -1,10 +1,38 @@
-import { useEffect, useState } from "react";
-import { getSpendingLimit } from "../lib/contract";
+import { useEffect, useMemo, useState } from "react";
+import { getRequiredQuorumWeight, getSpendingLimit } from "../lib/contract";
 import { createSpendingLimitProposal } from "../lib/submit";
-import { displayToStroops, stroopsToDisplay } from "../lib/soroban";
+import {
+  displayToStroops,
+  shortenAddr,
+} from "../lib/soroban";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { Owner } from "../types/accord";
-import { CreateWeightChangeProposalModal } from "../components/CreateWeightChangeProposalModal";
+import { useOwnerWeights } from "../hooks/useOwnerWeights";
+import { useDelegations } from "../hooks/useDelegations";
+import { DelegateModal } from "../components/DelegateModal";
+
+const CHART_COLORS = [
+  "bg-emerald-500",
+  "bg-blue-500",
+  "bg-amber-500",
+  "bg-rose-500",
+  "bg-indigo-500",
+  "bg-violet-500",
+  "bg-orange-500",
+  "bg-cyan-500",
+  "bg-fuchsia-500",
+  "bg-teal-500",
+  "bg-purple-500",
+  "bg-pink-500",
+  "bg-lime-500",
+  "bg-red-400",
+  "bg-purple-400",
+  "bg-sky-500",
+  "bg-emerald-400",
+  "bg-amber-400",
+  "bg-rose-400",
+  "bg-indigo-400",
+];
 
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -33,8 +61,20 @@ export function OwnersPage({
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
-  const [spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
-  const [limitsLoading, setLimitsLoading] = useState(true);
+  const {
+    weights,
+    totalWeight,
+    loading: weightsLoading,
+    error: weightsError,
+  } = useOwnerWeights(ownerAddresses);
+  const {
+    delegations,
+    loading: delegationsLoading,
+    refetch: refetchDelegations,
+  } = useDelegations(ownerAddresses);
+  const [delegateModalOpen, setDelegateModalOpen] = useState(false);
+  const [_spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
+  const [_limitsLoading, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [showWeightForm, setShowWeightForm] = useState(false);
   const [weightTargetOwner, setWeightTargetOwner] = useState<string>("");
@@ -51,6 +91,70 @@ export function OwnersPage({
   });
   const [slSubmitting, setSlSubmitting] = useState(false);
   const [slError, setSlError] = useState<string | null>(null);
+
+  // Derived state for weight display
+  const hasOwnerWeights =
+    !weightsLoading && Object.keys(weights).length > 0 && !weightsError;
+  const ownerWeightsLoading = weightsLoading;
+  const weightsUnavailable = !weightsLoading && !!weightsError;
+  const ownerCountLabel = `${ownerAddresses.length} ${ownerAddresses.length === 1 ? "owner" : "owners"}`;
+  const quorumPercent =
+    totalWeight > 0
+      ? ((threshold / totalWeight) * 100).toFixed(1)
+      : "0";
+  const weightsStale = false;
+
+  // Load required quorum weight for the simulator
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setQuorumLoading(true);
+      try {
+        const weight = await getRequiredQuorumWeight();
+        if (!cancelled) {
+          setRequiredQuorumWeight(weight);
+          setQuorumLoading(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setRequiredQuorumWeight(0);
+          setQuorumLoading(false);
+        }
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Quorum simulator computed values
+  const selectedWeight = useMemo(() => {
+    let sum = 0;
+    for (const addr of selectedAddresses) {
+      sum += weights[addr] ?? 0;
+    }
+    return sum;
+  }, [selectedAddresses, weights]);
+
+  const quorumMet =
+    requiredQuorumWeight > 0 && selectedWeight >= requiredQuorumWeight;
+
+  function toggleSelection(address: string) {
+    setSelectedAddresses((prev) => {
+      const next = new Set(prev);
+      if (next.has(address)) {
+        next.delete(address);
+      } else {
+        next.add(address);
+      }
+      return next;
+    });
+  }
+
+  function resetSelection() {
+    setSelectedAddresses(new Set());
+  }
 
   // Load spending limits for all owners and tokens
   useEffect(() => {
@@ -74,14 +178,40 @@ export function OwnersPage({
       }
     }
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [ownerAddresses]);
 
-  function formatLimit(limit: bigint, symbol: string): { text: string; variant: "unrestricted" | "zero" | "configured" } {
-    if (limit < 0n) return { text: "Unrestricted", variant: "unrestricted" };
-    if (limit === 0n) return { text: `0 ${symbol}`, variant: "zero" };
-    return { text: `${stroopsToDisplay(limit)} ${symbol}`, variant: "configured" };
-  }
+  const visibleOwners = owners
+    .map((owner, idx) => {
+      const fullAddress = ownerAddresses[idx] ?? owner.address;
+      const weight = weights[fullAddress] ?? (weightsLoading ? null : 1);
+      const percentage = totalWeight > 0 && weight !== null
+        ? (weight / totalWeight) * 100
+        : 0;
+      const outgoing = delegations.find((d) => d.delegator === fullAddress) ?? null;
+      const incoming = delegations.filter((d) => d.delegate === fullAddress);
+      const effectiveWeight = weight === null
+        ? null
+        : weight - (outgoing?.weight ?? 0) + incoming.reduce((sum, d) => sum + d.weight, 0);
+      return { ...owner, fullAddress, weight, percentage, outgoing, incoming, effectiveWeight };
+    })
+    .sort((left, right) => {
+      if (!sortByWeightDesc) return 0;
+      return (right.weight ?? 0) - (left.weight ?? 0);
+    })
+    .filter((owner) => {
+      if (filterMode === "all") return true;
+
+      const thresholdVal = Number(shareThreshold);
+      if (!Number.isFinite(thresholdVal)) return true;
+
+      if (filterMode === "above") return owner.percentage > thresholdVal;
+      return owner.percentage < thresholdVal;
+    });
+
+
 
   async function handleCreateSpendingLimit() {
     if (!walletAddress) {
@@ -129,7 +259,7 @@ export function OwnersPage({
         tokenAddr,
         displayToStroops(amountNum),
         slDescription.trim(),
-        BigInt(Math.floor(deadlineMs / 1000))
+        BigInt(Math.floor(deadlineMs / 1000)),
       );
       onProposalSubmitted();
       setShowForm(false);
@@ -142,6 +272,8 @@ export function OwnersPage({
     }
   }
 
+  const selectedCount = selectedAddresses.size;
+
   return (
     <>
       <div className="mb-8">
@@ -151,72 +283,114 @@ export function OwnersPage({
         </p>
       </div>
 
-      {/* Owners list with spending limits */}
+      {/* Owners list with checkboxes and spending limits */}
       {owners.length === 0 ? (
+        <div className="py-12 text-center">
+          <p className="text-sm text-zinc-600">No owners found.</p>
+        </div>
+      ) : visibleOwners.length === 0 ? (
         <div className="text-center py-12">
-          <p className="text-zinc-600 text-sm">No owners found.</p>
+          <p className="text-zinc-600 text-sm">
+            No owners match the current filters.
+          </p>
         </div>
       ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800 mb-8">
-          {owners.map((owner, index) => (
-            <div key={owner.address}>
-              <div className="flex items-center gap-3 px-4 py-4">
+          {visibleOwners.map((owner) => {
+            const isSelected = selectedAddresses.has(owner.fullAddress);
+            return (
+              <div
+                key={owner.fullAddress}
+                className={`flex items-center gap-3 px-4 py-4 transition-colors ${
+                  isSelected ? "bg-zinc-800/50" : ""
+                }`}
+              >
+                <label className="flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelection(owner.fullAddress)}
+                    className="accent-emerald-500 w-4 h-4"
+                    aria-label={`Select ${owner.label} for quorum simulation`}
+                  />
+                </label>
                 <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
                   {owner.label[0]}
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-zinc-300">{owner.label}</p>
-                  <p className="font-mono text-xs text-zinc-500">{owner.address}</p>
-                  <p className="mt-1 font-mono text-xs text-emerald-400">
-                    Weight {owner.weight}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const fullAddress = ownerAddresses[index] ?? "";
-                    setWeightTargetOwner(fullAddress);
-                    setShowWeightForm(true);
-                  }}
-                  className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
-                >
-                  Change Weight
-                </button>
-              </div>
-
-              {/* Spending limits per token */}
-              {limitsLoading ? (
-                <div className="px-4 pb-4">
-                  <div className="h-4 w-32 bg-zinc-800 animate-pulse rounded" />
-                </div>
-              ) : (
-                <div className="px-4 pb-4 pl-14 grid grid-cols-3 gap-2">
-                  {TOKEN_SYMBOLS.map((symbol) => {
-                    const rawAddr = ownerAddresses[index];
-                    const limit = rawAddr ? spendingLimits[rawAddr]?.[symbol] : undefined;
-                    const info = limit !== undefined
-                      ? formatLimit(limit, symbol)
-                      : { text: "—", variant: "unrestricted" as const };
-
-                    const variantStyles = {
-                      unrestricted: "text-zinc-500",
-                      zero: "text-red-400",
-                      configured: "text-emerald-400",
-                    };
-
-                    return (
-                      <div key={symbol} className="text-xs">
-                        <span className="text-zinc-600">{symbol}: </span>
-                        <span className={`font-mono ${variantStyles[info.variant]}`}>
-                          {info.text}
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm text-zinc-300">{owner.label}</p>
+                    <div className="flex items-center gap-1.5">
+                      {ownerWeightsLoading ? (
+                        <span className="text-xs text-zinc-500">
+                          Loading weight...
                         </span>
-                      </div>
-                    );
-                  })}
+                      ) : weightsUnavailable ? (
+                        <span className="text-xs text-red-400">
+                          Weight unavailable
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-xs text-zinc-400 bg-zinc-800 border border-zinc-700 px-2 py-0.5 rounded-full font-mono">
+                            Raw {owner.weight}
+                          </span>
+                          {owner.effectiveWeight !== null &&
+                            owner.effectiveWeight !== owner.weight && (
+                              <span
+                                title="Effective weight = raw weight minus delegated-away weight plus delegated-in weight"
+                                className={`text-xs px-2 py-0.5 rounded-full font-mono border ${
+                                  owner.effectiveWeight > (owner.weight ?? 0)
+                                    ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
+                                    : "text-amber-300 bg-amber-500/10 border-amber-500/30"
+                                }`}
+                              >
+                                Effective {owner.effectiveWeight}
+                              </span>
+                            )}
+                        </>
+                      )}
+                      {walletAddress === owner.fullAddress && !ownerWeightsLoading && !weightsUnavailable && (
+                        <button
+                          type="button"
+                          onClick={() => setDelegateModalOpen(true)}
+                          aria-label="Delegate voting weight"
+                          className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded-full transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                        >
+                          Delegate
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="font-mono text-xs text-zinc-500">
+                    {shortenAddr(owner.address)}
+                    {!ownerWeightsLoading && !weightsUnavailable && (
+                      <span className="text-xs text-zinc-400 ml-2">
+                        &middot; {owner.percentage.toFixed(1)}% of voting power
+                      </span>
+                    )}
+                  </p>
+                  {!delegationsLoading && (owner.outgoing || owner.incoming.length > 0) && (
+                    <div className="mt-2 space-y-1">
+                      {owner.outgoing && (
+                        <p className="text-xs text-zinc-500">
+                          <span className="text-zinc-400">Delegated {owner.outgoing.weight} to</span>{" "}
+                          <span className="font-mono">{shortenAddr(owner.outgoing.delegate)}</span>
+                          <span className="ml-1">&middot; expires {owner.outgoing.expiry}</span>
+                        </p>
+                      )}
+                      {owner.incoming.map((d) => (
+                        <p key={d.delegator} className="text-xs text-zinc-500">
+                          <span className="text-zinc-400">Received {d.weight} from</span>{" "}
+                          <span className="font-mono">{shortenAddr(d.delegator)}</span>
+                          <span className="ml-1">&middot; expires {d.expiry}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -227,6 +401,13 @@ export function OwnersPage({
           <button
             type="button"
             onClick={() => setShowForm(!showForm)}
+            aria-expanded={showForm}
+            aria-controls="spending-limit-form"
+            aria-label={
+              showForm
+                ? "Close spending limit form"
+                : "Open spending limit form"
+            }
             className="text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             {showForm ? "Cancel" : "Set Spending Limit"}
@@ -234,39 +415,61 @@ export function OwnersPage({
         </div>
 
         {showForm && (
-          <div className="space-y-4 border-t border-zinc-800 pt-4">
+          <div
+            id="spending-limit-form"
+            className="space-y-4 border-t border-zinc-800 pt-4"
+          >
             <p className="text-xs text-zinc-400">
-              Propose a per-owner, per-token spending limit. Set to 0 to block spending for that token.
+              Propose a per-owner, per-token spending limit. Set to 0 to block
+              spending for that token.
             </p>
 
             <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">Owner Address</label>
+              <label
+                htmlFor="sl-owner"
+                className="text-xs text-zinc-400 block mb-1.5"
+              >
+                Owner Address
+              </label>
               <input
+                id="sl-owner"
                 value={slOwner}
                 onChange={(e) => setSlOwner(e.target.value)}
                 placeholder="G..."
+                aria-label="Owner Stellar address"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
               />
             </div>
 
             <div className="flex gap-3">
               <div className="flex-1">
-                <label className="text-xs text-zinc-400 block mb-1.5">
+                <label
+                  htmlFor="sl-amount"
+                  className="text-xs text-zinc-400 block mb-1.5"
+                >
                   Limit Amount
                 </label>
                 <input
+                  id="sl-amount"
                   value={slAmount}
                   onChange={(e) => setSlAmount(e.target.value)}
                   placeholder="0.00"
                   type="number"
                   min="0"
                   step="any"
+                  aria-label="Spending limit amount"
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
                 />
               </div>
               <div className="w-28">
-                <label className="text-xs text-zinc-400 block mb-1.5">Token</label>
-                <div className="grid grid-cols-3 gap-1">
+                <label className="text-xs text-zinc-400 block mb-1.5">
+                  Token
+                </label>
+                <div
+                  className="grid grid-cols-3 gap-1"
+                  role="group"
+                  aria-label="Token selector"
+                >
                   {TOKEN_SYMBOLS.map((symbol) => {
                     const active = slToken === symbol;
                     return (
@@ -275,6 +478,7 @@ export function OwnersPage({
                         type="button"
                         onClick={() => setSlToken(symbol)}
                         aria-pressed={active}
+                        aria-label={`Select token ${symbol}`}
                         className={`rounded-lg border px-1.5 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
                           active
                             ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
@@ -290,22 +494,36 @@ export function OwnersPage({
             </div>
 
             <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">Description</label>
+              <label
+                htmlFor="sl-description"
+                className="text-xs text-zinc-400 block mb-1.5"
+              >
+                Description
+              </label>
               <input
+                id="sl-description"
                 value={slDescription}
                 onChange={(e) => setSlDescription(e.target.value)}
                 placeholder="Reason for spending limit"
                 maxLength={300}
+                aria-label="Spending limit description"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
               />
             </div>
 
             <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">Deadline</label>
+              <label
+                htmlFor="sl-deadline"
+                className="text-xs text-zinc-400 block mb-1.5"
+              >
+                Deadline
+              </label>
               <input
+                id="sl-deadline"
                 type="date"
                 value={slDeadline}
                 onChange={(e) => setSlDeadline(e.target.value)}
+                aria-label="Spending limit deadline"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
               />
             </div>
@@ -319,6 +537,7 @@ export function OwnersPage({
             <button
               type="button"
               onClick={handleCreateSpendingLimit}
+              aria-label="Create spending limit proposal"
               disabled={slSubmitting || !walletAddress}
               className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
@@ -329,17 +548,27 @@ export function OwnersPage({
 
         {!showForm && (
           <p className="text-xs text-zinc-500">
-            Configure per-owner spending limits for specific tokens. All changes require multisig approval.
+            Configure per-owner spending limits for specific tokens. All changes
+            require multisig approval.
           </p>
         )}
       </div>
 
-      {showWeightForm && (
-        <CreateWeightChangeProposalModal
+      {delegateModalOpen && walletAddress && (
+        <DelegateModal
           walletAddress={walletAddress}
-          onClose={() => setShowWeightForm(false)}
-          onSubmitted={onProposalSubmitted}
-          initialOwnerAddress={weightTargetOwner}
+          ownerWeight={weights[walletAddress] ?? 1}
+          candidates={owners
+            .map((o, idx) => ({
+              address: ownerAddresses[idx] ?? o.address,
+              label: o.label,
+            }))
+            .filter((o) => o.address !== walletAddress)}
+          onClose={() => setDelegateModalOpen(false)}
+          onSubmitted={() => {
+            refetchDelegations();
+            onProposalSubmitted();
+          }}
         />
       )}
     </>

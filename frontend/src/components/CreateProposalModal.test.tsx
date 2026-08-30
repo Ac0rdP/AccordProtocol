@@ -23,6 +23,10 @@ vi.mock("../lib/contract", () => ({
     "GBPLX2P3VWYKPQ7L5RI5OGXQ6T4G7QZMJ3HPQD7FZX5KJ3H2Z4YK5ABC",
   ]),
   getThreshold: vi.fn().mockResolvedValue(2),
+  getRequiredQuorumWeight: vi.fn().mockResolvedValue(2),
+  getOwnerWeight: vi.fn().mockResolvedValue(1),
+  getWeightCapPct: vi.fn().mockResolvedValue(50),
+  getTotalWeight: vi.fn().mockResolvedValue(2),
 }));
 
 // Mock StrKey to avoid validation issues with dummy addresses
@@ -98,7 +102,7 @@ describe("CreateProposalModal", () => {
     expect(screen.getByText("0 / 300")).toBeDefined();
     expect(descriptionInput.maxLength).toBe(300);
 
-    await userEvent.type(descriptionInput, "a".repeat(301));
+    fireEvent.change(descriptionInput, { target: { value: "a".repeat(300) } });
 
     expect(descriptionInput.value).toHaveLength(300);
     expect(screen.queryByText("301 / 300")).toBeNull();

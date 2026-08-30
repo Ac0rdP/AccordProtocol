@@ -383,6 +383,14 @@
                   "storage": [
                     {
                       "key": {
+                        "symbol": "GOVVER"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "INIT"
                       },
                       "val": {
@@ -415,7 +423,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "TWEIGHT"
+                        "symbol": "TWGT"
                       },
                       "val": {
                         "u32": 3

@@ -1,7 +1,7 @@
 # Accord Protocol — Architecture
 
 ## 1. System Overview
-
+ 
 ```text
 ┌──────────────────────────────┐
 │     Web Client (Vite/React)  │
@@ -61,6 +61,7 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `THRESH` | `u32`  | Approval threshold                        | 518,400 / 17,280                 |
 | `NEXT`   | `u64`  | Monotonic proposal ID counter             | 518,400 / 17,280                 |
 | `ACTCNT` | `u32`  | Active proposal count (budget guard)      | 518,400 / 17,280                 |
+| `TWGT`   | `u32`  | Cached total owner weight                  | 518,400 / 17,280                 |
 | `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
 
 **Instance entry cost**: all five keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
@@ -78,15 +79,18 @@ Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 ### Proposal Struct Fields
 
 ```
-id            u64
-proposer      Address
-to            Address
-amount        i128          (token's native unit — stroop for XLM-derived tokens)
-token         Address       (Soroban token contract)
-description   String        (max 300 chars)
-deadline      u64           (Unix timestamp)
-approvals     u32
-status        ProposalStatus
+id               u64
+proposer         Address
+description      String        (max 300 chars)
+deadline         u64           (Unix timestamp)
+approvals        u32           (cumulative approval weight; kept in sync with approval_weight)
+approval_weight  u32           (cumulative approval weight credited from approvers)
+status           ProposalStatus
+kind             ProposalKind  (Transfer | AddOwner | RemoveOwner | ChangeThreshold |
+                                SetSpendingLimit | ChangeOwnerWeight | recurring variants)
+ready_at         u64           (ledger time when quorum was first reached; 0 if not yet)
+quorum_weight    u32           (threshold snapshotted at proposal creation)
+category         ProposalCategory
 ```
 
 ### Key Naming Conventions
@@ -114,6 +118,14 @@ Accord uses two patterns:
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
+
+### Lifecycle of Per-Owner Persistent Storage Entries
+
+When an owner is removed from governance via `RemoveOwner`, the execution logic updates the `OWNERS` map and `TWEIGHT` (total weight) in storage. Per-owner persistent storage entries indexed by `Address` are not automatically swept or deleted upon owner removal:
+
+- **Per-Proposal Approval Entries (`("APPR", id, owner)`)**: Persistent approval entries for removed owners remain in ledger storage. Calling `has_approved(proposal_id, address)` directly reads `APPR` and returns `true` for an approval recorded prior to removal. High-level view functions like `get_approvers(proposal_id)` iterate only currently registered owners in `OWNERS`, automatically excluding removed addresses from the active approvers list.
+- **Spending Limit & Tracker Entries (`("SLIMIT", owner, token)` and `("SPENT", owner, token)`)**: Persistent spending limit bounds and tracking epochs are stored per `(owner, token)` pair and are not erased when an owner is removed.
+- **Re-added Owner Inheritance**: If an address is removed and later re-added as an owner via `AddOwner`, any pre-existing `SLIMIT` and `SPENT` entries associated with that address remain active in storage. The re-added owner immediately inherits those previous spending limits unless a new `SetSpendingLimit` proposal is created and executed to update or clear the limit.
 
 ### Storage Cost Per Proposal
 
@@ -230,6 +242,54 @@ When an entry's TTL reaches zero the Stellar network **permanently deletes** it 
 
 For long-lived multisigs, ensure at least one on-chain call touches the contract within every 30-day window (for example, a periodic `get_threshold` call) to keep the instance alive.
 
+## Weighted Governance Model
+
+Accord Protocol evolved from a flat M-of-N approval count into **weighted governance**: each owner carries an individual voting weight, proposals become `Ready` when accumulated approval weight meets a snapshotted quorum, and the contract maintains a total-weight counter that must always equal the sum of current owner weights.
+
+### Weighted data model
+
+| Concept | Where it lives | Meaning |
+|---------|----------------|---------|
+| Per-owner weight | Persistent `OWNERS` map (`Address → u32`) | Each registered owner's raw voting weight (`MIN_OWNER_WEIGHT`..=`MAX_OWNER_WEIGHT`) |
+| Total weight | Instance key `TWGT` (`u32`) | Running sum of all owner weights; updated on initialize, add/remove owner, and `ChangeOwnerWeight` |
+| Threshold / required quorum | Instance key `THRESH` (`u32`) | Absolute weight a **new** proposal must reach; also returned by `get_required_quorum_weight` |
+| Proposal quorum | `Proposal.quorum_weight` | Copy of the threshold at **proposal creation** — frozen for that proposal's lifetime |
+| Proposal approval progress | `Proposal.approvals` / `Proposal.approval_weight` | Cumulative effective weight from owners who have approved (delegation-aware at approve time) |
+| Per-approver contribution | Persistent `("APPR", id, owner)` weight | Weight credited when that owner approved, so `revoke` can subtract the same amount |
+
+Bounds enforced by the contract:
+
+- Per-owner weight: `1` … `100_000`
+- Max owners: `20` → theoretical max total weight `2_000_000`
+- Default single-owner cap for `ChangeOwnerWeight`: **50%** of resulting total weight (`MAX_SINGLE_OWNER_WEIGHT_PCT`)
+
+Read paths for operators and frontends: `get_owner_weight`, `get_owner_weights`, `get_total_weight`, `get_required_quorum_weight`, `get_proposal_approval_progress`.
+
+### Quorum computation and approval accumulation
+
+1. **At creation** — Every proposal-creation entrypoint reads the current threshold and stores it as `quorum_weight` on the new `Proposal`. It also emits `total_weight_at_creation` on the `created` event so auditors can reconstruct context even after later ownership changes. Changing `THRESH` afterward does **not** rewrite existing proposals' `quorum_weight`.
+
+2. **On approve** — The contract loads the approver's raw weight from `OWNERS`, computes **effective weight** (raw ± active delegations), records that value under `("APPR", id, owner)`, and adds it to both `approvals` and `approval_weight`.
+
+3. **Ready transition** — `derive_status` marks a proposal `Ready` when `approvals >= quorum_weight` (and the deadline has not passed). The same comparison gates `execute`.
+
+4. **On revoke** — The stored per-approver weight is subtracted from the cumulative totals so a weight change after approve cannot leave inconsistent counters.
+
+Invariant operators must preserve: **sum(`get_owner_weights`) == `get_total_weight`**. Governance executions that would leave any active proposal's `quorum_weight` unreachable (`WouldBreakQuorum`) are rejected.
+
+### How this differs from flat M-of-N
+
+| | Flat M-of-N (original) | Weighted governance (current) |
+|--|------------------------|-------------------------------|
+| Owner vote | Every approval counts as `1` | Each approval contributes that owner's weight |
+| Threshold meaning | “M distinct owners must approve” | “At least `threshold` weight must approve” |
+| Owner storage | List of addresses | Map of address → weight |
+| Ready condition | `approval_count >= M` | `approval_weight >= quorum_weight` |
+| Changing power | Add/remove owners only | Also `ChangeOwnerWeight(target, new_weight)` |
+| Equal weights | Native model | Still supported: set every weight to `1` and `threshold = M` — behaviour matches classical M-of-N |
+
+**Equal weights reduce to the old model.** A 2-of-3 multisig with weights `[1, 1, 1]` and threshold `2` still needs any two owners. Skewed weights (for example `[5, 3, 2]` with threshold `6`) let larger stakeholders carry more influence while still requiring coalition approvals when no single owner meets quorum alone. Legacy deployments that predate weights can call `migrate_to_weighted_governance` once (after upgrading WASM) to assign weight `1` to every existing owner.
+
 ## 4. Proposal Lifecycle
 
 ```
@@ -340,7 +400,224 @@ The execute flow is triggered when an owner clicks Execute on a proposal that ha
 
 > **Most common failure point:** The Accord contract's token balance may be insufficient to cover the transfer amount. The token contract's `transfer` call fails and the execute call reverts with `TransferFailed`. Frontends should check the contract's token balance before enabling the execute button.
 
-## 6. Event Schema
+### 5.3 Weighted Approve & Execute Flow
+
+The weighted flow differs from the flat model in two key ways: each approval contributes the owner's individual voting weight rather than a count of 1, and execution re-validates that the accumulated approval weight meets the snapshotted quorum weight. The approve step records the approver's effective (delegation-aware) weight so that `revoke` can later reverse precisely the same amount.
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract
+       |                |               |               |               |               |
+       | (1) Click      |               |               |               |               |
+       |    Approve      |               |               |               |               |
+       |--------------->|               |               |               |               |
+       |                | (2) Build tx  |               |               |               |
+       |                |-------------->|               |               |               |
+       |                |               | (3) Sign      |               |               |
+       |                |               |-------------->|               |               |
+       |                |               |               | (4) simulate  |               |
+       |                |               |               |   transaction |               |
+       |                |               |               |-------------->|               |
+       |                |               |               | (5) OK        |               |
+       |                |               |               |<--------------|               |
+       |                |               |               | (6) submit    |               |
+       |                |               |               |-------------->|               |
+       |                |               |               |               | (7) approve() |
+       |                |               |               |               |-------------->|
+       |                |               |               |               |               |  require_auth
+       |                |               |               |               |               |  load_owner_weight
+       |                |               |               |               |               |  read_proposal
+       |                |               |               |               |               |  derive_status
+       |                |               |               |               |               |  read_approval
+       |                |               |               |               |               |  compute_effective_weight
+       |                |               |               |               |               |  write_approval_weight
+       |                |               |               |               |               |  add weight to approvals
+       |                |               |               |               |               |  check approvals >= quorum
+       |                |               |               |               |               |  set ready_at
+       |                |               |               |               |               |  write_proposal
+       |                |               |               |               |               |  emit approved
+       |                |               |               |               |<--------------| (8) result
+       |                |               |               |<--------------|               |
+       |                |<--------------|               |               |               |
+       |<---------------|               |               |               |               |
+       | (9) re-fetch   |               |               |               |               |
+       |     proposal   |               |               |               |               |
+```
+
+> **Weighted key difference:** The flat approve flow checks `approvals >= threshold` (where each approval counts as 1). The weighted flow loads the approver's raw weight from the `OWNERS` map, computes effective (delegation-aware) weight, stores that exact value for later revocation, and adds it to the cumulative `approval_weight`. The proposal transitions to `Ready` when `approval_weight >= quorum_weight` — the quorum weight was snapshotted at proposal creation from the contract's total weight threshold.
+
+The weighted execute flow mirrors the flat flow's simulate-and-submit pattern, but re-validates the quorum at execution time against the snapshotted `quorum_weight` rather than an owner count:
+
+```text
+     Owner            Frontend        Freighter       Stellar SDK     Soroban RPC     Accord Contract   Token Contract
+       |                |               |               |               |               |               |
+       | (1) Click      |               |               |               |               |               |
+       |    Execute     |               |               |               |               |               |
+       |--------------->|               |               |               |               |               |
+       |                | (2) Build tx  |               |               |               |               |
+       |                |-------------->|               |               |               |               |
+       |                |               | (3) Sign      |               |               |               |
+       |                |               |-------------->|               |               |               |
+       |                |               |               | (4) simulate  |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               | (5) OK        |               |               |
+       |                |               |               |<--------------|               |               |
+       |                |               |               | (6) submit    |               |               |
+       |                |               |               |-------------->|               |               |
+       |                |               |               |               | (7) execute() |               |
+       |                |               |               |               |-------------->|               |
+       |                |               |               |               |               | require_auth  |
+       |                |               |               |               |               | require_owner |
+       |                |               |               |               |               | read_proposal |
+       |                |               |               |               |               | derive_status |
+       |                |               |               |               |               | check Ready   |
+       |                |               |               |               |               | check approvals >=
+       |                |               |               |               |               |   quorum_weight|
+       |                |               |               |               |               | check timelock|
+       |                |               |               |               |               | (8) transfer  |
+       |                |               |               |               |               |-------------->|
+       |                |               |               |               |               |<--------------| OK
+       |                |               |               |               |               | status=Exec'd |
+       |                |               |               |               |               | emit executed |
+       |                |               |               |               |<--------------| (9) result    |
+       |                |               |               |<--------------|               |               |
+       |                |<--------------|               |               |               |               |
+       |<---------------|               |               |               |               |               |
+       | (10) re-fetch  |               |               |               |               |               |
+       |      proposal  |               |               |               |               |               |
+```
+
+> **Weighted key difference:** The flat execute flow checks `approvals >= threshold` (owner count). The weighted flow checks `proposal.approvals >= proposal.quorum_weight` — the quorum weight was snapshotted at proposal creation. If the contract's threshold has been changed since the proposal was created, the snapshotted quorum_weight is unaffected; the proposal's requirement is frozen at creation time.
+
+## 6. Recurring & Scheduled Payments
+
+The contract supports automated, recurring payroll and token vesting schedules via the `CreateRecurringPayment` proposal kind. Once a recurring schedule is proposed and approved by the multisig owners, it is registered on-chain. Payouts are then disbursed incrementally according to the schedule's configuration.
+
+### 6.1 Data Model
+
+Recurring schedules are represented by the `RecurringPayment` struct stored in persistent storage under the `("RECUR", id)` namespace.
+
+```rust
+pub struct RecurringPayment {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval_secs: u64,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cliff_time: u64,
+    pub total_cap: i128,
+    pub status: RecurringStatus,
+    pub kind: RecurringKind,
+    pub total_disbursed: i128,
+    pub last_disbursed_at: u64,
+}
+```
+
+#### Status Lifecycle (`RecurringStatus`)
+- **Active**: The schedule is live and eligible for disbursement once temporal constraints (intervals/cliffs) are met.
+- **Paused**: Temporarily paused by a governance proposal; no disbursements can be made.
+- **Completed**: The schedule has naturally concluded because either its `end_time` has passed or the `total_cap` has been fully disbursed.
+- **Cancelled**: Terminated early by a governance proposal (`CancelRecurringPayment`); no further disbursements are possible.
+
+#### Payment Types (`RecurringKind`)
+- **FixedAmountPerPeriod**: Periodic payouts (e.g. salary). Each successful disbursement releases a set `amount` after each `interval_secs`.
+- **LinearVesting**: Continuous second-by-second vesting (e.g. token grants). Claimable amounts accrue continuously between `start_time` and `end_time` up to `total_cap`.
+
+---
+
+### 6.2 The Crank Pattern
+
+Because blockchain smart contracts are passive and cannot run background tasks or triggers on a timer, Accord utilizes the **Crank Pattern** to process disbursements.
+
+- **Crank Execution**: Any external party (such as the recipient, a multisig owner, or an automated bot) must call the public `disburse_recurring(schedule_id)` entrypoint.
+- **Access Control**: This function is unauthenticated (anyone can call it) because the beneficiary and payout parameters are immutable once the schedule is approved.
+- **Automation (Keepers)**: Teams typically deploy an off-chain script (a **Keeper**) that polls `get_claimable_amount(schedule_id)` and automatically submits a "crank" transaction calling `disburse_recurring` when the claimable balance is non-zero.
+
+---
+
+### 6.3 Catch-Up Policy
+
+If a schedule is not cranked immediately when funds become claimable, the protocol handles the delay differently based on the schedule's type:
+
+#### Fixed Amount Per Period (`FixedAmountPerPeriod`)
+- **No Automatic Backpay / Stacking**: The contract enforces that a minimum of `interval_secs` must elapse since `last_disbursed_at`.
+- **Resetting Schedule Timeline**: If multiple intervals are missed (e.g. 3 months on a 1-month interval), the next crank disburse exactly one `amount`. The `last_disbursed_at` is set to `now`, meaning subsequent intervals are measured from the actual execution time. This prevents sudden large token drains from the multisig.
+
+#### Linear Vesting (`LinearVesting`)
+- **True Catch-Up**: The claimable amount is calculated dynamically based on time elapsed since the start. 
+- If a crank is called late, the recipient claims the entire accrued/vested amount up to that second at once, ensuring they are always fully caught up.
+
+---
+
+### 6.4 Linear Vesting Mathematics
+
+For `LinearVesting` schedules, the claimable amount is calculated on-the-fly as:
+
+$$\text{total\_duration} = \text{end\_time} - \text{start\_time}$$
+$$\text{elapsed} = \min(\text{now}, \text{end\_time}) - \text{start\_time}$$
+$$\text{vested} = \frac{\text{total\_cap} \times \text{elapsed}}{\text{total\_duration}}$$
+$$\text{claimable} = \text{vested} - \text{total\_disbursed}$$
+
+The contract uses `u128` arithmetic to prevent multiplication overflow during calculation:
+
+```rust
+let total_duration = schedule.end_time - schedule.start_time;
+let elapsed = if now >= schedule.end_time {
+    total_duration
+} else {
+    now - schedule.start_time
+};
+let vested = (schedule.total_cap as u128)
+    .checked_mul(elapsed as u128)
+    .unwrap_or(0)
+    / (total_duration as u128);
+let claimable = (vested as i128).saturating_sub(schedule.total_disbursed);
+```
+
+---
+
+### 6.5 Full Lifecycle Sequence Diagram
+
+The sequence diagram below illustrates the full lifecycle of a recurring payment schedule, from creation and voting through automated disbursement:
+
+```text
+  Proposer             Owners             Keeper / Bot       Accord Contract      Token Contract
+     |                   |                     |                    |                   |
+     | (1) Propose       |                     |                    |                   |
+     |----create_recurring_payment_proposal------------------------>|                   |
+     |                   |                     |                    |                   |
+     |                   | (2) Approve         |                    |                   |
+     |                   |----approve------------------------------>|                   |
+     |                   |                     |                    |                   |
+     |                   | (3) Execute         |                    |                   |
+     |                   |----execute------------------------------>|                   |
+     |                   |                     |                    |                   |
+     |                   |                     |                    |--[Status=Active]  |
+     |                   |                     |                    |                   |
+     |                   |                     | (4) Poll           |                   |
+     |                   |                     |----get_claimable-->|                   |
+     |                   |                     |    _amount()       |                   |
+     |                   |                     |<---returns > 0-----|                   |
+     |                   |                     |                    |                   |
+     |                   |                     | (5) Crank          |                   |
+     |                   |                     |----disburse_       |                   |
+     |                   |                     |    recurring()---->|                   |
+     |                   |                     |                    |--[Verify Cliff]   |
+     |                   |                     |                    |--[Calculate Amt]  |
+     |                   |                     |                    |                   |
+     |                   |                     |                    | (6) transfer()    |
+     |                   |                     |                    |------------------>|
+     |                   |                     |                    |<--[Transfer OK]---|
+     |                   |                     |                    |                   |
+     |                   |                     |                    |--[Update State]   |
+     |                   |                     |                    |--[Emit Event]     |
+     |                   |                     |<---disbursed-------|                   |
+```
+
+---
+
+## 7. Event Schema
 
 The contract emits events using `env.events().publish()`. Each Soroban event has two components that external consumers must understand:
 
@@ -355,8 +632,8 @@ The contract address plus one topic string together uniquely identify a stream o
 | Topics          | Data Type                                                      | Consumer            |
 | --------------- | -------------------------------------------------------------- | ------------------- |
 | `("created",)`  | `ProposalCreatedEvent { id, proposer, to, amount, threshold }` | Proposal feed       |
-| `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold }` | Approval bar update |
-| `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals }`             | Approval bar update |
+| `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold, weight, cumulative_weight }` | Approval bar update |
+| `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals, weight, cumulative_weight }`             | Approval bar update |
 | `("executed",)` | `ProposalExecutedEvent { id, executor, to, amount }`           | Execution history   |
 
 ### Indexing Accord Events
@@ -395,14 +672,14 @@ For long-term event history, use one of the following:
 
 See issue #103 and the TTL documentation in Section 3 for context on how on-chain data persistence works more broadly.
 
-## 7. Frontend Polling Strategy
+## 8. Frontend Polling Strategy
 
 1. Load current proposals on mount, then poll every 15-30s for active proposals.
 2. After a confirmed transaction (approve, execute), re-fetch the affected proposal immediately for optimistic UI.
 3. Deduplicate events by `(ledger, topic, data-hash)`.
 4. Back off on RPC failure: 1s → 2s → 4s, cap at 30s.
 
-## 8. Token Handling
+## 9. Token Handling
 
 All token amounts are stored and transferred in the token's **smallest unit** (stroops for XLM: 1 stroop = 0.0000001 XLM). Use `BigInt` in the frontend — never `Number` for on-chain amounts.
 
@@ -416,7 +693,42 @@ Frontend utilities should live in `frontend/src/lib/soroban.ts`:
 - `toBaseUnit(amount: string, decimals: number): bigint`
 - `fromBaseUnit(amount: bigint, decimals: number): string`
 
-## 9. Related Documents
+## 10. Token Deposit Flow
+
+The Accord contract does not automatically pull tokens from owner wallets. It only holds whatever tokens have been sent directly to its own contract address — and only discovers a shortfall when execution is attempted.
+
+### 9.1 Deposit Pattern
+
+Owners (or anyone) must deposit tokens into the contract's address **before** a proposal referencing that token can be successfully executed. Depositing is a standard wallet transfer: send tokens to the contract's Stellar address the same way you would send tokens to any other account. There is no special contract function to call — the contract simply holds a balance in the same way any Stellar account does, using the network's native account model.
+
+Each deposit should cover the full `amount` of the intended proposal (or multiple proposals). If multiple proposals reference different token contracts, each token needs a separate deposit to the same contract address.
+
+### 9.2 Execute-Time Balance Check
+
+There is **no balance check at proposal creation time**. The `create_proposal` function validates the token contract address (`validate_token`) and the amount (`amount ≥ 1`), but it never queries the contract's own token balance. A proposal can be created, approved by all owners, and reach `Ready` status even if the contract holds zero of the required token.
+
+The balance is checked only at the moment of execution. When `execute` is called, the contract calls the token's `transfer` function directly from its own address to the recipient (`contracts/accord/src/lib.rs:1407–1416`):
+
+```rust
+token::Client::new(&env, &transfer.token)
+    .try_transfer(&env.current_contract_address(), &transfer.to, &transfer.amount)
+```
+
+If the contract's balance is too low, this cross-contract call fails and the entire `execute` call reverts with **`ContractError::TransferFailed`** (error code 15). See [`CONTRACT_API.md`](CONTRACT_API.md#error-reference) for the full error description.
+
+Because the failure happens inside the token contract's transfer logic — not in Accord's own validation — the error surfaces as a generic transfer failure rather than a specific "insufficient balance" error. The frontend maps this to the message *"Token transfer failed. Check the contract balance."* (`frontend/src/lib/soroban.ts:42`).
+
+### 9.3 Frontend Integration
+
+The Settings page (`frontend/src/pages/SettingsPage.tsx`) includes a **"Fund Contract"** panel that shows the contract's current token balances and its address with a copy button. Owners use this panel to:
+
+1. **View the contract's address** — displayed at the top of the Settings page with a copy button (`SettingsPage.tsx:212–224`).
+2. **Check current balances** — the "Fund Contract" panel shows XLM and USDC balances side-by-side (`SettingsPage.tsx:440–472`), loaded via `getContractXlmBalance()` and `getContractUsdcBalance()` from `frontend/src/lib/contract.ts`.
+3. **Send a deposit** — copy the contract address, use any Stellar wallet (Freighter, Lobstr, etc.) to send the required tokens to that address, then return to the proposal and execute it.
+
+The same panel also serves as a diagnostic tool: if an execute call fails with `TransferFailed`, an owner can check this panel to confirm the balance is sufficient before retrying.
+
+## 11. Related Documents
 
 | Document                                                                  | Description                                                    |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -425,6 +737,76 @@ Frontend utilities should live in `frontend/src/lib/soroban.ts`:
 | [docs/guides/reading-the-dashboard.md](guides/reading-the-dashboard.md)   | End-user guide: proposal list, status badges, and approval bar |
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
+
+## 12. Owner-Authorization Check Resource Cost
+
+Every authorized call into the contract (`approve`, `revoke`, `execute`, and each governance proposal creation) loads the entire `OWNERS` persistent entry (an `Address → u32` weight map) and looks up the caller's weight. This section measures the CPU instruction and memory cost of that check at the maximum owner count (`MAX_OWNERS = 20`) compared to a single-owner baseline.
+
+### Benchmark Methodology
+
+Two benchmark tests live in `contracts/accord/src/test.rs`:
+
+- **`benchmark_owner_check_cpu_and_memory`** — Calls `env.budget().reset_unlimited()`, initializes a contract with 1 owner (then separately with 20 owners), calls `get_owner_weight` (which exercises the same `require_owner_and_weight` code path), and records `cpu_instruction_cost()` and `memory_bytes_cost()` deltas.
+- **`benchmark_approve_cost_20_owners`** — Initializes a contract with 20 owners, creates a proposal, calls `approve` with a second owner, and records the full call cost.
+
+Both tests use `env.mock_all_auths()` and run with an unlimited budget to avoid budget-exhaustion interference during setup. The budget is reset just before the measured operation so only the operation's own cost is captured.
+
+### Results: Owner-Authorization Check (`get_owner_weight`)
+
+| Owner count | CPU instructions | Memory bytes |
+|-------------|-----------------|--------------|
+| 1           | 47,958          | 24,477       |
+| 20          | 89,998          | 55,035       |
+| **Delta**   | **42,040**      | **30,558**   |
+
+The delta (20 − 1) isolates the cost attributable to deserializing and iterating the larger owner map: approximately **2,212 CPU instructions and 1,608 memory bytes per additional owner**.
+
+### Results: Full `approve` Call (20 owners)
+
+| Scenario | CPU instructions | Memory bytes |
+|----------|-----------------|--------------|
+| `approve` at 20 owners | 280,920 | 145,205 |
+
+### Comparison Against Soroban Mainnet Limits
+
+Soroban's per-invocation resource limits on mainnet are **600,000,000 CPU instructions** and **41,943,040 memory bytes** (40 MiB).
+
+| Scenario | CPU | % of limit | Memory | % of limit |
+|---|---|---|---|---|
+| Owner check (20 owners) | 89,998 | 0.0150% | 55,035 | 0.1312% |
+| Full `approve` (20 owners) | 280,920 | 0.0468% | 145,205 | 0.3462% |
+
+### Full Budget Breakdown (20 owners)
+
+**Owner check (`get_owner_weight`):**
+```
+Cpu limit: 18446744073709551615; used: 89998
+Mem limit: 18446744073709551615; used: 55035
+
+CostType                           cpu_insns      mem_bytes
+MemAlloc                           22682          8727
+MemCpy                             7487           0
+MemCmp                             7898           0
+VisitObject                        7991           0
+ValSer                             40202          46308
+```
+
+**Full `approve` call:**
+```
+Cpu limit: 18446744073709551615; used: 280920
+Mem limit: 18446744073709551615; used: 145205
+
+CostType                           cpu_insns      mem_bytes
+MemAlloc                           88299          46535
+```
+
+### Conclusion
+
+**The owner-authorization check stays well within Soroban's per-invocation resource budget at the maximum owner count of 20.** The check consumes roughly 0.015% of the CPU budget and 0.13% of the memory budget. Even the full `approve` call (which includes the owner check plus proposal loading, approval recording, and event emission) consumes only 0.047% of CPU and 0.35% of memory.
+
+No follow-up action is required. The owner-map lookup does not pose a resource-limit risk, and the headroom is sufficient for the rest of each entrypoint's business logic.
+
+> **Note**: These measurements were obtained running Rust natively in test mode (not compiled to WASM). Soroban SDK's own documentation notes that CPU and memory costs are *likely to be underestimated* when running natively compared to actual WASM execution. The true WASM costs may be higher, but given the large headroom (less than 1% of limits), this margin of error does not change the conclusion.
 
 ## Security Note: Governance Controls vs Spending Limits
 

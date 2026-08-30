@@ -32,7 +32,31 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 
 ---
 
-## v0.3.0 — Production readiness
+## v0.3.0 — Recurring payments
+
+**Theme:** Enable automated payroll and token vesting schedules with configurable cliffs, intervals, and linear vesting structures.
+
+**Targeted features:**
+
+- On-chain recurring payment schedules (`CreateRecurringPayment` proposal kind)
+- Linear vesting structures and interval-based recurring payments
+- Configurable vesting cliff times
+- Public "crank" entrypoint (`disburse_recurring`) for automated or manual payouts
+- Support for off-chain keeper automation and tracking
+
+**Acceptance criteria:**
+
+- [ ] Contract supports creating and executing recurring payment proposals
+- [ ] Linear vesting calculates claimable amounts proportionally and continuously
+- [ ] Optional cliff time prevents disbursements before the specified timestamp
+- [ ] Public `disburse_recurring` allows any caller to trigger payouts for active schedules
+- [ ] Governance proposals can pause, resume, or cancel active schedules
+- [ ] Comprehensive unit tests cover all vesting edge cases, limits, and statuses
+- [ ] End-to-end user guide walks through setting up schedules, cliffs, and keepers
+
+---
+
+## v0.4.0 — Production readiness
 
 **Theme:** Harden the contract and frontend for mainnet-class usage with time-locked execution, comprehensive access controls, and a security audit.
 

@@ -17,3 +17,5 @@ contracts/accord/test_snapshots/test/approval_count_never_exceeds_owner_count.*.
 current-issue.md
 issue-tracker.md
 issues.md
+
+fix.md

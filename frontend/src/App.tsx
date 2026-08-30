@@ -7,6 +7,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
+import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
@@ -18,11 +19,13 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
+import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
+  { label: "recurring", to: "/app/recurring" },
   { label: "history", to: "/app/history" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
@@ -36,6 +39,7 @@ type OptimisticPatch = {
 
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -45,6 +49,7 @@ export default function App() {
   );
   // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
   const newProposalButtonRef = useRef<HTMLButtonElement>(null);
+  const recurringButtonRef = useRef<HTMLButtonElement>(null);
 
   const wallet = useWallet();
   const navigate = useNavigate();
@@ -87,6 +92,15 @@ export default function App() {
     }
     wasShowCreateRef.current = showCreate;
   }, [showCreate]);
+
+  // Return focus to the Recurring trigger when modal transitions from open → closed
+  const wasShowRecurringRef = useRef(false);
+  useEffect(() => {
+    if (!showCreateRecurring && wasShowRecurringRef.current) {
+      recurringButtonRef.current?.focus();
+    }
+    wasShowRecurringRef.current = showCreateRecurring;
+  }, [showCreateRecurring]);
 
   useEffect(() => {
     if (!wallet.address && txPending) {
@@ -460,7 +474,8 @@ export default function App() {
                   onExecute={handleExecute}
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
-                  createProposalButtonRef={newProposalButtonRef}
+                  onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                  recurringButtonRef={recurringButtonRef}
                   loading={loading}
                   error={error}
                 />
@@ -473,17 +488,22 @@ export default function App() {
               }
             />
             <Route
+              path="recurring"
+              element={
+                <RecurringPage walletAddress={wallet.address} />
+              }
+            />
+            <Route
               path="owners"
               element={
                 <OwnersPage
-                owners={owners}
-                ownerAddresses={ownerAddresses}
-                threshold={threshold}
-                totalWeight={totalWeight}
-                walletAddress={wallet.address}
-                onProposalSubmitted={refresh}
-              />
-            }
+                  owners={owners}
+                  ownerAddresses={ownerAddresses}
+                  threshold={threshold}
+                  walletAddress={wallet.address}
+                  onProposalSubmitted={refresh}
+                />
+              }
             />
             <Route path="settings" element={<SettingsPage stats={stats} walletAddress={wallet.address} ownerAddresses={ownerAddresses} onProposalSubmitted={refresh} />} />
             <Route
@@ -522,6 +542,14 @@ export default function App() {
           onClose={() => setShowCreate(false)}
           onSubmitted={refresh}
           triggerRef={newProposalButtonRef}
+        />
+      )}
+      {showCreateRecurring && (
+        <CreateRecurringPaymentModal
+          walletAddress={wallet.address}
+          onClose={() => setShowCreateRecurring(false)}
+          onSubmitted={refresh}
+          triggerRef={recurringButtonRef}
         />
       )}
     </div>
