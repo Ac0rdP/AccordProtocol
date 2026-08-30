@@ -12,6 +12,18 @@ import { ApprovalBar } from "./ApprovalBar";
 // quorumWeight ≠ totalWeight.
 
 describe("ApprovalBar", () => {
+  test("shows quorum completion for a single owner holding all voting weight", () => {
+    render(
+      <ApprovalBar approvalWeight={100} quorumWeight={100} totalWeight={100} />
+    );
+
+    expect(
+      screen.getByLabelText(/100 percent of quorum achieved/)
+    ).toBeInTheDocument();
+    expect(screen.getByText("100 / 100 weight")).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/i)).not.toBeInTheDocument();
+  });
+
   test("renders the snapshotted quorum in the weight label", () => {
     // quorumWeight=10 was snapshotted at creation; live totalWeight is now 35.
     render(
