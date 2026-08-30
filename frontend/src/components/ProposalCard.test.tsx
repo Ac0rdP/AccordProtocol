@@ -160,24 +160,95 @@ describe("ProposalCard", () => {
   });
 
   test("renders change-owner-weight proposals with governance summary", () => {
-    render(
-      <ProposalCard
-        proposal={baseProposal({
-          kind: "change_owner_weight",
-          to: "GOWNER...R111",
-          amount: "25",
-          token: "Owner weight",
-        })}
-        walletAddress="GCONNECTED123"
-        onApprove={vi.fn()}
-        onExecute={vi.fn()}
-        onRevoke={vi.fn()}
-      />
-    );
+    renderProposalCard({
+      proposal: baseProposal({
+        kind: "change_owner_weight",
+        to: "GOWNER...R111",
+        amount: "25",
+        token: "Owner weight",
+      }),
+    });
 
     expect(screen.getByText("Change Weight")).toBeTruthy();
     expect(screen.getByText("Governance")).toBeTruthy();
     expect(screen.getByText("Owner GOWNER...R111")).toBeTruthy();
     expect(screen.getByText("New weight: 25")).toBeTruthy();
+  });
+
+  // ── Stale-weight / snapshotted quorum tests ────────────────────────────────
+  //
+  // A proposal's quorum is fixed at creation time (snapshotted in quorumWeight).
+  // If owner weights change after the proposal is created, the UI must show the
+  // snapshotted quorum — not the live total weight — so that approval progress
+  // is measured against the original requirement.
+
+  test("ApprovalBar receives the snapshotted quorumWeight, not the live totalWeight", () => {
+    // Snapshot: quorumWeight=10, totalWeight=20 (at creation)
+    // After a weight change the live total is now 35 — but the bar must still
+    // show progress against the original quorumWeight of 10.
+    const proposal = baseProposal({
+      approvalWeight: 7,
+      quorumWeight: 10,   // snapshotted at creation
+      totalWeight: 35,    // live total after a weight change
+    });
+
+    renderProposalCard({ proposal });
+
+    // The label rendered by ApprovalBar reads "approvalWeight / quorumWeight weight"
+    expect(screen.getByText("7 / 10 weight")).toBeTruthy();
+  });
+
+  test("quorum label uses snapshot even when live total diverges significantly", () => {
+    // Snapshot quorumWeight=5; live totalWeight has grown to 100 after many
+    // weight increases. Progress must still be measured against 5.
+    const proposal = baseProposal({
+      approvalWeight: 3,
+      quorumWeight: 5,
+      totalWeight: 100,
+    });
+
+    renderProposalCard({ proposal });
+
+    expect(screen.getByText("3 / 5 weight")).toBeTruthy();
+  });
+
+  test("fully approved proposal shows 100% against snapshotted quorum, not live total", () => {
+    // approvalWeight meets quorumWeight (snapshot) even though totalWeight is higher.
+    const proposal = baseProposal({
+      approvalWeight: 10,
+      quorumWeight: 10,
+      totalWeight: 50,
+      status: "ready",
+    });
+
+    renderProposalCard({ proposal });
+
+    expect(screen.getByText("10 / 10 weight")).toBeTruthy();
+  });
+
+  test("snapshot quorum remains unchanged after a weight-change proposal would alter live total", () => {
+    // Two proposals created before and after a weight change.
+    // Both must still show their original snapshotted quorumWeight.
+    const proposalBeforeChange = baseProposal({
+      id: 1,
+      approvalWeight: 2,
+      quorumWeight: 6,   // threshold at creation: 6
+      totalWeight: 12,   // live total now higher after weight change
+    });
+
+    const { unmount } = renderProposalCard({ proposal: proposalBeforeChange });
+    expect(screen.getByText("2 / 6 weight")).toBeTruthy();
+    unmount();
+
+    // A proposal created after the weight change has a different snapshot.
+    const proposalAfterChange = baseProposal({
+      id: 2,
+      approvalWeight: 2,
+      quorumWeight: 8,   // threshold may differ post-change
+      totalWeight: 12,
+    });
+
+    renderProposalCard({ proposal: proposalAfterChange });
+    expect(screen.getByText("2 / 8 weight")).toBeTruthy();
   });
 });

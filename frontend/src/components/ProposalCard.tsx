@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import type { Proposal, ProposalKind } from "../types/accord";
+import { Link } from "react-router-dom";
+import type { Proposal, ProposalCategory, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
 import { Check, Copy, Link2 } from "lucide-react";
@@ -11,38 +12,45 @@ type ProposalCardProps = {
   onApprove: (id: number) => void;
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
-  // weight-based props (new)
-  approvalWeight?: number;
-  quorumWeight?: number;
-  totalWeight?: number;
   ownerWeights?: Record<string, number>;
 };
 
-const KIND_LABELS = {
+const KIND_LABELS: Record<Exclude<ProposalKind, "recurring">, { title: string; badge: string }> & {
+  recurring: { title: string; badge: string };
+} = {
   transfer: { title: "Transfer", badge: "Payment" },
   add_owner: { title: "Add Owner", badge: "Governance" },
   remove_owner: { title: "Remove Owner", badge: "Governance" },
   change_threshold: { title: "Change Threshold", badge: "Governance" },
   set_spending_limit: { title: "Set Spending Limit", badge: "Policy" },
   change_owner_weight: { title: "Change Weight", badge: "Governance" },
-} satisfies Record<ProposalKind, { title: string; badge: string }>;
+  recurring: { title: "Recurring Payment", badge: "Payment" },
+};
 
-function assertNever(value: never): never {
-  throw new Error(`Unhandled proposal kind: ${value}`);
-}
+const CATEGORY_STYLES: Record<ProposalCategory, string> = {
+  Transfer: "bg-sky-900/50 text-sky-300",
+  Payroll: "bg-violet-900/50 text-violet-300",
+  Grant: "bg-emerald-900/50 text-emerald-300",
+  Ops: "bg-amber-900/50 text-amber-300",
+  Other: "bg-zinc-800 text-zinc-400",
+};
 
 function KindSummary({ proposal }: { proposal: Proposal }) {
   switch (proposal.kind) {
     case "transfer":
       return (
-        <>
+        <Link
+          to={`/proposals/${proposal.id}`}
+          className="block"
+          aria-label={`Send ${proposal.amount} ${proposal.token}`}
+        >
           <p className="text-sm text-zinc-300">
             Send {proposal.amount} {proposal.token}
           </p>
           <p className="mt-0.5 font-mono text-sm text-zinc-500">
             To {proposal.to}
           </p>
-        </>
+        </Link>
       );
     case "add_owner":
       return (
@@ -84,8 +92,17 @@ function KindSummary({ proposal }: { proposal: Proposal }) {
           </p>
         </>
       );
-    default:
-      return assertNever(proposal.kind);
+    case "recurring":
+      return (
+        <p className="mt-0.5 text-sm text-zinc-500">
+          Recurring payment to {proposal.to}
+        </p>
+      );
+    default: {
+      // exhaustive check
+      const _: never = proposal.kind;
+      return null;
+    }
   }
 }
 
@@ -95,9 +112,6 @@ export function ProposalCard({
   onApprove,
   onExecute,
   onRevoke,
-  approvalWeight = 0,
-  quorumWeight = 0,
-  totalWeight = 0,
   ownerWeights = {},
 }: ProposalCardProps) {
   const connected = !!walletAddress;
@@ -160,28 +174,23 @@ export function ProposalCard({
               {labels.badge}
             </span>
           </div>
+
           <KindSummary proposal={proposal} />
-          <div className="flex items-center gap-2 mt-0.5">
-            <p className="text-zinc-500 text-sm font-mono">
-              Proposed by -&gt; {proposal.proposer.slice(0, 6)}...
-              {proposal.proposer.slice(-4)}
-            </p>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-zinc-800 text-zinc-400 font-mono">
-              {KIND_LABELS[proposal.kind].badge}
-            </span>
-          </div>
-          <KindSummary proposal={proposal} />
+
           <div className="flex items-center gap-2 mt-0.5">
             <div className="flex items-center gap-2">
               <p className="text-zinc-500 text-sm font-mono">
                 Proposed by → {shortenAddr(proposal.proposer)}
               </p>
               {(() => {
-                // Find full owner address that matches the shortened proposer string
-                const ownerAddr = Object.keys(ownerWeights).find((a) => shortenAddr(a) === proposal.proposer);
+                const ownerAddr = Object.keys(ownerWeights).find(
+                  (a) => shortenAddr(a) === proposal.proposer
+                );
                 if (ownerAddr) {
                   return (
-                    <span className="text-xs text-zinc-400 ml-1">· weight {ownerWeights[ownerAddr]}</span>
+                    <span className="text-xs text-zinc-400 ml-1">
+                      · weight {ownerWeights[ownerAddr]}
+                    </span>
                   );
                 }
                 return null;
@@ -206,11 +215,13 @@ export function ProposalCard({
               )}
             </button>
           </div>
+
           {proposal.description && (
             <p className="text-zinc-500 text-xs mt-1.5 leading-relaxed max-w-sm">
               {proposal.description}
             </p>
           )}
+
           <Link
             to={`/proposals/${proposal.id}`}
             className="mt-2 inline-flex text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
@@ -218,6 +229,7 @@ export function ProposalCard({
             View details
           </Link>
         </div>
+
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -236,22 +248,30 @@ export function ProposalCard({
               <Link2 size={16} />
             )}
           </button>
-          <span
-            role="note"
-            aria-label={`Category: ${proposal.category}`}
-            className={`text-xs px-2 py-0.5 rounded-full font-mono capitalize ${CATEGORY_STYLES[proposal.category]}`}
-          >
-            {proposal.category}
-          </span>
+          {proposal.category && (
+            <span
+              role="note"
+              aria-label={`Category: ${proposal.category}`}
+              className={`text-xs px-2 py-0.5 rounded-full font-mono capitalize ${
+                CATEGORY_STYLES[proposal.category] ?? "bg-zinc-800 text-zinc-400"
+              }`}
+            >
+              {proposal.category}
+            </span>
+          )}
           <StatusBadge status={proposal.status} />
         </div>
       </div>
 
       <div className="flex items-center justify-between mt-4">
+        {/* ApprovalBar uses the proposal's snapshotted quorumWeight fixed at
+            creation time — not the live totalWeight. This ensures the progress
+            bar reflects the original approval requirement even if owner weights
+            change after the proposal is created. */}
         <ApprovalBar
-          approvals={proposal.approvals}
-          threshold={proposal.threshold}
-          approverAddresses={proposal.approverAddresses}
+          approvalWeight={proposal.approvalWeight ?? 0}
+          quorumWeight={proposal.quorumWeight ?? proposal.threshold}
+          totalWeight={proposal.totalWeight ?? 0}
         />
 
         <div className="flex items-center gap-2">
@@ -261,23 +281,29 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => onApprove(proposal.id)}
-              aria-label={connected ? `Approve proposal #${proposal.id}` : `Connect and approve proposal #${proposal.id}`}
+              aria-label={
+                connected
+                  ? `Approve proposal #${proposal.id}`
+                  : `Connect and approve proposal #${proposal.id}`
+              }
               className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
               {connected ? "Approve" : "Connect & Approve"}
             </button>
           )}
 
-          {connected && proposal.userHasApproved && (proposal.status === "pending" || proposal.status === "ready") && (
-            <button
-              type="button"
-              onClick={() => onRevoke(proposal.id)}
-              aria-label={`Revoke approval for proposal #${proposal.id}`}
-              className="text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
-            >
-              Revoke
-            </button>
-          )}
+          {connected &&
+            proposal.userHasApproved &&
+            (proposal.status === "pending" || proposal.status === "ready") && (
+              <button
+                type="button"
+                onClick={() => onRevoke(proposal.id)}
+                aria-label={`Revoke approval for proposal #${proposal.id}`}
+                className="text-xs bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              >
+                Revoke
+              </button>
+            )}
 
           {connected && proposal.status === "ready" && !awaitingConfirmation && (
             <button
@@ -316,4 +342,4 @@ export function ProposalCard({
       </div>
     </div>
   );
-});
+}
