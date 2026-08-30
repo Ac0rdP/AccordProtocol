@@ -73,6 +73,18 @@ export type ProposalEvent = {
   details?: string;
 };
 
+export type OwnerWeightChangeEvent = {
+  /** Full address of the owner whose voting weight changed. */
+  owner: string;
+  oldWeight: number;
+  newWeight: number;
+  /** Total voting weight after the change, when the event reports it. */
+  newTotalWeight?: number;
+  ledger?: number;
+  /** Human-readable time (or ledger) the change was recorded. */
+  timestamp: string;
+};
+
 export type RecurringStatus = "active" | "paused" | "completed" | "cancelled";
 
 export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
