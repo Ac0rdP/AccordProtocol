@@ -4,6 +4,7 @@ import type { DashboardStat, Owner, Proposal, RecurringSchedule } from "../types
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { getRequiredQuorumWeight, getDueRecurring } from "../lib/contract";
 
@@ -95,6 +96,12 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
+
+      <GovernanceHealthWidget
+        weights={weights}
+        totalWeight={totalWeight}
+        loading={loading}
+      />
 
       {dueSchedules.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
