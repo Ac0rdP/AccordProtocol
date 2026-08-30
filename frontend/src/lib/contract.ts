@@ -109,6 +109,13 @@ function mapKind(kind: unknown): { kind: ProposalKind; to: string; amount: strin
         amount: stroopsToDisplay(safeBigInt(values[1])),
         token: shortenAddr(String(values[2] ?? "Unknown")),
       };
+    case "changeownerweight":
+      return {
+        kind: "change_owner_weight",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: String(values[1] ?? "0"),
+        token: "Weight",
+      };
     default:
       return { kind: "transfer", to: "Unknown", amount: "0", token: "Unknown" };
   }
@@ -118,6 +125,7 @@ function mapKind(kind: unknown): { kind: ProposalKind; to: string; amount: strin
 export function mapProposal(raw: any, threshold: number): Proposal {
   const rawDeadline = BigInt(raw.deadline);
   const mapped = mapKind(raw.kind);
+  const quorumWeight = Number(raw.quorum_weight ?? threshold);
 
   return {
     id: Number(raw.id),
@@ -127,7 +135,7 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     token: mapped.token,
     description: String(raw.description),
     approvals: Number(raw.approvals),
-    threshold,
+    threshold: quorumWeight,
     status: mapStatus(raw.status),
     deadline: formatDeadline(rawDeadline),
     deadlineTs: Number(rawDeadline),
@@ -147,6 +155,28 @@ export async function getOwners(): Promise<string[]> {
 export async function getThreshold(): Promise<number> {
   const val = await simulateView("get_threshold");
   return Number(scValToNative(val));
+}
+
+export async function getRequiredQuorumWeight(): Promise<number> {
+  const val = await simulateView("get_required_quorum_weight");
+  return Number(scValToNative(val));
+}
+
+export async function getTotalWeight(): Promise<number> {
+  const val = await simulateView("get_total_weight");
+  return Number(scValToNative(val));
+}
+
+export async function getOwnerWeight(owner: string): Promise<bigint> {
+  try {
+    const val = await simulateView("get_owner_weight", [
+      nativeToScVal(owner, { type: "address" }),
+    ]);
+    const raw = scValToNative(val);
+    return safeBigInt(raw);
+  } catch {
+    return 0n;
+  }
 }
 
 export async function getSpendingLimit(owner: string, token: string): Promise<bigint> {
@@ -187,6 +217,20 @@ export async function getProposal(id: number): Promise<Proposal> {
     getThreshold(),
   ]);
   return mapProposal(scValToNative(val), thresh);
+}
+
+export async function getProposalApprovalProgress(
+  proposalId: number
+): Promise<{ approvals: number; quorumWeight: number; totalWeight: number }> {
+  const val = await simulateView("get_proposal_approval_progress", [
+    nativeToScVal(BigInt(proposalId), { type: "u64" }),
+  ]);
+  const raw = scValToNative(val) as [unknown, unknown, unknown];
+  return {
+    approvals: Number(raw[0] ?? 0),
+    quorumWeight: Number(raw[1] ?? 0),
+    totalWeight: Number(raw[2] ?? 0),
+  };
 }
 
 export async function hasApproved(

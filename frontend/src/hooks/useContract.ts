@@ -3,10 +3,12 @@ import {
   getOwners,
   getProposalsPaged,
   getThreshold,
+  getTotalWeight,
   getTotalProposals,
   mapProposal,
   hasApproved,
   getApprovers,
+  getOwnerWeight,
 } from "../lib/contract";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 
@@ -50,10 +52,11 @@ export function useContract(walletAddress: string | null): ContractState {
 
     (async () => {
       try {
-        const [ownerAddrs, thresh, total] = await Promise.all([
+        const [ownerAddrs, thresh, total, totalWeight] = await Promise.all([
           getOwners(),
           getThreshold(),
           getTotalProposals(),
+          getTotalWeight(),
         ]);
 
         const raw = total > 0 ? await getProposalsPaged(0, Math.min(total, 50)) : [];
@@ -84,10 +87,14 @@ export function useContract(walletAddress: string | null): ContractState {
 
         setProposals(proposalsWithApproval);
         setOwnerAddresses(ownerAddrs);
+        const ownerWeights = await Promise.all(
+          ownerAddrs.map(async (addr) => Number(await getOwnerWeight(addr)))
+        );
         setOwners(
           ownerAddrs.map((addr, i) => ({
             address: `${addr.slice(0, 6)}...${addr.slice(-4)}`,
             label: addr === walletAddress ? "You" : `Signer ${i + 1}`,
+            weight: ownerWeights[i] ?? 0,
           }))
         );
 
@@ -99,8 +106,8 @@ export function useContract(walletAddress: string | null): ContractState {
         setStats([
           {
             label: "Threshold",
-            value: `${thresh} of ${ownerAddrs.length}`,
-            sub: "signers required",
+            value: `${thresh} of ${totalWeight}`,
+            sub: "voting weight required",
           },
           { label: "Active", value: String(active), sub: "proposals" },
           { label: "Total", value: String(total), sub: "proposals created" },

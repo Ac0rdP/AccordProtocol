@@ -318,3 +318,19 @@ export async function createChangeThresholdProposal(
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
 }
+
+export async function createChangeOwnerWeightProposal(
+  callerAddress: string,
+  targetOwner: string,
+  newWeight: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_change_weight_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(targetOwner, { type: "address" }),
+    nativeToScVal(newWeight, { type: "u32" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}

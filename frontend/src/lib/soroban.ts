@@ -49,7 +49,13 @@ const CONTRACT_ERRORS: Record<string, string> = {
   "22": "Invalid recipient address.",
   "23": "Time lock is still active. Please wait.",
   "24": "Removing this owner would break the required threshold.",
-  "25": "Owner not found."
+  "25": "Owner not found.",
+  "26": "Contract is frozen.",
+  "27": "No guardian is configured.",
+  "28": "The proposed spending limit is too high.",
+  "29": "Invalid owner weight.",
+  "30": "Invalid number of owner weights supplied.",
+  "31": "The proposed owner weight would exceed the allowed cap."
 };
 
 export function contractErrorMessage(error: string): string {

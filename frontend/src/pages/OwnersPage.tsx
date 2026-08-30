@@ -4,6 +4,7 @@ import { createSpendingLimitProposal } from "../lib/submit";
 import { displayToStroops, stroopsToDisplay } from "../lib/soroban";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { Owner } from "../types/accord";
+import { CreateWeightChangeProposalModal } from "../components/CreateWeightChangeProposalModal";
 
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -19,7 +20,7 @@ type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
-  totalOwners: number;
+  totalWeight: number;
   walletAddress: string | null;
   onProposalSubmitted: () => void;
 };
@@ -28,13 +29,15 @@ export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  totalOwners,
+  totalWeight,
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
   const [spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
   const [limitsLoading, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showWeightForm, setShowWeightForm] = useState(false);
+  const [weightTargetOwner, setWeightTargetOwner] = useState<string>("");
 
   // Spending limit proposal form state
   const [slOwner, setSlOwner] = useState("");
@@ -144,7 +147,7 @@ export function OwnersPage({
       <div className="mb-8">
         <h1 className="text-2xl font-semibold mb-2">Multisig Owners</h1>
         <p className="text-zinc-400 text-sm">
-          Requires {threshold} of {totalOwners} signers
+          Requires {threshold} of {totalWeight} voting weight
         </p>
       </div>
 
@@ -155,7 +158,7 @@ export function OwnersPage({
         </div>
       ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800 mb-8">
-          {owners.map((owner) => (
+          {owners.map((owner, index) => (
             <div key={owner.address}>
               <div className="flex items-center gap-3 px-4 py-4">
                 <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
@@ -164,7 +167,21 @@ export function OwnersPage({
                 <div className="flex-1">
                   <p className="text-sm text-zinc-300">{owner.label}</p>
                   <p className="font-mono text-xs text-zinc-500">{owner.address}</p>
+                  <p className="mt-1 font-mono text-xs text-emerald-400">
+                    Weight {owner.weight}
+                  </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const fullAddress = ownerAddresses[index] ?? "";
+                    setWeightTargetOwner(fullAddress);
+                    setShowWeightForm(true);
+                  }}
+                  className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                >
+                  Change Weight
+                </button>
               </div>
 
               {/* Spending limits per token */}
@@ -175,9 +192,7 @@ export function OwnersPage({
               ) : (
                 <div className="px-4 pb-4 pl-14 grid grid-cols-3 gap-2">
                   {TOKEN_SYMBOLS.map((symbol) => {
-                    const rawAddr = ownerAddresses[
-                      owners.findIndex((o) => o.address === owner.address)
-                    ];
+                    const rawAddr = ownerAddresses[index];
                     const limit = rawAddr ? spendingLimits[rawAddr]?.[symbol] : undefined;
                     const info = limit !== undefined
                       ? formatLimit(limit, symbol)
@@ -318,6 +333,15 @@ export function OwnersPage({
           </p>
         )}
       </div>
+
+      {showWeightForm && (
+        <CreateWeightChangeProposalModal
+          walletAddress={walletAddress}
+          onClose={() => setShowWeightForm(false)}
+          onSubmitted={onProposalSubmitted}
+          initialOwnerAddress={weightTargetOwner}
+        />
+      )}
     </>
   );
 }

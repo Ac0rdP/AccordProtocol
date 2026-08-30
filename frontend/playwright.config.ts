@@ -8,7 +8,6 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:5173",
     headless: true,
-    channel: "chrome",
   },
   webServer: {
     command: "npm run dev",
