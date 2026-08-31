@@ -2723,6 +2723,7 @@ impl AccordContract {
         if recipient == env.current_contract_address() {
             return Err(ContractError::InvalidRecipient);
         }
+        validate_token(&env, &token)?;
         validate_description(&description)?;
         validate_deadline(&env, deadline)?;
 
