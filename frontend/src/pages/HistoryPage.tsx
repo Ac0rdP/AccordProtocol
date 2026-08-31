@@ -121,9 +121,9 @@ export function HistoryPage({
     const sections: string[] = [];
 
     if (executed.length > 0) {
-      const headers = ["ID", "Amount", "Token", "Recipient", "Date"];
+      const headers = ["ID", "Amount", "Token", "Recipient", "Date", "Approval Weight", "Quorum Weight"];
       const rows = executed.map(
-        (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}"`
+        (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}","${p.approvalWeight ?? 0}","${p.quorumWeight ?? 0}"`
       );
       sections.push([headers.join(","), ...rows].join("\n"));
     }
