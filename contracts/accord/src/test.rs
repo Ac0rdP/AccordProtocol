@@ -7345,6 +7345,52 @@ fn frozen_contract_blocks_recurring_disbursement_and_unfreezing_restores_it() {
 }
 
 #[test]
+fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_insufficient_balance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let amount = 1_000_000_000_001_i128;
+    let interval = 3_600_u64;
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86_400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Insufficient balance schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    let schedule_before = client.get_recurring_payment(&1_u64);
+    assert_eq!(schedule_before.last_disbursed_at, 0);
+    assert_eq!(schedule_before.total_disbursed, 0);
+    assert_eq!(schedule_before.periods_disbursed, 0);
+
+    set_timestamp(&env, NOW + interval + 1);
+    assert_eq!(
+        client.try_disburse_recurring(&1_u64),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    let schedule_after = client.get_recurring_payment(&1_u64);
+    assert_eq!(schedule_after.last_disbursed_at, 0);
+    assert_eq!(schedule_after.total_disbursed, 0);
+    assert_eq!(schedule_after.periods_disbursed, 0);
+    assert_eq!(schedule_after.status, RecurringStatus::Active);
+    assert_eq!(token_client.balance(&client.address), 1_000_000_000_000_i128);
+}
+
+#[test]
 fn linear_vesting_claimable_amount_matches_time_proportional_checkpoints() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
