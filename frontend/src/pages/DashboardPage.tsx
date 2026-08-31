@@ -265,9 +265,40 @@ export function DashboardPage({
             <ProposalCardSkeleton />
           </>
         ) : activeProposals.length === 0 ? (
-          <div className="text-center py-16 text-zinc-500 text-sm">
-            <p className="font-semibold mb-2">No active proposals</p>
-            <p>Create a new proposal to start the approval flow.</p>
+          <div className="text-center py-20">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-zinc-500"
+              >
+                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </svg>
+            </div>
+            <h3 className="text-sm font-semibold text-zinc-300 mb-1">
+              No active proposals
+            </h3>
+            <p className="text-sm text-zinc-500 mb-5">
+              Proposals let signers vote on transactions before they execute.
+            </p>
+            <button
+              type="button"
+              onClick={onCreateProposal}
+              className="inline-flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg transition-colors font-medium"
+            >
+              <Plus size={14} />
+              Create proposal
+            </button>
           </div>
         ) : (
           displayedProposals.map((proposal) => {

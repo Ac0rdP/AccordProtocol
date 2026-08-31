@@ -14,10 +14,8 @@ import type {
   ProposalCategory,
   ProposalEvent,
   ProposalEventType,
-  ProposalKind,
   ProposalStatus,
   RecurringSchedule,
-  RecurringScheduleStatus,
   RecurringKind,
   RecurringPayment,
   RecurringStatus,
@@ -26,7 +24,6 @@ import {
   stroopsToDisplay,
   formatDeadline,
   shortenAddr,
-  formatInterval,
 } from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
@@ -78,19 +75,19 @@ function mapCategory(raw: unknown): ProposalCategory {
   } else if (raw && typeof raw === "object") {
     key = Object.keys(raw as object)[0] ?? "Other";
   } else {
-    return "other";
+    return "Other";
   }
   switch (key.toLowerCase()) {
     case "transfer":
-      return "transfer";
+      return "Transfer";
     case "payroll":
-      return "payroll";
+      return "Payroll";
     case "grant":
-      return "grant";
+      return "Grant";
     case "ops":
-      return "ops";
+      return "Ops";
     default:
-      return "other";
+      return "Other";
   }
 }
 
@@ -169,13 +166,6 @@ function mapKindDetails(
         to: shortenAddr(String(values[0] ?? "Unknown")),
         amount: String(values[1] ?? "Unknown"),
         token: "Owner weight",
-      };
-    case "changeownerweight":
-      return {
-        kind: "change_owner_weight",
-        to: shortenAddr(String(values[0] ?? "Unknown")),
-        amount: String(values[1] ?? "0"),
-        token: "Weight",
       };
     default:
       return {
@@ -277,14 +267,15 @@ export async function getOwners(): Promise<string[]> {
   return scValToNative(val) as string[];
 }
 
-export async function getOwnerWeight(owner: string): Promise<number> {
+export async function getOwnerWeight(owner: string): Promise<bigint> {
   try {
     const val = await simulateView("get_owner_weight", [
       nativeToScVal(owner, { type: "address" }),
     ]);
-    return Number(scValToNative(val));
+    const raw = scValToNative(val);
+    return safeBigInt(raw);
   } catch {
-    return 1;
+    return 0n;
   }
 }
 
@@ -316,36 +307,6 @@ export async function getTotalWeight(): Promise<number> {
   }
 }
 
-export async function getProposalApprovalProgress(
-  proposalId: number,
-): Promise<{
-  approvalWeight: number;
-  quorumWeight: number;
-  totalWeight: number;
-}> {
-  try {
-    const val = await simulateView("get_proposal_approval_progress", [
-      nativeToScVal(BigInt(proposalId), { type: "u64" }),
-    ]);
-    const raw = scValToNative(val) as {
-      approval_weight?: number;
-      quorum_weight?: number;
-      total_weight?: number;
-    };
-    return {
-      approvalWeight: Number(raw.approval_weight ?? 0),
-      quorumWeight: Number(raw.quorum_weight ?? 0),
-      totalWeight: Number(raw.total_weight ?? 0),
-    };
-  } catch (error) {
-    console.error(
-      `Failed to get approval progress for proposal ${proposalId}:`,
-      error,
-    );
-    throw error;
-  }
-}
-
 export async function getRequiredQuorumWeight(): Promise<number> {
   try {
     const val = await simulateView("get_required_quorum_weight");
@@ -367,28 +328,6 @@ export async function getWeightCapPct(): Promise<number> {
 export async function getThreshold(): Promise<number> {
   const val = await simulateView("get_threshold");
   return Number(scValToNative(val));
-}
-
-export async function getRequiredQuorumWeight(): Promise<number> {
-  const val = await simulateView("get_required_quorum_weight");
-  return Number(scValToNative(val));
-}
-
-export async function getTotalWeight(): Promise<number> {
-  const val = await simulateView("get_total_weight");
-  return Number(scValToNative(val));
-}
-
-export async function getOwnerWeight(owner: string): Promise<bigint> {
-  try {
-    const val = await simulateView("get_owner_weight", [
-      nativeToScVal(owner, { type: "address" }),
-    ]);
-    const raw = scValToNative(val);
-    return safeBigInt(raw);
-  } catch {
-    return 0n;
-  }
 }
 
 export async function getSpendingLimit(
@@ -530,13 +469,13 @@ export async function getProposal(id: number): Promise<Proposal> {
 
 export async function getProposalApprovalProgress(
   proposalId: number,
-): Promise<{ approvals: number; quorumWeight: number; totalWeight: number }> {
+): Promise<{ approvalWeight: number; quorumWeight: number; totalWeight: number }> {
   const val = await simulateView("get_proposal_approval_progress", [
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
   ]);
   const raw = scValToNative(val) as [unknown, unknown, unknown];
   return {
-    approvals: Number(raw[0] ?? 0),
+    approvalWeight: Number(raw[0] ?? 0),
     quorumWeight: Number(raw[1] ?? 0),
     totalWeight: Number(raw[2] ?? 0),
   };
@@ -1394,7 +1333,7 @@ export function reconstructTotalWeightHistory(
   }
 
   const history: WeightHistoryPoint[] = [];
-  let currentTotal = 0;
+  let currentTotal = currentTotalWeight;
 
   // Process events from oldest to newest
   for (const event of events) {

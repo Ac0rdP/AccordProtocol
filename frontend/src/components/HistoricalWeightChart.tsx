@@ -157,7 +157,7 @@ export function HistoricalWeightChart({
               dataKey="timestamp"
               stroke="#71717a"
               style={{ fontSize: "0.75rem" }}
-              tickFormatter={(value, index) => formatXAxisLabel(index)}
+              tickFormatter={(_value: string, index: number) => formatXAxisLabel(index)}
             />
             <YAxis stroke="#71717a" style={{ fontSize: "0.75rem" }} />
             <Tooltip
@@ -167,8 +167,6 @@ export function HistoricalWeightChart({
                 borderRadius: "0.5rem",
               }}
               labelStyle={{ color: "#e4e4e7" }}
-              formatter={(value: number) => [value, "Total Weight"]}
-              labelFormatter={(label: string) => `${label}`}
             />
             <Line
               type="monotone"
