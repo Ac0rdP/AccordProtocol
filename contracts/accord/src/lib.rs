@@ -1740,6 +1740,12 @@ impl AccordContract {
 
     /// Disburses one due period for a recurring payment schedule.
     ///
+    /// Permissionless crank: any address may trigger this entrypoint once a
+    /// schedule is due. This keeps automation simple and reduces the chance that
+    /// due payouts are missed, at the cost of allowing anyone to trigger the
+    /// transfer path as long as the schedule is eligible and the contract is not
+    /// frozen.
+    ///
     /// Non-retroactive pause/resume policy:
     /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
     /// When resumed, the schedule continues from its pre-pause `last_disbursed_at`, requiring
@@ -1751,7 +1757,6 @@ impl AccordContract {
         schedule_id: u64,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        require_owner(&env, &caller)?;
         require_not_frozen(&env)?;
 
         let mut schedule = read_recurring_payment(&env, schedule_id)?;
