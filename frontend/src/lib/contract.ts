@@ -22,7 +22,12 @@ import type {
   RecurringPayment,
   RecurringStatus,
 } from "../types/accord";
-import { stroopsToDisplay, formatDeadline, shortenAddr, formatInterval } from "./soroban";
+import {
+  stroopsToDisplay,
+  formatDeadline,
+  shortenAddr,
+  formatInterval,
+} from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
 const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
@@ -34,7 +39,7 @@ const server = new rpc.Server(RPC_URL);
 
 async function simulateView(
   fn: string,
-  args: xdr.ScVal[] = []
+  args: xdr.ScVal[] = [],
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
   const contract = new Contract(CONTRACT_ID);
@@ -106,7 +111,7 @@ function safeBigInt(value: unknown): bigint {
 }
 
 function mapKindDetails(
-  kind: unknown
+  kind: unknown,
 ): Pick<Proposal, "kind" | "to" | "amount" | "token"> {
   if (!kind || typeof kind !== "object") {
     return {
@@ -117,7 +122,8 @@ function mapKindDetails(
     };
   }
 
-  const [variant, payload] = Object.entries(kind as Record<string, unknown>)[0] ?? [];
+  const [variant, payload] =
+    Object.entries(kind as Record<string, unknown>)[0] ?? [];
   const normalizedVariant = variant?.toLowerCase() ?? "";
   const values = Array.isArray(payload) ? payload : [payload];
 
@@ -229,10 +235,15 @@ export async function getDelegations(owner: string): Promise<OwnerDelegations> {
     const val = await simulateView("get_delegations", [
       nativeToScVal(owner, { type: "address" }),
     ]);
-    const raw = scValToNative(val) as { outgoing?: unknown; incoming?: unknown[] };
+    const raw = scValToNative(val) as {
+      outgoing?: unknown;
+      incoming?: unknown[];
+    };
     return {
       outgoing: raw?.outgoing ? mapDelegation(raw.outgoing) : null,
-      incoming: Array.isArray(raw?.incoming) ? raw.incoming.map(mapDelegation) : [],
+      incoming: Array.isArray(raw?.incoming)
+        ? raw.incoming.map(mapDelegation)
+        : [],
     };
   } catch {
     return { outgoing: null, incoming: [] };
@@ -277,10 +288,16 @@ export async function getOwnerWeight(owner: string): Promise<number> {
   }
 }
 
-export async function getOwnerWeights(): Promise<Array<{ address: string; weight: number }>> {
+export async function getOwnerWeights(): Promise<
+  Array<{ address: string; weight: number }>
+> {
   try {
     const val = await simulateView("get_owner_weights");
-    const raw = scValToNative(val) as Array<{ owner?: string; address?: string; weight?: number }>;
+    const raw = scValToNative(val) as Array<{
+      owner?: string;
+      address?: string;
+      weight?: number;
+    }>;
     return (raw ?? []).map((entry) => ({
       address: String(entry.owner ?? entry.address ?? ""),
       weight: Number(entry.weight ?? 0),
@@ -301,7 +318,11 @@ export async function getTotalWeight(): Promise<number> {
 
 export async function getProposalApprovalProgress(
   proposalId: number,
-): Promise<{ approvalWeight: number; quorumWeight: number; totalWeight: number }> {
+): Promise<{
+  approvalWeight: number;
+  quorumWeight: number;
+  totalWeight: number;
+}> {
   try {
     const val = await simulateView("get_proposal_approval_progress", [
       nativeToScVal(BigInt(proposalId), { type: "u64" }),
@@ -317,7 +338,10 @@ export async function getProposalApprovalProgress(
       totalWeight: Number(raw.total_weight ?? 0),
     };
   } catch (error) {
-    console.error(`Failed to get approval progress for proposal ${proposalId}:`, error);
+    console.error(
+      `Failed to get approval progress for proposal ${proposalId}:`,
+      error,
+    );
     throw error;
   }
 }
@@ -339,7 +363,6 @@ export async function getWeightCapPct(): Promise<number> {
     return 50;
   }
 }
-
 
 export async function getThreshold(): Promise<number> {
   const val = await simulateView("get_threshold");
@@ -368,7 +391,10 @@ export async function getOwnerWeight(owner: string): Promise<bigint> {
   }
 }
 
-export async function getSpendingLimit(owner: string, token: string): Promise<bigint> {
+export async function getSpendingLimit(
+  owner: string,
+  token: string,
+): Promise<bigint> {
   try {
     const val = await simulateView("get_spending_limit", [
       nativeToScVal(owner, { type: "address" }),
@@ -388,7 +414,7 @@ export async function getTotalProposals(): Promise<number> {
 
 export async function getProposalsPaged(
   offset: number,
-  limit: number
+  limit: number,
 ): Promise<unknown[]> {
   const val = await simulateView("get_proposals_paged", [
     nativeToScVal(BigInt(offset), { type: "u64" }),
@@ -416,7 +442,9 @@ function mapRecurringKind(raw: unknown): RecurringKind {
   } else {
     key = "FixedAmountPerPeriod";
   }
-  return key.toLowerCase() === "linearvesting" ? "linear_vesting" : "fixed_amount_per_period";
+  return key.toLowerCase() === "linearvesting"
+    ? "linear_vesting"
+    : "fixed_amount_per_period";
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -445,7 +473,9 @@ function mapRecurringPayment(raw: any): RecurringPayment {
   };
 }
 
-export async function getRecurringPayment(id: number): Promise<RecurringPayment> {
+export async function getRecurringPayment(
+  id: number,
+): Promise<RecurringPayment> {
   const val = await simulateView("get_recurring_payment", [
     nativeToScVal(BigInt(id), { type: "u64" }),
   ]);
@@ -454,7 +484,7 @@ export async function getRecurringPayment(id: number): Promise<RecurringPayment>
 
 export async function getRecurringPaymentsPaged(
   offset: number,
-  limit: number
+  limit: number,
 ): Promise<RecurringPayment[]> {
   const val = await simulateView("get_recurring_payments_paged", [
     nativeToScVal(BigInt(offset), { type: "u64" }),
@@ -492,16 +522,14 @@ export {
 
 export async function getProposal(id: number): Promise<Proposal> {
   const [val, thresh] = await Promise.all([
-    simulateView("get_proposal", [
-      nativeToScVal(BigInt(id), { type: "u64" }),
-    ]),
+    simulateView("get_proposal", [nativeToScVal(BigInt(id), { type: "u64" })]),
     getThreshold(),
   ]);
   return mapProposal(scValToNative(val), thresh);
 }
 
 export async function getProposalApprovalProgress(
-  proposalId: number
+  proposalId: number,
 ): Promise<{ approvals: number; quorumWeight: number; totalWeight: number }> {
   const val = await simulateView("get_proposal_approval_progress", [
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
@@ -516,7 +544,7 @@ export async function getProposalApprovalProgress(
 
 export async function hasApproved(
   walletAddress: string,
-  proposalId: number
+  proposalId: number,
 ): Promise<boolean> {
   const val = await simulateView("has_approved", [
     nativeToScVal(walletAddress, { type: "address" }),
@@ -557,7 +585,7 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
 async function simulateContractView(
   contractId: string,
   fn: string,
-  args: xdr.ScVal[] = []
+  args: xdr.ScVal[] = [],
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
   const contract = new Contract(contractId);
@@ -591,7 +619,11 @@ export async function getContractUsdcBalance(): Promise<string> {
       nativeToScVal(CONTRACT_ID, { type: "address" }),
     ]);
     const raw = scValToNative(val);
-    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+    if (
+      typeof raw === "bigint" ||
+      typeof raw === "number" ||
+      typeof raw === "string"
+    ) {
       return stroopsToDisplay(BigInt(raw));
     }
     return "0";
@@ -628,7 +660,7 @@ export async function getApprovers(proposalId: number): Promise<string[]> {
       owners.map(async (owner) => {
         const approved = await hasApproved(owner, proposalId);
         return { owner, approved };
-      })
+      }),
     );
 
     return checks.filter((c) => c.approved).map((c) => c.owner);
@@ -654,7 +686,10 @@ function parseScVal(val: unknown): unknown {
   }
 }
 
-function formatEventTimestamp(ledgerClosedAt?: string, ledger?: number): string {
+function formatEventTimestamp(
+  ledgerClosedAt?: string,
+  ledger?: number,
+): string {
   if (ledgerClosedAt) {
     const d = new Date(ledgerClosedAt);
     if (!isNaN(d.getTime())) {
@@ -670,17 +705,32 @@ function formatEventTimestamp(ledgerClosedAt?: string, ledger?: number): string 
   return "Just now";
 }
 
-function resolveEventType(first: string, second: string): ProposalEventType | null {
+function resolveEventType(
+  first: string,
+  second: string,
+): ProposalEventType | null {
   const normFirst = first.replace(/_/g, "");
   const normSecond = second.replace(/_/g, "");
 
-  if (normFirst === "approved" || normFirst === "proposalapproved" || normFirst === "approve") {
+  if (
+    normFirst === "approved" ||
+    normFirst === "proposalapproved" ||
+    normFirst === "approve"
+  ) {
     return "approved";
   }
-  if (normFirst === "revoked" || normFirst === "proposalrevoked" || normFirst === "revoke") {
+  if (
+    normFirst === "revoked" ||
+    normFirst === "proposalrevoked" ||
+    normFirst === "revoke"
+  ) {
     return "revoked";
   }
-  if (normFirst === "executed" || normFirst === "proposalexecuted" || normFirst === "execute") {
+  if (
+    normFirst === "executed" ||
+    normFirst === "proposalexecuted" ||
+    normFirst === "execute"
+  ) {
     return "executed";
   }
   if (
@@ -753,7 +803,9 @@ function resolveEventType(first: string, second: string): ProposalEventType | nu
   return null;
 }
 
-export async function getProposalEvents(proposalId: number): Promise<ProposalEvent[]> {
+export async function getProposalEvents(
+  proposalId: number,
+): Promise<ProposalEvent[]> {
   try {
     let startLedger = 1;
     try {
@@ -779,33 +831,62 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
     if (res.events && Array.isArray(res.events)) {
       for (const rawEv of res.events) {
         try {
-          const rawTopic = Array.isArray(rawEv.topic) ? rawEv.topic : [rawEv.topic];
+          const rawTopic = Array.isArray(rawEv.topic)
+            ? rawEv.topic
+            : [rawEv.topic];
           const topics = rawTopic.map(parseScVal);
           const firstTopic = String(topics[0] ?? "").toLowerCase();
-          const secondTopic = topics.length > 1 ? String(topics[1] ?? "").toLowerCase() : "";
+          const secondTopic =
+            topics.length > 1 ? String(topics[1] ?? "").toLowerCase() : "";
 
-          const nativeValue = parseScVal(rawEv.value) as Record<string, unknown> | null;
+          const nativeValue = parseScVal(rawEv.value) as Record<
+            string,
+            unknown
+          > | null;
           let eventType = resolveEventType(firstTopic, secondTopic);
           if (!eventType && nativeValue && typeof nativeValue === "object") {
-            const innerType = String(nativeValue.event ?? nativeValue.type ?? "").toLowerCase();
+            const innerType = String(
+              nativeValue.event ?? nativeValue.type ?? "",
+            ).toLowerCase();
             eventType = resolveEventType(innerType, "");
           }
 
           if (eventType && nativeValue && typeof nativeValue === "object") {
             let eventPropId: number | null = null;
-            if (nativeValue.proposal_id !== undefined && nativeValue.proposal_id !== null) {
+            if (
+              nativeValue.proposal_id !== undefined &&
+              nativeValue.proposal_id !== null
+            ) {
               eventPropId = Number(nativeValue.proposal_id);
-            } else if (nativeValue.proposalId !== undefined && nativeValue.proposalId !== null) {
+            } else if (
+              nativeValue.proposalId !== undefined &&
+              nativeValue.proposalId !== null
+            ) {
               eventPropId = Number(nativeValue.proposalId);
-            } else if (nativeValue.proposal !== undefined && nativeValue.proposal !== null) {
+            } else if (
+              nativeValue.proposal !== undefined &&
+              nativeValue.proposal !== null
+            ) {
               eventPropId = Number(nativeValue.proposal);
-            } else if (nativeValue.id !== undefined && nativeValue.id !== null) {
+            } else if (
+              nativeValue.id !== undefined &&
+              nativeValue.id !== null
+            ) {
               eventPropId = Number(nativeValue.id);
-            } else if (nativeValue.schedule_id !== undefined && nativeValue.schedule_id !== null) {
+            } else if (
+              nativeValue.schedule_id !== undefined &&
+              nativeValue.schedule_id !== null
+            ) {
               eventPropId = Number(nativeValue.schedule_id);
-            } else if (nativeValue.scheduleId !== undefined && nativeValue.scheduleId !== null) {
+            } else if (
+              nativeValue.scheduleId !== undefined &&
+              nativeValue.scheduleId !== null
+            ) {
               eventPropId = Number(nativeValue.scheduleId);
-            } else if (nativeValue.schedule !== undefined && nativeValue.schedule !== null) {
+            } else if (
+              nativeValue.schedule !== undefined &&
+              nativeValue.schedule !== null
+            ) {
               eventPropId = Number(nativeValue.schedule);
             } else if (topics.length > 1 && !isNaN(Number(topics[1]))) {
               eventPropId = Number(topics[1]);
@@ -821,29 +902,37 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
                   nativeValue.sender ??
                   nativeValue.admin ??
                   nativeValue.owner ??
-                  ""
+                  "",
               );
               const actor = rawActor ? shortenAddr(rawActor) : "Unknown";
-              const timestamp = formatEventTimestamp(rawEv.ledgerClosedAt, rawEv.ledger);
+              const timestamp = formatEventTimestamp(
+                rawEv.ledgerClosedAt,
+                rawEv.ledger,
+              );
 
               const rawScheduleId =
                 nativeValue.schedule_id ??
                 nativeValue.scheduleId ??
                 nativeValue.schedule ??
                 nativeValue.schedule_number ??
-                (nativeValue.proposal_id !== undefined || nativeValue.proposalId !== undefined
+                (nativeValue.proposal_id !== undefined ||
+                nativeValue.proposalId !== undefined
                   ? nativeValue.id
                   : undefined) ??
-                (topics.length > 2 && !isNaN(Number(topics[2])) ? Number(topics[2]) : undefined);
+                (topics.length > 2 && !isNaN(Number(topics[2]))
+                  ? Number(topics[2])
+                  : undefined);
 
               const scheduleId =
                 rawScheduleId !== undefined && rawScheduleId !== null
-                  ? typeof rawScheduleId === "bigint" || typeof rawScheduleId === "number"
+                  ? typeof rawScheduleId === "bigint" ||
+                    typeof rawScheduleId === "number"
                     ? Number(rawScheduleId)
                     : String(rawScheduleId)
-                  : eventType.startsWith("recurring_payment") && nativeValue.id !== undefined
-                  ? Number(nativeValue.id)
-                  : undefined;
+                  : eventType.startsWith("recurring_payment") &&
+                      nativeValue.id !== undefined
+                    ? Number(nativeValue.id)
+                    : undefined;
 
               const rawAmount =
                 nativeValue.amount ??
@@ -877,36 +966,49 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
                 : undefined;
 
               const rawRecipient =
-                nativeValue.recipient ?? nativeValue.to ?? nativeValue.beneficiary;
-              const recipient = rawRecipient ? shortenAddr(String(rawRecipient)) : undefined;
+                nativeValue.recipient ??
+                nativeValue.to ??
+                nativeValue.beneficiary;
+              const recipient = rawRecipient
+                ? shortenAddr(String(rawRecipient))
+                : undefined;
 
-              const reason = nativeValue.reason ? String(nativeValue.reason) : undefined;
+              const reason = nativeValue.reason
+                ? String(nativeValue.reason)
+                : undefined;
 
               let details: string | undefined;
               if (eventType === "recurring_payment_created") {
                 const parts: string[] = [];
-                if (scheduleId !== undefined) parts.push(`Schedule #${scheduleId}`);
+                if (scheduleId !== undefined)
+                  parts.push(`Schedule #${scheduleId}`);
                 if (amount) parts.push(token ? `${amount} ${token}` : amount);
                 if (recipient) parts.push(`to ${recipient}`);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "recurring_payment_disbursed") {
                 const parts: string[] = [];
-                if (scheduleId !== undefined) parts.push(`Schedule #${scheduleId}`);
+                if (scheduleId !== undefined)
+                  parts.push(`Schedule #${scheduleId}`);
                 if (amount) parts.push(token ? `${amount} ${token}` : amount);
                 if (recipient) parts.push(`to ${recipient}`);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "recurring_payment_paused") {
                 const parts: string[] = [];
-                if (scheduleId !== undefined) parts.push(`Schedule #${scheduleId}`);
+                if (scheduleId !== undefined)
+                  parts.push(`Schedule #${scheduleId}`);
                 if (reason) parts.push(reason);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "recurring_payment_cancelled") {
                 const parts: string[] = [];
-                if (scheduleId !== undefined) parts.push(`Schedule #${scheduleId}`);
+                if (scheduleId !== undefined)
+                  parts.push(`Schedule #${scheduleId}`);
                 if (reason) parts.push(reason);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "owner_weight_changed") {
-                if (nativeValue.old_weight !== undefined && nativeValue.new_weight !== undefined) {
+                if (
+                  nativeValue.old_weight !== undefined &&
+                  nativeValue.new_weight !== undefined
+                ) {
                   details = `Weight: ${nativeValue.old_weight} → ${nativeValue.new_weight}`;
                 }
               }
@@ -952,16 +1054,22 @@ function mapRecurringSchedule(raw: unknown): RecurringSchedule | null {
 
   const rawStatus = String(obj.status ?? "active").toLowerCase();
   const status: RecurringSchedule["status"] =
-    rawStatus === "paused" || rawStatus === "completed" || rawStatus === "cancelled"
+    rawStatus === "paused" ||
+    rawStatus === "completed" ||
+    rawStatus === "cancelled"
       ? rawStatus
       : "active";
 
-  const rawAmount = obj.amount ?? obj.amount_per_period ?? obj.payment_amount ?? 0n;
+  const rawAmount =
+    obj.amount ?? obj.amount_per_period ?? obj.payment_amount ?? 0n;
   let amountDisplay: string;
   if (typeof rawAmount === "bigint") {
     amountDisplay = stroopsToDisplay(rawAmount);
   } else if (typeof rawAmount === "number") {
-    amountDisplay = rawAmount >= 10_000_000 ? stroopsToDisplay(BigInt(Math.round(rawAmount))) : String(rawAmount);
+    amountDisplay =
+      rawAmount >= 10_000_000
+        ? stroopsToDisplay(BigInt(Math.round(rawAmount)))
+        : String(rawAmount);
   } else {
     amountDisplay = String(rawAmount);
   }
@@ -971,12 +1079,21 @@ function mapRecurringSchedule(raw: unknown): RecurringSchedule | null {
 
   const recipient = String(obj.recipient ?? obj.to ?? "");
   const token = obj.token ? shortenAddr(String(obj.token)) : undefined;
-  const totalDisbursed = obj.total_disbursed !== undefined ? stroopsToDisplay(safeBigInt(obj.total_disbursed)) : "0";
-  const cap = obj.cap !== undefined ? stroopsToDisplay(safeBigInt(obj.cap)) : undefined;
-  const nextDisbursementTs = obj.next_disbursement_ts !== undefined ? Number(safeBigInt(obj.next_disbursement_ts)) * 1000 : undefined;
+  const totalDisbursed =
+    obj.total_disbursed !== undefined
+      ? stroopsToDisplay(safeBigInt(obj.total_disbursed))
+      : "0";
+  const cap =
+    obj.cap !== undefined ? stroopsToDisplay(safeBigInt(obj.cap)) : undefined;
+  const nextDisbursementTs =
+    obj.next_disbursement_ts !== undefined
+      ? Number(safeBigInt(obj.next_disbursement_ts)) * 1000
+      : undefined;
   const description = obj.description ? String(obj.description) : undefined;
-  const cliff = obj.cliff !== undefined ? Number(safeBigInt(obj.cliff)) : undefined;
-  const endDate = obj.end_date !== undefined ? Number(safeBigInt(obj.end_date)) : undefined;
+  const cliff =
+    obj.cliff !== undefined ? Number(safeBigInt(obj.cliff)) : undefined;
+  const endDate =
+    obj.end_date !== undefined ? Number(safeBigInt(obj.end_date)) : undefined;
 
   return {
     id,
@@ -1000,7 +1117,9 @@ export async function getRecurringPayments(): Promise<RecurringSchedule[]> {
     const val = await simulateView("get_recurring_payments");
     const raw = scValToNative(val);
     if (!Array.isArray(raw)) return [];
-    return raw.map(mapRecurringSchedule).filter((s): s is RecurringSchedule => s !== null);
+    return raw
+      .map(mapRecurringSchedule)
+      .filter((s): s is RecurringSchedule => s !== null);
   } catch {
     return [];
   }
@@ -1067,13 +1186,18 @@ export async function getOwnerWeightChangeEvents(
     if (res.events && Array.isArray(res.events)) {
       for (const rawEv of res.events) {
         try {
-          const rawTopic = Array.isArray(rawEv.topic) ? rawEv.topic : [rawEv.topic];
+          const rawTopic = Array.isArray(rawEv.topic)
+            ? rawEv.topic
+            : [rawEv.topic];
           const topics = rawTopic.map(parseScVal);
           const firstTopic = String(topics[0] ?? "").toLowerCase();
           const secondTopic =
             topics.length > 1 ? String(topics[1] ?? "").toLowerCase() : "";
 
-          const nativeValue = parseScVal(rawEv.value) as Record<string, unknown> | null;
+          const nativeValue = parseScVal(rawEv.value) as Record<
+            string,
+            unknown
+          > | null;
 
           let eventType = resolveEventType(firstTopic, secondTopic);
           if (!eventType && nativeValue && typeof nativeValue === "object") {
@@ -1142,4 +1266,171 @@ export async function getTotalRecurringPayments(): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Fetches all available owner weight change events from contract history.
+ * Returns events sorted from oldest to newest.
+ */
+export async function getHistoricalWeightChangeEvents(): Promise<
+  OwnerWeightChangeEvent[]
+> {
+  try {
+    let startLedger = 1;
+    try {
+      const latest = await getLatestLedger();
+      startLedger = Math.max(1, latest - 10000);
+    } catch {
+      startLedger = 1;
+    }
+
+    const res = await server.getEvents({
+      startLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [CONTRACT_ID],
+        },
+      ],
+      limit: 100,
+    });
+
+    const changes: OwnerWeightChangeEvent[] = [];
+
+    if (res.events && Array.isArray(res.events)) {
+      for (const rawEv of res.events) {
+        try {
+          const rawTopic = Array.isArray(rawEv.topic)
+            ? rawEv.topic
+            : [rawEv.topic];
+          const topics = rawTopic.map(parseScVal);
+          const firstTopic = String(topics[0] ?? "").toLowerCase();
+          const secondTopic =
+            topics.length > 1 ? String(topics[1] ?? "").toLowerCase() : "";
+
+          const nativeValue = parseScVal(rawEv.value) as Record<
+            string,
+            unknown
+          > | null;
+
+          let eventType = resolveEventType(firstTopic, secondTopic);
+          if (!eventType && nativeValue && typeof nativeValue === "object") {
+            const innerType = String(
+              nativeValue.event ?? nativeValue.type ?? "",
+            ).toLowerCase();
+            eventType = resolveEventType(innerType, "");
+          }
+
+          if (eventType !== "owner_weight_changed" || !nativeValue) continue;
+
+          const owner = String(
+            nativeValue.owner ??
+              nativeValue.target ??
+              nativeValue.target_owner ??
+              "",
+          );
+          if (!owner) continue;
+
+          const oldWeight = Number(
+            nativeValue.old_weight ??
+              nativeValue.oldWeight ??
+              nativeValue.previous_weight ??
+              0,
+          );
+          const newWeight = Number(
+            nativeValue.new_weight ??
+              nativeValue.newWeight ??
+              nativeValue.weight ??
+              0,
+          );
+          const rawTotal =
+            nativeValue.new_total_weight ??
+            nativeValue.newTotalWeight ??
+            nativeValue.new_total;
+
+          changes.push({
+            owner,
+            oldWeight,
+            newWeight,
+            newTotalWeight:
+              rawTotal !== undefined && rawTotal !== null
+                ? Number(rawTotal)
+                : undefined,
+            ledger: rawEv.ledger,
+            timestamp: formatEventTimestamp(rawEv.ledgerClosedAt, rawEv.ledger),
+          });
+        } catch (evErr) {
+          console.warn("Failed to parse weight-change event record:", evErr);
+        }
+      }
+    }
+
+    // Sort from oldest to newest for historical reconstruction
+    changes.sort((a, b) => (a.ledger ?? 0) - (b.ledger ?? 0));
+    return changes;
+  } catch (err) {
+    console.error("Failed to fetch historical weight-change events:", err);
+    return [];
+  }
+}
+
+export type WeightHistoryPoint = {
+  timestamp: string;
+  ledger: number;
+  totalWeight: number;
+  date: Date;
+};
+
+/**
+ * Reconstructs total voting weight at each point in time from weight change events.
+ * Returns sorted array of weight history points from oldest to newest.
+ */
+export function reconstructTotalWeightHistory(
+  events: OwnerWeightChangeEvent[],
+  currentTotalWeight: number,
+): WeightHistoryPoint[] {
+  if (events.length === 0) {
+    return [];
+  }
+
+  const history: WeightHistoryPoint[] = [];
+  let currentTotal = 0;
+
+  // Process events from oldest to newest
+  for (const event of events) {
+    if (event.newTotalWeight !== undefined) {
+      // Use the reported total weight if available
+      currentTotal = event.newTotalWeight;
+    } else {
+      // Estimate by tracking weight changes: total += (newWeight - oldWeight)
+      currentTotal += event.newWeight - event.oldWeight;
+    }
+
+    // Ensure we don't go negative
+    if (currentTotal < 0) {
+      currentTotal = 0;
+    }
+
+    const ledger = event.ledger ?? 0;
+    const dateStr = event.timestamp;
+    let dateObj: Date;
+
+    // Try to parse the timestamp
+    // Format is typically "Aug 31, 2026" or similar
+    dateObj = new Date(dateStr);
+    if (isNaN(dateObj.getTime())) {
+      // Fallback: use ledger-based approximation
+      // Stellar average is ~5 seconds per ledger
+      dateObj = new Date();
+    }
+
+    history.push({
+      timestamp: dateStr,
+      ledger,
+      totalWeight: Math.round(currentTotal),
+      date: dateObj,
+    });
+  }
+
+  return history;
 }

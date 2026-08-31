@@ -11,6 +11,7 @@ import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import {
   getRequiredQuorumWeight,
@@ -55,7 +56,9 @@ export function DashboardPage({
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
-  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>(
+    [],
+  );
   const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
@@ -78,7 +81,9 @@ export function DashboardPage({
       .catch(() => {
         /* noop */
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -90,7 +95,9 @@ export function DashboardPage({
       .catch(() => {
         /* noop */
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Recent owner voting-weight changes, newest first.
@@ -106,7 +113,9 @@ export function DashboardPage({
       .finally(() => {
         if (active) setWeightChangesLoading(false);
       });
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -134,12 +143,18 @@ export function DashboardPage({
         loading={loading}
       />
 
+      <HistoricalWeightChart
+        currentTotalWeight={totalWeight}
+        loading={loading}
+      />
+
       {dueSchedules.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
           <h3 className="font-semibold text-sm mb-3">
             Due for disbursement
             <span className="ml-2 text-xs text-zinc-500 font-normal">
-              {dueSchedules.length} {dueSchedules.length === 1 ? "schedule" : "schedules"}
+              {dueSchedules.length}{" "}
+              {dueSchedules.length === 1 ? "schedule" : "schedules"}
             </span>
           </h3>
           <div className="space-y-2">
@@ -181,23 +196,24 @@ export function DashboardPage({
       )}
 
       {error && !loading && dismissedError !== error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setDismissedError(error);
-              }}
-              className="underline hover:text-red-300 ml-4 shrink-0 focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDismissedError(error);
+            }}
+            className="underline hover:text-red-300 ml-4 shrink-0 focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
           <span>
-            {readyCount} {readyCount === 1 ? "proposal is" : "proposals are"} ready to execute.
+            {readyCount} {readyCount === 1 ? "proposal is" : "proposals are"}{" "}
+            ready to execute.
           </span>
           <button
             type="button"
@@ -256,7 +272,10 @@ export function DashboardPage({
         ) : (
           displayedProposals.map((proposal) => {
             // Sum approval weight by summing known owner weights for approver addresses
-            const approvalWeight = (proposal.approverAddresses || []).reduce((acc, addr) => acc + (weights[addr] ?? 0), 0);
+            const approvalWeight = (proposal.approverAddresses || []).reduce(
+              (acc, addr) => acc + (weights[addr] ?? 0),
+              0,
+            );
             return (
               <ProposalCard
                 key={proposal.id}
@@ -305,7 +324,9 @@ export function DashboardPage({
                 </div>
                 <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
                   <span className="text-zinc-500">{change.oldWeight}</span>
-                  <span aria-hidden className="text-zinc-600">→</span>
+                  <span aria-hidden className="text-zinc-600">
+                    →
+                  </span>
                   <span className="text-emerald-400">{change.newWeight}</span>
                 </div>
               </div>
