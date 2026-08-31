@@ -3,6 +3,43 @@
 All amounts are in the token's smallest unit (stroops for XLM-derived tokens).
 All deadlines are Unix timestamps (seconds since epoch).
 
+### JavaScript SDK call patterns
+
+The examples below use `@stellar/stellar-sdk`. Read-only functions are called by building and simulating a transaction, then decoding the returned `ScVal` with `scValToNative`. State-changing functions follow the same flow used by the frontend: build the transaction, simulate it, assemble the prepared transaction, sign it, and submit it with `sendTransaction`.
+
+Shared setup used by the examples:
+
+```js
+import { Contract, rpc, TransactionBuilder, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
+
+const RPC_URL = process.env.STELLAR_RPC_URL;
+const CONTRACT_ID = process.env.ACCORD_CONTRACT_ID;
+const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE;
+const SOURCE_ACCOUNT = process.env.STELLAR_SOURCE_ACCOUNT;
+
+const server = new rpc.Server(RPC_URL);
+const contract = new Contract(CONTRACT_ID);
+
+async function simulateView(method, args = []) {
+  const account = await server.getAccount(SOURCE_ACCOUNT);
+  const tx = new TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build();
+
+  const simulation = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(simulation)) {
+    throw new Error(simulation.error ?? "Simulation failed");
+  }
+  return simulation.result.retval;
+}
+```
+
+For state-changing examples, `signer` below represents the owner's `Keypair`. In a browser integration, use the project's wallet signing flow instead of exposing a secret key.
+
 ### Token Amounts and Decimals
 
 All `amount` fields in function parameters and event data use the token's smallest unit. The table below lists the conventions for common tokens:
@@ -87,6 +124,35 @@ One-shot initializer. Must be called before any other function. All owners must 
 | `threshold` | `u32` | 1 ≤ threshold ≤ owners.len() |
 
 **Errors:** `AlreadyInitialized`, `InvalidOwners`, `InvalidThreshold`, `DuplicateOwner`
+### JavaScript SDK example
+
+```js
+const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
+const owners = [signer.publicKey(), "G...SECOND_OWNER"];
+const threshold = 2;
+
+const account = await server.getAccount(signer.publicKey());
+const tx = new TransactionBuilder(account, {
+  fee: "100000",
+  networkPassphrase: NETWORK_PASSPHRASE,
+})
+  .addOperation(contract.call(
+    "initialize",
+    xdr.ScVal.scvVec(owners.map((owner) => nativeToScVal(owner, { type: "address" }))),
+    nativeToScVal(threshold, { type: "u32" }),
+  ))
+  .setTimeout(30)
+  .build();
+
+const simulation = await server.simulateTransaction(tx);
+if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+
+const assembled = rpc.assembleTransaction(tx, simulation).build();
+assembled.sign(signer);
+const submitted = await server.sendTransaction(assembled);
+console.log(submitted.hash);
+```
+
 
 ---
 
@@ -118,6 +184,42 @@ Creates a transfer proposal. Returns the new proposal ID.
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
 **Errors:** `Unauthorized`, `InvalidAmount`, `EmptyDescription`, `DescriptionTooLong`, `InvalidDeadline`, `InvalidDuration`, `InvalidToken`, `TooManyActiveProposals`
+### JavaScript SDK example
+
+```js
+const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
+const to = "G...RECIPIENT";
+const amount = 1_000_000n; // token's smallest unit
+const token = "G...TOKEN";
+const description = "Monthly vendor payment";
+const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+
+const account = await server.getAccount(signer.publicKey());
+const tx = new TransactionBuilder(account, {
+  fee: "100000",
+  networkPassphrase: NETWORK_PASSPHRASE,
+})
+  .addOperation(contract.call(
+    "create_proposal",
+    nativeToScVal(signer.publicKey(), { type: "address" }),
+    nativeToScVal(to, { type: "address" }),
+    nativeToScVal(amount, { type: "i128" }),
+    nativeToScVal(token, { type: "address" }),
+    nativeToScVal(description, { type: "string" }),
+    xdr.ScVal.scvU64(deadline),
+  ))
+  .setTimeout(30)
+  .build();
+
+const simulation = await server.simulateTransaction(tx);
+if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+
+const assembled = rpc.assembleTransaction(tx, simulation).build();
+assembled.sign(signer);
+const submitted = await server.sendTransaction(assembled);
+console.log(submitted.hash);
+```
+
 
 ---
 
@@ -137,6 +239,28 @@ Records an approval for `proposal_id` from `approver`. Transitions status to `Re
 **Emits:** `("approved",)` → `ProposalApprovedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `AlreadyApproved`
+### JavaScript SDK example
+
+```js
+const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
+const proposalId = 1n;
+const account = await server.getAccount(signer.publicKey());
+const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
+  .addOperation(contract.call(
+    "approve",
+    nativeToScVal(signer.publicKey(), { type: "address" }),
+    xdr.ScVal.scvU64(proposalId),
+  ))
+  .setTimeout(30)
+  .build();
+const simulation = await server.simulateTransaction(tx);
+if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+const assembled = rpc.assembleTransaction(tx, simulation).build();
+assembled.sign(signer);
+const submitted = await server.sendTransaction(assembled);
+console.log(submitted.hash);
+```
+
 
 ---
 
@@ -156,6 +280,28 @@ Withdraws the caller's approval. Transitions status back to `Pending` if approva
 **Emits:** `("revoked",)` → `ProposalRevokedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `NotApproved`
+### JavaScript SDK example
+
+```js
+const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
+const proposalId = 1n;
+const account = await server.getAccount(signer.publicKey());
+const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
+  .addOperation(contract.call(
+    "revoke",
+    nativeToScVal(signer.publicKey(), { type: "address" }),
+    xdr.ScVal.scvU64(proposalId),
+  ))
+  .setTimeout(30)
+  .build();
+const simulation = await server.simulateTransaction(tx);
+if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+const assembled = rpc.assembleTransaction(tx, simulation).build();
+assembled.sign(signer);
+const submitted = await server.sendTransaction(assembled);
+console.log(submitted.hash);
+```
+
 
 ---
 
@@ -175,6 +321,28 @@ Executes a `Ready` proposal. Transfers `amount` of `token` from the contract to 
 **Emits:** `("executed",)` → `ProposalExecutedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `ThresholdNotMet`, `ProposalExpired`, `TransferFailed`
+### JavaScript SDK example
+
+```js
+const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
+const proposalId = 1n;
+const account = await server.getAccount(signer.publicKey());
+const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
+  .addOperation(contract.call(
+    "execute",
+    nativeToScVal(signer.publicKey(), { type: "address" }),
+    xdr.ScVal.scvU64(proposalId),
+  ))
+  .setTimeout(30)
+  .build();
+const simulation = await server.simulateTransaction(tx);
+if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+const assembled = rpc.assembleTransaction(tx, simulation).build();
+assembled.sign(signer);
+const submitted = await server.sendTransaction(assembled);
+console.log(submitted.hash);
+```
+
 
 ---
 
@@ -187,6 +355,15 @@ fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, ContractError>
 Returns the current proposal state with a freshly derived status (Expired status is derived from the current ledger timestamp without requiring a write).
 
 **Errors:** `NotInitialized`, `ProposalNotFound`
+### JavaScript SDK example
+
+```js
+const proposalId = 1n;
+const retval = await simulateView("get_proposal", [xdr.ScVal.scvU64(proposalId)]);
+const proposal = scValToNative(retval);
+console.log(proposal);
+```
+
 
 ---
 
@@ -220,6 +397,19 @@ fn get_proposals_paged(env: Env, offset: u64, limit: u32) -> Vec<Proposal>
 ```
 
 Returns a page of proposals. `offset` is 0-based (first proposal is at offset 0). `limit` is capped at 20. Proposals are returned in creation order.
+### JavaScript SDK example
+
+```js
+const offset = 0n;
+const limit = 20;
+const retval = await simulateView("get_proposals_paged", [
+  xdr.ScVal.scvU64(offset),
+  nativeToScVal(limit, { type: "u32" }),
+]);
+const proposals = scValToNative(retval);
+console.log(proposals);
+```
+
 
 ---
 
@@ -230,6 +420,14 @@ fn get_owners(env: Env) -> Result<Vec<Address>, ContractError>
 ```
 
 Returns the current owner list.
+### JavaScript SDK example
+
+```js
+const retval = await simulateView("get_owners");
+const owners = scValToNative(retval);
+console.log(owners);
+```
+
 
 ---
 
@@ -240,6 +438,14 @@ fn get_threshold(env: Env) -> Result<u32, ContractError>
 ```
 
 Returns the approval threshold.
+### JavaScript SDK example
+
+```js
+const retval = await simulateView("get_threshold");
+const threshold = scValToNative(retval);
+console.log(threshold);
+```
+
 
 ---
 
@@ -282,6 +488,14 @@ fn get_total_proposals(env: Env) -> u64
 ```
 
 Returns the total number of proposals ever created (including expired and executed).
+### JavaScript SDK example
+
+```js
+const retval = await simulateView("get_total_proposals");
+const totalProposals = scValToNative(retval);
+console.log(totalProposals);
+```
+
 
 ---
 
@@ -292,6 +506,17 @@ fn is_owner(env: Env, address: Address) -> bool
 ```
 
 Returns `true` if `address` is a current owner.
+### JavaScript SDK example
+
+```js
+const address = "G...OWNER";
+const retval = await simulateView("is_owner", [
+  nativeToScVal(address, { type: "address" }),
+]);
+const isOwner = scValToNative(retval);
+console.log(isOwner);
+```
+
 
 ---
 
@@ -1309,3 +1534,16 @@ struct RecurringPaymentCancelledEvent {
     caller: Address,
 }
 ```
+### JavaScript SDK example
+
+```js
+const proposalId = 1n;
+const owner = "G...OWNER";
+const retval = await simulateView("has_approved", [
+  xdr.ScVal.scvU64(proposalId),
+  nativeToScVal(owner, { type: "address" }),
+]);
+const hasApproved = scValToNative(retval);
+console.log(hasApproved);
+```
+
