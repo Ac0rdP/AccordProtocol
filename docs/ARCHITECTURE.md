@@ -70,11 +70,11 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 
 Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 
-| Key                   | Type           | Description                          | TTL — bump / threshold (ledgers) | Approx. cost (XLM / 30 days) |
-| --------------------- | -------------- | ------------------------------------ | -------------------------------- | ---------------------------- |
-| `OWNERS`              | `Vec<Address>` | Fixed owner set (max 20 addresses)   | 518,400 / 17,280                 | ~0.052 XLM                   |
-| `("PROP", id)`        | `Proposal`     | Per-proposal state                   | 518,400 / 17,280                 | ~0.052 XLM                   |
-| `("APPR", id, owner)` | `bool`         | Per-owner approval flag per proposal | 518,400 / 17,280                 | ~0.052 XLM                   |
+| Key                   | Type               | Description                                | TTL — bump / threshold (ledgers) | Approx. cost (XLM / 30 days) |
+| --------------------- | ------------------ | ------------------------------------------ | -------------------------------- | ---------------------------- |
+| `OWNERS`              | `Map<Address,u32>` | Owner address → voting weight map (max 20) | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("PROP", id)`        | `Proposal`         | Per-proposal state                         | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("APPR", id, owner)` | `u32`              | Per-owner approval weight per proposal     | 518,400 / 17,280                 | ~0.052 XLM                   |
 
 ### Proposal Struct Fields
 
@@ -108,7 +108,8 @@ Accord uses two patterns:
 | `NEXT`   | Monotonic proposal ID counter       |
 | `ACTCNT` | Count of currently active proposals |
 | `TLOCK`  | Time-lock delay in seconds          |
-| `OWNERS` | Owner address list                  |
+| `TWGT`   | Cached total owner weight           |
+| `OWNERS` | Owner address → weight map          |
 
 **Tuple keys** — two- or three-part tuples for per-entity records, where the first element is a short symbol namespace:
 
@@ -174,23 +175,49 @@ rent_fee_stroops = ceil(entry_size_bytes / 1024) × fee_rate_1kb × delta_ledger
 | `("PROP", id)` entry size        | ~396 bytes (100-char description) | XDR field sum below; 300-char max adds ~200 bytes, still rounds to 1 KB                        |
 | `("APPR", id, owner)` entry size | ~144 bytes                        | XDR field sum below                                                                            |
 
+**XDR byte breakdown — `OWNERS` entry (Map<Address, u32>):**
+
+| Field                              | XDR bytes                       |
+| ---------------------------------- | ------------------------------- |
+| Key (`OWNERS` symbol)              | 8                               |
+| Map length prefix                  | 4                               |
+| Per entry: Address (discriminant + ed25519 key) | 40                   |
+| Per entry: u32 weight              | 4                               |
+| **1 owner**                        | **52 bytes → 1 KB billed**      |
+| **7 owners**                       | **316 bytes → 1 KB billed**     |
+| **20 owners (max)**                | **808 bytes → 1 KB billed**     |
+
+**Before weighted governance:** `OWNERS` was `Vec<Address>` — 1 owner = 52 bytes, 7 owners = 332 bytes, 20 owners = 820 bytes. The `Map<Address, u32>` adds 4 bytes per entry for the weight value, yielding a modest increase.
+
+**XDR byte breakdown — `("APPR", id, owner)` approval entry (weighted):**
+
+| Field                                 | XDR bytes                    |
+| ------------------------------------- | ---------------------------- |
+| Key (`"APPR"` symbol + u64 + Address) | 60                           |
+| Value (`u32` approval weight)         | 4                            |
+| LedgerEntry framing and metadata      | ~80                          |
+| **Total**                             | **~144 bytes → 1 KB billed** |
+
+**Before weighted governance:** the approval entry stored a `bool` (4 bytes). After: stores a `u32` weight (4 bytes) — same byte count, different semantic.
+
 **XDR byte breakdown — `("PROP", id)` Proposal entry (100-char description):**
 
 | Field                                                      | XDR bytes                    |
 | ---------------------------------------------------------- | ---------------------------- |
 | Key (`"PROP"` symbol + u64 id)                             | 16                           |
 | `id` (u64)                                                 | 8                            |
-| `proposer` (Address)                                       | 44                           |
-| `description` (String, 100 chars)                          | 108                          |
+| `proposer` (Address)                                       | 40                           |
+| `description` (String, 100 chars)                          | 104                          |
 | `deadline` (u64)                                           | 8                            |
 | `approvals` (u32)                                          | 4                            |
+| `approval_weight` (u32)                                    | 4                            |
 | `status` (enum)                                            | 4                            |
-| `kind` (Transfer: discriminant + Address + i128 + Address) | 108                          |
+| `kind` (Transfer: discriminant + Vec<Transfer>)            | 108                          |
 | `ready_at` (u64)                                           | 8                            |
-| `threshold` (u32)                                          | 4                            |
+| `quorum_weight` (u32)                                      | 4                            |
 | `category` (enum)                                          | 4                            |
 | LedgerEntry framing and metadata                           | ~80                          |
-| **Total**                                                  | **~396 bytes → 1 KB billed** |
+| **Total**                                                  | **~388 bytes → 1 KB billed** |
 
 **XDR byte breakdown — `("APPR", id, owner)` approval entry:**
 
@@ -208,6 +235,31 @@ rent_fee_stroops = ceil(entry_size_bytes / 1024) × fee_rate_1kb × delta_ledger
 | `("PROP", id)`                     | 1 KB        | 518,400 | ~0.052     |
 | `("APPR", id, owner)` per approver | 1 KB        | 518,400 | ~0.052     |
 | **3-of-5 multisig (3 approvers)**  | —           | —       | **~0.208** |
+
+### Storage Cost Delta — Weighted Governance
+
+The table below compares the pre-weighted and post-weighted storage costs for the `OWNERS` entry and the worst-case persistent storage total.
+
+| Metric | Pre-weighted (`Vec<Address>`) | Post-weighted (`Map<Address, u32>`) | Delta |
+|--------|------------------------------|--------------------------------------|-------|
+| `OWNERS` entry (1 owner) | 52 bytes → 1 KB billed | 52 bytes → 1 KB billed | 0 bytes |
+| `OWNERS` entry (7 owners) | 332 bytes → 1 KB billed | 316 bytes → 1 KB billed | −16 bytes |
+| `OWNERS` entry (20 owners) | 820 bytes → 1 KB billed | 808 bytes → 1 KB billed | −12 bytes |
+| `("APPR", id, owner)` value | `bool` = 4 bytes | `u32` = 4 bytes | 0 bytes |
+| `("PROP", id)` fields | 10 fields | 11 fields (+ `approval_weight`, `quorum_weight`) | +8 bytes |
+| New instance key `TWGT` | — | `u32` = 4 bytes (~150 bytes shared entry) | +4 bytes |
+
+**Worst-case persistent entries** (50 proposals × 20 owners):
+
+| | Pre-weighted | Post-weighted |
+|---|---|---|
+| `OWNERS` | 1 entry | 1 entry |
+| `("PROP", id)` | 50 entries | 50 entries |
+| `("APPR", id, owner)` | 1,000 entries | 1,000 entries |
+| **Total** | **1,051 entries** | **1,051 entries** |
+| **Cost per 30-day cycle** | **~54.6 XLM** | **~54.6 XLM** |
+
+> **Net impact**: The weighted governance model adds ~8 bytes to each proposal entry (`approval_weight` + `quorum_weight`) and introduces the shared instance key `TWGT`. Because all entries round up to 1 KB for billing, the actual XLM cost per 30-day bump cycle is **identical** — the byte-level increases fall well within the 1 KB billing quantum. The per-owner approval entry changed from `bool` to `u32` with no byte-level difference. The `OWNERS` map entry is slightly smaller than the prior `Vec` due to Soroban's more compact map encoding.
 
 > These figures use a fee rate of 1 stroop/KB/ledger. Verify the current network value before capacity-planning large deployments; the rate is adjustable via Stellar governance.
 
