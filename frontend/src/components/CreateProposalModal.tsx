@@ -15,7 +15,7 @@ import {
   getRequiredQuorumWeight,
   getWeightCapPct,
 } from "../lib/contract";
-import { displayToStroops } from "../lib/soroban";
+import { displayToStroops, formatWeightPercent } from "../lib/soroban";
 import { VotingPowerPreview } from "./VotingPowerPreview";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { ProposalKind } from "../types/accord";
@@ -976,6 +976,8 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
   function renderPreview() {
     const dl = formatDeadlineDate(deadline);
+    const quorumPercentage = totalWeight > 0 ? formatWeightPercent(quorumWeight, totalWeight) : "—";
+    
     return (
       <>
         <div className="space-y-3">
@@ -1046,6 +1048,18 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             <div>
               <dt className="text-xs text-zinc-500">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{dl}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-zinc-500">Required Quorum</dt>
+              <dd className="mt-1 text-sm text-zinc-200">
+                {quorumWeight > 0 ? (
+                  <>
+                    <span className="font-mono">{quorumWeight}</span> weight ({quorumPercentage} of total voting power)
+                  </>
+                ) : (
+                  <span className="text-zinc-400">Not available</span>
+                )}
+              </dd>
             </div>
           </dl>
         </div>
