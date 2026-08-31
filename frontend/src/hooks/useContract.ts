@@ -8,6 +8,7 @@ import {
   mapProposal,
   hasApproved,
   getApprovers,
+  getApproverWeight,
   getRecurringPayments,
   computeMonthlyOutflow,
 } from "../lib/contract";
@@ -70,16 +71,22 @@ export function useContract(walletAddress: string | null): ContractState {
           mapped.map(async (p) => {
 
             const approverAddresses = await getApprovers(p.id);
+            const approverWeights: Record<string, number> = {};
+            await Promise.all(
+              approverAddresses.map(async (addr) => {
+                approverWeights[addr] = await getApproverWeight(addr);
+              })
+            );
 
             if (!walletAddress) {
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
             try {
               const approved = await hasApproved(walletAddress, p.id);
-              return { ...p, userHasApproved: approved, approverAddresses };
+              return { ...p, userHasApproved: approved, approverAddresses, approverWeights };
             } catch (err) {
               console.error(`Failed to fetch approval for ${p.id}`, err);
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
           })
         );
