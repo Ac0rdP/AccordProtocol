@@ -250,6 +250,17 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
   }
 }
 
+export async function getApproverWeight(owner: string): Promise<number> {
+  try {
+    const val = await simulateView("get_owner_weight", [
+      nativeToScVal(owner, { type: "address" }),
+    ]);
+    return Number(scValToNative(val));
+  } catch {
+    return 0; // Safe fallback when address is not a current owner
+  }
+}
+
 export async function getOwners(): Promise<string[]> {
   const val = await simulateView("get_owners");
   return scValToNative(val) as string[];

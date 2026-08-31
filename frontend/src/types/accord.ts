@@ -30,6 +30,7 @@ export type Proposal = {
   proposer: string;
   userHasApproved: boolean;
   approverAddresses: string[];
+  approverWeights?: Record<string, number>;
   executedAt?: string | null;
 };
 

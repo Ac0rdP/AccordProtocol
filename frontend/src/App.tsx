@@ -199,13 +199,17 @@ export default function App() {
       return withTx(() => approveProposal(wallet.address!, id));
     }
 
-    const approvals = proposal.approvals + ownerWeightForWallet(wallet.address);
-    const status = approvals >= proposal.threshold ? "ready" : proposal.status;
+    const myWeight = ownerWeightForWallet(wallet.address);
+    const approvals = proposal.approvals + 1;
+    const approvalWeight = (proposal.approvalWeight ?? 0) + myWeight;
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+    const status = approvalWeight >= quorumWeight ? "ready" : proposal.status;
 
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: true,
       },
@@ -224,12 +228,13 @@ export default function App() {
       return withTx(() => revokeProposal(wallet.address!, id));
     }
 
-    const approvals = Math.max(
-      proposal.approvals - ownerWeightForWallet(wallet.address),
-      0,
-    );
+    const myWeight = ownerWeightForWallet(wallet.address);
+    const approvals = Math.max(proposal.approvals - 1, 0);
+    const approvalWeight = Math.max((proposal.approvalWeight ?? 0) - myWeight, 0);
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+
     const status =
-      approvals >= proposal.threshold && proposal.status === "ready"
+      approvalWeight >= quorumWeight && proposal.status === "ready"
         ? "ready"
         : "pending";
 
@@ -237,6 +242,7 @@ export default function App() {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: false,
       },
