@@ -128,6 +128,11 @@ export function useContract(walletAddress: string | null): ContractState {
             value: `${thresh} of ${totalWeight}`,
             sub: "voting weight required",
           },
+          {
+            label: "Total Voting Power",
+            value: String(totalWeight),
+            sub: `${ownerAddrs.length} ${ownerAddrs.length === 1 ? "owner" : "owners"}`,
+          },
           { label: "Active", value: String(active), sub: "proposals" },
           { label: "Total", value: String(total), sub: "proposals created" },
           { label: "Executed", value: String(executed), sub: "all time" },
