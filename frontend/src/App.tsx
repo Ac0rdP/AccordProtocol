@@ -254,10 +254,6 @@ export default function App() {
     thresholdStat?.value.split(" ")[0] ?? "0",
     10,
   );
-  const totalWeight = Number.parseInt(
-    thresholdStat?.value.split(" of ")[1] ?? "0",
-    10,
-  );
 
   function shortenAddr(addr: string) {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;

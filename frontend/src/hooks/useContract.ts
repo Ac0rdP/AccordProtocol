@@ -9,6 +9,7 @@ import {
   hasApproved,
   getApprovers,
   getApproverWeight,
+  getOwnerWeight,
   getRecurringPayments,
   computeMonthlyOutflow,
 } from "../lib/contract";
@@ -96,7 +97,7 @@ export function useContract(walletAddress: string | null): ContractState {
         setProposals(proposalsWithApproval);
         setOwnerAddresses(ownerAddrs);
         const ownerWeights = await Promise.all(
-          ownerAddrs.map(async (addr) => Number(await getOwnerWeight(addr)))
+          ownerAddrs.map(async (addr) => { const w = await getOwnerWeight(addr); return Number(w); })
         );
         setOwners(
           ownerAddrs.map((addr, i) => ({

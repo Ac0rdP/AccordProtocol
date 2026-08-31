@@ -23,11 +23,11 @@ const TABS: { key: Filter; label: string }[] = [
 
 const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
   { key: "all", label: "All Categories" },
-  { key: "transfer", label: "Transfer" },
-  { key: "payroll", label: "Payroll" },
-  { key: "grant", label: "Grant" },
-  { key: "ops", label: "Ops" },
-  { key: "other", label: "Other" },
+  { key: "Transfer", label: "Transfer" },
+  { key: "Payroll", label: "Payroll" },
+  { key: "Grant", label: "Grant" },
+  { key: "Ops", label: "Ops" },
+  { key: "Other", label: "Other" },
 ];
 
 export function HistoryPage({

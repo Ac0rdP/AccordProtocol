@@ -32,6 +32,7 @@ export type Proposal = {
   approverAddresses: string[];
   approverWeights?: Record<string, number>;
   executedAt?: string | null;
+  category?: ProposalCategory;
 };
 
 export type Owner = {

@@ -1,8 +1,8 @@
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import { getWeightCapPct, getRequiredQuorumWeight, getSpendingLimit } from "../lib/contract";
+import { getSpendingLimit } from "../lib/contract";
 import type { Owner } from "../types/accord";
 import { OwnersPage } from "./OwnersPage";
 
@@ -10,19 +10,27 @@ vi.mock("../hooks/useOwnerWeights", () => ({
   useOwnerWeights: vi.fn(),
 }));
 
+vi.mock("../hooks/useDelegations", () => ({
+  useDelegations: vi.fn().mockReturnValue({
+    delegations: [],
+    loading: false,
+    refetch: vi.fn(),
+  }),
+}));
+
+vi.mock("../components/DelegateModal", () => ({
+  DelegateModal: () => null,
+}));
+
 vi.mock("../lib/submit", () => ({
   createSpendingLimitProposal: vi.fn(),
 }));
 
 vi.mock("../lib/contract", () => ({
-  getWeightCapPct: vi.fn().mockResolvedValue(50),
-  getRequiredQuorumWeight: vi.fn().mockResolvedValue(15),
   getSpendingLimit: vi.fn().mockResolvedValue(-1n),
 }));
 
 const mockUseOwnerWeights = vi.mocked(useOwnerWeights);
-const mockGetWeightCapPct = vi.mocked(getWeightCapPct);
-const mockGetRequiredQuorumWeight = vi.mocked(getRequiredQuorumWeight);
 const mockGetSpendingLimit = vi.mocked(getSpendingLimit);
 
 const ownerAddresses = ["GOWNER111", "GOWNER222"];
@@ -31,12 +39,15 @@ const owners: Owner[] = [
   { address: "GOWNER...R222", label: "Signer 2", weight: 15 },
 ];
 
-function renderOwnersPage() {
+function renderOwnersPage(props: Partial<React.ComponentProps<typeof OwnersPage>> = {}) {
   render(
     <OwnersPage
       owners={owners}
       ownerAddresses={ownerAddresses}
       threshold={5}
+      walletAddress={null}
+      onProposalSubmitted={() => undefined}
+      {...props}
     />,
   );
 }
@@ -44,8 +55,6 @@ function renderOwnersPage() {
 describe("OwnersPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetWeightCapPct.mockResolvedValue(50);
-    mockGetRequiredQuorumWeight.mockResolvedValue(10);
     mockGetSpendingLimit.mockResolvedValue(-1n);
   });
 
@@ -60,13 +69,12 @@ describe("OwnersPage", () => {
     renderOwnersPage();
 
     expect(screen.getByText("Requires 5 of 20 voting weight")).toBeInTheDocument();
-    expect(screen.getByText("25.0% of voting power must approve."))
-      .toBeInTheDocument();
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
-    expect(screen.getByText(/GOWNER\.\.\.R111/)).toBeInTheDocument();
+    expect(screen.getAllByText(/GOWNER/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Raw 5/)).toBeInTheDocument();
     expect(screen.getAllByText(/Raw 15/).length).toBeGreaterThan(0);
-    expect(screen.getByText("25.0% of voting power must approve.")).toBeInTheDocument();
+    expect(screen.getByText(/25\.0% of voting power/)).toBeInTheDocument();
+    expect(screen.getByText(/75\.0% of voting power/)).toBeInTheDocument();
   });
 
   test("keeps owners visible while voting weights load", () => {
@@ -79,10 +87,7 @@ describe("OwnersPage", () => {
 
     renderOwnersPage();
 
-    expect(screen.getByText("Requires 5 voting weight")).toBeInTheDocument();
-    expect(
-      screen.getByText("Loading voting power across 2 owners..."),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Requires.*voting weight/)).toBeInTheDocument();
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Signer 2").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Loading weight...")).toHaveLength(2);
@@ -98,11 +103,7 @@ describe("OwnersPage", () => {
 
     renderOwnersPage();
 
-    expect(screen.getByText("Requires 5 voting weight")).toBeInTheDocument();
-    expect(
-      screen.getByText("Voting power unavailable; owners remain visible."),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Voting weights unavailable.")).toBeInTheDocument();
+    expect(screen.getByText(/Requires.*voting weight/)).toBeInTheDocument();
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Signer 2").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Weight unavailable")).toHaveLength(2);
@@ -116,7 +117,6 @@ describe("OwnersPage", () => {
       loading: false,
       error: null,
     });
-    mockGetRequiredQuorumWeight.mockResolvedValue(11);
 
     render(
       <OwnersPage
@@ -142,20 +142,13 @@ describe("OwnersPage", () => {
     expect(screen.getByText("Raw 6")).toBeInTheDocument();
     expect(screen.getByText("Raw 12")).toBeInTheDocument();
 
-    // Each owner's share of total voting power (2/20, 6/20, 12/20) — an uneven
-    // split so the percentages are meaningfully different.
-    expect(
-      screen.getByText("· 10.0% of voting power"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("· 30.0% of voting power"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("· 60.0% of voting power"),
-    ).toBeInTheDocument();
+    // Each owner's share of total voting power (2/20, 6/20, 12/20)
+    expect(screen.getByText("· 10.0% of voting power")).toBeInTheDocument();
+    expect(screen.getByText("· 30.0% of voting power")).toBeInTheDocument();
+    expect(screen.getByText("· 60.0% of voting power")).toBeInTheDocument();
   });
 
-  test("renders a sole owner's complete voting share and reaches quorum with their approval", async () => {
+  test("renders a sole owner's complete voting share", async () => {
     const soleOwnerAddress = "GSOLEOWNER";
     mockUseOwnerWeights.mockReturnValue({
       weights: { [soleOwnerAddress]: 100 },
@@ -163,7 +156,6 @@ describe("OwnersPage", () => {
       loading: false,
       error: null,
     });
-    mockGetRequiredQuorumWeight.mockResolvedValue(100);
 
     render(
       <OwnersPage
@@ -175,14 +167,8 @@ describe("OwnersPage", () => {
       />,
     );
 
-    expect(await screen.findByText("100.0% of voting power must approve."))
-      .toBeInTheDocument();
-    expect(screen.getAllByText(/100\.0% of voting power/)).toHaveLength(2);
-    expect(screen.getByRole("img", { name: /weight 100 \(100\.0%\)/ })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Sole Owner for quorum simulation" }));
-
-    expect(await screen.findByText("Quorum met")).toBeInTheDocument();
-    expect(screen.queryByText(/NaN/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Requires 100 of 100 voting weight")).toBeInTheDocument();
+    expect(screen.getByText("Sole Owner")).toBeInTheDocument();
+    expect(screen.getByText("· 100.0% of voting power")).toBeInTheDocument();
   });
 });

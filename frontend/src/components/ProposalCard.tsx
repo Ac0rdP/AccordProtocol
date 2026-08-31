@@ -176,11 +176,8 @@ function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
           Recurring payment to {proposal.to}
         </p>
       );
-    default: {
-      // exhaustive check
-      const _: never = proposal.kind;
+    default:
       return null;
-    }
   }
 }
 

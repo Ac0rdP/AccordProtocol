@@ -1,5 +1,3 @@
-import React from "react";
-
 export type ImpactLevel = "low" | "medium" | "high" | "critical";
 
 export interface GovernanceImpactBadgeProps {
