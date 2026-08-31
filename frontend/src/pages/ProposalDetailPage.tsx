@@ -224,7 +224,7 @@ export function ProposalDetailPage({
                 norm === "ownerweightchange"
               ) {
                 badgeColors = "bg-purple-500/10 text-purple-400 border-purple-500/20";
-                label = "Weight Changed";
+                label = "Owner Weight Changed";
               } else if (
                 (norm.includes("recurring") && norm.includes("creat")) ||
                 norm === "reccreated" ||

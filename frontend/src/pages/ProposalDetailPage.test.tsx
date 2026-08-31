@@ -6,15 +6,12 @@ import type { Proposal, ProposalEvent } from "../types/accord";
 import { ProposalDetailPage } from "./ProposalDetailPage";
 import * as contract from "../lib/contract";
 
-vi.mock("../lib/contract", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/contract")>();
-  return {
-    ...actual,
-    getProposalEvents: vi.fn().mockResolvedValue([]),
-    getOwners: vi.fn().mockResolvedValue(["GAPPROVER1"]),
-    getRequiredQuorumWeight: vi.fn().mockResolvedValue(2),
-  };
-});
+vi.mock("../lib/contract", () => ({
+  getProposalEvents: vi.fn().mockResolvedValue([]),
+  getOwners: vi.fn().mockResolvedValue(["GAPPROVER1"]),
+  getRequiredQuorumWeight: vi.fn().mockResolvedValue(2),
+  getOwnerWeights: vi.fn().mockResolvedValue([]),
+}));
 
 const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   id: 1,
@@ -175,6 +172,43 @@ describe("ProposalDetailPage", () => {
     expect(screen.getByText("Schedule #5 · Cancelled")).toBeTruthy();
     expect(screen.getByText("GAPPRO...VER1")).toBeTruthy();
     expect(screen.getByText("GPROPO...SER1")).toBeTruthy();
+  });
+
+  test("renders owner-weight-change events in the activity timeline with owner and old/new weight", async () => {
+    const mockEvents: ProposalEvent[] = [
+      {
+        type: "approved",
+        actor: "GAPPRO...VER1",
+        timestamp: "Ledger #100",
+        ledger: 100,
+      },
+      {
+        type: "owner_weight_changed",
+        actor: "GOWNER...AAAAAA",
+        timestamp: "Ledger #105",
+        ledger: 105,
+        details: "Weight: 25 → 40",
+      },
+      {
+        type: "executed",
+        actor: "GEXECU...TOR1",
+        timestamp: "Ledger #110",
+        ledger: 110,
+      },
+    ];
+
+    vi.mocked(contract.getProposalEvents).mockResolvedValueOnce(mockEvents);
+
+    renderDetail();
+
+    await waitFor(() => {
+      expect(screen.getByText("Owner Weight Changed")).toBeTruthy();
+    });
+
+    expect(screen.getByText("Weight: 25 → 40")).toBeTruthy();
+    expect(screen.getByText("GOWNER...AAAAAA")).toBeTruthy();
+    expect(screen.getByText("Approved")).toBeTruthy();
+    expect(screen.getByText("Executed")).toBeTruthy();
   });
 });
 

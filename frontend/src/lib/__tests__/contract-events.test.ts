@@ -1,6 +1,11 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { getLatestLedger, getContractEvents, mapProposal } from "../contract";
+import { getLatestLedger, getContractEvents, getProposalEvents, mapProposal } from "../contract";
 import { rpc } from "@stellar/stellar-sdk";
+
+const { mockGetLatestLedger, mockGetEvents } = vi.hoisted(() => ({
+  mockGetLatestLedger: vi.fn(),
+  mockGetEvents: vi.fn(),
+}));
 
 // Mock the rpc.Server instance directly through vi
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -193,6 +198,50 @@ describe("Contract Events API", () => {
     expect(events[1].ledger).toBe(150);
     expect(events[2].type).toBe("executed");
     expect(events[2].ledger).toBe(300);
+  });
+
+  test("getProposalEvents includes governance-wide owner-weight-change events in chronological order", async () => {
+    mockGetEvents.mockResolvedValueOnce({
+      events: [
+        {
+          topic: ["executed"],
+          value: { id: 1, executor: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC" },
+          ledger: 110,
+          ledgerClosedAt: "2026-06-27T13:00:00Z",
+        },
+        {
+          topic: ["c_wgt"],
+          value: {
+            owner: "GOWNER1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            old_weight: 25,
+            new_weight: 40,
+            new_total_weight: 60,
+          },
+          ledger: 105,
+          ledgerClosedAt: "2026-06-27T12:30:00Z",
+        },
+        {
+          topic: ["approved"],
+          value: { id: 1, approver: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC" },
+          ledger: 100,
+          ledgerClosedAt: "2026-06-27T12:00:00Z",
+        },
+      ],
+      latestLedger: 110,
+    });
+
+    const events = await getProposalEvents(1);
+    expect(events).toHaveLength(3);
+    expect(events[0].type).toBe("approved");
+    expect(events[0].ledger).toBe(100);
+    expect(events[1]).toMatchObject({
+      type: "owner_weight_changed",
+      actor: "GOWNER...AAAA",
+      ledger: 105,
+      details: "GOWNER...AAAA: Weight: 25 → 40",
+    });
+    expect(events[2].type).toBe("executed");
+    expect(events[2].ledger).toBe(110);
   });
 
   test("maps ChangeOwnerWeight proposal kind", () => {

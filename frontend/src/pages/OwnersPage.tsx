@@ -48,7 +48,6 @@ type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
-  totalWeight: number;
   walletAddress: string | null;
   onProposalSubmitted: () => void;
 };
@@ -57,10 +56,12 @@ export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  totalWeight,
   walletAddress,
   onProposalSubmitted,
 }: OwnersPageProps) {
+  const [sortByWeightDesc] = useState(false);
+  const [filterMode] = useState<"all" | "above" | "below">("all");
+  const [shareThreshold] = useState("");
   const {
     weights,
     totalWeight,
@@ -78,6 +79,11 @@ export function OwnersPage({
   const [showForm, setShowForm] = useState(false);
   const [showWeightForm, setShowWeightForm] = useState(false);
   const [weightTargetOwner, setWeightTargetOwner] = useState<string>("");
+  const [requiredQuorumWeight, setRequiredQuorumWeight] = useState(0);
+  const [, setQuorumLoading] = useState(true);
+  const [selectedAddresses, setSelectedAddresses] = useState<Set<string>>(
+    () => new Set(ownerAddresses),
+  );
 
   // Spending limit proposal form state
   const [slOwner, setSlOwner] = useState("");

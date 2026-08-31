@@ -255,14 +255,14 @@ export async function getOwners(): Promise<string[]> {
   return scValToNative(val) as string[];
 }
 
-export async function getOwnerWeight(owner: string): Promise<number> {
+export async function getOwnerWeight(owner: string): Promise<bigint> {
   try {
     const val = await simulateView("get_owner_weight", [
       nativeToScVal(owner, { type: "address" }),
     ]);
-    return Number(scValToNative(val));
+    return safeBigInt(scValToNative(val));
   } catch {
-    return 1;
+    return 0n;
   }
 }
 
@@ -333,28 +333,6 @@ export async function getWeightCapPct(): Promise<number> {
 export async function getThreshold(): Promise<number> {
   const val = await simulateView("get_threshold");
   return Number(scValToNative(val));
-}
-
-export async function getRequiredQuorumWeight(): Promise<number> {
-  const val = await simulateView("get_required_quorum_weight");
-  return Number(scValToNative(val));
-}
-
-export async function getTotalWeight(): Promise<number> {
-  const val = await simulateView("get_total_weight");
-  return Number(scValToNative(val));
-}
-
-export async function getOwnerWeight(owner: string): Promise<bigint> {
-  try {
-    const val = await simulateView("get_owner_weight", [
-      nativeToScVal(owner, { type: "address" }),
-    ]);
-    const raw = scValToNative(val);
-    return safeBigInt(raw);
-  } catch {
-    return 0n;
-  }
 }
 
 export async function getSpendingLimit(owner: string, token: string): Promise<bigint> {
@@ -487,20 +465,6 @@ export async function getProposal(id: number): Promise<Proposal> {
     getThreshold(),
   ]);
   return mapProposal(scValToNative(val), thresh);
-}
-
-export async function getProposalApprovalProgress(
-  proposalId: number
-): Promise<{ approvals: number; quorumWeight: number; totalWeight: number }> {
-  const val = await simulateView("get_proposal_approval_progress", [
-    nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
-  const raw = scValToNative(val) as [unknown, unknown, unknown];
-  return {
-    approvals: Number(raw[0] ?? 0),
-    quorumWeight: Number(raw[1] ?? 0),
-    totalWeight: Number(raw[2] ?? 0),
-  };
 }
 
 export async function hasApproved(
@@ -800,7 +764,12 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
               eventPropId = Number(topics[1]);
             }
 
-            if (eventPropId === proposalId) {
+            // Owner weight changes are governance-wide events emitted without a
+            // proposal id (the topic is just "c_wgt"), so they are included in
+            // every proposal's chronological history.
+            const isGovernanceWide = eventType === "owner_weight_changed";
+
+            if (eventPropId === proposalId || isGovernanceWide) {
               const rawActor = String(
                 nativeValue.approver ??
                   nativeValue.executor ??
@@ -895,8 +864,17 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
                 if (reason) parts.push(reason);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "owner_weight_changed") {
+                const owner = String(
+                  nativeValue.owner ??
+                    nativeValue.target ??
+                    nativeValue.target_owner ??
+                    ""
+                );
+                const ownerName = owner ? shortenAddr(owner) : undefined;
                 if (nativeValue.old_weight !== undefined && nativeValue.new_weight !== undefined) {
-                  details = `Weight: ${nativeValue.old_weight} → ${nativeValue.new_weight}`;
+                  details = `${ownerName ? `${ownerName}: ` : ""}Weight: ${nativeValue.old_weight} → ${nativeValue.new_weight}`;
+                } else if (ownerName) {
+                  details = ownerName;
                 }
               }
 
