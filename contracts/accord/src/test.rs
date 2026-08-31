@@ -8092,6 +8092,47 @@ fn test_get_claimable_amount() {
 }
 
 #[test]
+fn linear_vesting_disbursement_uses_newly_vested_amount_after_cliff() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &10_000_000_i128,
+        &3600_u64,
+        &NOW,
+        &(NOW + 10_000),
+        &(NOW + 2_000),
+        &10_000_000_i128,
+        &RecurringKind::LinearVesting,
+        &str(&env, "Linear vesting test"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    set_timestamp(&env, NOW + 1_000);
+    assert_eq!(client.try_disburse_recurring(&1), Err(Ok(ContractError::RecurringIntervalNotElapsed)));
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0_i128);
+
+    set_timestamp(&env, NOW + 5_000);
+    client.disburse_recurring(&1);
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 5_000_000_i128);
+
+    set_timestamp(&env, NOW + 7_500);
+    client.disburse_recurring(&1);
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 7_500_000_i128);
+
+    set_timestamp(&env, NOW + 20_000);
+    client.disburse_recurring(&1);
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 10_000_000_i128);
+}
+
+#[test]
 fn test_get_recurring_payments_paged() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);

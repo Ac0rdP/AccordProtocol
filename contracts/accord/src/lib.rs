@@ -1241,6 +1241,61 @@ fn recurring_payment_due_at(schedule: &RecurringPaymentSchedule) -> Result<u64, 
         .ok_or(ContractError::ArithmeticError)
 }
 
+fn linear_vesting_payout(
+    schedule: &RecurringPaymentSchedule,
+    now: u64,
+) -> Result<i128, ContractError> {
+    let cliff_time = schedule.cliff.unwrap_or(schedule.start);
+    if now < cliff_time {
+        return Ok(0);
+    }
+
+    let duration = match schedule.end {
+        Some(end_time) if end_time > schedule.start => {
+            end_time
+                .checked_sub(schedule.start)
+                .ok_or(ContractError::ArithmeticError)?
+        }
+        _ => return Ok(0),
+    };
+    if duration == 0 {
+        return Ok(0);
+    }
+
+    let elapsed = if now >= schedule.start {
+        now.checked_sub(schedule.start).ok_or(ContractError::ArithmeticError)?
+    } else {
+        return Ok(0);
+    };
+
+    let elapsed_i128 = i128::try_from(elapsed).map_err(|_| ContractError::ArithmeticError)?;
+    let duration_i128 = i128::try_from(duration).map_err(|_| ContractError::ArithmeticError)?;
+    let vested_total = {
+        let numerator = elapsed_i128
+            .checked_mul(schedule.amount)
+            .ok_or(ContractError::ArithmeticError)?;
+        let raw = numerator
+            .checked_div(duration_i128)
+            .ok_or(ContractError::ArithmeticError)?;
+
+        let cap = schedule.cap.unwrap_or(schedule.amount);
+        if cap > 0 && raw > cap {
+            cap
+        } else {
+            raw
+        }
+    };
+
+    let already_paid = schedule.total_disbursed;
+    if vested_total <= already_paid {
+        return Ok(0);
+    }
+
+    vested_total
+        .checked_sub(already_paid)
+        .ok_or(ContractError::ArithmeticError)
+}
+
 // ─── Contract ────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1769,6 +1824,12 @@ impl AccordContract {
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
+        let disbursement_amount = if schedule.cliff.is_some() || schedule.end.is_some() {
+            linear_vesting_payout(&schedule, now)?
+        } else {
+            schedule.amount
+        };
+
         if now < due_at {
             return Err(ContractError::RecurringIntervalNotElapsed);
         }
@@ -1777,24 +1838,33 @@ impl AccordContract {
                 return Err(ContractError::RecurringPaymentComplete);
             }
         }
+        if disbursement_amount <= 0 {
+            return Err(ContractError::RecurringPaymentComplete);
+        }
+
         let projected_total = schedule
             .total_disbursed
-            .checked_add(schedule.amount)
+            .checked_add(disbursement_amount)
             .ok_or(ContractError::ArithmeticError)?;
         if let Some(total_cap) = schedule.cap {
             if projected_total > total_cap {
-                return Err(ContractError::RecurringPaymentComplete);
+                let clamped = total_cap
+                    .checked_sub(schedule.total_disbursed)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if clamped <= 0 {
+                    return Err(ContractError::RecurringPaymentComplete);
+                }
             }
         }
 
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
         let balance = token_client.balance(&treasury);
-        if balance < schedule.amount {
+        if balance < disbursement_amount {
             return Err(ContractError::TransferFailed);
         }
         if token_client
-            .try_transfer(&treasury, &schedule.recipient, &schedule.amount)
+            .try_transfer(&treasury, &schedule.recipient, &disbursement_amount)
             .is_err()
         {
             return Err(ContractError::TransferFailed);
@@ -1808,11 +1878,11 @@ impl AccordContract {
             tracker.epoch
         };
         let spent = if now > epoch.saturating_add(SPENDING_WINDOW) {
-            schedule.amount
+            disbursement_amount
         } else {
             tracker
                 .spent
-                .checked_add(schedule.amount)
+                .checked_add(disbursement_amount)
                 .ok_or(ContractError::ArithmeticError)?
         };
         write_spent_tracker(&env, &schedule.proposer, &schedule.token, &SpentTracker { spent, epoch });
@@ -1831,7 +1901,7 @@ impl AccordContract {
                 schedule_id,
                 recipient: schedule.recipient.clone(),
                 token: schedule.token.clone(),
-                amount: schedule.amount,
+                amount: disbursement_amount,
                 total_disbursed: schedule.total_disbursed,
                 periods_disbursed: schedule.periods_disbursed,
             },
