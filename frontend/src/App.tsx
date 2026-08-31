@@ -155,6 +155,15 @@ export default function App() {
 
   const { address, connect } = wallet;
 
+  const ownerWeightForWallet = useCallback(
+    (addr: string | null | undefined) => {
+      if (!addr) return 0;
+      const index = ownerAddresses.indexOf(addr);
+      return index >= 0 ? owners[index]?.weight ?? 0 : 0;
+    },
+    [ownerAddresses, owners]
+  );
+
   const withTx = useCallback(
     async (
       fn: () => Promise<void>,
@@ -190,7 +199,7 @@ export default function App() {
       return withTx(() => approveProposal(wallet.address!, id));
     }
 
-    const approvals = proposal.approvals + 1;
+    const approvals = proposal.approvals + ownerWeightForWallet(wallet.address);
     const status = approvals >= proposal.threshold ? "ready" : proposal.status;
 
     return withTx(() => approveProposal(wallet.address!, id), {
@@ -201,7 +210,7 @@ export default function App() {
         userHasApproved: true,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const handleExecute = useCallback((id: number) =>
     withTx(() => executeProposal(wallet.address!, id), {
@@ -215,7 +224,10 @@ export default function App() {
       return withTx(() => revokeProposal(wallet.address!, id));
     }
 
-    const approvals = Math.max(proposal.approvals - 1, 0);
+    const approvals = Math.max(
+      proposal.approvals - ownerWeightForWallet(wallet.address),
+      0,
+    );
     const status =
       approvals >= proposal.threshold && proposal.status === "ready"
         ? "ready"
@@ -229,11 +241,15 @@ export default function App() {
         userHasApproved: false,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
     thresholdStat?.value.split(" ")[0] ?? "0",
+    10,
+  );
+  const totalWeight = Number.parseInt(
+    thresholdStat?.value.split(" of ")[1] ?? "0",
     10,
   );
 

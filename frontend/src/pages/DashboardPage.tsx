@@ -1,11 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
-import type { DashboardStat, Owner, Proposal, RecurringSchedule } from "../types/accord";
+import type {
+  DashboardStat,
+  Owner,
+  OwnerWeightChangeEvent,
+  Proposal,
+  RecurringSchedule,
+} from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import { getRequiredQuorumWeight, getDueRecurring } from "../lib/contract";
+import {
+  getRequiredQuorumWeight,
+  getDueRecurring,
+  getOwnerWeightChangeEvents,
+} from "../lib/contract";
+import { shortenAddr } from "../lib/soroban";
+
+const RECENT_WEIGHT_CHANGES = 5;
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -41,6 +55,8 @@ export function DashboardPage({
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
+  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -77,6 +93,22 @@ export function DashboardPage({
     return () => { active = false; };
   }, []);
 
+  // Recent owner voting-weight changes, newest first.
+  useEffect(() => {
+    let active = true;
+    getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
+      .then((events) => {
+        if (active) setWeightChanges(events);
+      })
+      .catch(() => {
+        /* noop — feed falls back to its empty state */
+      })
+      .finally(() => {
+        if (active) setWeightChangesLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => {
     if (readyCount > prevReadyCount.current) {
       setBannerDismissed(false);
@@ -95,6 +127,12 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
+
+      <GovernanceHealthWidget
+        weights={weights}
+        totalWeight={totalWeight}
+        loading={loading}
+      />
 
       {dueSchedules.length > 0 && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
@@ -184,7 +222,6 @@ export function DashboardPage({
             Expiring first
           </label>
           <button
-            ref={createProposalButtonRef}
             type="button"
             onClick={onCreateProposal}
             className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
@@ -236,6 +273,45 @@ export function DashboardPage({
             );
           })
         )}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="font-semibold mb-4">Recent Weight Changes</h2>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
+          {weightChangesLoading ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              Loading recent weight changes…
+            </div>
+          ) : weightChanges.length === 0 ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              No voting-weight changes recorded yet.
+            </div>
+          ) : (
+            weightChanges.map((change, index) => (
+              <div
+                key={`${change.owner}-${change.ledger ?? "x"}-${index}`}
+                className="flex items-center justify-between px-4 py-3 gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+                    {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm text-zinc-300 truncate">
+                      {shortenAddr(change.owner)}
+                    </p>
+                    <p className="text-xs text-zinc-500">{change.timestamp}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
+                  <span className="text-zinc-500">{change.oldWeight}</span>
+                  <span aria-hidden className="text-zinc-600">→</span>
+                  <span className="text-emerald-400">{change.newWeight}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="mt-8">

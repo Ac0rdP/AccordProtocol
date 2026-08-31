@@ -108,6 +108,53 @@ describe("OwnersPage", () => {
     expect(screen.getAllByText("Weight unavailable")).toHaveLength(2);
   });
 
+  test("renders each owner's weight and percentage share for an uneven multi-owner set", async () => {
+    const addresses = ["GALPHA111", "GBRAVO222", "GCHARLIE333"];
+    mockUseOwnerWeights.mockReturnValue({
+      weights: { GALPHA111: 2, GBRAVO222: 6, GCHARLIE333: 12 },
+      totalWeight: 20,
+      loading: false,
+      error: null,
+    });
+    mockGetRequiredQuorumWeight.mockResolvedValue(11);
+
+    render(
+      <OwnersPage
+        owners={[
+          { address: "GALPH...A111", label: "Alpha", weight: 2 },
+          { address: "GBRAV...O222", label: "Bravo", weight: 6 },
+          { address: "GCHAR...E333", label: "Charlie", weight: 12 },
+        ]}
+        ownerAddresses={addresses}
+        threshold={11}
+        walletAddress={null}
+        onProposalSubmitted={() => undefined}
+      />,
+    );
+
+    // Weighted quorum summary reflects the mocked total voting weight.
+    expect(
+      await screen.findByText("Requires 11 of 20 voting weight"),
+    ).toBeInTheDocument();
+
+    // Each owner's raw voting weight is shown.
+    expect(screen.getByText("Raw 2")).toBeInTheDocument();
+    expect(screen.getByText("Raw 6")).toBeInTheDocument();
+    expect(screen.getByText("Raw 12")).toBeInTheDocument();
+
+    // Each owner's share of total voting power (2/20, 6/20, 12/20) — an uneven
+    // split so the percentages are meaningfully different.
+    expect(
+      screen.getByText("· 10.0% of voting power"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("· 30.0% of voting power"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("· 60.0% of voting power"),
+    ).toBeInTheDocument();
+  });
+
   test("renders a sole owner's complete voting share and reaches quorum with their approval", async () => {
     const soleOwnerAddress = "GSOLEOWNER";
     mockUseOwnerWeights.mockReturnValue({

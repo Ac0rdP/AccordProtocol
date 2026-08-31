@@ -1,7 +1,7 @@
 #![no_std]
 #![allow(deprecated)]
 pub mod validate;
-use validate::{validate_deadline, validate_description, validate_recurring_schedule};
+use validate::{validate_deadline, validate_description};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -1578,20 +1578,6 @@ impl AccordContract {
 
     /// Disburses one due period for a recurring payment schedule.
     ///
-    /// **Catch-up policy: one period per call.**
-    /// If multiple intervals have elapsed since the last disbursement (e.g.
-    /// because no one cranked the schedule, or because it was paused for
-    /// several intervals), each call to `disburse_recurring` transfers exactly
-    /// one period's amount. The caller must invoke this function once per
-    /// missed period to "catch up". The alternative — disbursing all missed
-    /// periods in a single call — was rejected because it would allow a single
-    /// transaction to drain an arbitrarily large share of the contract's
-    /// treasury, making the disbursement cost unpredictable and opening a
-    /// denial-of-service vector if the accumulated debt is large enough to
-    /// exhaust the transaction's resource budget. One-period-per-call keeps
-    /// each call's cost bounded and gives the multisig owners the opportunity
-    /// to cancel or pause a misbehaving schedule between periods.
-    ///
     /// Non-retroactive pause/resume policy:
     /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
     /// When resumed, the schedule continues from its pre-pause `last_disbursed_at`, requiring
@@ -1616,29 +1602,22 @@ impl AccordContract {
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
-        if schedule.cliff_time > 0 && now < schedule.cliff_time {
-            return Err(ContractError::RecurringPaymentNotDue);
-        }
-
         if now < due_at {
             return Err(ContractError::RecurringIntervalNotElapsed);
         }
-
-        if schedule.end_time > 0 && (due_at > schedule.end_time || now > schedule.end_time) {
-            schedule.status = RecurringStatus::Completed;
-            write_recurring_payment(&env, &schedule);
-            return Err(ContractError::RecurringPaymentComplete);
+        if let Some(end_at) = schedule.end {
+            if due_at > end_at || now > end_at {
+                return Err(ContractError::RecurringPaymentComplete);
+            }
         }
-
         let projected_total = schedule
             .total_disbursed
             .checked_add(schedule.amount)
             .ok_or(ContractError::ArithmeticError)?;
-
-        if schedule.total_cap > 0 && projected_total > schedule.total_cap {
-            schedule.status = RecurringStatus::Completed;
-            write_recurring_payment(&env, &schedule);
-            return Err(ContractError::RecurringPaymentComplete);
+        if let Some(total_cap) = schedule.cap {
+            if projected_total > total_cap {
+                return Err(ContractError::RecurringPaymentComplete);
+            }
         }
 
         let token_client = token::Client::new(&env, &schedule.token);
@@ -1673,10 +1652,10 @@ impl AccordContract {
 
         schedule.last_disbursed_at = now;
         schedule.total_disbursed = projected_total;
-        
-        if schedule.total_cap > 0 && schedule.total_disbursed >= schedule.total_cap {
-            schedule.status = RecurringStatus::Completed;
-        }
+        schedule.periods_disbursed = schedule
+            .periods_disbursed
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticError)?;
         write_recurring_payment(&env, &schedule);
 
         env.events().publish(
@@ -1687,7 +1666,7 @@ impl AccordContract {
                 token: schedule.token.clone(),
                 amount: schedule.amount,
                 total_disbursed: schedule.total_disbursed,
-                periods_disbursed: (schedule.total_disbursed / schedule.amount) as u32,
+                periods_disbursed: schedule.periods_disbursed,
             },
         );
 
@@ -2544,7 +2523,7 @@ impl AccordContract {
                     cliff_time: params.cliff_time,
                     total_cap: params.total_cap,
                     total_disbursed: 0,
-                    last_disbursed_at: params.start_time,
+                    last_disbursed_at: 0,
                     status: RecurringStatus::Active,
                     kind: params.kind.clone(),
                     category: proposal.category.clone(),
@@ -2773,7 +2752,6 @@ impl AccordContract {
         }
         validate_description(&description)?;
         validate_deadline(&env, deadline)?;
-        validate_recurring_schedule(start_time, cliff_time, end_time, total_cap, amount)?;
 
         if read_active_recurring_count(&env) >= MAX_ACTIVE_RECURRING {
             return Err(ContractError::TooManyActiveRecurring);
