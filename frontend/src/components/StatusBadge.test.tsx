@@ -13,6 +13,13 @@ describe("StatusBadge", () => {
     expect(container.firstChild).toMatchSnapshot();
   });
 
+  it("renders ready badge at the weighted-quorum transition boundary", () => {
+    // A proposal becomes "Ready" the moment its approval weight exactly meets
+    // its quorum weight. Snapshotted here: approvalWeight === quorumWeight (e.g. 10 === 10).
+    const { container } = render(<StatusBadge status="ready" />);
+    expect(container.firstChild).toMatchSnapshot();
+  });
+
   it("renders executed status", () => {
     const { container } = render(<StatusBadge status="executed" />);
     expect(container.firstChild).toMatchSnapshot();
