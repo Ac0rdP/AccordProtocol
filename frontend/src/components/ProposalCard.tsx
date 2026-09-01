@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import type { Proposal, ProposalCategory, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
-import { Check, Copy, Link2 } from "lucide-react";
+import { Check, Copy, Link2, ShieldAlert } from "lucide-react";
 import { shortenAddr, formatWeightPercent } from "../lib/soroban";
 
 type ProposalCardProps = {
@@ -32,6 +32,13 @@ const KIND_LABELS: Record<Exclude<ProposalKind, "recurring">, { title: string; b
   change_owner_weight: { title: "Change Weight", badge: "Governance" },
   recurring: { title: "Recurring Payment", badge: "Payment" },
 };
+
+/** Proposal kinds that reshape multisig ownership or voting power. */
+const GOVERNANCE_KINDS = new Set<ProposalKind>([
+  "add_owner",
+  "remove_owner",
+  "change_owner_weight",
+]);
 
 const CATEGORY_STYLES: Record<ProposalCategory, string> = {
   Transfer: "bg-sky-900/50 text-sky-300",
@@ -336,6 +343,16 @@ export function ProposalCard({
               <Link2 size={16} />
             )}
           </button>
+          {GOVERNANCE_KINDS.has(proposal.kind) && (
+            <span
+              role="note"
+              aria-label="Governance Impact"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-gradient-to-r from-orange-500/20 to-amber-500/20 text-orange-300 border border-orange-500/30 shadow-[0_0_6px_rgba(251,146,60,0.15)] tracking-wide"
+            >
+              <ShieldAlert size={12} className="shrink-0" />
+              Governance Impact
+            </span>
+          )}
           {proposal.category && (
             <span
               role="note"
