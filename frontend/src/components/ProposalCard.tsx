@@ -176,11 +176,8 @@ function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
           Recurring payment to {proposal.to}
         </p>
       );
-    default: {
-      // exhaustive check
-      const _: never = proposal.kind;
+    default:
       return null;
-    }
   }
 }
 
@@ -360,6 +357,10 @@ export function ProposalCard({
             bar reflects the original approval requirement even if owner weights
             change after the proposal is created. */}
         <ApprovalBar
+          approvals={effectiveProposal.approvals}
+          threshold={effectiveProposal.threshold}
+          approverAddresses={effectiveProposal.approverAddresses}
+          approverWeights={effectiveProposal.approverWeights}
           approvalWeight={effectiveProposal.approvalWeight ?? 0}
           quorumWeight={effectiveProposal.quorumWeight ?? effectiveProposal.threshold}
           totalWeight={effectiveProposal.totalWeight ?? 0}

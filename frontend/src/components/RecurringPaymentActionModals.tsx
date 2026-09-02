@@ -7,11 +7,6 @@ import {
   createModifyRecurringProposal,
 } from "../lib/submit";
 
-// Default governance deadline: 7 days from now (seconds).
-function defaultDeadlineTs(): bigint {
-  return BigInt(Math.floor(Date.now() / 1000) + 7 * 86_400);
-}
-
 // ─── Shared modal shell ───────────────────────────────────────────────────────
 
 type ModalShellProps = {

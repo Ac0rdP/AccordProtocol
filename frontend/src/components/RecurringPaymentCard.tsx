@@ -123,7 +123,6 @@ function VestingProgressBar({
   const claimed = parse(disbursed);
   const claimableNum = parse(claimable);
   const total = parse(cap);
-  const unvested = Math.max(0, total - claimed - claimableNum);
 
   const claimedPct = total > 0 ? Math.min(100, (claimed / total) * 100) : 0;
   const claimablePct = total > 0 ? Math.min(100 - claimedPct, (claimableNum / total) * 100) : 0;

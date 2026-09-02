@@ -8,6 +8,8 @@ import {
   mapProposal,
   hasApproved,
   getApprovers,
+  getApproverWeight,
+  getOwnerWeight,
   getRecurringPayments,
   computeMonthlyOutflow,
 } from "../lib/contract";
@@ -70,16 +72,22 @@ export function useContract(walletAddress: string | null): ContractState {
           mapped.map(async (p) => {
 
             const approverAddresses = await getApprovers(p.id);
+            const approverWeights: Record<string, number> = {};
+            await Promise.all(
+              approverAddresses.map(async (addr) => {
+                approverWeights[addr] = await getApproverWeight(addr);
+              })
+            );
 
             if (!walletAddress) {
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
             try {
               const approved = await hasApproved(walletAddress, p.id);
-              return { ...p, userHasApproved: approved, approverAddresses };
+              return { ...p, userHasApproved: approved, approverAddresses, approverWeights };
             } catch (err) {
               console.error(`Failed to fetch approval for ${p.id}`, err);
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
           })
         );
@@ -89,7 +97,7 @@ export function useContract(walletAddress: string | null): ContractState {
         setProposals(proposalsWithApproval);
         setOwnerAddresses(ownerAddrs);
         const ownerWeights = await Promise.all(
-          ownerAddrs.map(async (addr) => Number(await getOwnerWeight(addr)))
+          ownerAddrs.map(async (addr) => { const w = await getOwnerWeight(addr); return Number(w); })
         );
         setOwners(
           ownerAddrs.map((addr, i) => ({
@@ -120,6 +128,11 @@ export function useContract(walletAddress: string | null): ContractState {
             label: "Threshold",
             value: `${thresh} of ${totalWeight}`,
             sub: "voting weight required",
+          },
+          {
+            label: "Total Voting Power",
+            value: String(totalWeight),
+            sub: `${ownerAddrs.length} ${ownerAddrs.length === 1 ? "owner" : "owners"}`,
           },
           { label: "Active", value: String(active), sub: "proposals" },
           { label: "Total", value: String(total), sub: "proposals created" },

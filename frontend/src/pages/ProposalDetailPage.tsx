@@ -146,9 +146,13 @@ export function ProposalDetailPage({
           </div>
           <div className="sm:min-w-64">
             <ApprovalBar
-            approvalWeight={(proposal.approverAddresses || []).reduce((acc, addr) => acc + (weights[addr] ?? 0), 0)}
-            quorumWeight={quorumWeight || proposal.threshold}
-            totalWeight={totalWeight}
+              approvals={proposal.approvals}
+              threshold={proposal.threshold}
+              approverAddresses={proposal.approverAddresses}
+              approverWeights={proposal.approverWeights}
+              approvalWeight={(proposal.approverAddresses || []).reduce((acc, addr) => acc + (weights[addr] ?? 0), 0)}
+              quorumWeight={quorumWeight || proposal.threshold}
+              totalWeight={totalWeight}
             />
           </div>
         </div>

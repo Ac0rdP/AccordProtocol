@@ -1251,6 +1251,61 @@ fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, Contract
 }
 
 
+fn linear_vesting_payout(
+    schedule: &RecurringPaymentSchedule,
+    now: u64,
+) -> Result<i128, ContractError> {
+    let cliff_time = schedule.cliff.unwrap_or(schedule.start);
+    if now < cliff_time {
+        return Ok(0);
+    }
+
+    let duration = match schedule.end {
+        Some(end_time) if end_time > schedule.start => {
+            end_time
+                .checked_sub(schedule.start)
+                .ok_or(ContractError::ArithmeticError)?
+        }
+        _ => return Ok(0),
+    };
+    if duration == 0 {
+        return Ok(0);
+    }
+
+    let elapsed = if now >= schedule.start {
+        now.checked_sub(schedule.start).ok_or(ContractError::ArithmeticError)?
+    } else {
+        return Ok(0);
+    };
+
+    let elapsed_i128 = i128::try_from(elapsed).map_err(|_| ContractError::ArithmeticError)?;
+    let duration_i128 = i128::try_from(duration).map_err(|_| ContractError::ArithmeticError)?;
+    let vested_total = {
+        let numerator = elapsed_i128
+            .checked_mul(schedule.amount)
+            .ok_or(ContractError::ArithmeticError)?;
+        let raw = numerator
+            .checked_div(duration_i128)
+            .ok_or(ContractError::ArithmeticError)?;
+
+        let cap = schedule.cap.unwrap_or(schedule.amount);
+        if cap > 0 && raw > cap {
+            cap
+        } else {
+            raw
+        }
+    };
+
+    let already_paid = schedule.total_disbursed;
+    if vested_total <= already_paid {
+        return Ok(0);
+    }
+
+    vested_total
+        .checked_sub(already_paid)
+        .ok_or(ContractError::ArithmeticError)
+}
+
 // ─── Contract ────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -1452,6 +1507,69 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Create a recurring schedule for periodic disbursements.
+    pub fn create_recurring_schedule(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        interval_secs: u64,
+        occurrences: u32,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner_and_weight(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        if transfers.len() == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        for transfer in transfers.iter() {
+            if transfer.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            validate_token(&env, &transfer.token)?;
+            if transfer.to == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+        if occurrences == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let id = read_recurring_next_id(&env);
+        let next = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_recurring_next_id(&env, next);
+
+        let schedule = RecurringSchedule {
+            id,
+            proposer: proposer.clone(),
+            transfers: transfers.clone(),
+            interval_secs,
+            last_disbursed_at: 0,
+            remaining_occurrences: occurrences,
+            status: RecurringStatus::Active,
+            description,
+        };
+        write_recurring_schedule(&env, &schedule);
+        Ok(id)
+    }
+
+    /// Cancel a recurring schedule (owner-only action).
+    pub fn cancel_recurring_schedule(
+        env: Env,
+        caller: Address,
+        id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        require_owner_and_weight(&env, &caller)?;
+        let mut s = read_recurring_schedule(&env, id)?;
+        s.status = RecurringStatus::Cancelled;
+        write_recurring_schedule(&env, &s);
+        Ok(())
+    }
 
     /// Creates a new transfer proposal with one or more asset transfers.
     ///
@@ -1578,6 +1696,12 @@ impl AccordContract {
 
     /// Disburses one due period for a recurring payment schedule.
     ///
+    /// Permissionless crank: any address may trigger this entrypoint once a
+    /// schedule is due. This keeps automation simple and reduces the chance that
+    /// due payouts are missed, at the cost of allowing anyone to trigger the
+    /// transfer path as long as the schedule is eligible and the contract is not
+    /// frozen.
+    ///
     /// Non-retroactive pause/resume policy:
     /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
     /// When resumed, the schedule continues from its pre-pause `last_disbursed_at`, requiring
@@ -1589,7 +1713,6 @@ impl AccordContract {
         schedule_id: u64,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        require_owner(&env, &caller)?;
         require_not_frozen(&env)?;
 
         let mut schedule = read_recurring_payment(&env, schedule_id)?;
@@ -1602,6 +1725,12 @@ impl AccordContract {
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
+        let disbursement_amount = if schedule.cliff.is_some() || schedule.end.is_some() {
+            linear_vesting_payout(&schedule, now)?
+        } else {
+            schedule.amount
+        };
+
         if now < due_at {
             return Err(ContractError::RecurringIntervalNotElapsed);
         }
@@ -1610,24 +1739,33 @@ impl AccordContract {
                 return Err(ContractError::RecurringPaymentComplete);
             }
         }
+        if disbursement_amount <= 0 {
+            return Err(ContractError::RecurringPaymentComplete);
+        }
+
         let projected_total = schedule
             .total_disbursed
-            .checked_add(schedule.amount)
+            .checked_add(disbursement_amount)
             .ok_or(ContractError::ArithmeticError)?;
         if let Some(total_cap) = schedule.cap {
             if projected_total > total_cap {
-                return Err(ContractError::RecurringPaymentComplete);
+                let clamped = total_cap
+                    .checked_sub(schedule.total_disbursed)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if clamped <= 0 {
+                    return Err(ContractError::RecurringPaymentComplete);
+                }
             }
         }
 
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
         let balance = token_client.balance(&treasury);
-        if balance < schedule.amount {
+        if balance < disbursement_amount {
             return Err(ContractError::TransferFailed);
         }
         if token_client
-            .try_transfer(&treasury, &schedule.recipient, &schedule.amount)
+            .try_transfer(&treasury, &schedule.recipient, &disbursement_amount)
             .is_err()
         {
             return Err(ContractError::TransferFailed);
@@ -1641,11 +1779,11 @@ impl AccordContract {
             tracker.epoch
         };
         let spent = if now > epoch.saturating_add(SPENDING_WINDOW) {
-            schedule.amount
+            disbursement_amount
         } else {
             tracker
                 .spent
-                .checked_add(schedule.amount)
+                .checked_add(disbursement_amount)
                 .ok_or(ContractError::ArithmeticError)?
         };
         write_spent_tracker(&env, &schedule.proposer, &schedule.token, &SpentTracker { spent, epoch });
@@ -1664,7 +1802,7 @@ impl AccordContract {
                 schedule_id,
                 recipient: schedule.recipient.clone(),
                 token: schedule.token.clone(),
-                amount: schedule.amount,
+                amount: disbursement_amount,
                 total_disbursed: schedule.total_disbursed,
                 periods_disbursed: schedule.periods_disbursed,
             },
@@ -2750,6 +2888,7 @@ impl AccordContract {
         if recipient == env.current_contract_address() {
             return Err(ContractError::InvalidRecipient);
         }
+        validate_token(&env, &token)?;
         validate_description(&description)?;
         validate_deadline(&env, deadline)?;
 

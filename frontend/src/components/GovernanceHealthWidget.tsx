@@ -1,4 +1,3 @@
-import React from "react";
 import { WhaleWarningBadge } from "./WhaleWarningBadge";
 import { weightToPercent, formatWeightPercent, shortenAddr } from "../lib/soroban";
 
