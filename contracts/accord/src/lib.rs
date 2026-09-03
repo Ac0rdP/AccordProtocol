@@ -5,7 +5,7 @@ use validate::{validate_deadline, validate_description};
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
-    IntoVal, String, Symbol, Val, Vec,
+    IntoVal, Map, String, Symbol, Val, Vec,
 };
 
 // ─── Data Types ─────────────────────────────────────────────────────────────
@@ -42,6 +42,12 @@ pub enum RecurringStatus {
 pub enum RecurringKind {
     FixedAmountPerPeriod,
     LinearVesting,
+}
+
+impl Default for RecurringKind {
+    fn default() -> Self {
+        RecurringKind::FixedAmountPerPeriod
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,26 +221,6 @@ pub struct ProposalCreatedEvent {
     pub total_weight_at_creation: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub enum RecurringStatus {
-    Active,
-    Cancelled,
-    Completed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct RecurringSchedule {
-    pub id: u64,
-    pub proposer: Address,
-    pub transfers: Vec<Transfer>,
-    pub interval_secs: u64,
-    pub last_disbursed_at: u64,
-    pub remaining_occurrences: u32,
-    pub status: RecurringStatus,
-    pub description: String,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
@@ -253,8 +239,6 @@ pub struct ProposalRevokedEvent {
     pub id: u64,
     pub approver: Address,
     pub approvals: u32,
-    pub weight: u32,
-    pub cumulative_weight: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,32 +267,6 @@ pub struct UnfrozenEvent {
     pub approvers: Vec<Address>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct SpendingLimit {
-    pub limit: i128,
-    pub spent: i128,
-    pub window_started_at: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct RecurringPaymentSchedule {
-    pub id: u64,
-    pub proposer: Address,
-    pub recipient: Address,
-    pub amount: i128,
-    pub token: Address,
-    pub interval: u64,
-    pub start: u64,
-    pub cliff: Option<u64>,
-    pub end: Option<u64>,
-    pub cap: Option<i128>,
-    pub category: ProposalCategory,
-    pub last_disbursed_at: u64,
-    pub total_disbursed: i128,
-    pub periods_disbursed: u32,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
@@ -345,6 +303,99 @@ pub struct RecurringPaymentModifiedEvent {
     pub new_interval: u64,
     pub previous_end_time: u64,
     pub new_end_time: u64,
+}
+
+/// Emitted when a recurring payment schedule is created through the execution
+/// of a `CreateRecurringPayment` proposal. Carries the full set of schedule
+/// parameters so that indexers and frontends can reconstruct the schedule from
+/// the event log alone without querying contract state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPaymentCreatedEvent {
+    /// The new schedule's ID, assigned sequentially at creation time.
+    pub id: u64,
+    /// The owner whose proposal was executed to create this schedule.
+    pub proposer: Address,
+    /// The address that will receive each period's disbursement.
+    pub recipient: Address,
+    /// The token contract address used for disbursements.
+    pub token: Address,
+    /// The amount transferred per period.
+    pub amount: i128,
+    /// The minimum number of seconds that must elapse between disbursements.
+    pub interval_secs: u64,
+    /// The earliest timestamp at which the first disbursement may occur.
+    pub start_time: u64,
+    /// Optional hard end timestamp; disbursements after this point are rejected.
+    pub end_time: u64,
+    /// Optional cliff timestamp; the first disbursement is not due until this
+    /// time even if `start_time` has already passed.
+    pub cliff_time: u64,
+    /// Optional cumulative cap; disbursements stop once `total_disbursed` would
+    /// exceed this value.
+    pub total_cap: i128,
+    /// The schedule's disbursement kind (fixed-amount or linear-vesting).
+    pub kind: RecurringKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPaymentCancelledEvent {
+    pub id: u64,
+    pub caller: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UpgradeExecutedEvent {
+    pub caller: Address,
+    pub new_wasm_hash: BytesN<32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AddOwnerExecutedEvent {
+    pub new_owner: Address,
+    pub owner_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RemoveOwnerExecutedEvent {
+    pub removed_owner: Address,
+    pub owner_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ChangeThresholdExecutedEvent {
+    pub previous_threshold: u32,
+    pub new_threshold: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SetSpendingLimitExecutedEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub previous_limit: Option<i128>,
+    pub new_limit: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OwnerWeightChangedEvent {
+    pub owner: Address,
+    pub old_weight: u32,
+    pub new_weight: u32,
+    pub new_total_weight: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GovernanceMigratedEvent {
+    pub owner_count: u32,
+    pub total_weight: u32,
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -394,6 +445,16 @@ pub enum ContractError {
     ScheduleAlreadyPaused = 39,
     ScheduleNotPaused = 40,
     ScheduleTerminal = 41,
+    InvalidWeightsLength = 42,
+    WeightBelowMinimum = 43,
+    InvalidWeight = 44,
+    AlreadyMigrated = 45,
+    SingleOwnerWeightCapExceeded = 46,
+    TargetOwnerNoLongerExists = 47,
+    WouldBreakQuorum = 48,
+    CannotRemoveLastOwner = 49,
+    ThresholdExceedsOwnerCount = 50,
+    ScheduleNotActive = 51,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -462,6 +523,51 @@ fn recurring_payment_key(id: u64) -> (Symbol, u64) {
 fn spending_limit_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
     (symbol_short!("SPLIM"), owner.clone(), token.clone())
 }
+
+fn total_weight_key() -> Symbol {
+    symbol_short!("TWEIGHT")
+}
+
+fn governance_version_key() -> Symbol {
+    symbol_short!("GOVVER")
+}
+
+fn delegation_key(delegator: &Address) -> (Symbol, Address) {
+    (symbol_short!("DELEG"), delegator.clone())
+}
+
+fn max_single_owner_weight_pct_key() -> Symbol {
+    symbol_short!("MAXOWNP")
+}
+
+fn read_max_single_owner_weight_pct(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&max_single_owner_weight_pct_key())
+        .unwrap_or(DEFAULT_MAX_SINGLE_OWNER_WEIGHT_PCT)
+}
+
+fn owner_weight_within_cap(env: &Env, owner_weight: u32, total_weight: u32) -> bool {
+    (owner_weight as u64) * 100
+        <= (total_weight as u64) * (read_max_single_owner_weight_pct(env) as u64)
+}
+
+fn owner_spending_limits_key(owner: &Address) -> (Symbol, Address) {
+    (symbol_short!("OSLIM"), owner.clone())
+}
+
+fn spent_tracking_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
+    (symbol_short!("SPENT"), owner.clone(), token.clone())
+}
+
+fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
+    a.checked_add(b).ok_or(ContractError::ArithmeticError)
+}
+
+fn checked_weight_sub(a: u32, b: u32) -> Result<u32, ContractError> {
+    a.checked_sub(b).ok_or(ContractError::ArithmeticError)
+}
+
 
 // ─── TTL Constants ───────────────────────────────────────────────────────────
 
@@ -760,37 +866,6 @@ fn write_next_id(env: &Env, id: u64) {
     bump_instance(env);
 }
 
-fn read_recurring_next_id(env: &Env) -> u64 {
-    let id = env
-        .storage()
-        .instance()
-        .get(&recurring_next_key())
-        .unwrap_or(1_u64);
-    bump_instance(env);
-    id
-}
-
-fn write_recurring_next_id(env: &Env, id: u64) {
-    env.storage().instance().set(&recurring_next_key(), &id);
-    bump_instance(env);
-}
-
-fn read_recurring_schedule(env: &Env, id: u64) -> Result<RecurringSchedule, ContractError> {
-    let key = recurring_key(id);
-    let s: RecurringSchedule = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(ContractError::ProposalNotFound)?;
-    bump_persistent(env, &key);
-    Ok(s)
-}
-
-fn write_recurring_schedule(env: &Env, s: &RecurringSchedule) {
-    let key = recurring_key(s.id);
-    env.storage().persistent().set(&key, s);
-    bump_persistent(env, &key);
-}
 
 fn read_proposal(env: &Env, id: u64) -> Result<Proposal, ContractError> {
     let key = proposal_key(id);
@@ -833,26 +908,6 @@ fn write_approval_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u
     }
 }
 
-fn read_active_count(env: &Env) -> u32 {
-    // Recompute active proposals (Pending + Ready) to ensure expired/ executed
-    // proposals are not counted, guarding against any missed decrements.
-    let next_id = env
-        .storage()
-        .instance()
-        .get(&next_id_key())
-        .unwrap_or(1_u64);
-    let mut active: u32 = 0;
-    for id in 1..next_id {
-        if let Ok(proposal) = read_proposal(env, id) {
-            // derive_status does not persist; we only count current derived active ones
-            let status = derive_status(env, &proposal);
-            if matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
-                active = active.saturating_add(1);
-            }
-        }
-    }
-    limit
-}
 
 fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128) {
     let key = spending_limit_key(owner, token);
@@ -898,58 +953,22 @@ fn upsert_owner_spending_limit(env: &Env, owner: &Address, token: &Address, limi
     write_owner_spending_limits(env, owner, &limits);
 }
 
-fn read_recurring_next_id(env: &Env) -> u64 {
-    let id = env
-        .storage()
-        .instance()
-        .get(&recurring_next_id_key())
-        .unwrap_or(1_u64);
-    bump_instance(env);
-    id
-}
 
-fn write_recurring_next_id(env: &Env, id: u64) {
-    env.storage().instance().set(&recurring_next_id_key(), &id);
-    bump_instance(env);
-}
-
-fn read_recurring_payment(env: &Env, id: u64) -> Result<RecurringPaymentSchedule, ContractError> {
-    let key = recurring_payment_key(id);
-    let schedule = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(ContractError::RecurringPaymentNotFound)?;
-    bump_persistent(env, &key);
-    Ok(schedule)
-}
-
-fn write_recurring_payment(env: &Env, schedule: &RecurringPaymentSchedule) {
-    let key = recurring_payment_key(schedule.id);
-    env.storage().persistent().set(&key, schedule);
-    bump_persistent(env, &key);
-}
-
-fn read_spending_limit(env: &Env, owner: &Address, token: &Address) -> Option<SpendingLimit> {
+fn read_spending_limit(env: &Env, owner: &Address, token: &Address) -> Option<i128> {
     let key = spending_limit_key(owner, token);
-    let limit = env.storage().persistent().get(&key);
-    if env.storage().persistent().has(&key) {
+    let limit: Option<i128> = env.storage().persistent().get(&key);
+    if limit.is_some() {
         bump_persistent(env, &key);
     }
     limit
 }
 
-fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: &SpendingLimit) {
-    let key = spending_limit_key(owner, token);
-    env.storage().persistent().set(&key, limit);
-    bump_persistent(env, &key);
-}
-
-fn require_not_frozen(env: &Env) -> Result<(), ContractError> {
-    if is_frozen_state(env) {
-        return Err(ContractError::ContractFrozen);
-    }
-    Ok(())
+fn read_spent_tracker(env: &Env, owner: &Address, token: &Address) -> SpentTracker {
+    let key = spent_tracking_key(owner, token);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
 }
 
 fn write_spent_tracker(env: &Env, owner: &Address, token: &Address, tracker: &SpentTracker) {
@@ -1100,6 +1119,22 @@ fn require_owner_and_weight(env: &Env, address: &Address) -> Result<u32, Contrac
     let owners = read_owners_map(env)?;
     owners.get(address.clone()).ok_or(ContractError::Unauthorized)
 }
+fn require_owner(env: &Env, address: &Address) -> Result<(), ContractError> {
+    require_owner_and_weight(env, address).map(|_| ())
+}
+
+fn read_owner_weight(env: &Env, owner: &Address) -> u32 {
+    read_owners_map(env).ok().and_then(|m| m.get(owner.clone())).unwrap_or(0)
+}
+
+fn read_approval(env: &Env, proposal_id: u64, owner: &Address) -> bool {
+    read_approval_weight(env, proposal_id, owner) > 0
+}
+
+fn write_approval(env: &Env, proposal_id: u64, owner: &Address, approved: bool) {
+    let weight = if approved { read_owner_weight(env, owner) } else { 0 };
+    write_approval_weight(env, proposal_id, owner, weight);
+}
 
 /// Validates privileged co-signers by distinct address and cumulative voting
 /// weight. Each address is added at most once, so an owner's weight cannot be
@@ -1199,47 +1234,22 @@ fn validate_recurring_payment(
     Ok(())
 }
 
-fn reserve_spending_limit(
-    env: &Env,
-    owner: &Address,
-    token_address: &Address,
-    amount: i128,
-) -> Result<(), ContractError> {
-    let Some(mut limit) = read_spending_limit(env, owner, token_address) else {
-        return Ok(());
-    };
 
-    let now = env.ledger().timestamp();
-    if now.saturating_sub(limit.window_started_at) >= SPENDING_LIMIT_WINDOW {
-        limit.window_started_at = now;
-        limit.spent = 0;
+fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, ContractError> {
+    if schedule.total_disbursed == 0 {
+        if schedule.cliff_time > 0 && schedule.cliff_time > schedule.start_time {
+            Ok(schedule.cliff_time)
+        } else {
+            Ok(schedule.start_time)
+        }
+    } else {
+        schedule
+            .last_disbursed_at
+            .checked_add(schedule.interval_secs)
+            .ok_or(ContractError::ArithmeticError)
     }
-
-    let next_spent = limit
-        .spent
-        .checked_add(amount)
-        .ok_or(ContractError::ArithmeticError)?;
-    if next_spent > limit.limit {
-        return Err(ContractError::SpendingLimitExceeded);
-    }
-
-    limit.spent = next_spent;
-    write_spending_limit(env, owner, token_address, &limit);
-    Ok(())
 }
 
-fn recurring_payment_due_at(schedule: &RecurringPaymentSchedule) -> Result<u64, ContractError> {
-    if schedule.periods_disbursed == 0 {
-        return Ok(match schedule.cliff {
-            Some(cliff) if cliff > schedule.start => cliff,
-            _ => schedule.start,
-        });
-    }
-    schedule
-        .last_disbursed_at
-        .checked_add(schedule.interval)
-        .ok_or(ContractError::ArithmeticError)
-}
 
 fn linear_vesting_payout(
     schedule: &RecurringPaymentSchedule,
@@ -1683,93 +1693,6 @@ impl AccordContract {
         Ok(id)
     }
 
-    /// Sets or replaces a 30-day spending limit for an owner/token pair.
-    pub fn set_spending_limit(
-        env: Env,
-        caller: Address,
-        owner: Address,
-        token: Address,
-        limit: i128,
-    ) -> Result<(), ContractError> {
-        caller.require_auth();
-        require_owner(&env, &caller)?;
-        require_owner(&env, &owner)?;
-        require_not_frozen(&env)?;
-
-        if limit < MIN_AMOUNT {
-            return Err(ContractError::InvalidAmount);
-        }
-        validate_token(&env, &token)?;
-
-        let spending_limit = SpendingLimit {
-            limit,
-            spent: 0,
-            window_started_at: env.ledger().timestamp(),
-        };
-        write_spending_limit(&env, &owner, &token, &spending_limit);
-
-        Ok(())
-    }
-
-    /// Creates an active recurring payment schedule after validating the
-    /// proposer's current spending-limit window against the first period.
-    pub fn create_recurring_payment(
-        env: Env,
-        proposer: Address,
-        recipient: Address,
-        amount: i128,
-        token: Address,
-        interval: u64,
-        start: u64,
-        cliff: Option<u64>,
-        end: Option<u64>,
-        cap: Option<i128>,
-        category: ProposalCategory,
-    ) -> Result<u64, ContractError> {
-        proposer.require_auth();
-        require_owner(&env, &proposer)?;
-        require_not_frozen(&env)?;
-
-        let active = read_active_recurring_count(&env);
-        if active >= MAX_ACTIVE_RECURRING {
-            return Err(ContractError::TooManyActiveRecurring);
-        }
-
-        validate_recurring_payment(
-            &env, &recipient, amount, &token, interval, start, &cliff, &end, &cap,
-        )?;
-        reserve_spending_limit(&env, &proposer, &token, amount)?;
-
-        let id = read_recurring_next_id(&env);
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_recurring_next_id(&env, next_id);
-
-        let schedule = RecurringPaymentSchedule {
-            id,
-            proposer,
-            recipient,
-            amount,
-            token,
-            interval,
-            start,
-            cliff,
-            end,
-            cap,
-            category,
-            last_disbursed_at: 0,
-            total_disbursed: 0,
-            periods_disbursed: 0,
-        };
-        write_recurring_payment(&env, &schedule);
-        write_active_recurring_count(
-            &env,
-            active
-                .checked_add(1)
-                .ok_or(ContractError::ArithmeticError)?,
-        );
-
-        Ok(id)
-    }
 
     /// Disburses one due period for a recurring payment schedule.
     ///
@@ -1888,18 +1811,6 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Returns a recurring payment schedule by ID.
-    pub fn get_recurring_payment(
-        env: Env,
-        schedule_id: u64,
-    ) -> Result<RecurringPaymentSchedule, ContractError> {
-        read_recurring_payment(&env, schedule_id)
-    }
-
-    /// Returns an owner's current spending-limit window for a token, if set.
-    pub fn get_spending_limit(env: Env, owner: Address, token: Address) -> Option<SpendingLimit> {
-        read_spending_limit(&env, &owner, &token)
-    }
 
     /// Returns the current spent tracker for an owner and token.
     pub fn get_spent_tracker(env: Env, owner: Address, token: Address) -> SpentTracker {
@@ -2162,6 +2073,218 @@ impl AccordContract {
         Ok(id)
     }
 
+    /// Creates a proposal to remove an existing owner from the multisig.
+    pub fn create_remove_owner_proposal(
+        env: Env,
+        proposer: Address,
+        owner_to_remove: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner_and_weight(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        require_owner(&env, &owner_to_remove)?;
+        let owners_map = read_owners_map(&env)?;
+        let current_count = owners_map.len();
+        if current_count <= 1 {
+            return Err(ContractError::CannotRemoveLastOwner);
+        }
+        let threshold = read_threshold(&env)?;
+        if current_count.saturating_sub(1) < threshold {
+            return Err(ContractError::ThresholdExceedsOwnerCount);
+        }
+
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::RemoveOwner(owner_to_remove),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to change the M-of-N approval threshold.
+    ///
+    /// # Arguments
+    /// * `proposer` - Owner proposing the change. Must authorize.
+    /// * `new_threshold` - The proposed new threshold. Must be ≥ 1 and ≤ current owner count.
+    pub fn create_change_threshold_proposal(
+        env: Env,
+        proposer: Address,
+        new_threshold: u32,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_owner_and_weight(&env, &proposer)?;
+        require_not_frozen(&env)?;
+
+        let total_weight = read_total_weight(&env);
+
+        // The threshold is an absolute weight value. Validate it against the
+        // current total weight so the proposed threshold is always achievable
+        // given the current weight distribution.
+        if new_threshold == 0 || new_threshold > total_weight {
+            return Err(ContractError::InvalidThreshold);
+        }
+
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::ChangeThreshold(new_threshold),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Approves a proposal. The approver must be an owner and must not have already approved.
+    ///
+    /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
+    /// Records `ready_at` the first time the threshold is crossed.
+    pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
+        approver.require_auth();
+        let owners = read_owners_map(&env)?;
+        let raw_weight = owners.get(approver.clone()).ok_or(ContractError::Unauthorized)?;
+        let mut proposal = read_proposal(&env, proposal_id)?;
+
+        // Refresh derived status so an already-expired proposal is caught here.
+        proposal.status = derive_status(&env, &proposal);
+
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        if read_approval_weight(&env, proposal_id, &approver) > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+
+        // Count the approver's effective (delegation-aware) weight, not just
+        // their own raw weight — the exact value is stored per-approval so
+        // `revoke` can later reverse precisely this amount.
+        let weight = compute_effective_weight(&env, &owners, &approver, raw_weight)?;
+        write_approval_weight(&env, proposal_id, &approver, weight);
+
+        proposal.approvals = checked_weight_add(proposal.approvals, weight)?;
+
+        proposal.approval_weight = checked_weight_add(proposal.approval_weight, weight)?;
+
+        // Record the timestamp when the proposal first crosses the threshold.
+        if proposal.ready_at == 0 && proposal.approvals >= proposal.quorum_weight {
+            proposal.ready_at = env.ledger().timestamp();
+        }
+
+        proposal.status = derive_status(&env, &proposal);
+        write_proposal(&env, &proposal);
+
+        env.events().publish(
+            (symbol_short!("approved"),),
+            ProposalApprovedEvent {
+                id: proposal_id,
+                approver,
+                approvals: proposal.approvals,
+                threshold: proposal.quorum_weight,
+                weight,
+                cumulative_weight: proposal.approvals,
+            },
+        );
+
+        Ok(())
+    }
+
     /// Revokes the caller's approval from a proposal that has not yet been executed.
     ///
     /// The proposal status is recalculated after the revoke: if approvals fall below
@@ -2169,6 +2292,48 @@ impl AccordContract {
     pub fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
         require_owner(&env, &approver)?;
+
+        let mut proposal = read_proposal(&env, proposal_id)?;
+
+        proposal.status = derive_status(&env, &proposal);
+
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        if !read_approval(&env, proposal_id, &approver) {
+            return Err(ContractError::NotApproved);
+        }
+
+        write_approval(&env, proposal_id, &approver, false);
+
+        let weight = read_owner_weight(&env, &approver);
+        proposal.approvals = proposal
+            .approvals
+            .checked_sub(weight)
+            .ok_or(ContractError::ArithmeticError)?;
+        proposal.status = derive_status(&env, &proposal);
+        write_proposal(&env, &proposal);
+
+        env.events().publish(
+            (symbol_short!("revoked"),),
+            ProposalRevokedEvent {
+                id: proposal_id,
+                approver,
+                approvals: proposal.approvals,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Executes a proposal that has reached ready status.
+    pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
+        executor.require_auth();
+        require_owner(&env, &executor)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
 
@@ -2733,6 +2898,16 @@ impl AccordContract {
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
+
+        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+            let already_spent = effective_spent(&env, &proposer, &token);
+            let cumulative = amount
+                .checked_add(already_spent)
+                .ok_or(ContractError::ArithmeticError)?;
+            if cumulative > limit {
+                return Err(ContractError::SpendingLimitExceeded);
+            }
+        }
 
         let p_kind = ProposalKind::CreateRecurringPayment(CreateRecurringParams {
             recipient,
