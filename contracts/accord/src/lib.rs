@@ -108,10 +108,25 @@ pub enum ProposalKind {
     CreateRecurringPayment(CreateRecurringParams),
     /// CancelRecurringPayment(schedule_id)
     CancelRecurringPayment(u64),
+    /// PauseRecurringPayment(schedule_id)
+    PauseRecurringPayment(u64),
+    /// ResumeRecurringPayment(schedule_id)
+    ResumeRecurringPayment(u64),
+    /// ModifyRecurringPayment(params)
+    ModifyRecurringPayment(ModifyRecurringParams),
     /// GrantRole(target, role)
     GrantRole(Address, Symbol),
     /// RevokeRole(target, role)
     RevokeRole(Address, Symbol),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ModifyRecurringParams {
+    pub schedule_id: u64,
+    pub new_amount: Option<i128>,
+    pub new_interval_secs: Option<u64>,
+    pub new_end_time: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2677,6 +2692,90 @@ impl AccordContract {
                     RecurringPaymentCancelledEvent {
                         id: *schedule_id,
                         caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::PauseRecurringPayment(schedule_id) => {
+                let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
+                }
+                if status == RecurringStatus::Paused {
+                    return Err(ContractError::ScheduleAlreadyPaused);
+                }
+
+                schedule.status = RecurringStatus::Paused;
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_pause"),),
+                    RecurringPaymentPausedEvent {
+                        id: *schedule_id,
+                        caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::ResumeRecurringPayment(schedule_id) => {
+                let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status != RecurringStatus::Paused {
+                    return Err(ContractError::ScheduleNotPaused);
+                }
+
+                schedule.status = RecurringStatus::Active;
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_resum"),),
+                    RecurringPaymentResumedEvent {
+                        id: *schedule_id,
+                        caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::ModifyRecurringPayment(params) => {
+                let mut schedule = read_recurring_payment(&env, params.schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
+                }
+
+                let previous_amount = schedule.amount;
+                let previous_interval = schedule.interval_secs;
+                let previous_end_time = schedule.end_time;
+
+                if let Some(amt) = params.new_amount {
+                    if amt < MIN_AMOUNT {
+                        return Err(ContractError::InvalidAmount);
+                    }
+                    schedule.amount = amt;
+                }
+                if let Some(inv) = params.new_interval_secs {
+                    if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&inv) {
+                        return Err(ContractError::InvalidInterval);
+                    }
+                    schedule.interval_secs = inv;
+                }
+                if let Some(end_t) = params.new_end_time {
+                    if end_t <= schedule.start_time {
+                        return Err(ContractError::InvalidDeadline);
+                    }
+                    schedule.end_time = end_t;
+                }
+
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_mod"),),
+                    RecurringPaymentModifiedEvent {
+                        schedule_id: params.schedule_id,
+                        previous_amount,
+                        new_amount: schedule.amount,
+                        previous_interval,
+                        new_interval: schedule.interval_secs,
+                        previous_end_time,
+                        new_end_time: schedule.end_time,
                     },
                 );
             }
