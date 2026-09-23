@@ -1,4 +1,7 @@
 #![cfg(test)]
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
+#![allow(dead_code)]
 
 extern crate std;
 
