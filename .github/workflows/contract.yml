@@ -39,7 +39,8 @@ jobs:
 
       - name: Build smart contracts
         run: |
-          stellar contract build --release
+          # stellar-cli v25+ has no --release flag; release profile is the default.
+          stellar contract build
 
       - name: Run contract test suite (flat weight fixture)
         run: ACCORD_WEIGHT_FIXTURE=flat cargo test -- --nocapture
