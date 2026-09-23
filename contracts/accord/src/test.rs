@@ -8375,7 +8375,28 @@ fn recurring_schedule_becomes_active_only_after_execution() {
     assert_eq!(client.get_active_recurring_count(), 1);
 }
 
+#[test]
+fn test_rbac_role_version_and_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
 
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
 
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let non_owner = Address::generate(&env);
 
+    let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    let weights = Vec::from_array(&env, [1, 1]);
+    client.initialize(&owners, &weights, &2, &0);
 
+    assert_eq!(client.get_role_version(), 1);
+
+    let roles_owner = client.get_roles(&owner_a);
+    assert!(roles_owner.contains(Symbol::new(&env, "Owner")));
+    assert!(roles_owner.contains(Symbol::new(&env, "Approver")));
+
+    let roles_non_owner = client.get_roles(&non_owner);
+    assert_eq!(roles_non_owner.len(), 0);
+}

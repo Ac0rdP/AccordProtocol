@@ -168,6 +168,20 @@ function mapKindDetails(
         amount: String(values[1] ?? "Unknown"),
         token: "Owner weight",
       };
+    case "grantrole":
+      return {
+        kind: "grant_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
+    case "revokerole":
+      return {
+        kind: "revoke_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
     default:
       return {
         kind: "transfer",

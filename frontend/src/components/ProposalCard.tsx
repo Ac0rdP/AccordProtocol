@@ -28,9 +28,10 @@ const KIND_LABELS: Record<Exclude<ProposalKind, "recurring">, { title: string; b
   add_owner: { title: "Add Owner", badge: "Governance" },
   remove_owner: { title: "Remove Owner", badge: "Governance" },
   change_threshold: { title: "Change Threshold", badge: "Governance" },
-  set_spending_limit: { title: "Set Spending Limit", badge: "Policy" },
-  change_owner_weight: { title: "Change Weight", badge: "Governance" },
-  recurring: { title: "Recurring Payment", badge: "Payment" },
+  set_spending_limit: { title: "Set Spending Limit", badge: "Spending Limit" },
+  change_owner_weight: { title: "Change Owner Weight", badge: "Governance" },
+  grant_role: { title: "Grant Role", badge: "Governance" },
+  revoke_role: { title: "Revoke Role", badge: "Governance" },
 };
 
 /** Proposal kinds that reshape multisig ownership or voting power. */
