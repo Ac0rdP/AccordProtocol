@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(deprecated)]
+#![allow(dead_code)]
 pub mod validate;
 use validate::{validate_deadline, validate_description};
 
