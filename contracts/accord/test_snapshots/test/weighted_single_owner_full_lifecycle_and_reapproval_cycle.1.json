@@ -674,7 +674,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 7
               }
             }
           },
@@ -704,7 +704,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 7
               }
             }
           },

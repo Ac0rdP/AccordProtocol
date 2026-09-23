@@ -1,5 +1,15 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
+export type Role =
+  | "owner"
+  | "admin"
+  | "guardian"
+  | "manager"
+  | "operator"
+  | "viewer";
+
+export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
+
 export type ProposalKind =
   | "transfer"
   | "add_owner"
@@ -7,15 +17,11 @@ export type ProposalKind =
   | "change_threshold"
   | "set_spending_limit"
   | "change_owner_weight"
-  | "grant_role"
-  | "revoke_role";
-
-export type ProposalCategory = "transfer" | "payroll" | "grant" | "ops" | "other";
+  | "recurring";
 
 export type Proposal = {
   id: number;
   kind: ProposalKind;
-  category: ProposalCategory;
   to: string;
   amount: string;
   token: string;
@@ -32,7 +38,9 @@ export type Proposal = {
   proposer: string;
   userHasApproved: boolean;
   approverAddresses: string[];
+  approverWeights?: Record<string, number>;
   executedAt?: string | null;
+  category?: ProposalCategory;
 };
 
 export type Owner = {
@@ -75,6 +83,41 @@ export type ProposalEvent = {
   details?: string;
 };
 
+export type OwnerWeightChangeEvent = {
+  /** Full address of the owner whose voting weight changed. */
+  owner: string;
+  oldWeight: number;
+  newWeight: number;
+  /** Total voting weight after the change, when the event reports it. */
+  newTotalWeight?: number;
+  ledger?: number;
+  /** Human-readable time (or ledger) the change was recorded. */
+  timestamp: string;
+};
+
+export type RecurringStatus = "active" | "paused" | "completed" | "cancelled";
+
+export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
+
+export type RecurringPayment = {
+  id: number;
+  proposer: string;
+  recipient: string;
+  token: string;
+  amount: string;
+  intervalSecs: number;
+  startTime: number;
+  endTime?: number;
+  cliffTime?: number;
+  totalCap?: string;
+  totalDisbursed: string;
+  lastDisbursedAt: number;
+  status: RecurringStatus;
+  kind: RecurringKind;
+  category: ProposalCategory;
+  description: string;
+};
+
 export type RecurringScheduleStatus = "active" | "paused" | "completed" | "cancelled";
 
 export type RecurringSchedule = {
@@ -86,6 +129,7 @@ export type RecurringSchedule = {
   interval?: number;
   totalDisbursed: string;
   status: RecurringScheduleStatus;
+  kind?: RecurringKind;
   cliff?: number | string;
   endDate?: number | string;
   cap?: string;

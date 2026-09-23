@@ -1,10 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { getLatestLedger, getContractEvents, getProposalEvents } from "../contract";
-
-const { mockGetEvents, mockGetLatestLedger } = vi.hoisted(() => ({
-  mockGetEvents: vi.fn(),
-  mockGetLatestLedger: vi.fn(),
-}));
+import { getLatestLedger, getContractEvents, mapProposal } from "../contract";
+import { rpc } from "@stellar/stellar-sdk";
 
 // Mock the rpc.Server instance directly through vi
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -197,6 +193,26 @@ describe("Contract Events API", () => {
     expect(events[1].ledger).toBe(150);
     expect(events[2].type).toBe("executed");
     expect(events[2].ledger).toBe(300);
+  });
+
+  test("maps ChangeOwnerWeight proposal kind", () => {
+    const proposal = mapProposal(
+      {
+        id: 7,
+        proposer: "GPROPOSER1",
+        description: "Adjust owner weight",
+        deadline: 1782259200,
+        approvals: 1,
+        status: { Pending: undefined },
+        kind: { ChangeOwnerWeight: ["GOWNER1111", 25] },
+      },
+      2,
+    );
+
+    expect(proposal.kind).toBe("change_owner_weight");
+    expect(proposal.to).toBe("GOWNER...1111");
+    expect(proposal.amount).toBe("25");
+    expect(proposal.token).toBe("Owner weight");
   });
 });
 

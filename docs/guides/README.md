@@ -10,5 +10,6 @@ Beginner-friendly guides for using Accord Protocol.
 | [Payroll Multisig](payroll-multisig.md) | Pay contributors monthly in USDC through a 2-of-3 multisig |
 | [Payroll with Recurring Payments](payroll-recurring.md) | Set up automated monthly payroll schedules or linear token vesting with cliffs |
 | [Grant Management](grant-management.md) | Disburse USDC grants through a multisig with a grants committee |
+| [Choosing Voting Weights](weighted-governance.md) | Decide when equal vs skewed owner weights make sense, with examples and centralization risks |
 | [Monitoring Your Multisig](monitoring-your-multisig.md) | Query Horizon events, spot missed executions, and verify state after an upgrade |
 | [Troubleshooting](troubleshooting.md) | Diagnose wallet, transaction, and network errors |

@@ -1,11 +1,16 @@
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { CreateRecurringPaymentModal } from "./CreateRecurringPaymentModal";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { vi, describe, it, expect, beforeEach } from "vitest";
 import { StrKey } from "@stellar/stellar-sdk";
+import { CreateRecurringPaymentModal } from "./CreateRecurringPaymentModal";
+import { createRecurringPaymentProposal } from "../lib/submit";
+
+vi.mock("../lib/submit", () => ({
+  createRecurringPaymentProposal: vi.fn(),
+}));
 
 vi.mock("@stellar/stellar-sdk", async () => {
-  const original = (await vi.importActual("@stellar/stellar-sdk")) as any;
+  const original = await vi.importActual("@stellar/stellar-sdk") as any;
   return {
     ...original,
     StrKey: {
@@ -27,111 +32,70 @@ describe("CreateRecurringPaymentModal", () => {
     (StrKey.isValidEd25519PublicKey as any).mockReturnValue(true);
   });
 
-  const fillValidFields = () => {
+  function fillBaseFields(container: HTMLElement) {
     fireEvent.change(screen.getByPlaceholderText("G..."), {
-      target: { value: "GBPLX2P3VWYKPQ7L5RI5OGXQ6T4G7QZMJ3HPQD7FZX5KJ3H2Z4YK5ABC" },
+      target: { value: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHB" },
     });
     fireEvent.change(screen.getByPlaceholderText("0.00"), {
-      target: { value: "50" },
+      target: { value: "10" },
     });
-    fireEvent.change(screen.getByPlaceholderText("30"), {
-      target: { value: "30" },
+    fireEvent.change(screen.getByPlaceholderText("2592000"), {
+      target: { value: "604800" },
     });
-  };
 
-  it("validates interval range and rejects out of range values", () => {
-    render(<CreateRecurringPaymentModal {...defaultProps} />);
-    fillValidFields();
+    const dateInputs = container.querySelectorAll('input[type="date"]');
+    fireEvent.change(dateInputs[0], { target: { value: "2026-09-01" } });
+    fireEvent.change(dateInputs[1], { target: { value: "" } });
+    fireEvent.change(dateInputs[2], { target: { value: "" } });
+  }
 
-    const intervalInput = screen.getByPlaceholderText("30");
+  it("rejects an invalid recipient address", async () => {
+    (StrKey.isValidEd25519PublicKey as any).mockReturnValue(false);
+    const { container } = render(<CreateRecurringPaymentModal {...defaultProps} />);
 
-    // Interval <= 0
-    fireEvent.change(intervalInput, { target: { value: "0" } });
-    fireEvent.click(screen.getByText("Review Schedule"));
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Interval must be between 1 and 365 days."
-    );
+    fillBaseFields(container);
+    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
 
-    // Interval > 365
-    fireEvent.change(intervalInput, { target: { value: "400" } });
-    fireEvent.click(screen.getByText("Review Schedule"));
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Interval must be between 1 and 365 days."
-    );
+    expect(screen.getAllByText("Enter a valid Stellar address.")).toHaveLength(2);
+    expect(createRecurringPaymentProposal).not.toHaveBeenCalled();
   });
 
-  it("validates cliff and end coherence, rejecting cliff after end date", () => {
-    render(<CreateRecurringPaymentModal {...defaultProps} />);
-    fillValidFields();
+  it("rejects an end date before the start date", async () => {
+    const { container } = render(<CreateRecurringPaymentModal {...defaultProps} />);
 
-    const dateInputs = document.querySelectorAll('input[type="date"]');
-    const cliffInput = dateInputs[0];
-    const endInput = dateInputs[1];
+    fillBaseFields(container);
+    const dateInputs = container.querySelectorAll('input[type="date"]');
+    fireEvent.change(dateInputs[2], { target: { value: "2026-08-30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
 
-    // Cliff date set after end date
-    fireEvent.change(cliffInput, { target: { value: "2026-12-01" } });
-    fireEvent.change(endInput, { target: { value: "2026-11-01" } });
+    expect(screen.getByText("End must be after start.")).toBeTruthy();
+    expect(createRecurringPaymentProposal).not.toHaveBeenCalled();
+  });
 
-    fireEvent.click(screen.getByText("Review Schedule"));
+  it("submits the recurring payment proposal with converted values", async () => {
+    const { container } = render(<CreateRecurringPaymentModal {...defaultProps} />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Cliff date cannot be after end date."
+    fillBaseFields(container);
+    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
+
+    await waitFor(() => {
+      expect(createRecurringPaymentProposal).toHaveBeenCalledTimes(1);
+    });
+
+    expect(createRecurringPaymentProposal).toHaveBeenCalledWith(
+      defaultProps.walletAddress,
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHB",
+      "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+      100000000n,
+      604800n,
+      1788220800n,
+      null,
+      null,
+      null,
+      "Payroll",
+      "FixedAmountPerPeriod"
     );
-  });
-
-  it("validates cap against payment amount, rejecting cap below amount", () => {
-    render(<CreateRecurringPaymentModal {...defaultProps} />);
-    fillValidFields(); // amount is 50
-
-    const capInput = screen.getByPlaceholderText("Maximum total payout");
-    fireEvent.change(capInput, { target: { value: "25" } }); // cap < amount
-
-    fireEvent.click(screen.getByText("Review Schedule"));
-
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Total cap cannot be less than payment amount."
-    );
-  });
-
-  it("updates the schedule preview correctly when valid parameters are entered", () => {
-    render(<CreateRecurringPaymentModal {...defaultProps} />);
-    fillValidFields();
-
-    const capInput = screen.getByPlaceholderText("Maximum total payout");
-    fireEvent.change(capInput, { target: { value: "500" } });
-
-    // Live preview in form step
-    const preview = screen.getByLabelText("Schedule Preview");
-    expect(preview).toBeDefined();
-    expect(preview).toHaveTextContent("50 XLM");
-    expect(preview).toHaveTextContent("Monthly");
-    expect(preview).toHaveTextContent("Total Cap: 500 XLM");
-
-    // Click Review Schedule to navigate to full preview step
-    fireEvent.click(screen.getByText("Review Schedule"));
-
-    expect(screen.getByText("Preview Recurring Schedule")).toBeDefined();
-    expect(screen.getByText("50 XLM")).toBeDefined();
-    expect(screen.getByText("Monthly")).toBeDefined();
-    expect(screen.getByText("500 XLM")).toBeDefined();
-    expect(
-      screen.getByText("GBPLX2P3VWYKPQ7L5RI5OGXQ6T4G7QZMJ3HPQD7FZX5KJ3H2Z4YK5ABC")
-    ).toBeDefined();
-  });
-
-  it("Back returns to form preserving input values and Close dismisses the modal", () => {
-    render(<CreateRecurringPaymentModal {...defaultProps} />);
-    fillValidFields();
-
-    fireEvent.click(screen.getByText("Review Schedule"));
-    expect(screen.getByText("Preview Recurring Schedule")).toBeDefined();
-
-    fireEvent.click(screen.getByText("Back"));
-    expect(screen.getByText("Create Recurring Payment")).toBeDefined();
-    expect(screen.getByPlaceholderText("0.00")).toHaveValue(50);
-    expect(screen.getByPlaceholderText("30")).toHaveValue(30);
-
-    fireEvent.click(screen.getByLabelText("Close"));
+    expect(defaultProps.onSubmitted).toHaveBeenCalledTimes(1);
     expect(defaultProps.onClose).toHaveBeenCalledTimes(1);
   });
 });

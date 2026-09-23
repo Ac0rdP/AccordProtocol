@@ -77,7 +77,7 @@ describe("RecurringPaymentCard", () => {
   test("due schedule renders enabled Disburse now button", () => {
     renderCard({ isDue: true });
 
-    const disburseBtn = screen.getByRole("button", { name: "Disburse now" });
+    const disburseBtn = screen.getByRole("button", { name: "Disburse schedule 1 now" });
     expect(disburseBtn).toBeDefined();
     expect(disburseBtn).not.toBeDisabled();
     expect(screen.getByText("Payment is due")).toBeDefined();
@@ -86,7 +86,7 @@ describe("RecurringPaymentCard", () => {
   test("calls disburse callback or hook when Disburse now button is clicked", () => {
     renderCard({ isDue: true });
 
-    const disburseBtn = screen.getByRole("button", { name: "Disburse now" });
+    const disburseBtn = screen.getByRole("button", { name: "Disburse schedule 1 now" });
     fireEvent.click(disburseBtn);
 
     expect(mockDisburse).toHaveBeenCalledWith(1);

@@ -63,13 +63,14 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 **Targeted features:**
 
 - Time-locked execution (enforce a configurable delay after threshold is met before execution is allowed)
-- Per-owner spending limits (optional caps on proposal amounts per signer)
+- Per-owner spending limits (optional    caps on proposal amounts per signer)
 - Multi-token treasury dashboard (aggregate balances for all held tokens)
 - Mobile-responsive UI
 - Security audit by an independent reviewer
 - SEP-55 contract build verification in CI (GitHub Actions attestation pipeline)
 
 **Acceptance criteria:**
+**Acceptance criteria:
 
 - [ ] Time-lock delay is configurable at initialization and enforced during execute
 - [ ] Per-owner spending limits can be set and are checked on proposal creation
