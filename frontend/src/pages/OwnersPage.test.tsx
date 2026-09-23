@@ -13,6 +13,9 @@ vi.mock("../hooks/useOwnerWeights", () => ({
 vi.mock("../lib/contract", () => ({
   getRequiredQuorumWeight: vi.fn().mockResolvedValue(15),
   getSpendingLimit: vi.fn().mockResolvedValue(-1n),
+  getWeightCapPct: vi.fn().mockResolvedValue(0),
+  getRoleVersion: vi.fn().mockResolvedValue("v1"),
+  getRoles: vi.fn().mockResolvedValue(["Owner", "Approver"]),
 }));
 
 const mockUseOwnerWeights = vi.mocked(useOwnerWeights);
@@ -59,8 +62,8 @@ describe("OwnersPage", () => {
       .toBeInTheDocument();
     expect(screen.getAllByText("Signer 1").length).toBeGreaterThan(0);
     expect(screen.getByText(/GOWNER\.\.\.R111/)).toBeInTheDocument();
-    expect(screen.getByText(/Weight 5/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Weight 15/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Raw 5/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Raw 15/).length).toBeGreaterThan(0);
     expect(screen.getByText("25.0% of voting power must approve.")).toBeInTheDocument();
   });
 

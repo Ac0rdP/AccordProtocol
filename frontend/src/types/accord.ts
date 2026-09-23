@@ -1,6 +1,14 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
-export type ProposalKind = "transfer" | "add_owner" | "remove_owner" | "change_threshold" | "set_spending_limit" | "change_owner_weight";
+export type ProposalKind =
+  | "transfer"
+  | "add_owner"
+  | "remove_owner"
+  | "change_threshold"
+  | "set_spending_limit"
+  | "change_owner_weight"
+  | "grant_role"
+  | "revoke_role";
 
 export type ProposalCategory = "transfer" | "payroll" | "grant" | "ops" | "other";
 

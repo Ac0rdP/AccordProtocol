@@ -144,6 +144,20 @@ function mapKind(kind: unknown): { kind: ProposalKind; to: string; amount: strin
         amount: stroopsToDisplay(safeBigInt(values[1])),
         token: shortenAddr(String(values[2] ?? "Unknown")),
       };
+    case "grantrole":
+      return {
+        kind: "grant_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
+    case "revokerole":
+      return {
+        kind: "revoke_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
     default:
       return { kind: "transfer", to: "Unknown", amount: "0", token: "Unknown" };
   }
@@ -769,5 +783,40 @@ export async function getProposalEvents(proposalId: number): Promise<ProposalEve
     console.error(`Failed to fetch events for proposal #${proposalId}:`, err);
     throw err;
   }
+}
+
+export async function getRoleVersion(): Promise<string> {
+  try {
+    const val = await simulateView("get_role_version");
+    const versionNum = scValToNative(val);
+    return `v${versionNum ?? 1}`;
+  } catch {
+    return "v1";
+  }
+}
+
+export async function getRoles(walletAddress: string | null): Promise<string[]> {
+  if (!walletAddress) return [];
+  try {
+    const val = await simulateView("get_roles", [
+      nativeToScVal(walletAddress, { type: "address" }),
+    ]);
+    const rawRoles = scValToNative(val);
+    if (Array.isArray(rawRoles) && rawRoles.length > 0) {
+      return rawRoles.map((r: unknown) => String(r));
+    }
+  } catch {
+    // Ignore error and use fallback
+  }
+
+  try {
+    const owners = await getOwners();
+    if (owners.includes(walletAddress)) {
+      return ["Owner", "Approver"];
+    }
+  } catch {
+    // Fallback if getOwners fails
+  }
+  return [];
 }
 

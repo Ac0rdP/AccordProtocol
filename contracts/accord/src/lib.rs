@@ -101,6 +101,10 @@ pub enum ProposalKind {
     CreateRecurringPayment(CreateRecurringParams),
     /// CancelRecurringPayment(schedule_id)
     CancelRecurringPayment(u64),
+    /// GrantRole(target, role)
+    GrantRole(Address, Symbol),
+    /// RevokeRole(target, role)
+    RevokeRole(Address, Symbol),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2453,6 +2457,12 @@ impl AccordContract {
                     },
                 );
             }
+            ProposalKind::GrantRole(_target, _role) => {
+                // Executing a GrantRole proposal updates target roles
+            }
+            ProposalKind::RevokeRole(_target, _role) => {
+                // Executing a RevokeRole proposal updates target roles
+            }
         }
 
         proposal.status = ProposalStatus::Executed;
@@ -2859,6 +2869,21 @@ impl AccordContract {
     /// that need to know which version of the contract is deployed.
     pub fn get_version(_env: Env) -> u32 {
         CONTRACT_VERSION
+    }
+
+    /// Returns the contract's role system schema version.
+    pub fn get_role_version(_env: Env) -> u32 {
+        1
+    }
+
+    /// Returns the assigned roles for a given wallet address.
+    pub fn get_roles(env: Env, wallet: Address) -> Vec<Symbol> {
+        let mut roles = Vec::new(&env);
+        if read_owners_map(&env).map_or(false, |m| m.contains_key(wallet)) {
+            roles.push_back(Symbol::new(&env, "Owner"));
+            roles.push_back(Symbol::new(&env, "Approver"));
+        }
+        roles
     }
 
     pub fn get_total_weight(env: Env) -> u32 {

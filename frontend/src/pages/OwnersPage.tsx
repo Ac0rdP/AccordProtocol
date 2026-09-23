@@ -10,6 +10,7 @@ import type { Owner } from "../types/accord";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { useDelegations } from "../hooks/useDelegations";
 import { DelegateModal } from "../components/DelegateModal";
+import { RoleModal } from "../components/RoleModal";
 
 const CHART_COLORS = [
   "bg-emerald-500",
@@ -71,6 +72,7 @@ export function OwnersPage({
     refetch: refetchDelegations,
   } = useDelegations(ownerAddresses);
   const [delegateModalOpen, setDelegateModalOpen] = useState(false);
+  const [roleModalOwner, setRoleModalOwner] = useState<{ address: string; label: string } | null>(null);
   const [_spendingLimits, setSpendingLimits] = useState<SpendingLimitMap>({});
   const [_limitsLoading, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -571,6 +573,21 @@ export function OwnersPage({
                           Delegate
                         </button>
                       )}
+                      <span
+                        className="text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full font-medium"
+                        aria-label="Role: Owner"
+                      >
+                        Owner
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setRoleModalOwner({ address: owner.fullAddress, label: owner.label })}
+                        aria-haspopup="dialog"
+                        aria-label={`Manage roles for ${owner.label}`}
+                        className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded-full transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                      >
+                        Manage Roles
+                      </button>
                     </div>
                   </div>
                   <p className="font-mono text-xs text-zinc-500">
@@ -781,6 +798,16 @@ export function OwnersPage({
             refetchDelegations();
             onProposalSubmitted();
           }}
+        />
+      )}
+
+      {roleModalOwner && (
+        <RoleModal
+          isOpen={!!roleModalOwner}
+          targetAddress={roleModalOwner.address}
+          targetLabel={roleModalOwner.label}
+          currentRoles={["Owner", "Approver"]}
+          onClose={() => setRoleModalOwner(null)}
         />
       )}
     </>
