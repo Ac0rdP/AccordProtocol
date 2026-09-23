@@ -342,6 +342,74 @@ Invariant operators must preserve: **sum(`get_owner_weights`) == `get_total_weig
 
 **Equal weights reduce to the old model.** A 2-of-3 multisig with weights `[1, 1, 1]` and threshold `2` still needs any two owners. Skewed weights (for example `[5, 3, 2]` with threshold `6`) let larger stakeholders carry more influence while still requiring coalition approvals when no single owner meets quorum alone. Legacy deployments that predate weights can call `migrate_to_weighted_governance` once (after upgrading WASM) to assign weight `1` to every existing owner.
 
+## RBAC & Access Control
+
+Role-based access control (RBAC) layers **least-privilege operational roles** on top of owner-weighted governance. Ownership still decides *how much weight* a vote carries; roles decide *who is allowed* to draft proposals, cast votes, push execute, or only observe. High-privilege security posture changes stay on the owner-weight path so a role grant alone cannot freeze, upgrade, or reconfigure guardianship.
+
+### Role data model
+
+| Piece | Storage | Purpose |
+|-------|---------|---------|
+| `Role` enum | Contract type | Four variants: `Proposer`, `Approver`, `Executor`, `Viewer` |
+| Per-address role set | Persistent `role_key(address)` → `Vec<Role>` | Which roles one address holds |
+| Reverse member index | Persistent `role_members_key(role)` → `Vec<Address>` | Which addresses hold a given role (avoids scanning all addresses) |
+| `role_version` / RBAC flag | Instance storage | Marks that RBAC migration (or fresh init) has populated roles |
+| `DEFAULT_OWNER_ROLES` | Constant | `Proposer` + `Approver` + `Executor` — granted to every owner at `initialize` and by `migrate_to_rbac` |
+
+Helpers:
+
+- `has_role(env, address, role)` → `bool`
+- `require_role(env, address, role)` → `Ok(())` or `MissingRole`
+- `read_roles` / `write_roles` keep the per-address set and reverse index in sync on every grant/revoke
+- Views: `get_roles`, `get_role_members`, `has_role`, `get_role_version`
+
+Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role)` and `ProposalKind::RevokeRole(Address, Role)`, created via `create_grant_role_proposal` / `create_revoke_role_proposal`, then approve → execute like any other proposal. Execute re-validates so a stale grant/revoke cannot corrupt the reverse index (`RoleAlreadyGranted`, `RoleNotGranted`).
+
+### Entrypoint gating matrix
+
+| Gate | Entrypoints | Rule |
+|------|-------------|------|
+| **Role: Proposer** | All `create_*_proposal` entrypoints (transfers, owner/weight/threshold/spending-limit changes, recurring schedules, grant/revoke role) | Caller must hold `Proposer`. Non-owner proposers may draft; owner proposers still get spending-limit checks. |
+| **Owner + Role: Approver** | `approve`, `revoke` | Caller must be an **owner** (source of voting weight) **and** hold `Approver`. |
+| **Role: Executor** | `execute`, `cancel_expired` | Caller must hold `Executor` (may be a keeper that is not an owner). |
+| **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
+| **Guardian-only** | `freeze` (after guardian is set) | Guardian address must match; separate from RBAC roles. |
+| **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank. |
+
+```text
+                 ┌──────────────────────────────┐
+                 │     Operational roles        │
+                 │  Proposer / Approver /       │
+                 │  Executor / Viewer           │
+                 └──────────────┬───────────────┘
+                                │
+        create_* ───────────────┼─────────────── approve/revoke
+        (Proposer)              │               (owner + Approver)
+                                │
+                          execute / cancel_expired
+                                (Executor)
+                                │
+                 ┌──────────────┴───────────────┐
+                 │  Governance security path    │
+                 │  owner-weight co-signatures  │
+                 │  (upgrade, guardian, migrate)│
+                 └──────────────────────────────┘
+```
+
+`Viewer` is reserved for read-oriented assignments and UI affordances; it does not by itself unlock create/approve/execute. Holding `Viewer` alone never substitutes for the gates above.
+
+### Migration (`migrate_to_rbac`)
+
+Legacy deployments have no role data. After upgrading to RBAC-capable WASM:
+
+1. Owners co-sign `migrate_to_rbac` (owner-weight gated, same pattern as `migrate_to_weighted_governance`).
+2. The function grants `DEFAULT_OWNER_ROLES` to every current owner and updates the reverse index.
+3. It sets the `role_version` flag so `get_role_version` reports RBAC-enabled.
+
+**Single-run guarantee:** A second call is rejected (migration-already-done / `AlreadyMigrated`-style guard on `role_version`) and writes no further role state. Fresh contracts that grant defaults in `initialize` never need the migration.
+
+See also: [Roles & Permissions guide](./guides/roles-and-permissions.md), [CONTRACT_API error reference](./CONTRACT_API.md#error-reference) (`MissingRole`, `RoleAlreadyGranted`, `RoleNotGranted`, `InvalidRole`).
+
 ## 4. Proposal Lifecycle
 
 ```

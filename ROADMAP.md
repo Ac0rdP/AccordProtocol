@@ -82,6 +82,35 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 
 ---
 
+## v0.5.0 — Role-based access control (RBAC)
+
+**Theme:** Introduce least-privilege operational roles (Proposer, Approver, Executor, Viewer) on top of owner-weighted governance, with a one-time migration for existing deployments and UI to manage role assignments.
+
+**Targeted features:**
+
+- `Role` enum and per-address role storage with a reverse role→members index
+- `has_role` / `require_role` helpers and role `ContractError` variants (`MissingRole`, `RoleAlreadyGranted`, `RoleNotGranted`, `InvalidRole`)
+- Role-gated entrypoints: Proposer for `create_*_proposal`, Approver (+ owner) for `approve`/`revoke`, Executor for `execute`/`cancel_expired`
+- Owner-weight-gated security path retained for guardian, freeze/unfreeze, upgrade, and migrations
+- `GrantRole` / `RevokeRole` proposal kinds and create entrypoints
+- `migrate_to_rbac` single-run migration granting `DEFAULT_OWNER_ROLES` to existing owners
+- Frontend surfaces for role badges, grant/revoke flows, and settings summaries
+
+**Acceptance criteria:**
+
+- [ ] Contract gates create / approve-revoke / execute paths per the RBAC matrix; governance entrypoints remain owner-weight-gated
+- [ ] `migrate_to_rbac` grants default roles once and rejects a second call without changing state
+- [ ] Role grant/revoke proposals execute with reverse-index consistency and execute-time re-validation
+- [ ] Error reference documents `MissingRole`, `RoleAlreadyGranted`, `RoleNotGranted`, and `InvalidRole` ([CONTRACT_API.md](./docs/CONTRACT_API.md#error-reference))
+- [ ] Architecture deep-dive covers data model, gating matrix, and migration ([ARCHITECTURE.md](./docs/ARCHITECTURE.md#rbac--access-control))
+- [ ] User guide and glossary cover the four roles ([roles-and-permissions.md](./docs/guides/roles-and-permissions.md), [GLOSSARY.md](./docs/GLOSSARY.md))
+- [ ] Frontend can display roles and submit grant/revoke proposals
+- [ ] RBAC contract tests pass in CI; wasm-manifest records RBAC capability when applicable
+
+**Docs:** [RBAC & Access Control](./docs/ARCHITECTURE.md#rbac--access-control) · [Roles & Permissions](./docs/guides/roles-and-permissions.md) · [Error Reference](./docs/CONTRACT_API.md#error-reference)
+
+---
+
 ## v1.0.0 — Mainnet launch
 
 **Theme:** Ship a production-grade, audited multisig treasury system ready for real funds on Stellar mainnet.
