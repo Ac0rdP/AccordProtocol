@@ -7368,7 +7368,6 @@ fn frozen_contract_blocks_recurring_disbursement_and_unfreezing_restores_it() {
 // idleness instead of a pause.
 
 #[test]
-fn idle_schedule_pays_only_one_period_and_does_not_back_pay_missed_intervals() {
 fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_insufficient_balance() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
@@ -7402,7 +7401,7 @@ fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_i
 
     set_timestamp(&env, NOW + interval + 1);
     assert_eq!(
-        client.try_disburse_recurring(&1_u64),
+        client.try_disburse_recurring(&owner_a, &1_u64),
         Err(Ok(ContractError::TransferFailed))
     );
 
@@ -7415,29 +7414,33 @@ fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_i
 }
 
 #[test]
-fn linear_vesting_claimable_amount_matches_time_proportional_checkpoints() {
+fn idle_schedule_pays_only_one_period_and_does_not_back_pay_missed_intervals() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
 
     let interval = 3_600_u64;
     let amount = 1_000_000_i128;
 
-    let schedule_id = create_active_schedule(
-        &env,
-        &client,
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &owner_b,
-        &owner_c,
         &recipient,
         &token_client.address,
-        amount,
-        interval,
-        NOW,
-        0,
-        0,
-        0,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 30),
+        &0_u64,
+        &(amount * 100),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Idle schedule no back-pay"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
     );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
 
+    let schedule_id = 1_u64;
     let recipient_before = token_client.balance(&recipient);
     let active_before = client.get_active_recurring_count();
 
