@@ -7,6 +7,7 @@ import type { Owner } from "../types/accord";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { useDelegations } from "../hooks/useDelegations";
 import { DelegateModal } from "../components/DelegateModal";
+import { RoleModal } from "../components/RoleModal";
 
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -441,6 +442,16 @@ export function OwnersPage({
             refetchDelegations();
             onProposalSubmitted();
           }}
+        />
+      )}
+
+      {roleModalOwner && (
+        <RoleModal
+          isOpen={!!roleModalOwner}
+          targetAddress={roleModalOwner.address}
+          targetLabel={roleModalOwner.label}
+          currentRoles={["Owner", "Approver"]}
+          onClose={() => setRoleModalOwner(null)}
         />
       )}
     </>

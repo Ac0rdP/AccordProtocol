@@ -28,6 +28,9 @@ vi.mock("../lib/submit", () => ({
 
 vi.mock("../lib/contract", () => ({
   getSpendingLimit: vi.fn().mockResolvedValue(-1n),
+  getWeightCapPct: vi.fn().mockResolvedValue(0),
+  getRoleVersion: vi.fn().mockResolvedValue("v1"),
+  getRoles: vi.fn().mockResolvedValue(["Owner", "Approver"]),
 }));
 
 const mockUseOwnerWeights = vi.mocked(useOwnerWeights);

@@ -49,6 +49,9 @@ jobs:
       - name: Run contract test suite (skewed weight fixture)
         run: ACCORD_WEIGHT_FIXTURE=skewed cargo test -- --nocapture
 
+      - name: Run RBAC tests
+        run: cargo test -- rbac -- --nocapture
+
       - name: Generate wasm-manifest.json
         run: |
           python3 <<'PY'
@@ -82,17 +85,14 @@ jobs:
               raise SystemExit("Could not read soroban-sdk version from Cargo.toml")
           soroban_sdk_version = match.group(1)
 
-          # Probed: True if contract source includes recurring-payment types/entrypoints
+          # Probed: True if contract source includes feature capability flags
           try:
               lib_rs = open("contracts/accord/src/lib.rs", encoding="utf-8").read()
               supports_recurring_payments = "RecurringPayment" in lib_rs and "disburse_recurring" in lib_rs
-              supports_weighted_governance = (
-                  "get_owner_weight" in lib_rs
-                  and ("change_owner_weight" in lib_rs or "migrate_to_weighted_governance" in lib_rs)
-              )
+              supports_rbac = ("GrantRole" in lib_rs and "RevokeRole" in lib_rs) or ("get_roles" in lib_rs and "get_role_version" in lib_rs)
           except FileNotFoundError:
               supports_recurring_payments = False
-              supports_weighted_governance = False
+              supports_rbac = False
 
           manifest = {
               "wasm_file": os.path.basename(wasm_path),
@@ -104,7 +104,7 @@ jobs:
               .replace("+00:00", "Z"),
               "soroban_sdk_version": soroban_sdk_version,
               "supports_recurring_payments": supports_recurring_payments,
-              "supports_weighted_governance": supports_weighted_governance,
+              "supports_rbac": supports_rbac,
           }
 
           with open("wasm-manifest.json", "w", encoding="utf-8") as out:

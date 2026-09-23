@@ -19,6 +19,7 @@ import type {
   RecurringKind,
   RecurringPayment,
   RecurringStatus,
+  Role,
 } from "../types/accord";
 import {
   stroopsToDisplay,
@@ -167,6 +168,20 @@ function mapKindDetails(
         amount: String(values[1] ?? "Unknown"),
         token: "Owner weight",
       };
+    case "grantrole":
+      return {
+        kind: "grant_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
+    case "revokerole":
+      return {
+        kind: "revoke_role",
+        to: shortenAddr(String(values[0] ?? "Unknown")),
+        amount: "—",
+        token: String(values[1] ?? "Role"),
+      };
     default:
       return {
         kind: "transfer",
@@ -246,6 +261,94 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
     const val = await simulateView("get_active_delegations");
     const raw = scValToNative(val);
     return Array.isArray(raw) ? raw.map(mapDelegation) : [];
+  } catch {
+    return [];
+  }
+}
+
+const ROLE_ALIASES: Record<string, Role> = {
+  owner: "owner",
+  admin: "admin",
+  guardian: "guardian",
+  manager: "manager",
+  operator: "operator",
+  viewer: "viewer",
+  maintainer: "manager",
+  administrator: "admin",
+};
+
+function normalizeRole(value: unknown): Role | null {
+  if (typeof value === "string") {
+    const key = value.trim();
+    if (!key) return null;
+    const normalized = key.toLowerCase();
+    return ROLE_ALIASES[normalized] ?? null;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (!entries.length) return null;
+    const variant = String(entries[0][0]);
+    return normalizeRole(variant);
+  }
+
+  return null;
+}
+
+function mapRoleList(raw: unknown): Role[] {
+  if (!Array.isArray(raw)) return [];
+  const roles: Role[] = [];
+  for (const entry of raw) {
+    const role = normalizeRole(entry);
+    if (role && !roles.includes(role)) {
+      roles.push(role);
+    }
+  }
+  return roles;
+}
+
+export async function getRoleVersion(): Promise<number> {
+  try {
+    const val = await simulateView("get_role_version");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getRoles(): Promise<Role[]> {
+  try {
+    const val = await simulateView("get_roles");
+    return mapRoleList(scValToNative(val));
+  } catch {
+    return [];
+  }
+}
+
+export async function hasRole(
+  walletAddress: string,
+  role: Role | string,
+): Promise<boolean> {
+  try {
+    const normalized = normalizeRole(role) ?? String(role).trim();
+    const val = await simulateView("has_role", [
+      nativeToScVal(walletAddress, { type: "address" }),
+      nativeToScVal(normalized, { type: "symbol" }),
+    ]);
+    return Boolean(scValToNative(val));
+  } catch {
+    return false;
+  }
+}
+
+export async function getRoleMembers(role: Role | string): Promise<string[]> {
+  try {
+    const normalized = normalizeRole(role) ?? String(role).trim();
+    const val = await simulateView("get_role_members", [
+      nativeToScVal(normalized, { type: "symbol" }),
+    ]);
+    const raw = scValToNative(val);
+    return Array.isArray(raw) ? raw.map(String) : [];
   } catch {
     return [];
   }
