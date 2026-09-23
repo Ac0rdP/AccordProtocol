@@ -84,23 +84,16 @@ fn setup_with_timelock(
     owners.push_back(owner_b.clone());
     owners.push_back(owner_c.clone());
 
-    let fixture = std::env::var("ACCORD_WEIGHT_FIXTURE")
-        .or_else(|_| std::env::var("WEIGHT_FIXTURE"))
-        .unwrap_or_default();
-
+    // Shared unit-test setup always uses equal weight-1 owners. Unequal-weight
+    // coverage lives in `setup_weighted` / `setup_three_owner_weighted` and the
+    // proptest suites. The ACCORD_WEIGHT_FIXTURE env var must not rewrite this
+    // helper — doing so breaks dozens of tests that assert flat count semantics
+    // when CI rematerializes the suite under `skewed`.
     let mut weights = Vec::new(&env);
-    let effective_threshold = if fixture == "skewed" {
-        weights.push_back(5);
-        weights.push_back(3);
-        weights.push_back(2);
-        if threshold == 2 { 6 } else { threshold * 3 }
-    } else {
-        for _ in 0..owners.len() {
-            weights.push_back(1);
-        }
-        threshold
-    };
-    client.initialize(&owners, &weights, &effective_threshold, &time_lock_delay);
+    for _ in 0..owners.len() {
+        weights.push_back(1);
+    }
+    client.initialize(&owners, &weights, &threshold, &time_lock_delay);
 
     // Fund the multisig contract so it can pay out proposals.
     token_sac.mint(&contract_id, &1_000_000_000_000_i128);
@@ -7579,19 +7572,22 @@ fn linear_vesting_disbursement_uses_newly_vested_amount_after_cliff() {
     client.execute(&owner_c, &create_id);
 
     set_timestamp(&env, NOW + 1_000);
-    assert_eq!(client.try_disburse_recurring(&1), Err(Ok(ContractError::RecurringIntervalNotElapsed)));
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &1),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
+    );
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0_i128);
 
     set_timestamp(&env, NOW + 5_000);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 5_000_000_i128);
 
     set_timestamp(&env, NOW + 7_500);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 7_500_000_i128);
 
     set_timestamp(&env, NOW + 20_000);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 10_000_000_i128);
 }
 
