@@ -1,5 +1,13 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
+export type Role =
+  | "owner"
+  | "admin"
+  | "guardian"
+  | "manager"
+  | "operator"
+  | "viewer";
+
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
 
 export type ProposalKind =
