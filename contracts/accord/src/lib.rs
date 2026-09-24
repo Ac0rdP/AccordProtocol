@@ -23,6 +23,14 @@ pub enum ProposalStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub enum Role {
+    CreateProposal,
+    ApproveProposal,
+    ExecuteProposal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct Transfer {
     pub to: Address,
     pub token: Address,
@@ -230,6 +238,47 @@ pub struct ProposalCreatedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub enum RecurringStatus {
+    Active,
+    Cancelled,
+    Completed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringSchedule {
+    pub id: u64,
+    pub proposer: Address,
+    pub transfers: Vec<Transfer>,
+    pub interval_secs: u64,
+    pub last_disbursed_at: u64,
+    pub remaining_occurrences: u32,
+    pub status: RecurringStatus,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPayment {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount_per_period: i128,
+    pub interval_secs: u64,
+    pub start_time: u64,
+    pub end_time: Option<u64>,
+    pub cliff_time: Option<u64>,
+    pub total_cap: Option<i128>,
+    pub last_disbursed_at: u64,
+    pub total_disbursed: i128,
+    pub periods_disbursed: u32,
+    pub status: RecurringStatus,
+    pub proposer: Address,
+    pub category: ProposalCategory,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct ProposalApprovedEvent {
     pub id: u64,
     pub approver: Address,
@@ -406,6 +455,13 @@ pub struct GovernanceMigratedEvent {
     pub total_weight: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RbacMigratedEvent {
+    pub owner_count: u32,
+    pub role_version: u32,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -540,8 +596,26 @@ fn governance_version_key() -> Symbol {
     symbol_short!("GOVVER")
 }
 
-fn delegation_key(delegator: &Address) -> (Symbol, Address) {
-    (symbol_short!("DELEG"), delegator.clone())
+fn role_version_key() -> Symbol {
+    symbol_short!("ROLEVER")
+}
+
+fn owner_roles_key(owner: &Address) -> (Symbol, Address) {
+    (symbol_short!("ROLES"), owner.clone())
+}
+
+fn role_members_key(role: &Role) -> (Symbol, Role) {
+    (symbol_short!("RMEM"), role.clone())
+}
+
+const RBAC_VERSION: u32 = 1;
+
+fn default_owner_roles(env: &Env) -> Vec<Role> {
+    let mut roles = Vec::new(env);
+    roles.push_back(Role::CreateProposal);
+    roles.push_back(Role::ApproveProposal);
+    roles.push_back(Role::ExecuteProposal);
+    roles
 }
 
 fn max_single_owner_weight_pct_key() -> Symbol {
@@ -765,6 +839,105 @@ fn write_governance_migrated(env: &Env, migrated: bool) {
     bump_instance(env);
 }
 
+fn read_role_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&role_version_key())
+        .unwrap_or(0)
+}
+
+fn write_role_version(env: &Env, version: u32) {
+    env.storage().instance().set(&role_version_key(), &version);
+    bump_instance(env);
+}
+
+fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
+    let key = owner_roles_key(owner);
+    let roles = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    roles
+}
+
+fn read_role_members(env: &Env, role: &Role) -> Vec<Address> {
+    let key = role_members_key(role);
+    let members = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    members
+}
+
+fn write_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
+    let key = owner_roles_key(owner);
+    env.storage().persistent().set(&key, roles);
+    bump_persistent(env, &key);
+}
+
+fn write_role_members(env: &Env, role: &Role, members: &Vec<Address>) {
+    let key = role_members_key(role);
+    env.storage().persistent().set(&key, members);
+    bump_persistent(env, &key);
+}
+
+fn update_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
+    let old_roles = read_owner_roles(env, owner);
+    for old_role in old_roles.iter() {
+        let members = read_role_members(env, &old_role);
+        let mut remaining = Vec::new(env);
+        for member in members.iter() {
+            if member != *owner {
+                remaining.push_back(member);
+            }
+        }
+        write_role_members(env, &old_role, &remaining);
+    }
+
+    write_owner_roles(env, owner, roles);
+    for role in roles.iter() {
+        let members = read_role_members(env, &role);
+        let mut present = false;
+        for member in members.iter() {
+            if member == *owner {
+                present = true;
+                break;
+            }
+        }
+        if !present {
+            let mut updated = members;
+            updated.push_back(owner.clone());
+            write_role_members(env, &role, &updated);
+        }
+    }
+}
+
+fn has_role(env: &Env, owner: &Address, role: &Role) -> bool {
+    for assigned in read_owner_roles(env, owner).iter() {
+        if assigned == *role {
+            return true;
+        }
+    }
+    false
+}
+
+fn require_role(env: &Env, owner: &Address, role: Role) -> Result<(), ContractError> {
+    require_owner_and_weight(env, owner)?;
+    if has_role(env, owner, &role) {
+        Ok(())
+    } else {
+        Err(ContractError::Unauthorized)
+    }
+}
+
 fn read_threshold(env: &Env) -> Result<u32, ContractError> {
     env.storage()
         .instance()
@@ -874,6 +1047,37 @@ fn write_next_id(env: &Env, id: u64) {
     bump_instance(env);
 }
 
+fn read_recurring_next_id(env: &Env) -> u64 {
+    let id = env
+        .storage()
+        .instance()
+        .get(&recurring_next_key())
+        .unwrap_or(1_u64);
+    bump_instance(env);
+    id
+}
+
+fn write_recurring_next_id(env: &Env, id: u64) {
+    env.storage().instance().set(&recurring_next_key(), &id);
+    bump_instance(env);
+}
+
+fn read_recurring_schedule(env: &Env, id: u64) -> Result<RecurringSchedule, ContractError> {
+    let key = recurring_key(id);
+    let s: RecurringSchedule = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ContractError::ProposalNotFound)?;
+    bump_persistent(env, &key);
+    Ok(s)
+}
+
+fn write_recurring_schedule(env: &Env, s: &RecurringSchedule) {
+    let key = recurring_key(s.id);
+    env.storage().persistent().set(&key, s);
+    bump_persistent(env, &key);
+}
 
 fn read_proposal(env: &Env, id: u64) -> Result<Proposal, ContractError> {
     let key = proposal_key(id);
@@ -1444,6 +1648,11 @@ impl AccordContract {
         env.storage()
             .instance()
             .set(&governance_version_key(), &true);
+        let roles = default_owner_roles(&env);
+        for owner in owners.iter() {
+            update_owner_roles(&env, &owner, &roles);
+        }
+        write_role_version(&env, RBAC_VERSION);
         bump_instance(&env);
 
         Ok(())
@@ -1535,6 +1744,121 @@ impl AccordContract {
         Ok(())
     }
 
+    /// One-time migration for legacy deployments. Grants every current owner
+    /// the default proposal lifecycle roles and records the RBAC version.
+    pub fn migrate_to_rbac(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_role_version(&env) != 0 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        let owners = read_owners_map(&env)?;
+        let roles = default_owner_roles(&env);
+        for owner in owners.keys().iter() {
+            update_owner_roles(&env, &owner, &roles);
+        }
+        write_role_version(&env, RBAC_VERSION);
+
+        env.events().publish(
+            (symbol_short!("rbac_migrated"),),
+            RbacMigratedEvent {
+                owner_count: owners.len(),
+                role_version: RBAC_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    /// Create a recurring schedule for periodic disbursements.
+    pub fn create_recurring_schedule(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        interval_secs: u64,
+        occurrences: u32,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_not_frozen(&env)?;
+
+        if transfers.len() == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        for transfer in transfers.iter() {
+            if transfer.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            validate_token(&env, &transfer.token)?;
+            if transfer.to == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+        if occurrences == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let id = read_recurring_next_id(&env);
+        let next = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_recurring_next_id(&env, next);
+
+        let schedule = RecurringSchedule {
+            id,
+            proposer: proposer.clone(),
+            transfers: transfers.clone(),
+            interval_secs,
+            last_disbursed_at: 0,
+            remaining_occurrences: occurrences,
+            status: RecurringStatus::Active,
+            description,
+        };
+        write_recurring_schedule(&env, &schedule);
+        Ok(id)
+    }
+
+    /// Cancel a recurring schedule (owner-only action).
+    pub fn cancel_recurring_schedule(
+        env: Env,
+        caller: Address,
+        id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        require_owner_and_weight(&env, &caller)?;
+        let mut s = read_recurring_schedule(&env, id)?;
+        s.status = RecurringStatus::Cancelled;
+        write_recurring_schedule(&env, &s);
+        Ok(())
+    }
+
+    /// Disburse a recurring schedule (permissionless crank). Reject if schedule
+    /// is in a terminal status (Cancelled or Completed) or called too early.
+    pub fn disburse_recurring(env: Env, id: u64) -> Result<(), ContractError> {
+        let mut s = read_recurring_schedule(&env, id)?;
+        if !matches!(s.status, RecurringStatus::Active) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        let now = env.ledger().timestamp();
+        if s.last_disbursed_at != 0 && now < s.last_disbursed_at.saturating_add(s.interval_secs) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        s.last_disbursed_at = now;
+        if s.remaining_occurrences > 0 {
+            s.remaining_occurrences = s.remaining_occurrences.saturating_sub(1);
+        }
+        if s.remaining_occurrences == 0 {
+            s.status = RecurringStatus::Completed;
+        }
+        write_recurring_schedule(&env, &s);
+        Ok(())
+    }
+
     /// Creates a new transfer proposal with one or more asset transfers.
     ///
     /// # Arguments
@@ -1551,7 +1875,7 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         let transfers_len = transfers.len();
@@ -1802,7 +2126,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         let owners = read_owners_map(&env)?;
@@ -1891,7 +2215,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         if limit < 0 {
@@ -1969,7 +2293,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         if new_weight < MIN_OWNER_WEIGHT {
@@ -2057,7 +2381,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         require_owner(&env, &owner_to_remove)?;
@@ -2140,7 +2464,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::CreateProposal)?;
         require_not_frozen(&env)?;
 
         let total_weight = read_total_weight(&env);
@@ -2212,8 +2536,10 @@ impl AccordContract {
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        let owners = read_owners_map(&env)?;
-        let raw_weight = owners.get(approver.clone()).ok_or(ContractError::Unauthorized)?;
+        let weight = {
+            require_role(&env, &approver, Role::ApproveProposal)?;
+            require_owner_and_weight(&env, &approver)?
+        };
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         // Refresh derived status so an already-expired proposal is caught here.
@@ -2269,8 +2595,10 @@ impl AccordContract {
     /// threshold the status transitions back to `Pending`.
     pub fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        require_owner(&env, &approver)?;
-
+        let weight = {
+            require_role(&env, &approver, Role::ApproveProposal)?;
+            require_owner_and_weight(&env, &approver)?
+        };
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         proposal.status = derive_status(&env, &proposal);
@@ -2312,7 +2640,8 @@ impl AccordContract {
     /// Executes a proposal that has reached ready status.
     pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
         executor.require_auth();
-        require_owner(&env, &executor)?;
+        require_role(&env, &executor, Role::ExecuteProposal)?;
+        require_not_frozen(&env)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
 
@@ -2429,11 +2758,16 @@ impl AccordContract {
                 let key = owners_key();
                 env.storage().persistent().set(&key, &owners);
                 bump_persistent(&env, &key);
-
-                let current_total = read_total_weight(&env);
-                let new_total = current_total.checked_add(*weight).ok_or(ContractError::ArithmeticError)?;
-                write_total_weight(&env, new_total);
-
+                let roles = default_owner_roles(&env);
+                update_owner_roles(&env, new_owner, &roles);
+                // New owners start at MIN_OWNER_WEIGHT; keep the counter in
+                // lockstep with the implicit default returned by read_owner_weight.
+                write_total_weight(
+                    &env,
+                    read_total_weight(&env)
+                        .checked_add(MIN_OWNER_WEIGHT)
+                        .ok_or(ContractError::ArithmeticError)?,
+                );
                 env.events().publish(
                     (symbol_short!("a_own"),),
                     AddOwnerExecutedEvent {
@@ -2477,6 +2811,7 @@ impl AccordContract {
                 let key = owners_key();
                 env.storage().persistent().set(&key, &owners);
                 bump_persistent(&env, &key);
+                update_owner_roles(&env, owner_to_remove, &Vec::new(&env));
 
                 write_total_weight(
                     &env,
@@ -3343,6 +3678,19 @@ impl AccordContract {
     /// migration is still needed should call this before invoking it.
     pub fn is_governance_migrated(env: Env) -> bool {
         governance_migrated(&env)
+    }
+
+    /// Returns the RBAC schema version, or zero for a legacy deployment.
+    pub fn get_role_version(env: Env) -> u32 {
+        read_role_version(&env)
+    }
+
+    pub fn get_roles(env: Env, owner: Address) -> Vec<Role> {
+        read_owner_roles(&env, &owner)
+    }
+
+    pub fn get_role_members(env: Env, role: Role) -> Vec<Address> {
+        read_role_members(&env, &role)
     }
 
     /// Returns a current owner's voting weight, or `OwnerNotFound` otherwise.

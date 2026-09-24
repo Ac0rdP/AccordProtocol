@@ -147,17 +147,18 @@ See also: [Architecture §3](./ARCHITECTURE.md#3-storage-layout-soroban).
 A deadline is the Unix timestamp (seconds since epoch) after which a proposal can no longer be approved or executed, and is instead treated as `Expired`. A new proposal's deadline must be in the future and within a bounded window, and the contract checks it against the current ledger's timestamp rather than wall-clock time on any one machine.
 See also: [Contract API — create_proposal](./CONTRACT_API.md#create_proposal).
 
-**Schedule (Recurring Schedule)**
-A recurring schedule (or simply "schedule") is an Accord configuration that automates or structures payments to a recipient over time. Schedules are created via governance proposals (`CreateRecurringPayment`) and can have active, paused, completed, or cancelled statuses. They specify a payout amount, a time interval (for fixed recurring payments), a cliff time, and a total cap.
+**Governance version**
+Governance version marks whether a deployed Accord contract uses flat (M-of-N approval count) or weighted (per-owner weight sum) voting logic. The `is_governance_migrated` query returns `false` for flat and `true` for weighted. A multisig deployed before weighted governance was added must call `migrate_to_weighted_governance` to transition to the new model.
+See also: [DEPLOYMENT.md — Migrating to Weighted Governance](./DEPLOYMENT.md#migrating-to-weighted-governance).
 
-**Cliff (Cliff Time)**
-The cliff time is a timestamp in a recurring payment schedule before which no funds can be disbursed. Once the cliff time passes, all vested or accrued funds from the start of the schedule become claimable in the next disbursement.
+**Quorum weight**
+Quorum weight is the minimum total voting weight required for a proposal to transition from `Pending` to `Ready`, enabling execution. Unlike the flat M-of-N threshold (an approval count), quorum weight is expressed as a sum of per-owner weights and is snapshotted when the proposal is created so that ownership or weight changes after creation do not retroactively alter the proposal's approval requirement.
+See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle).
 
-**Vesting Period**
-The vesting period refers to the duration over which tokens gradually vest (become claimable) by a recipient under a linear vesting schedule. Rather than releasing funds in fixed steps at set intervals, linear vesting determines the claimable amount continuously and proportionally based on the time elapsed since the start time.
+**Total weight**
+Total weight is the sum of all current owner weights in the contract. It determines the ceiling for all future quorum weights — a proposed quorum weight must never exceed total weight. When owners are added or removed, or their individual weights are changed, total weight updates to reflect the new ownership composition.
+See also: [Deployment — Migrating to Weighted Governance](./DEPLOYMENT.md#migrating-to-weighted-governance).
 
-**Crank**
-A crank is an action (specifically the contract's public `disburse_recurring` function call) that executes the disbursement of vested or recurring funds. Because smart contracts cannot run on a timer automatically, an external account must call the contract to "crank" the schedule, triggering the actual transfer of ready funds.
-
-**Keeper**
-A keeper is an off-chain actor, bot, or automated script that regularly calls ("cranks") the contract's `disburse_recurring` function to ensure payments are disbursed on time as soon as they become claimable.
+**Weighted approval**
+Weighted approval is the voting model where each owner has a distinct voting weight (rather than each owner having an equal vote), and a proposal reaches quorum when the sum of approving owners' weights meets or exceeds the proposal's quorum_weight. This enables asymmetric governance structures, such as giving founders larger voting power while still requiring multisig approval.
+See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle).

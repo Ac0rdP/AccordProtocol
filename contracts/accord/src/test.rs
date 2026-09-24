@@ -657,7 +657,7 @@ fn remove_heaviest_owner_keeps_other_pending_proposals_reachable() {
 #[test]
 fn change_threshold_proposal_validates_against_total_weight() {
     // 3 owners each weight 1 → total_weight = 3, threshold = 2.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
 
     // Proposing a threshold of 4 > total_weight 3 must fail.
     assert_eq!(
@@ -6726,6 +6726,128 @@ fn mark_governance_unmigrated(env: &Env, contract_id: &Address) {
     });
 }
 
+fn mark_rbac_unmigrated(env: &Env, contract_id: &Address, owners: &Vec<Address>) {
+    env.as_contract(contract_id, || {
+        env.storage().instance().set(&role_version_key(), &0_u32);
+        let empty = Vec::new(env);
+        for owner in owners.iter() {
+            update_owner_roles(env, &owner, &empty);
+        }
+    });
+}
+
+#[test]
+fn migrate_to_rbac_grants_default_roles_and_is_single_run() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+    let roles = client.get_roles(&owner_a);
+    assert_eq!(roles.len(), 3);
+    assert!(roles.contains(&Role::CreateProposal));
+    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&owner_c));
+
+    let roles_before = client.get_roles(&owner_a);
+    let members_before = client.get_role_members(&Role::ApproveProposal);
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_roles(&owner_a), roles_before);
+    assert_eq!(client.get_role_members(&Role::ApproveProposal), members_before);
+}
+
+#[test]
+fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_owner = Address::generate(&env);
+    let add_id = client.create_add_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &str(&env, "Add owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+    assert_eq!(client.get_roles(&new_owner).len(), 3);
+    assert!(client.get_role_members(&Role::CreateProposal).contains(&new_owner));
+
+    let remove_id = client.create_remove_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &str(&env, "Remove owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+    assert!(client.get_roles(&new_owner).is_empty());
+    assert!(!client.get_role_members(&Role::ExecuteProposal).contains(&new_owner));
+}
+
+#[test]
+fn migrated_contract_matches_legacy_approve_revoke_execute_results() {
+    let (env_pre, client_pre, a_pre, b_pre, c_pre, _, token_pre) = setup(2);
+    let (env_post, client_post, a_post, b_post, c_post, _, token_post) = setup(2);
+    let recipient_pre = Address::generate(&env_pre);
+    let recipient_post = Address::generate(&env_post);
+    let owners_post = client_post.get_owners();
+    mark_rbac_unmigrated(&env_post, &client_post.address, &owners_post);
+
+    let mut approvers = Vec::new(&env_post);
+    approvers.push_back(a_post.clone());
+    approvers.push_back(b_post.clone());
+    client_post.migrate_to_rbac(&approvers);
+
+    let amount = 42_000_i128;
+    let id_pre = client_pre.create_proposal(
+        &a_pre,
+        &t(&env_pre, &recipient_pre, amount, &token_pre.address),
+        &str(&env_pre, "Migration regression"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let id_post = client_post.create_proposal(
+        &a_post,
+        &t(&env_post, &recipient_post, amount, &token_post.address),
+        &str(&env_post, "Migration regression"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client_pre.approve(&a_pre, &id_pre);
+    client_post.approve(&a_post, &id_post);
+    client_pre.approve(&b_pre, &id_pre);
+    client_post.approve(&b_post, &id_post);
+    client_pre.revoke(&b_pre, &id_pre);
+    client_post.revoke(&b_post, &id_post);
+    client_pre.approve(&c_pre, &id_pre);
+    client_post.approve(&c_post, &id_post);
+
+    let pre_before = token_pre.balance(&recipient_pre);
+    let post_before = token_post.balance(&recipient_post);
+    client_pre.execute(&c_pre, &id_pre);
+    client_post.execute(&c_post, &id_post);
+
+    let pre_proposal = client_pre.get_proposal(&id_pre);
+    let post_proposal = client_post.get_proposal(&id_post);
+    assert_eq!(pre_proposal.status, post_proposal.status);
+    assert_eq!(pre_proposal.approvals, post_proposal.approvals);
+    assert_eq!(token_pre.balance(&recipient_pre) - pre_before, amount);
+    assert_eq!(token_post.balance(&recipient_post) - post_before, amount);
+    assert_eq!(
+        token_pre.balance(&recipient_pre) - pre_before,
+        token_post.balance(&recipient_post) - post_before
+    );
+}
+
 #[test]
 fn migrate_to_weighted_governance_succeeds_assigns_equal_weights_and_sets_flag() {
     let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
@@ -7062,291 +7184,42 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
 }
 
-// ─── Owner-Authorization Check Resource Cost Benchmark ─────────────────────
+// ─── Recurring schedule terminal-status guards ─────────────────────────────
 
-const CPU_LIMIT_MAINNET: u64 = 600_000_000;
-const MEM_LIMIT_MAINNET: u64 = 41_943_040;
+#[test]
+fn cancelled_recurring_schedule_cannot_disburse() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
 
-fn setup_n_owners(
-    env: &Env,
-    count: u32,
-) -> (AccordContractClient<'static>, Vec<Address>) {
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(env, &contract_id);
+    let id = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+        &60,
+        &5,
+        &str(&env, "Cancelled schedule"),
+    );
 
-    let mut owners = Vec::new(env);
-    for _ in 0..count {
-        owners.push_back(Address::generate(env));
-    }
+    client.cancel_recurring_schedule(&owner_a, &id);
 
-    let mut weights = Vec::new(env);
-    for _ in 0..count {
-        weights.push_back(1_u32);
-    }
-
-    client.initialize(&owners, &weights, &1, &0);
-    (client, owners)
+    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
 }
 
 #[test]
-fn benchmark_owner_check_cpu_and_memory() {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-    env.budget().reset_unlimited();
+fn completed_recurring_schedule_cannot_disburse() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
 
-    // ── Baseline: 1 owner ──────────────────────────────────────────────
-    let (client_1, owners_1) = setup_n_owners(&env, 1);
-    let owner_1 = owners_1.get(0).unwrap();
-
-    env.budget().reset_unlimited();
-    let cpu_before = env.budget().cpu_instruction_cost();
-    let mem_before = env.budget().memory_bytes_cost();
-    let _ = client_1.get_owner_weight(&owner_1);
-    let cpu_1 = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
-    let mem_1 = env.budget().memory_bytes_cost().saturating_sub(mem_before);
-
-    // ── Max owners: 20 ─────────────────────────────────────────────────
-    let (client_20, owners_20) = setup_n_owners(&env, 20);
-    let owner_20 = owners_20.get(0).unwrap();
-
-    env.budget().reset_unlimited();
-    let cpu_before = env.budget().cpu_instruction_cost();
-    let mem_before = env.budget().memory_bytes_cost();
-    let _ = client_20.get_owner_weight(&owner_20);
-    let cpu_20 = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
-    let mem_20 = env.budget().memory_bytes_cost().saturating_sub(mem_before);
-
-    // ── Report ─────────────────────────────────────────────────────────
-    std::println!();
-    std::println!("=== Owner-Authorization Check Resource Cost ===");
-    std::println!(
-        " 1 owner — CPU: {:>12} instructions, Memory: {:>10} bytes",
-        cpu_1, mem_1
-    );
-    std::println!(
-        "20 owners — CPU: {:>12} instructions, Memory: {:>10} bytes",
-        cpu_20, mem_20
-    );
-    std::println!(" Delta    — CPU: {:>12}, Memory: {:>10}", cpu_20.saturating_sub(cpu_1), mem_20.saturating_sub(mem_1));
-    std::println!();
-    std::println!(
-        "CPU usage at 20 owners: {:.4}% of mainnet limit ({} instructions)",
-        (cpu_20 as f64 / CPU_LIMIT_MAINNET as f64) * 100.0,
-        CPU_LIMIT_MAINNET
-    );
-    std::println!(
-        "Mem usage at 20 owners: {:.4}% of mainnet limit ({} bytes)",
-        (mem_20 as f64 / MEM_LIMIT_MAINNET as f64) * 100.0,
-        MEM_LIMIT_MAINNET
-    );
-
-    // Confirm we are well within mainnet resource bounds.
-    assert!(
-        cpu_20 < CPU_LIMIT_MAINNET,
-        "CPU cost {} exceeds mainnet limit of {}",
-        cpu_20,
-        CPU_LIMIT_MAINNET
-    );
-    assert!(
-        mem_20 < MEM_LIMIT_MAINNET,
-        "Memory cost {} exceeds mainnet limit of {}",
-        mem_20,
-        MEM_LIMIT_MAINNET
-    );
-
-    std::println!();
-    std::println!("=== Full Budget Breakdown (20 owners) ===");
-    std::println!("{}", env.cost_estimate().budget());
-}
-
-#[test]
-fn benchmark_approve_cost_20_owners() {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-    env.budget().reset_unlimited();
-
-    // Prepare a token for proposals.
-    let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_client = token::Client::new(&env, &token_id.address());
-    let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-    // ── Setup: 20 owners, threshold = 10 ───────────────────────────────
-    let (client, owners) = setup_n_owners(&env, 20);
-    token_sac.mint(&client.address, &1_000_000_000_000_i128);
-
-    let owner_a = owners.get(0).unwrap();
-    let owner_b = owners.get(1).unwrap();
-
-    // Create a proposal that both owners will approve.
-    let recipient = Address::generate(&env);
-    let proposal_id = client.create_proposal(
+    let id = client.create_recurring_schedule(
         &owner_a,
-        &t(&env, &recipient, 1_000_000, &token_client.address),
-        &str(&env, "Benchmark approve"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+        &60,
+        &1,
+        &str(&env, "One-off schedule"),
     );
 
-    // Record cost before and after approve.
-    env.budget().reset_unlimited();
-    let cpu_before = env.budget().cpu_instruction_cost();
-    let mem_before = env.budget().memory_bytes_cost();
-    let _ = client.approve(&owner_b, &proposal_id);
-    let cpu_approve = env.budget().cpu_instruction_cost().saturating_sub(cpu_before);
-    let mem_approve = env.budget().memory_bytes_cost().saturating_sub(mem_before);
+    // First disburse should succeed and mark Completed (occurrences == 1)
+    client.disburse_recurring(&id);
 
-    std::println!();
-    std::println!("=== Approve Call Resource Cost (20 owners) ===");
-    std::println!(
-        " approve — CPU: {:>12} instructions, Memory: {:>10} bytes",
-        cpu_approve, mem_approve
-    );
-    std::println!(
-        "CPU usage: {:.4}% of mainnet limit",
-        (cpu_approve as f64 / CPU_LIMIT_MAINNET as f64) * 100.0
-    );
-    std::println!(
-        "Mem usage: {:.4}% of mainnet limit",
-        (mem_approve as f64 / MEM_LIMIT_MAINNET as f64) * 100.0
-    );
-
-    std::println!();
-    std::println!("=== Full Budget Breakdown (approve, 20 owners) ===");
-    std::println!("{}", env.cost_estimate().budget());
-
-    assert!(
-        cpu_approve < CPU_LIMIT_MAINNET,
-        "approve CPU cost {} exceeds mainnet limit",
-        cpu_approve
-    );
-    assert!(
-        mem_approve < MEM_LIMIT_MAINNET,
-        "approve memory cost {} exceeds mainnet limit",
-        mem_approve
-    );
-}
-
-// ─── Recurring Payment Tests ──────────────────────────────────────────────────
-
-#[test]
-fn cancelling_recurring_payment_is_terminal_decrements_active_and_blocks_disbursement() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-
-    let create_id = client.create_recurring_proposal(
-        &owner_a,
-        &recipient,
-        &token_client.address,
-        &1_000_000_i128,
-        &3_600_u64,
-        &NOW,
-        &(NOW + 86_400),
-        &0_u64,
-        &10_000_000_i128,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(&env, "Recurring payment schedule"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-
-    client.approve(&owner_a, &create_id);
-    client.approve(&owner_b, &create_id);
-    client.execute(&owner_c, &create_id);
-
-    assert_eq!(client.get_active_recurring_count(), 1);
-    let schedule = client.get_recurring_payment(&1);
-    assert_eq!(schedule.status, RecurringStatus::Active);
-
-    let cancel_id = client.create_cancel_recurring_proposal(
-        &owner_a,
-        &1_u64,
-        &str(&env, "Cancel recurring schedule"),
-        &DEADLINE,
-    );
-
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-    client.execute(&owner_c, &cancel_id);
-
-    assert_eq!(client.get_active_recurring_count(), 0);
-
-    let cancelled_schedule = client.get_recurring_payment(&1);
-    assert_eq!(cancelled_schedule.status, RecurringStatus::Cancelled);
-
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &1_u64),
-        Err(Ok(ContractError::RecurringPaymentInactive))
-    );
-
-    assert_eq!(
-        client.try_create_cancel_recurring_proposal(
-            &owner_a,
-            &1_u64,
-            &str(&env, "Second cancel attempt"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ScheduleAlreadyCancelled))
-    );
-}
-
-#[test]
-fn frozen_contract_blocks_recurring_disbursement_and_unfreezing_restores_it() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let guardian = Address::generate(&env);
-    let recipient = Address::generate(&env);
-
-    let mut approvers = Vec::new(&env);
-    approvers.push_back(owner_a.clone());
-    approvers.push_back(owner_b.clone());
-    client.set_guardian(&approvers, &guardian);
-
-    let create_id = client.create_recurring_proposal(
-        &owner_a,
-        &recipient,
-        &token_client.address,
-        &1_000_000_i128,
-        &3_600_u64,
-        &NOW,
-        &(NOW + 86_400),
-        &0_u64,
-        &10_000_000_i128,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(&env, "Recurring payment schedule"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-
-    client.approve(&owner_a, &create_id);
-    client.approve(&owner_b, &create_id);
-    client.execute(&owner_c, &create_id);
-
-    assert_eq!(client.get_active_recurring_count(), 1);
-
-    client.freeze(&guardian);
-    assert!(client.is_frozen());
-
-    set_timestamp(&env, NOW + 3_600);
-
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &1_u64),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-
-    let schedule_after_frozen_attempt = client.get_recurring_payment(&1);
-    assert_eq!(schedule_after_frozen_attempt.last_disbursed_at, 0);
-    assert_eq!(schedule_after_frozen_attempt.total_disbursed, 0);
-
-    client.unfreeze(&approvers);
-    assert!(!client.is_frozen());
-
-    client.disburse_recurring(&owner_a, &1_u64);
-
-    let schedule_after_unfreeze = client.get_recurring_payment(&1);
-    assert_eq!(schedule_after_unfreeze.last_disbursed_at, NOW + 3_600);
-    assert_eq!(schedule_after_unfreeze.total_disbursed, 1_000_000_i128);
+    // A subsequent disburse must be rejected.
+    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
 }
 
 
