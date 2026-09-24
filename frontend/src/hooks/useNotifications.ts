@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Proposal } from "../types/accord";
+import { getOwnerWeightChangeEvents } from "../lib/contract";
 
 export function useNotifications(
   walletAddress: string | null,
@@ -7,6 +8,7 @@ export function useNotifications(
 ) {
   const [permission, setPermission] = useState<NotificationPermission>("default");
   const notifiedIds = useRef<Set<number>>(new Set());
+  const notifiedWeightChanges = useRef<Set<string>>(new Set());
   const lastWalletAddress = useRef<string | null>(null);
 
   // Request/Check permission on mount
@@ -26,6 +28,7 @@ export function useNotifications(
   useEffect(() => {
     if (walletAddress !== lastWalletAddress.current) {
       notifiedIds.current.clear();
+      notifiedWeightChanges.current.clear();
       lastWalletAddress.current = walletAddress;
     }
   }, [walletAddress]);
@@ -61,5 +64,44 @@ export function useNotifications(
         console.error("Failed to trigger notification", err);
       }
     }
+  }, [proposals, walletAddress, permission]);
+
+  // Notify the connected owner when their own voting weight is changed by an
+  // executed governance proposal. Other owners' changes are ignored, and each
+  // change is only announced once.
+  useEffect(() => {
+    if (!walletAddress || permission !== "granted") {
+      return;
+    }
+
+    let cancelled = false;
+    getOwnerWeightChangeEvents(10)
+      .then((events) => {
+        if (cancelled) return;
+
+        const mine = events.filter((e) => e.owner === walletAddress);
+        for (const change of mine) {
+          const key = `${change.owner}|${change.oldWeight}|${change.newWeight}|${
+            change.ledger ?? ""
+          }`;
+          if (notifiedWeightChanges.current.has(key)) continue;
+          notifiedWeightChanges.current.add(key);
+
+          try {
+            new Notification("Voting Weight Updated", {
+              body: `Your voting weight changed from ${change.oldWeight} to ${change.newWeight}.`,
+            });
+          } catch (err) {
+            console.error("Failed to trigger notification", err);
+          }
+        }
+      })
+      .catch(() => {
+        /* ignore — nothing to notify if events can't be read */
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [proposals, walletAddress, permission]);
 }

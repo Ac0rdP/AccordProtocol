@@ -1347,6 +1347,26 @@
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
               "key": {
+                "symbol": "ACTIDS"
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": []
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+              "key": {
                 "symbol": "OWNERS"
               },
               "durability": "persistent",
@@ -1406,7 +1426,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 5
               }
             }
           },
@@ -1436,7 +1456,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 3
               }
             }
           },
@@ -1466,7 +1486,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 5
               }
             }
           },
@@ -1496,7 +1516,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 2
               }
             }
           },
@@ -1526,7 +1546,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 5
               }
             }
           },
@@ -1556,7 +1576,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 3
               }
             }
           },
@@ -1586,7 +1606,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 5
               }
             }
           },
@@ -1616,7 +1636,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 4
               }
             }
           },
@@ -1646,7 +1666,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 3
               }
             }
           },
@@ -1676,7 +1696,55 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "OSLIM"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": [
+                  {
+                    "map": [
+                      {
+                        "key": {
+                          "symbol": "limit"
+                        },
+                        "val": {
+                          "i128": "10000000"
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "token"
+                        },
+                        "val": {
+                          "address": "CACMVW2KK4H5FZDFF2AUCAKQTEJMZZWJUIZF23XMRVYQBSXYLHZ6BKWN"
+                        }
+                      }
+                    ]
+                  }
+                ]
               }
             }
           },
@@ -1704,6 +1772,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "approval_weight"
+                    },
+                    "val": {
+                      "u32": 8
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "approvals"
@@ -1833,6 +1909,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "approval_weight"
+                    },
+                    "val": {
+                      "u32": 7
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "approvals"
@@ -1987,6 +2071,14 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "approval_weight"
+                    },
+                    "val": {
+                      "u32": 8
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "approvals"
                     },
                     "val": {
@@ -2111,6 +2203,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "approval_weight"
+                    },
+                    "val": {
+                      "u32": 9
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "approvals"
@@ -2263,6 +2363,14 @@
               "durability": "persistent",
               "val": {
                 "map": [
+                  {
+                    "key": {
+                      "symbol": "approval_weight"
+                    },
+                    "val": {
+                      "u32": 7
+                    }
+                  },
                   {
                     "key": {
                       "symbol": "approvals"
@@ -2539,7 +2647,7 @@
                         "symbol": "ACTCNT"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {

@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
-import { getTotalProposals } from "../lib/contract";
+import { getTotalProposals, getRequiredQuorumWeight, getTotalWeight } from "../lib/contract";
+import { formatWeightPercent } from "../lib/soroban";
 
 /**
  * Hook to detect when an element enters the viewport using IntersectionObserver.
@@ -76,11 +77,26 @@ export function LandingPage() {
   const [proposalCount, setProposalCount] = useState<number | "—">(0);
   const [loading, setLoading] = useState(true);
 
+  // Current quorum requirement (weight a new proposal must reach) alongside the
+  // total voting weight, shown next to the live proposal counter as a
+  // transparency signal. `null` means the value could not be fetched.
+  const [quorum, setQuorum] = useState<{ weight: number; totalWeight: number } | null>(
+    null,
+  );
+  const [quorumLoading, setQuorumLoading] = useState(true);
+
   useEffect(() => {
     getTotalProposals()
       .then(setProposalCount)
       .catch(() => setProposalCount("—"))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    Promise.all([getRequiredQuorumWeight(), getTotalWeight()])
+      .then(([weight, totalWeight]) => setQuorum({ weight, totalWeight }))
+      .catch(() => setQuorum(null))
+      .finally(() => setQuorumLoading(false));
   }, []);
 
   return (
@@ -183,17 +199,39 @@ export function LandingPage() {
       <section className="py-32 px-6 border-y border-zinc-900 hover:bg-zinc-900/10 transition-colors duration-1000">
         <div className="max-w-4xl mx-auto text-center space-y-8">
           <h2 className="text-3xl md:text-4xl font-bold tracking-tight">Built on Stellar</h2>
-          <div className="flex flex-col items-center justify-center gap-4">
-            <div className="text-6xl md:text-8xl font-mono font-bold text-emerald-500 tracking-tighter">
-              {loading ? (
-                <div className="h-20 w-32 bg-zinc-900 animate-pulse rounded-2xl mx-auto" />
-              ) : (
-                proposalCount
-              )}
+          <div className="flex flex-col md:flex-row items-center justify-center gap-12 md:gap-20">
+            <div className="flex flex-col items-center justify-center gap-4">
+              <div className="text-6xl md:text-8xl font-mono font-bold text-emerald-500 tracking-tighter">
+                {loading ? (
+                  <div className="h-20 w-32 bg-zinc-900 animate-pulse rounded-2xl mx-auto" />
+                ) : (
+                  proposalCount
+                )}
+              </div>
+              <p className="text-zinc-600 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
+                proposals created on-chain
+              </p>
             </div>
-            <p className="text-zinc-600 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
-              proposals created on-chain
-            </p>
+
+            <div className="flex flex-col items-center justify-center gap-4">
+              <div className="text-6xl md:text-8xl font-mono font-bold text-emerald-500 tracking-tighter">
+                {quorumLoading ? (
+                  <div className="h-20 w-32 bg-zinc-900 animate-pulse rounded-2xl mx-auto" />
+                ) : quorum ? (
+                  quorum.weight
+                ) : (
+                  "—"
+                )}
+              </div>
+              <p className="text-zinc-600 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
+                {quorum && quorum.totalWeight > 0
+                  ? `quorum weight · ${formatWeightPercent(
+                      quorum.weight,
+                      quorum.totalWeight,
+                    )} of voting power`
+                  : "current quorum requirement"}
+              </p>
+            </div>
           </div>
         </div>
       </section>

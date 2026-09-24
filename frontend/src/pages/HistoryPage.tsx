@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Proposal, ProposalCategory, ProposalStatus } from "../types/accord";
+import type { Proposal, ProposalCategory, ProposalStatus, RecurringSchedule } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import {
   getProposalsPaged,
@@ -7,6 +7,7 @@ import {
   getThreshold,
   mapProposal,
 } from "../lib/contract";
+import { formatInterval } from "../lib/soroban";
 
 type Filter = "all" | ProposalStatus;
 type CategoryFilter = "all" | ProposalCategory;
@@ -22,19 +23,21 @@ const TABS: { key: Filter; label: string }[] = [
 
 const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
   { key: "all", label: "All Categories" },
-  { key: "transfer", label: "Transfer" },
-  { key: "payroll", label: "Payroll" },
-  { key: "grant", label: "Grant" },
-  { key: "ops", label: "Ops" },
-  { key: "other", label: "Other" },
+  { key: "Transfer", label: "Transfer" },
+  { key: "Payroll", label: "Payroll" },
+  { key: "Grant", label: "Grant" },
+  { key: "Ops", label: "Ops" },
+  { key: "Other", label: "Other" },
 ];
 
 export function HistoryPage({
   proposals,
   onApprove,
+  recurringSchedules = [],
 }: {
   proposals: Proposal[];
   onApprove: (id: number) => void;
+  recurringSchedules?: RecurringSchedule[];
 }) {
   const [activeTab, setActiveTab] = useState<Filter>("all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -108,17 +111,34 @@ export function HistoryPage({
     );
 
   const hasExecutedProposals = displayedProposals.some((p) => p.status === "executed");
+  const hasRecurringSchedules = recurringSchedules.length > 0;
+  const canExportCSV = hasExecutedProposals || hasRecurringSchedules;
 
   const handleExportCSV = () => {
     const executed = displayedProposals.filter((p) => p.status === "executed");
-    if (executed.length === 0) return;
+    if (!canExportCSV) return;
 
-    const headers = ["ID", "Amount", "Token", "Recipient", "Date"];
-    const rows = executed.map(
-      (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}"`
-    );
+    const sections: string[] = [];
 
-    const csvContent = [headers.join(","), ...rows].join("\n");
+    if (executed.length > 0) {
+      const headers = ["ID", "Amount", "Token", "Recipient", "Date", "Approval Weight", "Quorum Weight"];
+      const rows = executed.map(
+        (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}","${p.approvalWeight ?? 0}","${p.quorumWeight ?? 0}"`
+      );
+      sections.push([headers.join(","), ...rows].join("\n"));
+    }
+
+    if (hasRecurringSchedules) {
+      const scheduleHeaders = ["Schedule ID", "Recipient", "Amount", "Cadence", "Total Disbursed"];
+      const scheduleRows = recurringSchedules.map((s) => {
+        const cadence = s.cadence ?? (s.interval !== undefined ? formatInterval(s.interval) : "—");
+        return `${s.id},"${s.recipient}","${s.amount}","${cadence}","${s.totalDisbursed}"`;
+      });
+      const scheduleSection = ["Recurring Schedules", scheduleHeaders.join(","), ...scheduleRows].join("\n");
+      sections.push(scheduleSection);
+    }
+
+    const csvContent = sections.join("\n\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -135,7 +155,7 @@ export function HistoryPage({
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Proposal History</h2>
         <div className="flex items-center gap-3">
-          {hasExecutedProposals && (
+          {canExportCSV && (
             <button
               onClick={handleExportCSV}
               className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center gap-2"

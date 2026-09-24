@@ -7,6 +7,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
+import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
@@ -18,11 +19,13 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
+import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
+  { label: "recurring", to: "/app/recurring" },
   { label: "history", to: "/app/history" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
@@ -36,6 +39,7 @@ type OptimisticPatch = {
 
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -45,6 +49,7 @@ export default function App() {
   );
   // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
   const newProposalButtonRef = useRef<HTMLButtonElement>(null);
+  const recurringButtonRef = useRef<HTMLButtonElement>(null);
 
   const wallet = useWallet();
   const navigate = useNavigate();
@@ -87,6 +92,15 @@ export default function App() {
     }
     wasShowCreateRef.current = showCreate;
   }, [showCreate]);
+
+  // Return focus to the Recurring trigger when modal transitions from open → closed
+  const wasShowRecurringRef = useRef(false);
+  useEffect(() => {
+    if (!showCreateRecurring && wasShowRecurringRef.current) {
+      recurringButtonRef.current?.focus();
+    }
+    wasShowRecurringRef.current = showCreateRecurring;
+  }, [showCreateRecurring]);
 
   useEffect(() => {
     if (!wallet.address && txPending) {
@@ -141,6 +155,15 @@ export default function App() {
 
   const { address, connect } = wallet;
 
+  const ownerWeightForWallet = useCallback(
+    (addr: string | null | undefined) => {
+      if (!addr) return 0;
+      const index = ownerAddresses.indexOf(addr);
+      return index >= 0 ? owners[index]?.weight ?? 0 : 0;
+    },
+    [ownerAddresses, owners]
+  );
+
   const withTx = useCallback(
     async (
       fn: () => Promise<void>,
@@ -176,18 +199,22 @@ export default function App() {
       return withTx(() => approveProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = proposal.approvals + 1;
-    const status = approvals >= proposal.threshold ? "ready" : proposal.status;
+    const approvalWeight = (proposal.approvalWeight ?? 0) + myWeight;
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+    const status = approvalWeight >= quorumWeight ? "ready" : proposal.status;
 
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: true,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const handleExecute = useCallback((id: number) =>
     withTx(() => executeProposal(wallet.address!, id), {
@@ -201,9 +228,13 @@ export default function App() {
       return withTx(() => revokeProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = Math.max(proposal.approvals - 1, 0);
+    const approvalWeight = Math.max((proposal.approvalWeight ?? 0) - myWeight, 0);
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+
     const status =
-      approvals >= proposal.threshold && proposal.status === "ready"
+      approvalWeight >= quorumWeight && proposal.status === "ready"
         ? "ready"
         : "pending";
 
@@ -211,11 +242,12 @@ export default function App() {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: false,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
@@ -444,7 +476,8 @@ export default function App() {
                   onExecute={handleExecute}
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
-                  createProposalButtonRef={newProposalButtonRef}
+                  onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                  recurringButtonRef={recurringButtonRef}
                   loading={loading}
                   error={error}
                 />
@@ -457,13 +490,18 @@ export default function App() {
               }
             />
             <Route
+              path="recurring"
+              element={
+                <RecurringPage walletAddress={wallet.address} />
+              }
+            />
+            <Route
               path="owners"
               element={
                 <OwnersPage
                   owners={owners}
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
-                  totalOwners={owners.length}
                   walletAddress={wallet.address}
                   onProposalSubmitted={refresh}
                 />
@@ -506,6 +544,14 @@ export default function App() {
           onClose={() => setShowCreate(false)}
           onSubmitted={refresh}
           triggerRef={newProposalButtonRef}
+        />
+      )}
+      {showCreateRecurring && (
+        <CreateRecurringPaymentModal
+          walletAddress={wallet.address}
+          onClose={() => setShowCreateRecurring(false)}
+          onSubmitted={refresh}
+          triggerRef={recurringButtonRef}
         />
       )}
     </div>
