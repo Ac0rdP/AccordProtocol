@@ -8342,3 +8342,43 @@ fn has_role_view_reports_held_and_unheld_roles() {
     assert!(client.has_role(&owner_a, &Role::ApproveProposal));
     assert!(!client.has_role(&owner_a, &Role::ExecuteProposal));
 }
+
+#[test]
+fn initialize_grants_every_owner_default_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut owners = Vec::new(&env);
+    let mut weights = Vec::new(&env);
+    for _ in 0..5 {
+        owners.push_back(Address::generate(&env));
+        weights.push_back(1_u32);
+    }
+    client.initialize(&owners, &weights, &3, &0);
+
+    let defaults = [
+        Role::CreateProposal,
+        Role::ApproveProposal,
+        Role::ExecuteProposal,
+    ];
+
+    for owner in owners.iter() {
+        let roles = client.get_roles(&owner);
+        assert_eq!(roles.len(), defaults.len() as u32);
+        for role in defaults.iter() {
+            assert!(roles.contains(role));
+            assert!(client.has_role(&owner, role));
+        }
+    }
+
+    for role in defaults.iter() {
+        let members = client.get_role_members(role);
+        assert_eq!(members.len(), owners.len());
+        for owner in owners.iter() {
+            assert!(members.contains(&owner));
+        }
+    }
+}
