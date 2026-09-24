@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { jsPDF } from "jspdf";
 import type { Proposal, ProposalCategory } from "../types/accord";
 import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
@@ -150,6 +151,78 @@ export function AnalyticsPage() {
     );
   };
 
+  const handleDownloadStatement = () => {
+    const doc = new jsPDF();
+    const rangeLabel =
+      filters.startDate || filters.endDate
+        ? `${filters.startDate || "start"} to ${filters.endDate || "now"}`
+        : "All time";
+
+    let y = 20;
+    doc.setFontSize(16);
+    doc.text("Accord Treasury Statement", 14, y);
+
+    y += 8;
+    doc.setFontSize(10);
+    doc.text(`Period: ${rangeLabel}`, 14, y);
+
+    y += 12;
+    doc.setFontSize(12);
+    doc.text("Summary", 14, y);
+    y += 7;
+    doc.setFontSize(10);
+    doc.text(`Total outflow: ${totalSpend.toFixed(2)}`, 14, y);
+    y += 6;
+    doc.text(`Transactions: ${filteredTransfers.length}`, 14, y);
+    y += 6;
+    doc.text(`XLM treasury balance: ${state.xlmBalance ?? "N/A"}`, 14, y);
+    y += 6;
+    doc.text(`USDC treasury balance: ${state.usdcBalance ?? "N/A"}`, 14, y);
+
+    y += 12;
+    doc.setFontSize(12);
+    doc.text("Spend by Category", 14, y);
+    y += 7;
+    doc.setFontSize(10);
+    if (spendByCategory.length === 0) {
+      doc.text("No spend in this period.", 14, y);
+      y += 6;
+    } else {
+      for (const row of spendByCategory) {
+        doc.text(
+          `${row.category}: ${row.total.toFixed(2)} (${row.count} tx)`,
+          14,
+          y,
+        );
+        y += 6;
+      }
+    }
+
+    y += 6;
+    doc.setFontSize(12);
+    doc.text("Flow Entries", 14, y);
+    y += 7;
+    doc.setFontSize(10);
+    if (filteredTransfers.length === 0) {
+      doc.text("No flow entries in this period.", 14, y);
+    } else {
+      for (const p of filteredTransfers) {
+        if (y > 280) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.text(
+          `#${p.id}  ${p.deadline}  ${p.amount} ${p.token} -> ${p.to}`,
+          14,
+          y,
+        );
+        y += 6;
+      }
+    }
+
+    doc.save(`${buildExportFilename("statement", filters)}.pdf`);
+  };
+
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
@@ -170,6 +243,14 @@ export function AnalyticsPage() {
             className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             Export Treasury CSV
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadStatement}
+            disabled={isEmpty}
+            className="text-xs px-3 py-1 bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            Download Statement (PDF)
           </button>
         </div>
       </div>

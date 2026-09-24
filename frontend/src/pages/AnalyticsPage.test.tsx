@@ -4,6 +4,17 @@ import { describe, expect, test, vi, beforeEach } from "vitest";
 import { AnalyticsPage } from "./AnalyticsPage";
 import type { Proposal } from "../types/accord";
 
+const savePdf = vi.fn();
+const pdfText = vi.fn();
+vi.mock("jspdf", () => ({
+  jsPDF: vi.fn().mockImplementation(() => ({
+    setFontSize: vi.fn(),
+    text: pdfText,
+    addPage: vi.fn(),
+    save: savePdf,
+  })),
+}));
+
 vi.mock("../lib/contract", () => ({
   getThreshold: vi.fn(),
   getTotalProposals: vi.fn(),
@@ -56,6 +67,8 @@ function mockSuccessfulLoad(proposals: Proposal[]) {
 describe("AnalyticsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    savePdf.mockClear();
+    pdfText.mockClear();
 
     global.URL.createObjectURL = vi.fn(() => "blob:mock-url");
     global.URL.revokeObjectURL = vi.fn();
@@ -191,5 +204,30 @@ describe("AnalyticsPage", () => {
     expect(
       screen.getByRole("button", { name: /export treasury csv/i }),
     ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /download statement/i }),
+    ).toBeDisabled();
+  });
+
+  test("downloads a PDF statement including the summary and flow entries", async () => {
+    mockSuccessfulLoad([
+      rawProposal({ id: 1, amount: "100", category: "Grant" }),
+    ]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /download statement/i }),
+    );
+
+    expect(savePdf).toHaveBeenCalledWith(
+      "accord-analytics-statement-all-time.pdf",
+    );
+    expect(pdfText).toHaveBeenCalledWith(
+      expect.stringContaining("Total outflow: 100.00"),
+      14,
+      expect.any(Number),
+    );
   });
 });
