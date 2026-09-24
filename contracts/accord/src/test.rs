@@ -8521,3 +8521,161 @@ proptest! {
         }
     }
 }
+
+// ─── Governance co-signer role-bypass audit ──────────────────────────────────
+//
+// `set_guardian`, `unfreeze` and `upgrade` authorize through
+// `require_weighted_approvers`, which rejects duplicate addresses and then
+// sums weight read from the owners map via `require_owner_and_weight`. Role
+// storage is never consulted, so a role-only address carries no weight and is
+// rejected with `Unauthorized`, duplicates are rejected before any weight is
+// counted, and owners' governance weight is independent of their role set.
+
+fn grant_all_roles(env: &Env, client: &AccordContractClient, address: &Address) {
+    let roles = default_owner_roles(env);
+    env.as_contract(&client.address, || {
+        update_owner_roles(env, address, &roles);
+    });
+}
+
+fn clear_roles(env: &Env, client: &AccordContractClient, address: &Address) {
+    env.as_contract(&client.address, || {
+        update_owner_roles(env, address, &Vec::new(env));
+    });
+}
+
+fn assert_governance_rejects(
+    env: &Env,
+    client: &AccordContractClient,
+    approvers: &Vec<Address>,
+    expected: ContractError,
+) {
+    let dummy_hash: BytesN<32> = BytesN::from_array(env, &[0u8; 32]);
+    let guardian_before = client.get_guardian();
+    let frozen_before = client.is_frozen();
+
+    assert_eq!(
+        client.try_set_guardian(approvers, &Address::generate(env)),
+        Err(Ok(expected.clone()))
+    );
+    assert_eq!(client.try_unfreeze(approvers), Err(Ok(expected.clone())));
+    assert_eq!(client.try_upgrade(approvers, &dummy_hash), Err(Ok(expected)));
+
+    assert_eq!(client.get_guardian(), guardian_before);
+    assert_eq!(client.is_frozen(), frozen_before);
+}
+
+fn freeze_with_new_guardian(env: &Env, client: &AccordContractClient, owners: &Vec<Address>) {
+    let guardian = Address::generate(env);
+    client.set_guardian(owners, &guardian);
+    client.freeze(&guardian);
+    assert!(client.is_frozen());
+}
+
+#[test]
+fn governance_entrypoints_reject_role_only_non_owner() {
+    // Threshold 1: a single genuine owner would pass, so only the role check
+    // being bypassed could let the role-only address through.
+    let (env, client, owner_a, _, _, role_only, _) = setup(1);
+    grant_all_roles(&env, &client, &role_only);
+    assert!(client.has_role(&role_only, &Role::ApproveProposal));
+    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&role_only));
+    assert!(!client.is_owner(&role_only));
+
+    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a]));
+
+    let approvers = Vec::from_array(&env, [role_only]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
+
+#[test]
+fn role_only_address_cannot_top_up_owner_weight_to_threshold() {
+    let (env, client, owner_a, _, _, role_only, _) = setup(2);
+    grant_all_roles(&env, &client, &role_only);
+    freeze_with_new_guardian(
+        &env,
+        &client,
+        &Vec::from_array(&env, [owner_a.clone(), client.get_owners().get(1).unwrap()]),
+    );
+
+    // One genuine owner (weight 1) plus a role-only address must not reach 2.
+    let approvers = Vec::from_array(&env, [owner_a.clone(), role_only.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+
+    // Order does not matter.
+    let approvers = Vec::from_array(&env, [role_only, owner_a]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
+
+#[test]
+fn governance_duplicate_approvers_rejected_with_roles_present() {
+    let (env, client, owner_a, _, _, role_only, _) = setup(2);
+    grant_all_roles(&env, &client, &role_only);
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_a.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), role_only.clone(), owner_a]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+
+    let approvers = Vec::from_array(&env, [role_only.clone(), role_only]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+}
+
+#[test]
+fn governance_weight_sum_uses_owner_weight_not_roles() {
+    let (env, client, owner_a, owner_b, owner_c, token_client) =
+        setup_three_owner_weighted([2, 2, 1], 4);
+
+    // Holding every role does not add weight: A alone (2) is below 4.
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    let approvers = Vec::from_array(&env, [owner_a.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::ThresholdNotMet);
+
+    // A + C (3) is still short, regardless of both holding every role.
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_c.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::ThresholdNotMet);
+
+    // Owners with no roles still carry their governance weight: A + B (4) passes.
+    clear_roles(&env, &client, &owner_a);
+    clear_roles(&env, &client, &owner_b);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
+    assert_eq!(client.get_guardian(), Some(guardian.clone()));
+    client.freeze(&guardian);
+    client.unfreeze(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
+    assert!(!client.is_frozen());
+
+    // Passing the owner-weight path grants nothing on the role layer.
+    assert!(client.get_roles(&owner_a).is_empty());
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 1, &token_client.address),
+            &str(&env, "no role"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn removed_owner_with_stale_roles_cannot_cosign_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+
+    let id = client.create_remove_owner_proposal(&owner_a, &owner_c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_a, &id);
+    assert!(!client.is_owner(&owner_c));
+
+    // Even if role storage were left populated for the removed owner, it has
+    // no owner weight and cannot co-sign.
+    grant_all_roles(&env, &client, &owner_c);
+    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a.clone(), owner_b]));
+
+    let approvers = Vec::from_array(&env, [owner_a, owner_c]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
