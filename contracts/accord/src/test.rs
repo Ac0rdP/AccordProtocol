@@ -8382,3 +8382,142 @@ fn initialize_grants_every_owner_default_roles() {
         }
     }
 }
+
+fn role_from_seed(seed: u8) -> Role {
+    match seed % 3 {
+        0 => Role::CreateProposal,
+        1 => Role::ApproveProposal,
+        _ => Role::ExecuteProposal,
+    }
+}
+
+/// Rebuilds the membership of every role by scanning each tracked address's
+/// per-address role set, and asserts the reverse index reports exactly that set.
+fn assert_role_index_matches_storage(
+    client: &AccordContractClient,
+    pool: &std::vec::Vec<Address>,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    for seed in 0..3u8 {
+        let role = role_from_seed(seed);
+        let members = client.get_role_members(&role);
+
+        let mut derived: std::vec::Vec<Address> = std::vec::Vec::new();
+        for address in pool.iter() {
+            if client.get_roles(address).contains(&role) {
+                derived.push(address.clone());
+            }
+        }
+
+        prop_assert_eq!(members.len(), derived.len() as u32);
+        for address in derived.iter() {
+            prop_assert!(members.contains(address));
+        }
+        // No duplicates, and nothing outside the per-address derived set.
+        for i in 0..members.len() {
+            let member = members.get(i).unwrap();
+            prop_assert!(derived.contains(&member));
+            for j in (i + 1)..members.len() {
+                prop_assert!(member != members.get(j).unwrap());
+            }
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Across random role grants/revokes and owner additions/removals, the
+    /// reverse role -> members index must always equal the membership derived
+    /// from per-address role storage.
+    #[test]
+    fn role_members_index_matches_per_address_roles(
+        operations in proptest::collection::vec((0u8..=3, 0u32..=1_000, 0u8..=2), 1..=30)
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let mut owners = Vec::new(&env);
+        let mut initial_weights = Vec::new(&env);
+        for _ in 0..3 {
+            owners.push_back(Address::generate(&env));
+            initial_weights.push_back(1);
+        }
+        client.initialize(&owners, &initial_weights, &1, &0);
+
+        // The anchor owner keeps its default roles and is never removed, so it
+        // can always propose, approve and execute owner changes at threshold 1.
+        let anchor = owners.get(0).unwrap();
+
+        // Every address that has ever been a role candidate: current owners,
+        // removed owners, and a couple of addresses that were never owners.
+        let mut pool: std::vec::Vec<Address> = owners.iter().collect();
+        pool.push(Address::generate(&env));
+        pool.push(Address::generate(&env));
+
+        assert_role_index_matches_storage(&client, &pool)?;
+
+        for (kind, seed, role_seed) in operations {
+            let role = role_from_seed(role_seed);
+            match kind {
+                // Grant a role to any tracked address.
+                0 => {
+                    let target = pool[seed as usize % pool.len()].clone();
+                    let mut roles = client.get_roles(&target);
+                    if !roles.contains(&role) {
+                        roles.push_back(role);
+                    }
+                    env.as_contract(&contract_id, || {
+                        update_owner_roles(&env, &target, &roles);
+                    });
+                }
+                // Revoke a role from any tracked address except the anchor.
+                1 => {
+                    let target = pool[seed as usize % pool.len()].clone();
+                    if target != anchor {
+                        let mut roles = Vec::new(&env);
+                        for held in client.get_roles(&target).iter() {
+                            if held != role {
+                                roles.push_back(held);
+                            }
+                        }
+                        env.as_contract(&contract_id, || {
+                            update_owner_roles(&env, &target, &roles);
+                        });
+                    }
+                }
+                // Add a fresh owner while the tracked pool fits the result cap.
+                2 if (pool.len() as u32) < MAX_ROLE_MEMBERS_RESULT
+                    && owners.len() < MAX_OWNERS =>
+                {
+                    let new_owner = Address::generate(&env);
+                    let id = client.create_add_owner_proposal(
+                        &anchor, &new_owner, &1, &str(&env, "fuzz add"), &DEADLINE,
+                    );
+                    client.approve(&anchor, &id);
+                    client.execute(&anchor, &id);
+                    owners.push_back(new_owner.clone());
+                    pool.push(new_owner);
+                }
+                // Remove any owner except the anchor.
+                3 if owners.len() > 1 => {
+                    let index = 1 + seed % (owners.len() - 1);
+                    let target = owners.get(index).unwrap();
+                    let id = client.create_remove_owner_proposal(
+                        &anchor, &target, &str(&env, "fuzz remove"), &DEADLINE,
+                    );
+                    client.approve(&anchor, &id);
+                    client.execute(&anchor, &id);
+                    owners.remove(index);
+                    prop_assert!(client.get_roles(&target).is_empty());
+                }
+                _ => {}
+            }
+
+            assert_role_index_matches_storage(&client, &pool)?;
+        }
+    }
+}
