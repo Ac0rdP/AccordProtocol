@@ -8382,3 +8382,379 @@ fn initialize_grants_every_owner_default_roles() {
         }
     }
 }
+
+fn role_from_seed(seed: u8) -> Role {
+    match seed % 3 {
+        0 => Role::CreateProposal,
+        1 => Role::ApproveProposal,
+        _ => Role::ExecuteProposal,
+    }
+}
+
+/// Rebuilds the membership of every role by scanning each tracked address's
+/// per-address role set, and asserts the reverse index reports exactly that set.
+fn assert_role_index_matches_storage(
+    client: &AccordContractClient,
+    pool: &std::vec::Vec<Address>,
+) -> Result<(), proptest::test_runner::TestCaseError> {
+    for seed in 0..3u8 {
+        let role = role_from_seed(seed);
+        let members = client.get_role_members(&role);
+
+        let mut derived: std::vec::Vec<Address> = std::vec::Vec::new();
+        for address in pool.iter() {
+            if client.get_roles(address).contains(&role) {
+                derived.push(address.clone());
+            }
+        }
+
+        prop_assert_eq!(members.len(), derived.len() as u32);
+        for address in derived.iter() {
+            prop_assert!(members.contains(address));
+        }
+        // No duplicates, and nothing outside the per-address derived set.
+        for i in 0..members.len() {
+            let member = members.get(i).unwrap();
+            prop_assert!(derived.contains(&member));
+            for j in (i + 1)..members.len() {
+                prop_assert!(member != members.get(j).unwrap());
+            }
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Across random role grants/revokes and owner additions/removals, the
+    /// reverse role -> members index must always equal the membership derived
+    /// from per-address role storage.
+    #[test]
+    fn role_members_index_matches_per_address_roles(
+        operations in proptest::collection::vec((0u8..=3, 0u32..=1_000, 0u8..=2), 1..=30)
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let mut owners = Vec::new(&env);
+        let mut initial_weights = Vec::new(&env);
+        for _ in 0..3 {
+            owners.push_back(Address::generate(&env));
+            initial_weights.push_back(1);
+        }
+        client.initialize(&owners, &initial_weights, &1, &0);
+
+        // The anchor owner keeps its default roles and is never removed, so it
+        // can always propose, approve and execute owner changes at threshold 1.
+        let anchor = owners.get(0).unwrap();
+
+        // Every address that has ever been a role candidate: current owners,
+        // removed owners, and a couple of addresses that were never owners.
+        let mut pool: std::vec::Vec<Address> = owners.iter().collect();
+        pool.push(Address::generate(&env));
+        pool.push(Address::generate(&env));
+
+        assert_role_index_matches_storage(&client, &pool)?;
+
+        for (kind, seed, role_seed) in operations {
+            let role = role_from_seed(role_seed);
+            match kind {
+                // Grant a role to any tracked address.
+                0 => {
+                    let target = pool[seed as usize % pool.len()].clone();
+                    let mut roles = client.get_roles(&target);
+                    if !roles.contains(&role) {
+                        roles.push_back(role);
+                    }
+                    env.as_contract(&contract_id, || {
+                        update_owner_roles(&env, &target, &roles);
+                    });
+                }
+                // Revoke a role from any tracked address except the anchor.
+                1 => {
+                    let target = pool[seed as usize % pool.len()].clone();
+                    if target != anchor {
+                        let mut roles = Vec::new(&env);
+                        for held in client.get_roles(&target).iter() {
+                            if held != role {
+                                roles.push_back(held);
+                            }
+                        }
+                        env.as_contract(&contract_id, || {
+                            update_owner_roles(&env, &target, &roles);
+                        });
+                    }
+                }
+                // Add a fresh owner while the tracked pool fits the result cap.
+                2 if (pool.len() as u32) < MAX_ROLE_MEMBERS_RESULT
+                    && owners.len() < MAX_OWNERS =>
+                {
+                    let new_owner = Address::generate(&env);
+                    let id = client.create_add_owner_proposal(
+                        &anchor, &new_owner, &1, &str(&env, "fuzz add"), &DEADLINE,
+                    );
+                    client.approve(&anchor, &id);
+                    client.execute(&anchor, &id);
+                    owners.push_back(new_owner.clone());
+                    pool.push(new_owner);
+                }
+                // Remove any owner except the anchor.
+                3 if owners.len() > 1 => {
+                    let index = 1 + seed % (owners.len() - 1);
+                    let target = owners.get(index).unwrap();
+                    let id = client.create_remove_owner_proposal(
+                        &anchor, &target, &str(&env, "fuzz remove"), &DEADLINE,
+                    );
+                    client.approve(&anchor, &id);
+                    client.execute(&anchor, &id);
+                    owners.remove(index);
+                    prop_assert!(client.get_roles(&target).is_empty());
+                }
+                _ => {}
+            }
+
+            assert_role_index_matches_storage(&client, &pool)?;
+        }
+    }
+}
+
+// ─── Governance co-signer role-bypass audit ──────────────────────────────────
+//
+// `set_guardian`, `unfreeze` and `upgrade` authorize through
+// `require_weighted_approvers`, which rejects duplicate addresses and then
+// sums weight read from the owners map via `require_owner_and_weight`. Role
+// storage is never consulted, so a role-only address carries no weight and is
+// rejected with `Unauthorized`, duplicates are rejected before any weight is
+// counted, and owners' governance weight is independent of their role set.
+
+fn grant_all_roles(env: &Env, client: &AccordContractClient, address: &Address) {
+    let roles = default_owner_roles(env);
+    env.as_contract(&client.address, || {
+        update_owner_roles(env, address, &roles);
+    });
+}
+
+fn clear_roles(env: &Env, client: &AccordContractClient, address: &Address) {
+    env.as_contract(&client.address, || {
+        update_owner_roles(env, address, &Vec::new(env));
+    });
+}
+
+fn assert_governance_rejects(
+    env: &Env,
+    client: &AccordContractClient,
+    approvers: &Vec<Address>,
+    expected: ContractError,
+) {
+    let dummy_hash: BytesN<32> = BytesN::from_array(env, &[0u8; 32]);
+    let guardian_before = client.get_guardian();
+    let frozen_before = client.is_frozen();
+
+    assert_eq!(
+        client.try_set_guardian(approvers, &Address::generate(env)),
+        Err(Ok(expected.clone()))
+    );
+    assert_eq!(client.try_unfreeze(approvers), Err(Ok(expected.clone())));
+    assert_eq!(client.try_upgrade(approvers, &dummy_hash), Err(Ok(expected)));
+
+    assert_eq!(client.get_guardian(), guardian_before);
+    assert_eq!(client.is_frozen(), frozen_before);
+}
+
+fn freeze_with_new_guardian(env: &Env, client: &AccordContractClient, owners: &Vec<Address>) {
+    let guardian = Address::generate(env);
+    client.set_guardian(owners, &guardian);
+    client.freeze(&guardian);
+    assert!(client.is_frozen());
+}
+
+#[test]
+fn governance_entrypoints_reject_role_only_non_owner() {
+    // Threshold 1: a single genuine owner would pass, so only the role check
+    // being bypassed could let the role-only address through.
+    let (env, client, owner_a, _, _, role_only, _) = setup(1);
+    grant_all_roles(&env, &client, &role_only);
+    assert!(client.has_role(&role_only, &Role::ApproveProposal));
+    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&role_only));
+    assert!(!client.is_owner(&role_only));
+
+    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a]));
+
+    let approvers = Vec::from_array(&env, [role_only]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
+
+#[test]
+fn role_only_address_cannot_top_up_owner_weight_to_threshold() {
+    let (env, client, owner_a, _, _, role_only, _) = setup(2);
+    grant_all_roles(&env, &client, &role_only);
+    freeze_with_new_guardian(
+        &env,
+        &client,
+        &Vec::from_array(&env, [owner_a.clone(), client.get_owners().get(1).unwrap()]),
+    );
+
+    // One genuine owner (weight 1) plus a role-only address must not reach 2.
+    let approvers = Vec::from_array(&env, [owner_a.clone(), role_only.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+
+    // Order does not matter.
+    let approvers = Vec::from_array(&env, [role_only, owner_a]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
+
+#[test]
+fn governance_duplicate_approvers_rejected_with_roles_present() {
+    let (env, client, owner_a, _, _, role_only, _) = setup(2);
+    grant_all_roles(&env, &client, &role_only);
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_a.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), role_only.clone(), owner_a]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+
+    let approvers = Vec::from_array(&env, [role_only.clone(), role_only]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
+}
+
+#[test]
+fn governance_weight_sum_uses_owner_weight_not_roles() {
+    let (env, client, owner_a, owner_b, owner_c, token_client) =
+        setup_three_owner_weighted([2, 2, 1], 4);
+
+    // Holding every role does not add weight: A alone (2) is below 4.
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    let approvers = Vec::from_array(&env, [owner_a.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::ThresholdNotMet);
+
+    // A + C (3) is still short, regardless of both holding every role.
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_c.clone()]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::ThresholdNotMet);
+
+    // Owners with no roles still carry their governance weight: A + B (4) passes.
+    clear_roles(&env, &client, &owner_a);
+    clear_roles(&env, &client, &owner_b);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
+    assert_eq!(client.get_guardian(), Some(guardian.clone()));
+    client.freeze(&guardian);
+    client.unfreeze(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
+    assert!(!client.is_frozen());
+
+    // Passing the owner-weight path grants nothing on the role layer.
+    assert!(client.get_roles(&owner_a).is_empty());
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 1, &token_client.address),
+            &str(&env, "no role"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn removed_owner_with_stale_roles_cannot_cosign_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+
+    let id = client.create_remove_owner_proposal(&owner_a, &owner_c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_a, &id);
+    assert!(!client.is_owner(&owner_c));
+
+    // Even if role storage were left populated for the removed owner, it has
+    // no owner weight and cannot co-sign.
+    grant_all_roles(&env, &client, &owner_c);
+    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a.clone(), owner_b]));
+
+    let approvers = Vec::from_array(&env, [owner_a, owner_c]);
+    assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
+}
+
+// ─── approve: owner + Approver role gate ─────────────────────────────────────
+
+fn transfer_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    proposer: &Address,
+    token_client: &token::Client,
+) -> u64 {
+    client.create_proposal(
+        proposer,
+        &t(env, &Address::generate(env), 1_000, &token_client.address),
+        &str(env, "approve gate"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    )
+}
+
+#[test]
+fn approve_rejects_non_owner_holding_approver_role() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    let mut approve_only = Vec::new(&env);
+    approve_only.push_back(Role::ApproveProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &non_owner, &approve_only);
+    });
+    assert!(client.has_role(&non_owner, &Role::ApproveProposal));
+    assert!(!client.is_owner(&non_owner));
+
+    assert_eq!(
+        client.try_approve(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &non_owner));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn approve_rejects_owner_without_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    let mut without_approve = Vec::new(&env);
+    without_approve.push_back(Role::CreateProposal);
+    without_approve.push_back(Role::ExecuteProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &owner_b, &without_approve);
+    });
+    assert!(client.is_owner(&owner_b));
+    assert!(!client.has_role(&owner_b, &Role::ApproveProposal));
+    assert!(!client.get_role_members(&Role::ApproveProposal).contains(&owner_b));
+
+    assert_eq!(
+        client.try_approve(&owner_b, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn approve_succeeds_for_owner_with_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    assert!(client.is_owner(&owner_b));
+    assert!(client.has_role(&owner_b, &Role::ApproveProposal));
+
+    client.approve(&owner_b, &id);
+    assert!(client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 1);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
+
+    client.approve(&owner_a, &id);
+    assert_eq!(client.get_proposal(&id).approvals, 2);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
