@@ -116,4 +116,36 @@ describe("AnalyticsPage", () => {
 
     await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
   });
+
+  test("filtering by category narrows the totals shown", async () => {
+    mockSuccessfulLoad([
+      rawProposal({ id: 1, amount: "100", category: "Grant" }),
+      rawProposal({ id: 2, amount: "50", category: "Payroll" }),
+    ]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() => expect(screen.getByText("150.00")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Category"), {
+      target: { value: "Grant" },
+    });
+
+    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+  });
+
+  test("filtering by owner substring narrows the totals shown", async () => {
+    mockSuccessfulLoad([
+      rawProposal({ id: 1, amount: "100", proposer: "GAliceAddress" }),
+      rawProposal({ id: 2, amount: "50", proposer: "GBobAddress" }),
+    ]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() => expect(screen.getByText("150.00")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Owner"), {
+      target: { value: "alice" },
+    });
+
+    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+  });
 });
