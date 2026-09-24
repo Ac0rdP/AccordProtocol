@@ -8322,3 +8322,23 @@ fn get_roles_returns_role_set_and_empty_for_non_holder() {
     assert!(client.get_roles(&non_owner).is_empty());
     assert!(client.get_roles(&Address::generate(&env)).is_empty());
 }
+
+#[test]
+fn has_role_view_reports_held_and_unheld_roles() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+
+    assert!(client.has_role(&owner_a, &Role::CreateProposal));
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(client.has_role(&owner_a, &Role::ExecuteProposal));
+
+    assert!(!client.has_role(&non_owner, &Role::CreateProposal));
+    assert!(!client.has_role(&non_owner, &Role::ExecuteProposal));
+
+    let mut approve_only = Vec::new(&env);
+    approve_only.push_back(Role::ApproveProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &owner_a, &approve_only);
+    });
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(!client.has_role(&owner_a, &Role::ExecuteProposal));
+}

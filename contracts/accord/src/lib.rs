@@ -3684,6 +3684,12 @@ impl AccordContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns whether `address` holds `role`. Returns `false` for an address
+    /// holding no roles or not holding the requested role. Read-only.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        Self::get_roles(env, address).contains(&role)
+    }
+
     /// Returns every address holding `role`, read from the reverse role-member
     /// index. The result is capped at `MAX_ROLE_MEMBERS_RESULT` (20) entries;
     /// a role with no holders returns an empty list. Read-only.
