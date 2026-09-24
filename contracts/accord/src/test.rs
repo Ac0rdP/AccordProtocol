@@ -8275,3 +8275,36 @@ fn test_rbac_role_version_and_roles() {
     let roles_non_owner = client.get_roles(&non_owner);
     assert_eq!(roles_non_owner.len(), 0);
 }
+
+#[test]
+fn get_role_members_returns_holders_and_empty_for_unheld_role() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
+
+    let members = client.get_role_members(&Role::ApproveProposal);
+    assert_eq!(members.len(), 3);
+    assert!(members.contains(&owner_a));
+    assert!(members.contains(&owner_b));
+    assert!(members.contains(&owner_c));
+    assert!(!members.contains(&non_owner));
+
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+    assert!(client.get_role_members(&Role::ApproveProposal).is_empty());
+    assert!(client.get_role_members(&Role::ExecuteProposal).is_empty());
+}
+
+#[test]
+fn get_role_members_result_is_capped() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    let mut many = Vec::new(&env);
+    for _ in 0..(MAX_ROLE_MEMBERS_RESULT + 5) {
+        many.push_back(Address::generate(&env));
+    }
+    env.as_contract(&client.address, || {
+        write_role_members(&env, &Role::CreateProposal, &many);
+    });
+
+    let members = client.get_role_members(&Role::CreateProposal);
+    assert_eq!(members.len(), MAX_ROLE_MEMBERS_RESULT);
+    assert_eq!(members, many.slice(0..MAX_ROLE_MEMBERS_RESULT));
+}

@@ -723,6 +723,10 @@ const MAX_TOTAL_WEIGHT: u32 = MAX_OWNERS * MAX_OWNER_WEIGHT;
 /// via a weight-change proposal. A strict majority would permit unilateral quorum.
 const MAX_SINGLE_OWNER_WEIGHT_PCT: u32 = 50;
 const DEFAULT_MAX_SINGLE_OWNER_WEIGHT_PCT: u32 = MAX_SINGLE_OWNER_WEIGHT_PCT;
+/// Maximum number of addresses returned by `get_role_members`. Role holders
+/// are always owners, so this matches `MAX_OWNERS` and the 20-item cap used by
+/// the other paged views.
+const MAX_ROLE_MEMBERS_RESULT: u32 = MAX_OWNERS;
 
 /// Spending window: 30 days in seconds. The cumulative spent amount per (owner, token)
 /// resets when this window elapses since the first tracked spend in the window.
@@ -3689,8 +3693,20 @@ impl AccordContract {
         read_owner_roles(&env, &owner)
     }
 
+    /// Returns every address holding `role`, read from the reverse role-member
+    /// index. The result is capped at `MAX_ROLE_MEMBERS_RESULT` (20) entries;
+    /// a role with no holders returns an empty list. Read-only.
     pub fn get_role_members(env: Env, role: Role) -> Vec<Address> {
-        read_role_members(&env, &role)
+        let members: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&role_members_key(&role))
+            .unwrap_or_else(|| Vec::new(&env));
+        if members.len() > MAX_ROLE_MEMBERS_RESULT {
+            members.slice(0..MAX_ROLE_MEMBERS_RESULT)
+        } else {
+            members
+        }
     }
 
     /// Returns a current owner's voting weight, or `OwnerNotFound` otherwise.
