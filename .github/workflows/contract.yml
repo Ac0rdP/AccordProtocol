@@ -19,7 +19,8 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: wasm32-unknown-unknown
+          # Soroban builds require wasm32v1-none (setup-rust-toolchain uses singular `target`).
+          target: wasm32v1-none
 
       - name: Install cargo-audit and cargo-deny
         run: |
@@ -39,7 +40,8 @@ jobs:
 
       - name: Build smart contracts
         run: |
-          stellar contract build --release
+          # stellar-cli v25+ has no --release flag; release profile is the default.
+          stellar contract build
 
       - name: Run contract test suite (flat weight fixture)
         run: ACCORD_WEIGHT_FIXTURE=flat cargo test -- --nocapture
@@ -118,7 +120,8 @@ jobs:
         with:
           name: accord-contract-wasm
           path: |
-            target/wasm32-unknown-unknown/release/*.wasm
+            target/wasm32v1-none/release/*.wasm
+            target/wasm32*/release/*.wasm
             wasm-manifest.json
           retention-days: 90
 

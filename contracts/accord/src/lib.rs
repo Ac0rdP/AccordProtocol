@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(deprecated)]
+#![allow(dead_code)]
 pub mod validate;
 use validate::{validate_deadline, validate_description};
 
@@ -65,6 +66,7 @@ pub struct RecurringPayment {
     pub total_cap: i128,
     pub total_disbursed: i128,
     pub last_disbursed_at: u64,
+    pub periods_disbursed: u32,
     pub status: RecurringStatus,
     pub kind: RecurringKind,
     pub category: ProposalCategory,
@@ -107,10 +109,25 @@ pub enum ProposalKind {
     CreateRecurringPayment(CreateRecurringParams),
     /// CancelRecurringPayment(schedule_id)
     CancelRecurringPayment(u64),
+    /// PauseRecurringPayment(schedule_id)
+    PauseRecurringPayment(u64),
+    /// ResumeRecurringPayment(schedule_id)
+    ResumeRecurringPayment(u64),
+    /// ModifyRecurringPayment(params)
+    ModifyRecurringPayment(ModifyRecurringParams),
     /// GrantRole(target, role)
     GrantRole(Address, Symbol),
     /// RevokeRole(target, role)
     RevokeRole(Address, Symbol),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ModifyRecurringParams {
+    pub schedule_id: u64,
+    pub new_amount: Option<i128>,
+    pub new_interval_secs: Option<u64>,
+    pub new_end_time: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -228,6 +245,8 @@ pub struct ProposalRevokedEvent {
     pub id: u64,
     pub approver: Address,
     pub approvals: u32,
+    pub weight: u32,
+    pub cumulative_weight: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1226,10 +1245,18 @@ fn validate_recurring_payment(
 
 fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, ContractError> {
     if schedule.total_disbursed == 0 {
-        if schedule.cliff_time > 0 && schedule.cliff_time > schedule.start_time {
-            Ok(schedule.cliff_time)
-        } else {
-            Ok(schedule.start_time)
+        match schedule.kind {
+            RecurringKind::LinearVesting => {
+                if schedule.cliff_time > 0 && schedule.cliff_time > schedule.start_time {
+                    Ok(schedule.cliff_time)
+                } else {
+                    Ok(schedule.start_time)
+                }
+            }
+            RecurringKind::FixedAmountPerPeriod => schedule
+                .start_time
+                .checked_add(schedule.interval_secs)
+                .ok_or(ContractError::ArithmeticError),
         }
     } else {
         schedule
@@ -1241,31 +1268,39 @@ fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, Contract
 
 
 fn linear_vesting_payout(
-    schedule: &RecurringPaymentSchedule,
+    schedule: &RecurringPayment,
     now: u64,
 ) -> Result<i128, ContractError> {
-    let cliff_time = schedule.cliff.unwrap_or(schedule.start);
+    let cliff_time = if schedule.cliff_time > 0 {
+        schedule.cliff_time
+    } else {
+        schedule.start_time
+    };
     if now < cliff_time {
         return Ok(0);
     }
 
-    let duration = match schedule.end {
-        Some(end_time) if end_time > schedule.start => {
-            end_time
-                .checked_sub(schedule.start)
-                .ok_or(ContractError::ArithmeticError)?
-        }
-        _ => return Ok(0),
-    };
+    if schedule.end_time <= schedule.start_time {
+        return Ok(0);
+    }
+    let duration = schedule
+        .end_time
+        .checked_sub(schedule.start_time)
+        .ok_or(ContractError::ArithmeticError)?;
     if duration == 0 {
         return Ok(0);
     }
 
-    let elapsed = if now >= schedule.start {
-        now.checked_sub(schedule.start).ok_or(ContractError::ArithmeticError)?
+    let elapsed = if now >= schedule.start_time {
+        now.checked_sub(schedule.start_time)
+            .ok_or(ContractError::ArithmeticError)?
     } else {
         return Ok(0);
     };
+
+    // Clamp elapsed to the vesting window so post-end claims can still drain
+    // the remaining vested amount up to the cap.
+    let elapsed = elapsed.min(duration);
 
     let elapsed_i128 = i128::try_from(elapsed).map_err(|_| ContractError::ArithmeticError)?;
     let duration_i128 = i128::try_from(duration).map_err(|_| ContractError::ArithmeticError)?;
@@ -1277,7 +1312,11 @@ fn linear_vesting_payout(
             .checked_div(duration_i128)
             .ok_or(ContractError::ArithmeticError)?;
 
-        let cap = schedule.cap.unwrap_or(schedule.amount);
+        let cap = if schedule.total_cap > 0 {
+            schedule.total_cap
+        } else {
+            schedule.amount
+        };
         if cap > 0 && raw > cap {
             cap
         } else {
@@ -1496,70 +1535,6 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Create a recurring schedule for periodic disbursements.
-    pub fn create_recurring_schedule(
-        env: Env,
-        proposer: Address,
-        transfers: Vec<Transfer>,
-        interval_secs: u64,
-        occurrences: u32,
-        description: String,
-    ) -> Result<u64, ContractError> {
-        proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
-        require_not_frozen(&env)?;
-
-        if transfers.len() == 0 {
-            return Err(ContractError::InvalidAmount);
-        }
-        for transfer in transfers.iter() {
-            if transfer.amount < MIN_AMOUNT {
-                return Err(ContractError::InvalidAmount);
-            }
-            validate_token(&env, &transfer.token)?;
-            if transfer.to == env.current_contract_address() {
-                return Err(ContractError::InvalidRecipient);
-            }
-        }
-        if occurrences == 0 {
-            return Err(ContractError::InvalidDuration);
-        }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let id = read_recurring_next_id(&env);
-        let next = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_recurring_next_id(&env, next);
-
-        let schedule = RecurringSchedule {
-            id,
-            proposer: proposer.clone(),
-            transfers: transfers.clone(),
-            interval_secs,
-            last_disbursed_at: 0,
-            remaining_occurrences: occurrences,
-            status: RecurringStatus::Active,
-            description,
-        };
-        write_recurring_schedule(&env, &schedule);
-        Ok(id)
-    }
-
-    /// Cancel a recurring schedule (owner-only action).
-    pub fn cancel_recurring_schedule(
-        env: Env,
-        caller: Address,
-        id: u64,
-    ) -> Result<(), ContractError> {
-        caller.require_auth();
-        require_owner_and_weight(&env, &caller)?;
-        let mut s = read_recurring_schedule(&env, id)?;
-        s.status = RecurringStatus::Cancelled;
-        write_recurring_schedule(&env, &s);
-        Ok(())
-    }
-
     /// Creates a new transfer proposal with one or more asset transfers.
     ///
     /// # Arguments
@@ -1706,28 +1681,40 @@ impl AccordContract {
 
         let mut schedule = read_recurring_payment(&env, schedule_id)?;
 
-        // Paused schedules cannot disburse and must not mutate state or advance last_disbursed_at
-        if schedule.status == RecurringStatus::Paused {
+        // Paused/cancelled/completed schedules cannot disburse and must not
+        // mutate state or advance last_disbursed_at.
+        if matches!(
+            schedule.status,
+            RecurringStatus::Paused | RecurringStatus::Cancelled | RecurringStatus::Completed
+        ) {
             return Err(ContractError::RecurringPaymentInactive);
         }
 
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
 
-        let disbursement_amount = if schedule.cliff.is_some() || schedule.end.is_some() {
-            linear_vesting_payout(&schedule, now)?
-        } else {
-            schedule.amount
+        let disbursement_amount = match schedule.kind {
+            RecurringKind::LinearVesting => linear_vesting_payout(&schedule, now)?,
+            RecurringKind::FixedAmountPerPeriod => {
+                if now < due_at {
+                    return Err(ContractError::RecurringIntervalNotElapsed);
+                }
+                if schedule.end_time > 0 && (due_at > schedule.end_time || now > schedule.end_time)
+                {
+                    return Err(ContractError::RecurringPaymentComplete);
+                }
+                schedule.amount
+            }
         };
 
-        if now < due_at {
-            return Err(ContractError::RecurringIntervalNotElapsed);
-        }
-        if let Some(end_at) = schedule.end {
-            if due_at > end_at || now > end_at {
-                return Err(ContractError::RecurringPaymentComplete);
+        // Linear vesting gates the first claim on cliff/start, then allows
+        // claiming newly vested amounts without waiting a full interval.
+        if matches!(schedule.kind, RecurringKind::LinearVesting) {
+            if schedule.periods_disbursed == 0 && now < due_at {
+                return Err(ContractError::RecurringIntervalNotElapsed);
             }
         }
+
         if disbursement_amount <= 0 {
             return Err(ContractError::RecurringPaymentComplete);
         }
@@ -1736,14 +1723,13 @@ impl AccordContract {
             .total_disbursed
             .checked_add(disbursement_amount)
             .ok_or(ContractError::ArithmeticError)?;
-        if let Some(total_cap) = schedule.cap {
-            if projected_total > total_cap {
-                let clamped = total_cap
-                    .checked_sub(schedule.total_disbursed)
-                    .ok_or(ContractError::ArithmeticError)?;
-                if clamped <= 0 {
-                    return Err(ContractError::RecurringPaymentComplete);
-                }
+        if schedule.total_cap > 0 && projected_total > schedule.total_cap {
+            let clamped = schedule
+                .total_cap
+                .checked_sub(schedule.total_disbursed)
+                .ok_or(ContractError::ArithmeticError)?;
+            if clamped <= 0 {
+                return Err(ContractError::RecurringPaymentComplete);
             }
         }
 
@@ -2081,8 +2067,11 @@ impl AccordContract {
             return Err(ContractError::CannotRemoveLastOwner);
         }
         let threshold = read_threshold(&env)?;
-        if current_count.saturating_sub(1) < threshold {
-            return Err(ContractError::ThresholdExceedsOwnerCount);
+        let remove_weight = owners_map.get(owner_to_remove.clone()).unwrap_or(0);
+        let resulting_total_weight =
+            checked_weight_sub(read_total_weight(&env), remove_weight)?;
+        if resulting_total_weight < threshold {
+            return Err(ContractError::WouldBreakThreshold);
         }
 
         if description.is_empty() {
@@ -2297,13 +2286,12 @@ impl AccordContract {
             return Err(ContractError::NotApproved);
         }
 
-        write_approval(&env, proposal_id, &approver, false);
+        // Reverse the exact effective weight recorded at approve-time.
+        let weight = read_approval_weight(&env, proposal_id, &approver);
+        write_approval_weight(&env, proposal_id, &approver, 0);
 
-        let weight = read_owner_weight(&env, &approver);
-        proposal.approvals = proposal
-            .approvals
-            .checked_sub(weight)
-            .ok_or(ContractError::ArithmeticError)?;
+        proposal.approvals = checked_weight_sub(proposal.approvals, weight)?;
+        proposal.approval_weight = checked_weight_sub(proposal.approval_weight, weight)?;
         proposal.status = derive_status(&env, &proposal);
         write_proposal(&env, &proposal);
 
@@ -2313,6 +2301,8 @@ impl AccordContract {
                 id: proposal_id,
                 approver,
                 approvals: proposal.approvals,
+                weight,
+                cumulative_weight: proposal.approvals,
             },
         );
 
@@ -2651,6 +2641,7 @@ impl AccordContract {
                     total_cap: params.total_cap,
                     total_disbursed: 0,
                     last_disbursed_at: 0,
+                    periods_disbursed: 0,
                     status: RecurringStatus::Active,
                     kind: params.kind.clone(),
                     category: proposal.category.clone(),
@@ -2702,6 +2693,90 @@ impl AccordContract {
                     RecurringPaymentCancelledEvent {
                         id: *schedule_id,
                         caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::PauseRecurringPayment(schedule_id) => {
+                let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
+                }
+                if status == RecurringStatus::Paused {
+                    return Err(ContractError::ScheduleAlreadyPaused);
+                }
+
+                schedule.status = RecurringStatus::Paused;
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_pause"),),
+                    RecurringPaymentPausedEvent {
+                        id: *schedule_id,
+                        caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::ResumeRecurringPayment(schedule_id) => {
+                let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status != RecurringStatus::Paused {
+                    return Err(ContractError::ScheduleNotPaused);
+                }
+
+                schedule.status = RecurringStatus::Active;
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_resum"),),
+                    RecurringPaymentResumedEvent {
+                        id: *schedule_id,
+                        caller: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::ModifyRecurringPayment(params) => {
+                let mut schedule = read_recurring_payment(&env, params.schedule_id)?;
+                let status = derive_recurring_status(&env, &schedule);
+                if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                    return Err(ContractError::ScheduleTerminal);
+                }
+
+                let previous_amount = schedule.amount;
+                let previous_interval = schedule.interval_secs;
+                let previous_end_time = schedule.end_time;
+
+                if let Some(amt) = params.new_amount {
+                    if amt < MIN_AMOUNT {
+                        return Err(ContractError::InvalidAmount);
+                    }
+                    schedule.amount = amt;
+                }
+                if let Some(inv) = params.new_interval_secs {
+                    if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&inv) {
+                        return Err(ContractError::InvalidInterval);
+                    }
+                    schedule.interval_secs = inv;
+                }
+                if let Some(end_t) = params.new_end_time {
+                    if end_t <= schedule.start_time {
+                        return Err(ContractError::InvalidDeadline);
+                    }
+                    schedule.end_time = end_t;
+                }
+
+                write_recurring_payment(&env, &schedule);
+
+                env.events().publish(
+                    (symbol_short!("r_mod"),),
+                    RecurringPaymentModifiedEvent {
+                        schedule_id: params.schedule_id,
+                        previous_amount,
+                        new_amount: schedule.amount,
+                        previous_interval,
+                        new_interval: schedule.interval_secs,
+                        previous_end_time,
+                        new_end_time: schedule.end_time,
                     },
                 );
             }

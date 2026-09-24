@@ -104,13 +104,40 @@ ProposalStatus is a proposal's current lifecycle state. The contract defines fiv
 See also: [Architecture §4](./ARCHITECTURE.md#4-proposal-lifecycle).
 
 **Owner**
-An owner is one of the addresses authorized to propose, approve, revoke, and execute on the contract. The initial owner set is established when the contract is initialized, and every action — including casting an approval — checks that the caller is a current owner before proceeding.
+An owner is one of the addresses registered in the multisig’s owner-weight map. Ownership supplies voting **weight** for quorum and is required (together with the Approver role) to approve or revoke. High-privilege governance actions (upgrade, guardian, RBAC migration) still require owner-weight co-signatures, not roles alone.
+See also: [RBAC & Access Control](./ARCHITECTURE.md#rbac--access-control).
 
-**Proposer**
-The proposer is the owner who originates a specific proposal. Their address is recorded on the proposal and emitted in its creation event, but a proposer does not automatically count as having approved their own proposal — they still need to approve separately, like any other owner.
+**Role (RBAC)**
+A role is one of four operational permissions (`Proposer`, `Approver`, `Executor`, `Viewer`) stored per address. Roles gate who may draft, vote, execute, or be marked as a viewer; they do not replace owner-weighted quorum for security-critical governance.
+See also: [Roles & Permissions guide](./guides/roles-and-permissions.md).
 
-**Approver**
-An approver is an owner who has cast an approval vote on a specific proposal. The contract tracks each owner's approval per-proposal as an individual flag, which is what lets an owner later withdraw just their own vote without affecting anyone else's.
+**Proposer (role)**
+The Proposer **role** allows an address to call proposal-creation entrypoints (`create_*_proposal`). It is distinct from the proposal’s recorded proposer field: the role is a standing permission; the field is who created a specific proposal. Non-owners may hold Proposer and draft proposals; owner proposers still undergo spending-limit checks.
+See also: [RBAC gating matrix](./ARCHITECTURE.md#entrypoint-gating-matrix).
+
+**Proposer (proposal field)**
+On a given proposal, the proposer is the address that originated that proposal. Their address is recorded on the proposal and emitted in its creation event. Holding the Proposer role does not auto-approve the proposal — Approver + ownership are still required to vote.
+
+**Approver (role)**
+The Approver **role** allows an **owner** to call `approve` and `revoke`. Non-owners cannot cast weighted votes even if they somehow hold Approver; weight always comes from ownership.
+
+**Approver (vote)**
+An approver (lowercase usage in lifecycle docs) is an owner who has cast an approval vote on a specific proposal. The contract stores the weight credited for that approval so a later revoke can reverse the same amount.
+
+**Executor (role)**
+The Executor **role** allows an address to call `execute` and `cancel_expired`. This can be a human owner or an automated keeper that does not hold Approver or Proposer.
+
+**Viewer (role)**
+The Viewer **role** marks an address for read-oriented access in product and policy terms. It does not unlock create, approve, or execute by itself.
+
+**DEFAULT_OWNER_ROLES**
+The default role set granted to every owner at `initialize` and by `migrate_to_rbac`: Proposer, Approver, and Executor. It preserves classic “owners can do everything” behaviour until roles are narrowed deliberately.
+
+**GrantRole / RevokeRole**
+Governance proposal kinds that add or remove a role for a target address. Created via `create_grant_role_proposal` / `create_revoke_role_proposal`, then approved and executed like other proposals.
+
+**migrate_to_rbac**
+A one-time, owner-weight-gated migration that grants `DEFAULT_OWNER_ROLES` to every current owner and sets the RBAC `role_version` flag. A second call is rejected and leaves state unchanged.
 
 **Active proposal count**
 The active proposal count is a running tally of proposals that haven't yet reached a terminal state, kept as a budget guard against unbounded growth. Creating a new proposal checks this count against a fixed limit and fails if the limit has been reached.

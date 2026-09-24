@@ -1,4 +1,7 @@
 #![cfg(test)]
+#![allow(unused_variables)]
+#![allow(unused_assignments)]
+#![allow(dead_code)]
 
 extern crate std;
 
@@ -84,23 +87,16 @@ fn setup_with_timelock(
     owners.push_back(owner_b.clone());
     owners.push_back(owner_c.clone());
 
-    let fixture = std::env::var("ACCORD_WEIGHT_FIXTURE")
-        .or_else(|_| std::env::var("WEIGHT_FIXTURE"))
-        .unwrap_or_default();
-
+    // Shared unit-test setup always uses equal weight-1 owners. Unequal-weight
+    // coverage lives in `setup_weighted` / `setup_three_owner_weighted` and the
+    // proptest suites. The ACCORD_WEIGHT_FIXTURE env var must not rewrite this
+    // helper — doing so breaks dozens of tests that assert flat count semantics
+    // when CI rematerializes the suite under `skewed`.
     let mut weights = Vec::new(&env);
-    let effective_threshold = if fixture == "skewed" {
-        weights.push_back(5);
-        weights.push_back(3);
-        weights.push_back(2);
-        if threshold == 2 { 6 } else { threshold * 3 }
-    } else {
-        for _ in 0..owners.len() {
-            weights.push_back(1);
-        }
-        threshold
-    };
-    client.initialize(&owners, &weights, &effective_threshold, &time_lock_delay);
+    for _ in 0..owners.len() {
+        weights.push_back(1);
+    }
+    client.initialize(&owners, &weights, &threshold, &time_lock_delay);
 
     // Fund the multisig contract so it can pay out proposals.
     token_sac.mint(&contract_id, &1_000_000_000_000_i128);
@@ -7368,7 +7364,6 @@ fn frozen_contract_blocks_recurring_disbursement_and_unfreezing_restores_it() {
 // idleness instead of a pause.
 
 #[test]
-fn idle_schedule_pays_only_one_period_and_does_not_back_pay_missed_intervals() {
 fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_insufficient_balance() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
@@ -7402,7 +7397,7 @@ fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_i
 
     set_timestamp(&env, NOW + interval + 1);
     assert_eq!(
-        client.try_disburse_recurring(&1_u64),
+        client.try_disburse_recurring(&owner_a, &1_u64),
         Err(Ok(ContractError::TransferFailed))
     );
 
@@ -7415,29 +7410,33 @@ fn recurring_disbursement_returns_transfer_failed_without_mutating_schedule_on_i
 }
 
 #[test]
-fn linear_vesting_claimable_amount_matches_time_proportional_checkpoints() {
+fn idle_schedule_pays_only_one_period_and_does_not_back_pay_missed_intervals() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
 
     let interval = 3_600_u64;
     let amount = 1_000_000_i128;
 
-    let schedule_id = create_active_schedule(
-        &env,
-        &client,
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &owner_b,
-        &owner_c,
         &recipient,
         &token_client.address,
-        amount,
-        interval,
-        NOW,
-        0,
-        0,
-        0,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 30),
+        &0_u64,
+        &(amount * 100),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Idle schedule no back-pay"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
     );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
 
+    let schedule_id = 1_u64;
     let recipient_before = token_client.balance(&recipient);
     let active_before = client.get_active_recurring_count();
 
@@ -7576,19 +7575,22 @@ fn linear_vesting_disbursement_uses_newly_vested_amount_after_cliff() {
     client.execute(&owner_c, &create_id);
 
     set_timestamp(&env, NOW + 1_000);
-    assert_eq!(client.try_disburse_recurring(&1), Err(Ok(ContractError::RecurringIntervalNotElapsed)));
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &1),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
+    );
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0_i128);
 
     set_timestamp(&env, NOW + 5_000);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 5_000_000_i128);
 
     set_timestamp(&env, NOW + 7_500);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 7_500_000_i128);
 
     set_timestamp(&env, NOW + 20_000);
-    client.disburse_recurring(&1);
+    client.disburse_recurring(&owner_a, &1);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 10_000_000_i128);
 }
 

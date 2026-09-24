@@ -94,6 +94,10 @@ Scan this table when you hit an error code and need a fast answer. Errors develo
 | 20 `ArithmeticError` | Integer overflow/underflow guard tripped (rare). | Contact maintainers; should not occur in normal use. |
 | 32 `TargetOwnerNoLongerExists` | The target of a `ChangeOwnerWeight` proposal is no longer an owner at execution time. | This is an edge case; create a new proposal. |
 | 33 `AlreadyMigrated` | `migrate_to_weighted_governance` was called on a contract that already has weighted governance. | Do not re-migrate; the contract is already up-to-date. |
+| 52 `MissingRole` | Caller lacks the role required by a role-gated entrypoint. | Grant the needed role (`Proposer` / `Approver` / `Executor`) via governance, then retry. |
+| 53 `RoleAlreadyGranted` | Granting a role the address already holds. | Skip the grant, or revoke first if you intended a no-op refresh. |
+| 54 `RoleNotGranted` | Revoking a role the address does not hold. | Confirm roles with `get_roles` / `has_role` before revoking. |
+| 55 `InvalidRole` | Role value is not a known `Role` enum variant. | Pass one of `Proposer`, `Approver`, `Executor`, or `Viewer`. |
 
 ---
 
@@ -1217,6 +1221,10 @@ The table below maps every `ContractError` discriminant to its cause and the rec
 | 43 | `ScheduleEnded` | The schedule has reached `end_time` or its `total_cap` has been fully disbursed (`lib.rs:2678`, `lib.rs:2748`). `disburse_recurring` marks the schedule `Completed` and decrements `ACTREC`. | The schedule is `Completed`; no further disbursements will succeed. Create a new recurring-payment proposal if continued payments are needed. |
 | 44 | `TooManyActiveRecurring` | Creating or executing a `CreateRecurringPayment` proposal would exceed `MAX_ACTIVE_RECURRING=20` (`lib.rs:594`, checked at `lib.rs:2546` and at execution). | Cancel an existing schedule via `create_cancel_recurring_proposal` or let a schedule complete/expire to free a slot, then retry. |
 | 45 | `ScheduleAlreadyCancelled` | `create_cancel_recurring_proposal` was called for a schedule whose `status == Cancelled` (`lib.rs:2613`). | The schedule is already `Cancelled`; no second cancel is needed. Verify with `get_recurring_payment`. |
+| 52 | `MissingRole` | A role-gated entrypoint was called by an address that does not hold the required role. Thrown by `require_role` when used from proposal-creation paths (`Proposer`), `approve` / `revoke` (`Approver`, in addition to owner membership), and `execute` / `cancel_expired` (`Executor`). | Grant the missing role through a `GrantRole` proposal (`create_grant_role_proposal`), wait for it to execute, then retry with the same address — or switch to an address that already holds the role (`has_role` / `get_roles`). |
+| 53 | `RoleAlreadyGranted` | A `GrantRole` proposal (or grant helper) tried to add a role that the target address already holds. Raised at proposal creation and/or execute-time re-validation for `create_grant_role_proposal` / `GrantRole` execution. | Do not re-grant the same role. Inspect current roles with `get_roles(address)` or `get_role_members(role)`. If you need a no-op, cancel the proposal instead of executing it. |
+| 54 | `RoleNotGranted` | A `RevokeRole` proposal (or revoke helper) tried to remove a role that the target address does not currently hold. Raised at proposal creation and/or execute-time re-validation for `create_revoke_role_proposal` / `RevokeRole` execution. | Confirm the address still holds the role with `has_role` before creating or executing the revoke. Roles can change between proposal creation and execution — recreate the proposal if state drifted. |
+| 55 | `InvalidRole` | A role argument was not one of the four supported `Role` variants (`Proposer`, `Approver`, `Executor`, `Viewer`). Can be raised by role views, grant/revoke proposal creation, and execute arms that decode a `Role` payload. | Pass a valid `Role` enum value. Do not invent custom role strings; only the four contract variants are accepted. |
 
 ---
 
