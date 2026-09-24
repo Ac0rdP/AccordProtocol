@@ -8269,8 +8269,8 @@ fn test_rbac_role_version_and_roles() {
     assert_eq!(client.get_role_version(), 1);
 
     let roles_owner = client.get_roles(&owner_a);
-    assert!(roles_owner.contains(Symbol::new(&env, "Owner")));
-    assert!(roles_owner.contains(Symbol::new(&env, "Approver")));
+    assert!(roles_owner.contains(Role::CreateProposal));
+    assert!(roles_owner.contains(Role::ApproveProposal));
 
     let roles_non_owner = client.get_roles(&non_owner);
     assert_eq!(roles_non_owner.len(), 0);
@@ -8307,4 +8307,18 @@ fn get_role_members_result_is_capped() {
     let members = client.get_role_members(&Role::CreateProposal);
     assert_eq!(members.len(), MAX_ROLE_MEMBERS_RESULT);
     assert_eq!(members, many.slice(0..MAX_ROLE_MEMBERS_RESULT));
+}
+
+#[test]
+fn get_roles_returns_role_set_and_empty_for_non_holder() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+
+    let roles = client.get_roles(&owner_a);
+    assert_eq!(roles.len(), 3);
+    assert!(roles.contains(&Role::CreateProposal));
+    assert!(roles.contains(&Role::ApproveProposal));
+    assert!(roles.contains(&Role::ExecuteProposal));
+
+    assert!(client.get_roles(&non_owner).is_empty());
+    assert!(client.get_roles(&Address::generate(&env)).is_empty());
 }

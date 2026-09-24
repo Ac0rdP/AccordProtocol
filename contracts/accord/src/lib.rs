@@ -3656,21 +3656,6 @@ impl AccordContract {
         CONTRACT_VERSION
     }
 
-    /// Returns the contract's role system schema version.
-    pub fn get_role_version(_env: Env) -> u32 {
-        1
-    }
-
-    /// Returns the assigned roles for a given wallet address.
-    pub fn get_roles(env: Env, wallet: Address) -> Vec<Symbol> {
-        let mut roles = Vec::new(&env);
-        if read_owners_map(&env).map_or(false, |m| m.contains_key(wallet)) {
-            roles.push_back(Symbol::new(&env, "Owner"));
-            roles.push_back(Symbol::new(&env, "Approver"));
-        }
-        roles
-    }
-
     pub fn get_total_weight(env: Env) -> u32 {
         read_total_weight(&env)
     }
@@ -3689,8 +3674,14 @@ impl AccordContract {
         read_role_version(&env)
     }
 
-    pub fn get_roles(env: Env, owner: Address) -> Vec<Role> {
-        read_owner_roles(&env, &owner)
+    /// Returns the set of roles held by `address`. An address holding no
+    /// roles (including any non-owner) returns an empty list. Read-only: the
+    /// entry is read without extending its TTL.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        env.storage()
+            .persistent()
+            .get(&owner_roles_key(&address))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Returns every address holding `role`, read from the reverse role-member
