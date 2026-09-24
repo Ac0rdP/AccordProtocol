@@ -56,6 +56,10 @@ function mockSuccessfulLoad(proposals: Proposal[]) {
 describe("AnalyticsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+
+    global.URL.createObjectURL = vi.fn(() => "blob:mock-url");
+    global.URL.revokeObjectURL = vi.fn();
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   });
 
   test("shows a loading state while fetching", () => {
@@ -147,5 +151,45 @@ describe("AnalyticsPage", () => {
     });
 
     await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+  });
+
+  test("exports the spend CSV via a download click", async () => {
+    mockSuccessfulLoad([
+      rawProposal({ id: 1, amount: "100", category: "Grant" }),
+    ]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /export spend csv/i }));
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
+  });
+
+  test("exports the treasury CSV via a download click", async () => {
+    mockSuccessfulLoad([
+      rawProposal({ id: 1, amount: "100", category: "Grant" }),
+    ]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /export treasury csv/i }),
+    );
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
+  });
+
+  test("export buttons are disabled when there is no data", async () => {
+    mockSuccessfulLoad([]);
+
+    render(<AnalyticsPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /export spend csv/i }),
+      ).toBeDisabled(),
+    );
+    expect(
+      screen.getByRole("button", { name: /export treasury csv/i }),
+    ).toBeDisabled();
   });
 });

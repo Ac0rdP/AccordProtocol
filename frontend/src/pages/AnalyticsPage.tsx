@@ -22,9 +22,13 @@ import {
   mapProposal,
 } from "../lib/contract";
 import {
+  buildExportFilename,
+  buildSpendCsv,
+  buildTreasuryCsv,
   computeSpendByCategory,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
+  downloadCsv,
   filterExecutedTransfers,
   type AnalyticsFilters,
   type CategoryFilter,
@@ -132,10 +136,42 @@ export function AnalyticsPage() {
   const isEmpty =
     !state.loading && !state.error && filteredTransfers.length === 0;
 
+  const handleExportSpendCsv = () => {
+    downloadCsv(
+      `${buildExportFilename("spend", filters)}.csv`,
+      buildSpendCsv(spendByCategory),
+    );
+  };
+
+  const handleExportTreasuryCsv = () => {
+    downloadCsv(
+      `${buildExportFilename("treasury", filters)}.csv`,
+      buildTreasuryCsv(treasuryFlow),
+    );
+  };
+
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h2 className="font-semibold">Analytics</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExportSpendCsv}
+            disabled={isEmpty}
+            className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            Export Spend CSV
+          </button>
+          <button
+            type="button"
+            onClick={handleExportTreasuryCsv}
+            disabled={isEmpty}
+            className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            Export Treasury CSV
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">

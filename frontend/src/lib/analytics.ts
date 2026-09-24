@@ -112,3 +112,44 @@ export function computeTreasuryFlow(
       return { period, outflow, cumulative };
     });
 }
+
+function filterRangeLabel(filters: AnalyticsFilters): string {
+  if (!filters.startDate && !filters.endDate) return "all-time";
+  return `${filters.startDate || "start"}_to_${filters.endDate || "now"}`;
+}
+
+export function buildExportFilename(
+  dataset: string,
+  filters: AnalyticsFilters,
+): string {
+  return `accord-analytics-${dataset}-${filterRangeLabel(filters)}`;
+}
+
+export function buildSpendCsv(rows: SpendByCategory[]): string {
+  const headers = ["Category", "Total", "Transaction Count"];
+  const lines = rows.map(
+    (r) => `"${r.category}","${r.total.toFixed(2)}",${r.count}`,
+  );
+  return [headers.join(","), ...lines].join("\n");
+}
+
+export function buildTreasuryCsv(rows: TreasuryFlowPoint[]): string {
+  const headers = ["Period", "Outflow", "Cumulative Outflow"];
+  const lines = rows.map(
+    (r) =>
+      `"${r.period}","${r.outflow.toFixed(2)}","${r.cumulative.toFixed(2)}"`,
+  );
+  return [headers.join(","), ...lines].join("\n");
+}
+
+export function downloadCsv(filename: string, content: string): void {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

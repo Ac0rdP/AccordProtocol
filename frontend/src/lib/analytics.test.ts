@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { Proposal } from "../types/accord";
 import {
+  buildExportFilename,
+  buildSpendCsv,
+  buildTreasuryCsv,
   computeSpendByCategory,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
@@ -102,5 +105,57 @@ describe("computeTreasuryFlow", () => {
 
   test("returns an empty array for no proposals", () => {
     expect(computeTreasuryFlow([])).toEqual([]);
+  });
+});
+
+describe("buildExportFilename", () => {
+  test("uses 'all-time' when no date range is set", () => {
+    expect(buildExportFilename("spend", DEFAULT_ANALYTICS_FILTERS)).toBe(
+      "accord-analytics-spend-all-time",
+    );
+  });
+
+  test("includes the date range when set", () => {
+    const filename = buildExportFilename("treasury", {
+      ...DEFAULT_ANALYTICS_FILTERS,
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+    });
+    expect(filename).toBe("accord-analytics-treasury-2026-01-01_to_2026-01-31");
+  });
+
+  test("falls back to 'start'/'now' for a one-sided range", () => {
+    expect(
+      buildExportFilename("spend", {
+        ...DEFAULT_ANALYTICS_FILTERS,
+        endDate: "2026-01-31",
+      }),
+    ).toBe("accord-analytics-spend-start_to_2026-01-31");
+  });
+});
+
+describe("buildSpendCsv", () => {
+  test("produces a CSV with headers and one row per category", () => {
+    const csv = buildSpendCsv([
+      { category: "Grant", total: 150, count: 2 },
+      { category: "Payroll", total: 500, count: 1 },
+    ]);
+
+    expect(csv).toBe(
+      'Category,Total,Transaction Count\n"Grant","150.00",2\n"Payroll","500.00",1',
+    );
+  });
+});
+
+describe("buildTreasuryCsv", () => {
+  test("produces a CSV with headers and one row per period", () => {
+    const csv = buildTreasuryCsv([
+      { period: "2026-01", outflow: 150, cumulative: 150 },
+      { period: "2026-02", outflow: 25, cumulative: 175 },
+    ]);
+
+    expect(csv).toBe(
+      'Period,Outflow,Cumulative Outflow\n"2026-01","150.00","150.00"\n"2026-02","25.00","175.00"',
+    );
   });
 });
