@@ -14,6 +14,7 @@ import { useNotifications } from "./hooks/useNotifications";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
+import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
   { label: "recurring", to: "/app/recurring" },
   { label: "history", to: "/app/history" },
+  { label: "analytics", to: "/app/analytics" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
   { label: "docs", to: "/docs" },
@@ -495,6 +497,7 @@ export default function App() {
                 <RecurringPage walletAddress={wallet.address} />
               }
             />
+            <Route path="analytics" element={<AnalyticsPage />} />
             <Route
               path="owners"
               element={
