@@ -723,6 +723,10 @@ const MAX_TOTAL_WEIGHT: u32 = MAX_OWNERS * MAX_OWNER_WEIGHT;
 /// via a weight-change proposal. A strict majority would permit unilateral quorum.
 const MAX_SINGLE_OWNER_WEIGHT_PCT: u32 = 50;
 const DEFAULT_MAX_SINGLE_OWNER_WEIGHT_PCT: u32 = MAX_SINGLE_OWNER_WEIGHT_PCT;
+/// Maximum number of addresses returned by `get_role_members`. Role holders
+/// are always owners, so this matches `MAX_OWNERS` and the 20-item cap used by
+/// the other paged views.
+const MAX_ROLE_MEMBERS_RESULT: u32 = MAX_OWNERS;
 
 /// Spending window: 30 days in seconds. The cumulative spent amount per (owner, token)
 /// resets when this window elapses since the first tracked spend in the window.
@@ -3652,21 +3656,6 @@ impl AccordContract {
         CONTRACT_VERSION
     }
 
-    /// Returns the contract's role system schema version.
-    pub fn get_role_version(_env: Env) -> u32 {
-        1
-    }
-
-    /// Returns the assigned roles for a given wallet address.
-    pub fn get_roles(env: Env, wallet: Address) -> Vec<Symbol> {
-        let mut roles = Vec::new(&env);
-        if read_owners_map(&env).map_or(false, |m| m.contains_key(wallet)) {
-            roles.push_back(Symbol::new(&env, "Owner"));
-            roles.push_back(Symbol::new(&env, "Approver"));
-        }
-        roles
-    }
-
     pub fn get_total_weight(env: Env) -> u32 {
         read_total_weight(&env)
     }
@@ -3685,12 +3674,36 @@ impl AccordContract {
         read_role_version(&env)
     }
 
-    pub fn get_roles(env: Env, owner: Address) -> Vec<Role> {
-        read_owner_roles(&env, &owner)
+    /// Returns the set of roles held by `address`. An address holding no
+    /// roles (including any non-owner) returns an empty list. Read-only: the
+    /// entry is read without extending its TTL.
+    pub fn get_roles(env: Env, address: Address) -> Vec<Role> {
+        env.storage()
+            .persistent()
+            .get(&owner_roles_key(&address))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns whether `address` holds `role`. Returns `false` for an address
+    /// holding no roles or not holding the requested role. Read-only.
+    pub fn has_role(env: Env, address: Address, role: Role) -> bool {
+        Self::get_roles(env, address).contains(&role)
+    }
+
+    /// Returns every address holding `role`, read from the reverse role-member
+    /// index. The result is capped at `MAX_ROLE_MEMBERS_RESULT` (20) entries;
+    /// a role with no holders returns an empty list. Read-only.
     pub fn get_role_members(env: Env, role: Role) -> Vec<Address> {
-        read_role_members(&env, &role)
+        let members: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&role_members_key(&role))
+            .unwrap_or_else(|| Vec::new(&env));
+        if members.len() > MAX_ROLE_MEMBERS_RESULT {
+            members.slice(0..MAX_ROLE_MEMBERS_RESULT)
+        } else {
+            members
+        }
     }
 
     /// Returns a current owner's voting weight, or `OwnerNotFound` otherwise.

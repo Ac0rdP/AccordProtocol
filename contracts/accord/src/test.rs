@@ -8269,9 +8269,116 @@ fn test_rbac_role_version_and_roles() {
     assert_eq!(client.get_role_version(), 1);
 
     let roles_owner = client.get_roles(&owner_a);
-    assert!(roles_owner.contains(Symbol::new(&env, "Owner")));
-    assert!(roles_owner.contains(Symbol::new(&env, "Approver")));
+    assert!(roles_owner.contains(Role::CreateProposal));
+    assert!(roles_owner.contains(Role::ApproveProposal));
 
     let roles_non_owner = client.get_roles(&non_owner);
     assert_eq!(roles_non_owner.len(), 0);
+}
+
+#[test]
+fn get_role_members_returns_holders_and_empty_for_unheld_role() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
+
+    let members = client.get_role_members(&Role::ApproveProposal);
+    assert_eq!(members.len(), 3);
+    assert!(members.contains(&owner_a));
+    assert!(members.contains(&owner_b));
+    assert!(members.contains(&owner_c));
+    assert!(!members.contains(&non_owner));
+
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+    assert!(client.get_role_members(&Role::ApproveProposal).is_empty());
+    assert!(client.get_role_members(&Role::ExecuteProposal).is_empty());
+}
+
+#[test]
+fn get_role_members_result_is_capped() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    let mut many = Vec::new(&env);
+    for _ in 0..(MAX_ROLE_MEMBERS_RESULT + 5) {
+        many.push_back(Address::generate(&env));
+    }
+    env.as_contract(&client.address, || {
+        write_role_members(&env, &Role::CreateProposal, &many);
+    });
+
+    let members = client.get_role_members(&Role::CreateProposal);
+    assert_eq!(members.len(), MAX_ROLE_MEMBERS_RESULT);
+    assert_eq!(members, many.slice(0..MAX_ROLE_MEMBERS_RESULT));
+}
+
+#[test]
+fn get_roles_returns_role_set_and_empty_for_non_holder() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+
+    let roles = client.get_roles(&owner_a);
+    assert_eq!(roles.len(), 3);
+    assert!(roles.contains(&Role::CreateProposal));
+    assert!(roles.contains(&Role::ApproveProposal));
+    assert!(roles.contains(&Role::ExecuteProposal));
+
+    assert!(client.get_roles(&non_owner).is_empty());
+    assert!(client.get_roles(&Address::generate(&env)).is_empty());
+}
+
+#[test]
+fn has_role_view_reports_held_and_unheld_roles() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+
+    assert!(client.has_role(&owner_a, &Role::CreateProposal));
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(client.has_role(&owner_a, &Role::ExecuteProposal));
+
+    assert!(!client.has_role(&non_owner, &Role::CreateProposal));
+    assert!(!client.has_role(&non_owner, &Role::ExecuteProposal));
+
+    let mut approve_only = Vec::new(&env);
+    approve_only.push_back(Role::ApproveProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &owner_a, &approve_only);
+    });
+    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(!client.has_role(&owner_a, &Role::ExecuteProposal));
+}
+
+#[test]
+fn initialize_grants_every_owner_default_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut owners = Vec::new(&env);
+    let mut weights = Vec::new(&env);
+    for _ in 0..5 {
+        owners.push_back(Address::generate(&env));
+        weights.push_back(1_u32);
+    }
+    client.initialize(&owners, &weights, &3, &0);
+
+    let defaults = [
+        Role::CreateProposal,
+        Role::ApproveProposal,
+        Role::ExecuteProposal,
+    ];
+
+    for owner in owners.iter() {
+        let roles = client.get_roles(&owner);
+        assert_eq!(roles.len(), defaults.len() as u32);
+        for role in defaults.iter() {
+            assert!(roles.contains(role));
+            assert!(client.has_role(&owner, role));
+        }
+    }
+
+    for role in defaults.iter() {
+        let members = client.get_role_members(role);
+        assert_eq!(members.len(), owners.len());
+        for owner in owners.iter() {
+            assert!(members.contains(&owner));
+        }
+    }
 }
