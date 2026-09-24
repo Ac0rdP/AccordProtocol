@@ -645,7 +645,7 @@ fn remove_heaviest_owner_keeps_other_pending_proposals_reachable() {
 #[test]
 fn change_threshold_proposal_validates_against_total_weight() {
     // 3 owners each weight 1 → total_weight = 3, threshold = 2.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
 
     // Proposing a threshold of 4 > total_weight 3 must fail.
     assert_eq!(
@@ -6184,6 +6184,128 @@ fn mark_governance_unmigrated(env: &Env, contract_id: &Address) {
             .instance()
             .set(&governance_version_key(), &false);
     });
+}
+
+fn mark_rbac_unmigrated(env: &Env, contract_id: &Address, owners: &Vec<Address>) {
+    env.as_contract(contract_id, || {
+        env.storage().instance().set(&role_version_key(), &0_u32);
+        let empty = Vec::new(env);
+        for owner in owners.iter() {
+            update_owner_roles(env, &owner, &empty);
+        }
+    });
+}
+
+#[test]
+fn migrate_to_rbac_grants_default_roles_and_is_single_run() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+    let roles = client.get_roles(&owner_a);
+    assert_eq!(roles.len(), 3);
+    assert!(roles.contains(&Role::CreateProposal));
+    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&owner_c));
+
+    let roles_before = client.get_roles(&owner_a);
+    let members_before = client.get_role_members(&Role::ApproveProposal);
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_roles(&owner_a), roles_before);
+    assert_eq!(client.get_role_members(&Role::ApproveProposal), members_before);
+}
+
+#[test]
+fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_owner = Address::generate(&env);
+    let add_id = client.create_add_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &str(&env, "Add owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+    assert_eq!(client.get_roles(&new_owner).len(), 3);
+    assert!(client.get_role_members(&Role::CreateProposal).contains(&new_owner));
+
+    let remove_id = client.create_remove_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &str(&env, "Remove owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+    assert!(client.get_roles(&new_owner).is_empty());
+    assert!(!client.get_role_members(&Role::ExecuteProposal).contains(&new_owner));
+}
+
+#[test]
+fn migrated_contract_matches_legacy_approve_revoke_execute_results() {
+    let (env_pre, client_pre, a_pre, b_pre, c_pre, _, token_pre) = setup(2);
+    let (env_post, client_post, a_post, b_post, c_post, _, token_post) = setup(2);
+    let recipient_pre = Address::generate(&env_pre);
+    let recipient_post = Address::generate(&env_post);
+    let owners_post = client_post.get_owners();
+    mark_rbac_unmigrated(&env_post, &client_post.address, &owners_post);
+
+    let mut approvers = Vec::new(&env_post);
+    approvers.push_back(a_post.clone());
+    approvers.push_back(b_post.clone());
+    client_post.migrate_to_rbac(&approvers);
+
+    let amount = 42_000_i128;
+    let id_pre = client_pre.create_proposal(
+        &a_pre,
+        &t(&env_pre, &recipient_pre, amount, &token_pre.address),
+        &str(&env_pre, "Migration regression"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let id_post = client_post.create_proposal(
+        &a_post,
+        &t(&env_post, &recipient_post, amount, &token_post.address),
+        &str(&env_post, "Migration regression"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client_pre.approve(&a_pre, &id_pre);
+    client_post.approve(&a_post, &id_post);
+    client_pre.approve(&b_pre, &id_pre);
+    client_post.approve(&b_post, &id_post);
+    client_pre.revoke(&b_pre, &id_pre);
+    client_post.revoke(&b_post, &id_post);
+    client_pre.approve(&c_pre, &id_pre);
+    client_post.approve(&c_post, &id_post);
+
+    let pre_before = token_pre.balance(&recipient_pre);
+    let post_before = token_post.balance(&recipient_post);
+    client_pre.execute(&c_pre, &id_pre);
+    client_post.execute(&c_post, &id_post);
+
+    let pre_proposal = client_pre.get_proposal(&id_pre);
+    let post_proposal = client_post.get_proposal(&id_post);
+    assert_eq!(pre_proposal.status, post_proposal.status);
+    assert_eq!(pre_proposal.approvals, post_proposal.approvals);
+    assert_eq!(token_pre.balance(&recipient_pre) - pre_before, amount);
+    assert_eq!(token_post.balance(&recipient_post) - post_before, amount);
+    assert_eq!(
+        token_pre.balance(&recipient_pre) - pre_before,
+        token_post.balance(&recipient_post) - post_before
+    );
 }
 
 #[test]
