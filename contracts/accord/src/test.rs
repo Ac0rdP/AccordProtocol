@@ -8679,3 +8679,82 @@ fn removed_owner_with_stale_roles_cannot_cosign_governance() {
     let approvers = Vec::from_array(&env, [owner_a, owner_c]);
     assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
 }
+
+// ─── approve: owner + Approver role gate ─────────────────────────────────────
+
+fn transfer_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    proposer: &Address,
+    token_client: &token::Client,
+) -> u64 {
+    client.create_proposal(
+        proposer,
+        &t(env, &Address::generate(env), 1_000, &token_client.address),
+        &str(env, "approve gate"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    )
+}
+
+#[test]
+fn approve_rejects_non_owner_holding_approver_role() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    let mut approve_only = Vec::new(&env);
+    approve_only.push_back(Role::ApproveProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &non_owner, &approve_only);
+    });
+    assert!(client.has_role(&non_owner, &Role::ApproveProposal));
+    assert!(!client.is_owner(&non_owner));
+
+    assert_eq!(
+        client.try_approve(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &non_owner));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn approve_rejects_owner_without_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    let mut without_approve = Vec::new(&env);
+    without_approve.push_back(Role::CreateProposal);
+    without_approve.push_back(Role::ExecuteProposal);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &owner_b, &without_approve);
+    });
+    assert!(client.is_owner(&owner_b));
+    assert!(!client.has_role(&owner_b, &Role::ApproveProposal));
+    assert!(!client.get_role_members(&Role::ApproveProposal).contains(&owner_b));
+
+    assert_eq!(
+        client.try_approve(&owner_b, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn approve_succeeds_for_owner_with_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+
+    assert!(client.is_owner(&owner_b));
+    assert!(client.has_role(&owner_b, &Role::ApproveProposal));
+
+    client.approve(&owner_b, &id);
+    assert!(client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 1);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
+
+    client.approve(&owner_a, &id);
+    assert_eq!(client.get_proposal(&id).approvals, 2);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
