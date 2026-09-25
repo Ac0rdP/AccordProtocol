@@ -222,3 +222,4 @@ export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
   }
 }
 
+// TODO: Add tests confirming the analytics aggregations compute the correct totals
