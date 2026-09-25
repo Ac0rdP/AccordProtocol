@@ -4266,3 +4266,4 @@ impl AccordContract {
 }
 
 mod test;
+// TODO: Ensure tests verify event parsing and decoding into typed records
