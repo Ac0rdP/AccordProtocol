@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
+import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
@@ -42,6 +43,7 @@ type OptimisticPatch = {
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
+  const [showRoleManagement, setShowRoleManagement] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -505,31 +507,8 @@ export default function App() {
                   owners={owners}
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
-                  walletAddress={wallet.address}
-                  onProposalSubmitted={refresh}
-                />
-              }
-            />
-            <Route path="settings" element={<SettingsPage stats={stats} walletAddress={wallet.address} ownerAddresses={ownerAddresses} onProposalSubmitted={refresh} />} />
-            <Route
-              path="/proposals/:id"
-              element={
-                <ProposalDetailPage
-                  proposals={proposals}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
-                />
-              }
-            />
-            <Route
-              path="proposals/:id"
-              element={
-                <ProposalDetailPage
-                  proposals={proposals}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
+                  totalOwners={owners.length}
+                  onManageRole={() => setShowRoleManagement(true)}
                 />
               }
             />
@@ -555,6 +534,15 @@ export default function App() {
           onClose={() => setShowCreateRecurring(false)}
           onSubmitted={refresh}
           triggerRef={recurringButtonRef}
+        />
+      )}
+      {showRoleManagement && (
+        <GrantRevokeRoleModal
+          walletAddress={wallet.address}
+          ownerAddresses={ownerAddresses}
+          threshold={threshold}
+          onClose={() => setShowRoleManagement(false)}
+          onSubmitted={refresh}
         />
       )}
     </div>

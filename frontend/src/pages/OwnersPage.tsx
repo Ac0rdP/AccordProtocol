@@ -1,8 +1,4 @@
-import { useEffect, useState } from "react";
-import { getSpendingLimit } from "../lib/contract";
-import { createSpendingLimitProposal } from "../lib/submit";
-import { displayToStroops, shortenAddr } from "../lib/soroban";
-import { StrKey } from "@stellar/stellar-sdk";
+import { UserCog } from "lucide-react";
 import type { Owner } from "../types/accord";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { useDelegations } from "../hooks/useDelegations";
@@ -23,16 +19,16 @@ type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
-  walletAddress: string | null;
-  onProposalSubmitted: () => void;
+  totalOwners: number;
+  onManageRole: () => void;
 };
 
 export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  walletAddress,
-  onProposalSubmitted,
+  totalOwners,
+  onManageRole,
 }: OwnersPageProps) {
   const {
     weights,
@@ -169,11 +165,21 @@ export function OwnersPage({
 
   return (
     <>
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold mb-2">Multisig Owners</h1>
-        <p className="text-zinc-400 text-sm">
-          Requires {threshold} of {totalWeight} voting weight
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="mb-2 text-2xl font-semibold">Multisig Owners</h1>
+          <p className="text-sm text-zinc-400">
+            Requires {threshold} of {totalOwners} signers
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onManageRole}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+        >
+          <UserCog size={14} />
+          Manage Roles
+        </button>
       </div>
 
       {/* Owners list */}
