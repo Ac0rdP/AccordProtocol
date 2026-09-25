@@ -605,7 +605,10 @@ export async function getLatestLedger(): Promise<number> {
   }
 }
 
-export async function getContractEvents(fromLedger: number): Promise<number> {
+export async function getContractEvents(
+  fromLedger: number,
+  options: { throwOnError?: boolean } = {},
+): Promise<number> {
   try {
     const res = await server.getEvents({
       startLedger: fromLedger,
@@ -620,6 +623,8 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
     return res.latestLedger || fromLedger;
   } catch (err) {
     console.error("Failed to get contract events:", err);
+    // Polling must observe failures to apply backoff; preserve the legacy fallback.
+    if (options.throwOnError) throw err;
     return fromLedger;
   }
 }

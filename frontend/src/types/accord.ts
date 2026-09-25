@@ -151,3 +151,85 @@ export type OwnerDelegations = {
   incoming: Delegation[];
 };
 
+/** Analytics amounts are decimal token units, serialized as strings to preserve precision. */
+export type AnalyticsAmount = string;
+export type AnalyticsGranularity = "day" | "week" | "month";
+
+export type AnalyticsQuery = {
+  /** Inclusive ISO date/date-time range. Empty strings omit the bound. */
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+  category?: ProposalCategory;
+  owner?: string;
+  status?: ProposalStatus;
+  limit?: number;
+  offset?: number;
+  sort?: "deadline" | "amount" | "createdAt";
+  order?: "asc" | "desc";
+  granularity?: AnalyticsGranularity;
+  timeSeries?: boolean;
+};
+
+export type AnalyticsTimeSeriesPoint = {
+  /** ISO 8601 UTC timestamp. */
+  timestamp: string;
+  /** Token identifier to balance in decimal token units. */
+  values: Record<string, AnalyticsAmount>;
+};
+
+export type TreasuryBalance = {
+  balances: Record<string, AnalyticsAmount>;
+  timeSeries?: AnalyticsTimeSeriesPoint[];
+};
+
+export type CategorySpendBucket = {
+  category: ProposalCategory;
+  token: string;
+  total: AnalyticsAmount;
+  count: number;
+  /** Percentage points, 0–100 (not a fraction). */
+  share: number;
+};
+
+export type OwnerSpendBucket = {
+  owner: string;
+  token: string;
+  total: AnalyticsAmount;
+  count: number;
+};
+
+export type TreasuryFlowBucket = {
+  /** ISO 8601 UTC start of the bucket. */
+  timestamp: string;
+  token: string;
+  inflow: AnalyticsAmount;
+  outflow: AnalyticsAmount;
+};
+
+export type TreasurySummary = {
+  totalDisbursed: Record<string, AnalyticsAmount>;
+  activeProposals: number;
+  ownerCount: number;
+  largestOutflow: { token: string; amount: AnalyticsAmount } | null;
+};
+
+export type AnalyticsProposalPage = {
+  proposals: Proposal[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AnalyticsProposalDetail = {
+  proposal: Proposal;
+  timeline: ProposalEvent[];
+};
+
+export type TreasuryAnalytics = {
+  summary: TreasurySummary;
+  balance: TreasuryBalance;
+  spendByCategory: CategorySpendBucket[];
+  spendByOwner: OwnerSpendBucket[];
+  flow: TreasuryFlowBucket[];
+};

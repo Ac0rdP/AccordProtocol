@@ -7,10 +7,10 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
-- No unreleased additions recorded yet.
+- Frontend analytics response types, HTTP client, treasury polling hook, and currency, percentage, and UTC date formatting helpers (#656–#659).
 
 ### Changed
-- No unreleased changes recorded yet.
+- Event and treasury analytics polling share serial requests, capped exponential backoff, and cleanup.
 
 ### Fixed
 - No unreleased fixes recorded yet.

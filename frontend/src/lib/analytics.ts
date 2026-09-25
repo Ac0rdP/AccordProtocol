@@ -185,7 +185,72 @@ export async function fetchTreasuryBalanceHistory(): Promise<
       }));
     }
     return [];
+export type SpendByOwner = {
+  owner: string;
+  shortOwner: string;
+  total: number;
+  count: number;
+};
+
+function formatShortOwner(addr: string): string {
+  if (!addr || addr.length < 10) return addr || "Unknown";
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
+export function computeSpendByOwner(proposals: Proposal[]): SpendByOwner[] {
+  const totals = new Map<string, { total: number; count: number }>();
+  for (const p of proposals) {
+    const owner = p.proposer || "Unknown";
+    const amount = parseFloat(p.amount) || 0;
+    const entry = totals.get(owner) ?? { total: 0, count: 0 };
+    entry.total += amount;
+    entry.count += 1;
+    totals.set(owner, entry);
+  }
+  return [...totals.entries()]
+    .map(([owner, { total, count }]) => ({
+      owner,
+      shortOwner: formatShortOwner(owner),
+      total,
+      count,
+    }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Fetch spend-by-owner data from GET /spend/by-owner endpoint.
+ * Returns an array of SpendByOwner objects or [] on error.
+ */
+export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase ? `${apiBase}/spend/by-owner` : "/spend/by-owner";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as unknown;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((item: Record<string, unknown>) => {
+        const owner = String(item.owner ?? item.address ?? item.proposer ?? "Unknown");
+        const total =
+          typeof item.total === "number"
+            ? item.total
+            : parseFloat(String(item.total || "0")) || 0;
+        const count =
+          typeof item.count === "number"
+            ? item.count
+            : parseInt(String(item.count || "0"), 10) || 0;
+        return {
+          owner,
+          shortOwner: formatShortOwner(owner),
+          total,
+          count,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
   } catch {
     return [];
   }
 }
+
+// TODO: Add tests confirming the analytics aggregations compute the correct totals
