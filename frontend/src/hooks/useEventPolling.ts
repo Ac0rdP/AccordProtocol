@@ -1,48 +1,24 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { getContractEvents, getLatestLedger } from "../lib/contract";
+import { startPolling } from "../lib/polling";
 
 export function useEventPolling(
   refresh: () => void | Promise<void>,
-  intervalMs: number
+  intervalMs: number,
 ) {
-  const lastSeenLedger = useRef<number | null>(null);
-
   useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      try {
-        const currentLedger = await getLatestLedger();
-        if (!cancelled) {
-          lastSeenLedger.current = currentLedger;
-        }
-      } catch (err) {
-        console.error("Failed to initialize event polling ledger checkpoint", err);
-      }
-    }
-
-    init();
-
-    const intervalId = setInterval(async () => {
-      if (lastSeenLedger.current === null) {
+    let lastSeenLedger: number | null = null;
+    const polling = startPolling(async (signal) => {
+      if (lastSeenLedger === null) {
+        lastSeenLedger = await getLatestLedger();
         return;
       }
-
-      try {
-        const latest = await getContractEvents(lastSeenLedger.current);
-
-        if (latest > lastSeenLedger.current && !cancelled) {
-          await refresh();
-          lastSeenLedger.current = latest;
-        }
-      } catch (err) {
-        console.error("Error during event polling", err);
+      const latest = await getContractEvents(lastSeenLedger, { throwOnError: true });
+      if (latest > lastSeenLedger && !signal.aborted) {
+        await refresh();
+        if (!signal.aborted) lastSeenLedger = latest;
       }
-    }, intervalMs);
-
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
+    }, intervalMs, (error) => console.error("Error during event polling", error));
+    return polling.stop;
   }, [refresh, intervalMs]);
 }
