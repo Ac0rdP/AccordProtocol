@@ -10,7 +10,7 @@ export type Role =
 
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
 
-export type ProposalRole = "Owner";
+export type Role = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
 
 export type ProposalKind =
   | "transfer"
@@ -47,13 +47,10 @@ export type Proposal = {
 
 export type Owner = {
   address: string;
+  fullAddress: string;
   label: string;
+  roles: Role[];
   weight?: number;
-};
-
-export type OwnerWeight = {
-  address: string;
-  weight: number;
 };
 
 export type DashboardStat = {

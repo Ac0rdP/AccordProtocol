@@ -12,6 +12,7 @@ import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
+import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
@@ -43,7 +44,7 @@ type OptimisticPatch = {
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
-  const [showRoleManagement, setShowRoleManagement] = useState(false);
+  const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -150,12 +151,12 @@ export default function App() {
       ),
     [proposals]
   );
-  const isOwner = Boolean(
-    wallet.address && ownerAddresses.includes(wallet.address),
-  );
-  const showReadOnlyBanner = Boolean(
-    wallet.address && !loading && !error && !isOwner,
-  );
+  const walletRoles = useRoles({
+    walletAddress: wallet.address,
+    ownerAddresses,
+    loading,
+    error,
+  });
 
   const { address, connect } = wallet;
 
@@ -420,13 +421,6 @@ export default function App() {
           </div>
         )}
 
-        {showReadOnlyBanner && (
-          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            You are connected in read-only mode. This wallet is not a multisig
-            owner.
-          </div>
-        )}
-
         {!wallet.installed ? (
           <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
             <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-300">
@@ -481,7 +475,8 @@ export default function App() {
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
                   onCreateRecurringPayment={() => setShowCreateRecurring(true)}
-                  recurringButtonRef={recurringButtonRef}
+                  walletRoles={walletRoles.roles}
+                  roleBanner={walletRoles.banner}
                   loading={loading}
                   error={error}
                 />
@@ -508,7 +503,7 @@ export default function App() {
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
                   totalOwners={owners.length}
-                  onManageRole={() => setShowRoleManagement(true)}
+                  onManageRoles={setRoleModalTarget}
                 />
               }
             />
@@ -542,6 +537,16 @@ export default function App() {
           ownerAddresses={ownerAddresses}
           threshold={threshold}
           onClose={() => setShowRoleManagement(false)}
+          onSubmitted={refresh}
+        />
+      )}
+      {roleModalTarget && (
+        <GrantRevokeRoleModal
+          walletAddress={wallet.address}
+          ownerAddresses={ownerAddresses}
+          threshold={threshold}
+          initialTargetAddress={roleModalTarget}
+          onClose={() => setRoleModalTarget(null)}
           onSubmitted={refresh}
         />
       )}
