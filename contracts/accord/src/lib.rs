@@ -238,14 +238,6 @@ pub struct ProposalCreatedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub enum RecurringStatus {
-    Active,
-    Cancelled,
-    Completed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
 pub struct RecurringSchedule {
     pub id: u64,
     pub proposer: Address,
@@ -255,26 +247,6 @@ pub struct RecurringSchedule {
     pub remaining_occurrences: u32,
     pub status: RecurringStatus,
     pub description: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct RecurringPayment {
-    pub id: u64,
-    pub recipient: Address,
-    pub token: Address,
-    pub amount_per_period: i128,
-    pub interval_secs: u64,
-    pub start_time: u64,
-    pub end_time: Option<u64>,
-    pub cliff_time: Option<u64>,
-    pub total_cap: Option<i128>,
-    pub last_disbursed_at: u64,
-    pub total_disbursed: i128,
-    pub periods_disbursed: u32,
-    pub status: RecurringStatus,
-    pub proposer: Address,
-    pub category: ProposalCategory,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -462,6 +434,24 @@ pub struct RbacMigratedEvent {
     pub role_version: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleGrantedEvent {
+    pub target: Address,
+    pub role: Role,
+    pub before: Vec<Role>,
+    pub after: Vec<Role>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleRevokedEvent {
+    pub target: Address,
+    pub role: Role,
+    pub before: Vec<Role>,
+    pub after: Vec<Role>,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -642,6 +632,10 @@ fn owner_spending_limits_key(owner: &Address) -> (Symbol, Address) {
 
 fn spent_tracking_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
     (symbol_short!("SPENT"), owner.clone(), token.clone())
+}
+
+fn delegation_key(delegator: &Address) -> (Symbol, Address) {
+    (symbol_short!("DELEG"), delegator.clone())
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -955,6 +949,63 @@ fn require_role_holder(env: &Env, address: &Address, role: Role) -> Result<(), C
         Ok(())
     } else {
         Err(ContractError::MissingRole)
+    }
+}
+
+/// Converts a Symbol role argument (e.g. "Approver", "Proposer") into the
+/// internal `Role` enum. Accepts both the short UI names (Proposer/Approver/
+/// Executor) and the historical enum variant names
+/// (CreateProposal/ApproveProposal/ExecuteProposal) for backwards
+/// compatibility. Returns `InvalidRole` for any other value.
+fn symbol_to_role(env: &Env, sym: &Symbol) -> Result<Role, ContractError> {
+    if *sym == Symbol::new(env, "Proposer") || *sym == Symbol::new(env, "CreateProposal") {
+        return Ok(Role::CreateProposal);
+    }
+    if *sym == Symbol::new(env, "Approver") || *sym == Symbol::new(env, "ApproveProposal") {
+        return Ok(Role::ApproveProposal);
+    }
+    if *sym == Symbol::new(env, "Executor") || *sym == Symbol::new(env, "ExecuteProposal") {
+        return Ok(Role::ExecuteProposal);
+    }
+    Err(ContractError::InvalidRole)
+}
+
+/// Returns true if the Symbol denotes the Approver role in any accepted form.
+fn is_approver_symbol(env: &Env, sym: &Symbol) -> bool {
+    matches!(symbol_to_role(env, sym), Ok(Role::ApproveProposal))
+}
+
+/// Sums the voting weight of all owners that currently hold the Approver role.
+fn total_approver_weight(env: &Env) -> Result<u32, ContractError> {
+    let owners = read_owners_map(env)?;
+    let mut total: u32 = 0;
+    for owner in owners.keys().iter() {
+        if has_role(env, &owner, &Role::ApproveProposal) {
+            let w = owners.get(owner.clone()).unwrap_or(0);
+            total = checked_weight_add(total, w)?;
+        }
+    }
+    Ok(total)
+}
+
+/// Weight that would remain with Approvers after revoking `target`'s
+/// Approver role. If `target` is not an owner or does not hold Approver,
+/// the result equals the current total approver weight.
+fn remaining_approver_weight_after_revoke(
+    env: &Env,
+    target: &Address,
+) -> Result<u32, ContractError> {
+    let owners = read_owners_map(env)?;
+    let total = total_approver_weight(env)?;
+    if !has_role(env, target, &Role::ApproveProposal) {
+        return Ok(total);
+    }
+    if let Some(w) = owners.get(target.clone()) {
+        checked_weight_sub(total, w)
+    } else {
+        // Target holds Approver but is not an owner (e.g. non-owner delegate):
+        // revoking does not affect quorum, since only owner weight counts.
+        Ok(total)
     }
 }
 
@@ -1784,7 +1835,7 @@ impl AccordContract {
         write_role_version(&env, RBAC_VERSION);
 
         env.events().publish(
-            (symbol_short!("rbac_migrated"),),
+            (Symbol::new(&env, "rbac_migrated"),),
             RbacMigratedEvent {
                 owner_count: owners.len(),
                 role_version: RBAC_VERSION,
@@ -1859,7 +1910,7 @@ impl AccordContract {
 
     /// Disburse a recurring schedule (permissionless crank). Reject if schedule
     /// is in a terminal status (Cancelled or Completed) or called too early.
-    pub fn disburse_recurring(env: Env, id: u64) -> Result<(), ContractError> {
+    pub fn disburse_recurring_schedule(env: Env, id: u64) -> Result<(), ContractError> {
         let mut s = read_recurring_schedule(&env, id)?;
         if !matches!(s.status, RecurringStatus::Active) {
             return Err(ContractError::ProposalNotActive);
@@ -2585,6 +2636,7 @@ impl AccordContract {
         // Count the approver's effective (delegation-aware) weight, not just
         // their own raw weight — the exact value is stored per-approval so
         // `revoke` can later reverse precisely this amount.
+        let owners = read_owners_map(&env)?;
         let weight = compute_effective_weight(&env, &owners, &approver, raw_weight)?;
         write_approval_weight(&env, proposal_id, &approver, weight);
 
@@ -3144,11 +3196,59 @@ impl AccordContract {
                     },
                 );
             }
-            ProposalKind::GrantRole(_target, _role) => {
-                // Executing a GrantRole proposal updates target roles
+            ProposalKind::GrantRole(target, role_sym) => {
+                let role = symbol_to_role(&env, role_sym)?;
+                if has_role(&env, target, &role) {
+                    return Err(ContractError::RoleAlreadyGranted);
+                }
+                let before = read_owner_roles(&env, target);
+                let mut roles = before.clone();
+                roles.push_back(role.clone());
+                update_owner_roles(&env, target, &roles);
+                let after = read_owner_roles(&env, target);
+                env.events().publish(
+                    (Symbol::new(&env, "role_granted"),),
+                    RoleGrantedEvent {
+                        target: target.clone(),
+                        role: role.clone(),
+                        before,
+                        after,
+                    },
+                );
             }
-            ProposalKind::RevokeRole(_target, _role) => {
-                // Executing a RevokeRole proposal updates target roles
+            ProposalKind::RevokeRole(target, role_sym) => {
+                let role = symbol_to_role(&env, role_sym)?;
+                if !has_role(&env, target, &role) {
+                    return Err(ContractError::RoleNotGranted);
+                }
+                // Re-validate quorum-stranding at execute time: state may have
+                // drifted since proposal creation (another revoke could have
+                // already reduced approver weight).
+                if role == Role::ApproveProposal {
+                    let threshold = read_threshold(&env)?;
+                    let remaining = remaining_approver_weight_after_revoke(&env, target)?;
+                    if remaining < threshold {
+                        return Err(ContractError::WouldBreakQuorum);
+                    }
+                }
+                let before = read_owner_roles(&env, target);
+                let mut next = Vec::new(&env);
+                for r in before.iter() {
+                    if r != role {
+                        next.push_back(r);
+                    }
+                }
+                update_owner_roles(&env, target, &next);
+                let after = read_owner_roles(&env, target);
+                env.events().publish(
+                    (Symbol::new(&env, "role_revoked"),),
+                    RoleRevokedEvent {
+                        target: target.clone(),
+                        role: role.clone(),
+                        before,
+                        after,
+                    },
+                );
             }
         }
 
@@ -3572,6 +3672,151 @@ impl AccordContract {
                 proposer,
                 threshold,
                 category: ProposalCategory::Ops,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to grant a role to a target address.
+    ///
+    /// Guard: if the target already holds the role, returns `RoleAlreadyGranted`.
+    /// The role argument is a Symbol accepting "Proposer"/"CreateProposal",
+    /// "Approver"/"ApproveProposal", "Executor"/"ExecuteProposal".
+    pub fn create_grant_role_proposal(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        role: Symbol,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_not_frozen(&env)?;
+
+        let parsed = symbol_to_role(&env, &role)?;
+        if has_role(&env, &target, &parsed) {
+            return Err(ContractError::RoleAlreadyGranted);
+        }
+
+        validate_description(&description)?;
+        validate_deadline(&env, deadline)?;
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::GrantRole(target.clone(), role.clone()),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to revoke a role from a target address.
+    ///
+    /// # Quorum-safety guard
+    /// Revoking `Approver` is rejected with `WouldBreakQuorum` if the combined
+    /// weight of owners that would still hold `Approver` after the revoke would
+    /// fall below the current threshold (quorum requirement). This mirrors the
+    /// existing `WouldBreakThreshold`/`WouldBreakQuorum` guards for removing
+    /// owners or changing thresholds, and prevents the multisig from stranding
+    /// itself so no future proposal can reach quorum.
+    ///
+    /// For non-Approver roles or targets that do not hold Approver / are not
+    /// owners, the check is a no-op (remaining weight equals current total
+    /// approver weight).
+    pub fn create_revoke_role_proposal(
+        env: Env,
+        proposer: Address,
+        target: Address,
+        role: Symbol,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_not_frozen(&env)?;
+
+        let parsed = symbol_to_role(&env, &role)?;
+        if !has_role(&env, &target, &parsed) {
+            return Err(ContractError::RoleNotGranted);
+        }
+
+        // Quorum-stranding guard: only applies to Approver revokes.
+        if parsed == Role::ApproveProposal {
+            let threshold = read_threshold(&env)?;
+            let remaining = remaining_approver_weight_after_revoke(&env, &target)?;
+            if remaining < threshold {
+                return Err(ContractError::WouldBreakQuorum);
+            }
+        }
+
+        validate_description(&description)?;
+        validate_deadline(&env, deadline)?;
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::RevokeRole(target.clone(), role.clone()),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
