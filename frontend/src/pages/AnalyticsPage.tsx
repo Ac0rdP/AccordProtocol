@@ -165,6 +165,7 @@ export function AnalyticsPage() {
           }));
         }
       });
+
     return () => {
       active = false;
     };
