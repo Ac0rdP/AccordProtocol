@@ -17,10 +17,12 @@ Please read the [README](./README.md) first for product context, architecture, a
 7. [Branching, commits, and pull requests](#branching-commits-and-pull-requests)
 8. [Coding standards](#coding-standards)
 9. [Testing and quality gates](#testing-and-quality-gates)
-10. [Documentation](#documentation)
-11. [Security and responsible disclosure](#security-and-responsible-disclosure)
-12. [Licensing](#licensing)
-13. [Questions and maintainer contact](#questions-and-maintainer-contact)
+10. [Debugging tips](#debugging-tips)
+11. [Documentation](#documentation)
+12. [Release process](#release-process)
+13. [Security and responsible disclosure](#security-and-responsible-disclosure)
+14. [Licensing](#licensing)
+15. [Questions and maintainer contact](#questions-and-maintainer-contact)
 
 ---
 
@@ -266,7 +268,7 @@ When a reviewer requests changes:
 
 - **Delete your feature branch** to keep the repository tidy. GitHub offers a button for this after merge.
 - **Your name appears in the commit history** as a contributor to the project.
-- **Check the changelog** (`CHANGELOG.md`) to see your change listed in the next release, or follow the [issue tracker](https://github.com/thegreatfeez/accord-protocol/issues) for release announcements.
+- **Check the changelog** (`CHANGELOG.md`) to verify your entry is recorded under `[Unreleased]`. See the [Release process](#release-process) section for details on versioning, tagging, and how unreleased entries are packaged into official releases.
 
 ---
 
@@ -391,11 +393,268 @@ If your change touches both areas, run **both** frontend and contract commands a
 
 ---
 
+## Debugging tips
+
+This section covers the three tools you are most likely to need when a contract call misbehaves, a Rust build refuses to compile, or you need to inspect what actually landed on the network.
+
+### Reading Soroban diagnostic events
+
+Every state-changing function in the Accord contract calls `env.events().publish()` before returning. These events are the fastest way to confirm that a call did what you expected, or to find out at exactly which point it diverged from what you intended.
+
+#### Viewing events during a local `contract invoke`
+
+Append `--diagnostic-events` to any `stellar contract invoke` command. The CLI simulates the transaction first and prints the events that would be emitted alongside the result:
+
+```bash
+stellar contract invoke \
+  --network local \
+  --rpc-url http://localhost:8000 \
+  --source-account alice \
+  --id "$CONTRACT_ID" \
+  --diagnostic-events \
+  -- approve \
+  --approver "$ALICE" \
+  --proposal_id 1
+```
+
+The output includes a `diagnosticEvents` array. Each entry looks like this:
+
+```json
+{
+  "event": {
+    "type": "contract",
+    "contractId": "CA7...",
+    "topics": [{ "type": "sym", "value": "approved" }],
+    "data": {
+      "type": "map",
+      "entries": [
+        { "key": { "value": "id" },        "val": { "value": "1"       } },
+        { "key": { "value": "approver" },  "val": { "value": "GALICE..." } },
+        { "key": { "value": "approvals" }, "val": { "value": "1"       } },
+        { "key": { "value": "threshold" }, "val": { "value": "2"       } }
+      ]
+    }
+  }
+}
+```
+
+#### Event names and what they tell you
+
+The topic symbol identifies which event fired. All event names and their full payload schemas are documented in [`docs/CONTRACT_API.md — Event Payloads`](./docs/CONTRACT_API.md#event-payloads).
+
+| Topic symbol | Emitted by | Key fields to check |
+|---|---|---|
+| `"created"` | `create_proposal` | `id` (new proposal ID), `proposer`, `threshold`, `category`, `transfers` |
+| `"approved"` | `approve` | `id`, `approver`, `approvals` (running total), `threshold` |
+| `"revoked"` | `revoke` | `id`, `approver`, `approvals` (remaining count after revoke) |
+| `"executed"` | `execute` | `id`, `executor`, `transfers` (what was actually moved) |
+
+#### Using events to diagnose failures
+
+If a call returns an error, `--diagnostic-events` still shows any events that fired before the revert. If no topic event appears at all, the error happened before `env.events().publish()` — meaning the problem is in input validation (wrong owner, invalid token, expired deadline, and so on).
+
+Use the error code together with the event absence to narrow the root cause quickly. For the full list of error codes and their meanings, see [`docs/CONTRACT_API.md — Error Reference`](./docs/CONTRACT_API.md#error-reference).
+
+---
+
+### Common Rust compile errors in Soroban contracts
+
+New contributors to the contract layer tend to hit the same handful of compiler errors. Here are the most common ones and what they mean in the context of Soroban SDK code.
+
+#### 1. "value used after move" / "use of partially moved value"
+
+```
+error[E0382]: use of moved value: `proposal`
+  --> contracts/accord/src/lib.rs:123:18
+```
+
+**Cause:** Rust moves a value when it is passed to a function that takes ownership. Soroban types such as `Address`, `String`, and `Vec<T>` are not `Copy`, so passing one to a function or storing it consumes it. A subsequent use of the same binding fails to compile.
+
+**Fix:** Clone the value at the first use when you need it in more than one place:
+
+```rust
+// Before — compile error
+env.events().publish((symbol_short!("created"),), ProposalCreatedEvent {
+    proposer,         // moved here
+    ..
+});
+some_other_fn(proposer);  // ❌ moved value used again
+
+// After — clone at first use
+env.events().publish((symbol_short!("created"),), ProposalCreatedEvent {
+    proposer: proposer.clone(),  // ✅ clone consumed, original still valid
+    ..
+});
+some_other_fn(proposer);        // ✅ original used here
+```
+
+#### 2. "cannot borrow as mutable" / borrow checker conflicts
+
+```
+error[E0502]: cannot borrow `env` as mutable because it is also borrowed as immutable
+```
+
+**Cause:** Soroban's `Env` is a shared handle. Holding an immutable reference — for example, iterating over a storage result — while also trying to write through `env.storage()` creates an aliasing conflict the borrow checker rejects.
+
+**Fix:** Collect the data you need from `env` into an owned value (such as a `Vec`) before the mutable operation:
+
+```rust
+// Before — borrow conflict
+for owner in env.storage().persistent().get::<_, Vec<Address>>(&key).unwrap().iter() {
+    env.storage().persistent().set(&other_key, &owner);  // ❌ mutable borrow while iter holds ref
+}
+
+// After — collect first, then write
+let owners: Vec<Address> = env.storage().persistent().get(&key).unwrap();
+for owner in owners.iter() {
+    env.storage().persistent().set(&other_key, owner);  // ✅ no overlapping borrow
+}
+```
+
+#### 3. Unwrapping `Option` / `Result` with `.unwrap()` in contract code
+
+```
+error[E0308]: mismatched types
+  expected `Result<(), ContractError>`, found `()`
+```
+or a runtime panic in test output:
+
+```
+called `Option::unwrap()` on a `None` value
+```
+
+**Cause:** Soroban contract functions return `Result<T, ContractError>`. Using `.unwrap()` on a storage read or SDK call compiles, but panics at runtime if the value is absent — which produces an opaque host trap instead of a typed `ContractError` that tests can assert.
+
+**Fix:** Use `ok_or(ContractError::...)` to convert `Option` to `Result` and propagate errors with `?`:
+
+```rust
+// Before — panics on missing key
+let threshold: u32 = env.storage().instance().get(&threshold_key()).unwrap();
+
+// After — returns ContractError::NotInitialized if key is absent
+let threshold: u32 = env.storage()
+    .instance()
+    .get(&threshold_key())
+    .ok_or(ContractError::NotInitialized)?;
+```
+
+#### 4. `#[no_std]` environment: missing `std` types
+
+```
+error[E0433]: failed to resolve: use of undeclared crate or module `std`
+  --> contracts/accord/src/lib.rs:5:5
+  |
+  use std::collections::HashMap;
+```
+
+**Cause:** Soroban contracts compile with `#![no_std]` (the first line of `lib.rs`), which excludes the Rust standard library. Types like `HashMap`, `String` from `std`, `Vec` from `std`, and `format!` are not available.
+
+**Fix:** Use the Soroban SDK equivalents declared in `soroban_sdk`:  
+`soroban_sdk::Vec` instead of `std::vec::Vec`, `soroban_sdk::String` instead of `std::string::String`, `soroban_sdk::Map` instead of `std::collections::HashMap`. Import them from the SDK crate at the top of the file, matching the existing import block in `lib.rs`.
+
+#### 5. Missing `IntoVal` / `TryFromVal` implementations
+
+```
+error[E0277]: the trait bound `MyType: IntoVal<Env, Val>` is not satisfied
+```
+
+**Cause:** Storing a custom type in Soroban persistent storage requires that type to implement `IntoVal<Env, Val>` and `TryFromVal<Env, Val>`. The SDK generates these implementations automatically, but only when you annotate the type with `#[contracttype]`.
+
+**Fix:** Add `#[contracttype]` (and `#[derive(Clone)]`) to any struct or enum you store in or read from contract storage:
+
+```rust
+#[derive(Clone)]
+#[contracttype]
+pub struct MyData {
+    pub value: u32,
+}
+```
+
+---
+
+### Inspecting transactions in Stellar Lab
+
+[Stellar Lab](https://lab.stellar.org/) provides a browser-based interface for looking up transactions by hash and reading their full XDR result — useful when you have submitted a transaction from the CLI or the frontend and want to verify exactly what the network recorded.
+
+#### Finding a transaction by hash
+
+1. Open [https://lab.stellar.org/](https://lab.stellar.org/) in your browser.
+2. Click **Explorer** in the top navigation, then choose **Transactions**.
+3. Paste your transaction hash (the 64-character hex string printed by `stellar contract invoke` or returned by the Stellar SDK) into the search field and press Enter.
+
+If you are working against testnet, make sure the network selector in the top bar reads **Testnet** — results are network-specific and a mainnet hash will not appear in a testnet search.
+
+#### Reading the result: success vs. failure
+
+The transaction detail page shows a **Result** section. The two cases look like this:
+
+| Outcome | What you see in the Result section |
+|---|---|
+| **Success** | `txSUCCESS` at the top level; the `OperationResult` entry for the `invokeHostFunction` op shows `invokeHostFunctionSuccess` and the return value (or void for functions that return `()`) |
+| **Failure** | `txFAILED` at the top level; the `OperationResult` shows `invokeHostFunctionTrapped` or `invokeHostFunctionRecovered` |
+
+#### Locating the contract error code
+
+When a call fails, the contract error code is encoded as an `ScVal::Error` in the operation's `resultXdr`. Stellar Lab renders this in the **XDR Viewer** pane. Look for a field named `error` with a `contractCode` sub-field — its numeric value maps directly to the `ContractError` variants listed in [`docs/CONTRACT_API.md — Common Errors Quick Reference`](./docs/CONTRACT_API.md#common-errors-quick-reference).
+
+For example, a `contractCode` of `3` means `Unauthorized` (the signer is not a registered owner), and `10` means `ThresholdNotMet` (the proposal does not yet have enough approvals). Cross-referencing that table with the Lab output is usually the fastest way to diagnose a failed on-chain call without re-running the transaction locally.
+
+---
+
 ## Documentation
 
 - Update the **README** when you change user-visible setup steps, prerequisites, or high-level architecture.
 - Update **this file** when contribution rules or quality gates change.
 - For small behavior changes, **PR description** may be enough; for new contributor-facing workflows, prefer durable docs in the repo.
+
+---
+
+## Release process
+
+This section covers how releases are planned, versioned, tagged, and documented in Accord Protocol, and how contributors ensure their merged work is included.
+
+### How a release is cut
+
+Releases package accumulated changes from the `main` branch into official, tagged milestones (cross-referenced with [`ROADMAP.md`](./ROADMAP.md)). When cutting a release, a maintainer:
+
+1. Opens a release PR that updates [`CHANGELOG.md`](./CHANGELOG.md):
+   - Moves entries from `## [Unreleased]` into a new version section titled `## [X.Y.Z] - YYYY-MM-DD` (for example, `## [0.2.0] - 2026-08-01`).
+   - Re-creates empty `Added`, `Changed`, `Fixed`, and `Removed` subsections under `## [Unreleased]` for future PRs.
+2. Merges the release PR into `main`.
+3. Creates and pushes an annotated git tag matching the version string (for example, `git tag -a v0.2.0 -m "Release v0.2.0"` followed by `git push origin v0.2.0`).
+4. Publishes a GitHub Release attached to the new tag containing the release notes summary.
+
+### Versioning scheme
+
+Accord Protocol follows [Semantic Versioning (SemVer 2.0.0)](https://semver.org/): `MAJOR.MINOR.PATCH` (for example, `v0.2.0`).
+
+- **MAJOR (`X.0.0`)**: Incremented for breaking contract API changes, incompatible storage layout modifications, or protocol changes requiring data migration.  
+  *Example:* Changing public contract function parameters in `lib.rs` in a way that breaks existing clients, or altering storage keys such that previously written state cannot be deserialized without a migration script.
+- **MINOR (`0.X.0`)**: Incremented for new, backward-compatible features in the contract or frontend.  
+  *Example:* Adding spending limit governance (`create_spending_limit_proposal`), introducing guardian pause controls (`freeze`/`unfreeze`), or adding proposal category filters in the UI.
+- **PATCH (`0.0.X`)**: Incremented for backward-compatible bug fixes, security patches, documentation updates, or internal refactoring.  
+  *Example:* Correcting a deadline validation edge case, fixing a layout bug on proposal cards, or clarifying setup instructions in documentation.
+
+### What belongs in release notes
+
+Release notes provide a concise overview of changes since the prior release for treasury operators, integration developers, and co-owners.
+
+Release notes should include:
+- A high-level summary of the milestone theme (referencing [`ROADMAP.md`](./ROADMAP.md)).
+- Bulleted items organized under the standard Keep a Changelog categories matching [`CHANGELOG.md`](./CHANGELOG.md):
+  - **Added**: New contract functions, UI views, or developer tooling.
+  - **Changed**: Modifications to existing behavior, component styles, or default parameters.
+  - **Fixed**: Bug fixes, security patches, or error handling corrections.
+  - **Removed**: Deprecated or removed functions and features.
+- Explicit migration or upgrade notes if deployment steps or configuration options changed.
+
+### Ensuring your work is included in a release
+
+To ensure your merged pull request is credited and included in the next release:
+
+1. **Update `CHANGELOG.md` in your PR**: Before merging your PR, add a clear bullet point under `## [Unreleased]` in [`CHANGELOG.md`](./CHANGELOG.md) under the appropriate subsection (`Added`, `Changed`, `Fixed`, or `Removed`).
+2. **Write user/developer-oriented entries**: Frame the entry around what changed for users or developers (for example, `- Add spending limit proposal creation flow and display table`).
+3. **Ask when in doubt**: If you are unsure which subsection (`Added` vs `Changed`) your change belongs under, or whether your change requires a changelog entry, comment on your PR or tag a maintainer during code review.
 
 ---
 
