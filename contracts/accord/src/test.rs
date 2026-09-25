@@ -800,7 +800,7 @@ fn create_proposal_succeeds_for_non_owner_proposer() {
         Err(Ok(ContractError::MissingRole))
     );
 
-    set_roles(&env, &client.address, &non_owner, &[Role::CreateProposal]);
+    set_roles(&env, &client.address, &non_owner, &[Role::Proposer]);
     assert!(!client.get_owners().contains(&non_owner));
 
     let id = client.create_proposal(
@@ -841,7 +841,7 @@ fn create_proposal_non_owner_proposer_skips_owner_spending_limit() {
     );
 
     // ...but it is not enforced on the non-owner Proposer path.
-    set_roles(&env, &client.address, &non_owner, &[Role::CreateProposal]);
+    set_roles(&env, &client.address, &non_owner, &[Role::Proposer]);
     let id = client.create_proposal(
         &non_owner,
         &t(
@@ -862,7 +862,7 @@ fn create_proposal_owner_proposer_still_enforces_spending_limit() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let limit: i128 = 1_000_000;
     assert!(client
-        .get_role_members(&Role::CreateProposal)
+        .get_role_members(&Role::Proposer)
         .contains(&owner_a));
 
     let limit_id = client.create_spending_limit_proposal(
@@ -910,10 +910,10 @@ fn create_proposal_rejects_caller_without_proposer_role() {
         &env,
         &client.address,
         &owner_b,
-        &[Role::ApproveProposal, Role::ExecuteProposal],
+        &[Role::Approver, Role::Executor],
     );
     assert!(!client
-        .get_role_members(&Role::CreateProposal)
+        .get_role_members(&Role::Proposer)
         .contains(&owner_b));
 
     // One live proposal so an unchanged count is distinguishable from zero.
@@ -1291,7 +1291,7 @@ fn approve_rejects_non_owner() {
 // ─── Approve: Owner + Approver Role ──────────────────────────────────────────
 //
 // `approve` requires the caller to be an owner (so it has a weight to
-// accumulate) *and* to hold `Role::ApproveProposal`. Grant/revoke-role
+// accumulate) *and* to hold `Role::Approver`. Grant/revoke-role
 // proposals do not yet mutate roles on execution, so these tests arrange the
 // role matrix via direct storage manipulation, as `mark_rbac_unmigrated` does.
 
@@ -1310,7 +1310,7 @@ fn approve_succeeds_for_owner_with_approver_role() {
     let (env, client, owner_a, _, _, token_client) = setup_three_owner_weighted([5, 3, 2], 8);
     assert!(client.get_owners().contains(&owner_a));
     assert!(client
-        .get_role_members(&Role::ApproveProposal)
+        .get_role_members(&Role::Approver)
         .contains(&owner_a));
 
     let id = client.create_proposal(
@@ -1343,11 +1343,11 @@ fn approve_rejects_owner_without_approver_role() {
         &env,
         &client.address,
         &owner_b,
-        &[Role::CreateProposal, Role::ExecuteProposal],
+        &[Role::Proposer, Role::Executor],
     );
     assert!(client.get_owners().contains(&owner_b));
     assert!(!client
-        .get_role_members(&Role::ApproveProposal)
+        .get_role_members(&Role::Approver)
         .contains(&owner_b));
 
     let id = client.create_proposal(
@@ -1373,10 +1373,10 @@ fn approve_rejects_owner_without_approver_role() {
 #[test]
 fn approve_rejects_non_owner_with_approver_role() {
     let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
-    set_roles(&env, &client.address, &non_owner, &[Role::ApproveProposal]);
+    set_roles(&env, &client.address, &non_owner, &[Role::Approver]);
     assert!(!client.get_owners().contains(&non_owner));
     assert!(client
-        .get_role_members(&Role::ApproveProposal)
+        .get_role_members(&Role::Approver)
         .contains(&non_owner));
 
     let id = client.create_proposal(
@@ -3362,11 +3362,11 @@ fn execute_rejects_owner_without_executor_role() {
         &env,
         &client.address,
         &owner_c,
-        &[Role::CreateProposal, Role::ApproveProposal],
+        &[Role::Proposer, Role::Approver],
     );
     assert!(client.get_owners().contains(&owner_c));
     assert!(!client
-        .get_role_members(&Role::ExecuteProposal)
+        .get_role_members(&Role::Executor)
         .contains(&owner_c));
 
     let id = client.create_proposal(
@@ -3393,7 +3393,7 @@ fn execute_succeeds_for_non_owner_executor_on_ready_proposal() {
     let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
     let recipient = Address::generate(&env);
     let amount = 1_000_000_i128;
-    set_roles(&env, &client.address, &non_owner, &[Role::ExecuteProposal]);
+    set_roles(&env, &client.address, &non_owner, &[Role::Executor]);
     assert!(!client.get_owners().contains(&non_owner));
 
     let id = client.create_proposal(
@@ -3426,7 +3426,7 @@ fn cancel_expired_rejects_owner_without_executor_role() {
         &env,
         &client.address,
         &owner_b,
-        &[Role::CreateProposal, Role::ApproveProposal],
+        &[Role::Proposer, Role::Approver],
     );
     assert!(client.get_owners().contains(&owner_b));
 
@@ -3453,7 +3453,7 @@ fn cancel_expired_rejects_owner_without_executor_role() {
 #[test]
 fn cancel_expired_succeeds_for_non_owner_executor() {
     let (env, client, owner_a, _, _, non_owner, token_client) = setup(1);
-    set_roles(&env, &client.address, &non_owner, &[Role::ExecuteProposal]);
+    set_roles(&env, &client.address, &non_owner, &[Role::Executor]);
 
     let id = client.create_proposal(
         &owner_a,
@@ -7170,17 +7170,17 @@ fn migrate_to_rbac_grants_default_roles_and_is_single_run() {
     assert_eq!(client.get_role_version(), RBAC_VERSION);
     let roles = client.get_roles(&owner_a);
     assert_eq!(roles.len(), 3);
-    assert!(roles.contains(&Role::CreateProposal));
-    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&owner_c));
+    assert!(roles.contains(&Role::Proposer));
+    assert!(client.get_role_members(&Role::Executor).contains(&owner_c));
 
     let roles_before = client.get_roles(&owner_a);
-    let members_before = client.get_role_members(&Role::ApproveProposal);
+    let members_before = client.get_role_members(&Role::Approver);
     assert_eq!(
         client.try_migrate_to_rbac(&approvers),
         Err(Ok(ContractError::AlreadyMigrated))
     );
     assert_eq!(client.get_roles(&owner_a), roles_before);
-    assert_eq!(client.get_role_members(&Role::ApproveProposal), members_before);
+    assert_eq!(client.get_role_members(&Role::Approver), members_before);
 }
 
 #[test]
@@ -7197,7 +7197,7 @@ fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
     client.approve(&owner_b, &add_id);
     client.execute(&owner_c, &add_id);
     assert_eq!(client.get_roles(&new_owner).len(), 3);
-    assert!(client.get_role_members(&Role::CreateProposal).contains(&new_owner));
+    assert!(client.get_role_members(&Role::Proposer).contains(&new_owner));
 
     let remove_id = client.create_remove_owner_proposal(
         &owner_a,
@@ -7209,7 +7209,7 @@ fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
     client.approve(&owner_b, &remove_id);
     client.execute(&owner_c, &remove_id);
     assert!(client.get_roles(&new_owner).is_empty());
-    assert!(!client.get_role_members(&Role::ExecuteProposal).contains(&new_owner));
+    assert!(!client.get_role_members(&Role::Executor).contains(&new_owner));
 }
 
 #[test]
@@ -8689,8 +8689,8 @@ fn test_rbac_role_version_and_roles() {
     assert_eq!(client.get_role_version(), 1);
 
     let roles_owner = client.get_roles(&owner_a);
-    assert!(roles_owner.contains(Role::CreateProposal));
-    assert!(roles_owner.contains(Role::ApproveProposal));
+    assert!(roles_owner.contains(Role::Proposer));
+    assert!(roles_owner.contains(Role::Approver));
 
     let roles_non_owner = client.get_roles(&non_owner);
     assert_eq!(roles_non_owner.len(), 0);
@@ -8700,7 +8700,7 @@ fn test_rbac_role_version_and_roles() {
 fn get_role_members_returns_holders_and_empty_for_unheld_role() {
     let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
 
-    let members = client.get_role_members(&Role::ApproveProposal);
+    let members = client.get_role_members(&Role::Approver);
     assert_eq!(members.len(), 3);
     assert!(members.contains(&owner_a));
     assert!(members.contains(&owner_b));
@@ -8709,8 +8709,8 @@ fn get_role_members_returns_holders_and_empty_for_unheld_role() {
 
     let owners = client.get_owners();
     mark_rbac_unmigrated(&env, &client.address, &owners);
-    assert!(client.get_role_members(&Role::ApproveProposal).is_empty());
-    assert!(client.get_role_members(&Role::ExecuteProposal).is_empty());
+    assert!(client.get_role_members(&Role::Approver).is_empty());
+    assert!(client.get_role_members(&Role::Executor).is_empty());
 }
 
 #[test]
@@ -8721,10 +8721,10 @@ fn get_role_members_result_is_capped() {
         many.push_back(Address::generate(&env));
     }
     env.as_contract(&client.address, || {
-        write_role_members(&env, &Role::CreateProposal, &many);
+        write_role_members(&env, &Role::Proposer, &many);
     });
 
-    let members = client.get_role_members(&Role::CreateProposal);
+    let members = client.get_role_members(&Role::Proposer);
     assert_eq!(members.len(), MAX_ROLE_MEMBERS_RESULT);
     assert_eq!(members, many.slice(0..MAX_ROLE_MEMBERS_RESULT));
 }
@@ -8735,9 +8735,9 @@ fn get_roles_returns_role_set_and_empty_for_non_holder() {
 
     let roles = client.get_roles(&owner_a);
     assert_eq!(roles.len(), 3);
-    assert!(roles.contains(&Role::CreateProposal));
-    assert!(roles.contains(&Role::ApproveProposal));
-    assert!(roles.contains(&Role::ExecuteProposal));
+    assert!(roles.contains(&Role::Proposer));
+    assert!(roles.contains(&Role::Approver));
+    assert!(roles.contains(&Role::Executor));
 
     assert!(client.get_roles(&non_owner).is_empty());
     assert!(client.get_roles(&Address::generate(&env)).is_empty());
@@ -8747,20 +8747,20 @@ fn get_roles_returns_role_set_and_empty_for_non_holder() {
 fn has_role_view_reports_held_and_unheld_roles() {
     let (env, client, owner_a, _, _, non_owner, _) = setup(2);
 
-    assert!(client.has_role(&owner_a, &Role::CreateProposal));
-    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
-    assert!(client.has_role(&owner_a, &Role::ExecuteProposal));
+    assert!(client.has_role(&owner_a, &Role::Proposer));
+    assert!(client.has_role(&owner_a, &Role::Approver));
+    assert!(client.has_role(&owner_a, &Role::Executor));
 
-    assert!(!client.has_role(&non_owner, &Role::CreateProposal));
-    assert!(!client.has_role(&non_owner, &Role::ExecuteProposal));
+    assert!(!client.has_role(&non_owner, &Role::Proposer));
+    assert!(!client.has_role(&non_owner, &Role::Executor));
 
     let mut approve_only = Vec::new(&env);
-    approve_only.push_back(Role::ApproveProposal);
+    approve_only.push_back(Role::Approver);
     env.as_contract(&client.address, || {
         update_owner_roles(&env, &owner_a, &approve_only);
     });
-    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
-    assert!(!client.has_role(&owner_a, &Role::ExecuteProposal));
+    assert!(client.has_role(&owner_a, &Role::Approver));
+    assert!(!client.has_role(&owner_a, &Role::Executor));
 }
 
 #[test]
@@ -8780,9 +8780,9 @@ fn initialize_grants_every_owner_default_roles() {
     client.initialize(&owners, &weights, &3, &0);
 
     let defaults = [
-        Role::CreateProposal,
-        Role::ApproveProposal,
-        Role::ExecuteProposal,
+        Role::Proposer,
+        Role::Approver,
+        Role::Executor,
     ];
 
     for owner in owners.iter() {
@@ -8805,9 +8805,9 @@ fn initialize_grants_every_owner_default_roles() {
 
 fn role_from_seed(seed: u8) -> Role {
     match seed % 3 {
-        0 => Role::CreateProposal,
-        1 => Role::ApproveProposal,
-        _ => Role::ExecuteProposal,
+        0 => Role::Proposer,
+        1 => Role::Approver,
+        _ => Role::Executor,
     }
 }
 
@@ -8952,7 +8952,7 @@ proptest! {
 // counted, and owners' governance weight is independent of their role set.
 
 fn grant_all_roles(env: &Env, client: &AccordContractClient, address: &Address) {
-    let roles = default_owner_roles(env);
+    let roles = Vec::from_slice(env, &DEFAULT_OWNER_ROLES);
     env.as_contract(&client.address, || {
         update_owner_roles(env, address, &roles);
     });
@@ -8998,8 +8998,8 @@ fn governance_entrypoints_reject_role_only_non_owner() {
     // being bypassed could let the role-only address through.
     let (env, client, owner_a, _, _, role_only, _) = setup(1);
     grant_all_roles(&env, &client, &role_only);
-    assert!(client.has_role(&role_only, &Role::ApproveProposal));
-    assert!(client.get_role_members(&Role::ExecuteProposal).contains(&role_only));
+    assert!(client.has_role(&role_only, &Role::Approver));
+    assert!(client.get_role_members(&Role::Executor).contains(&role_only));
     assert!(!client.is_owner(&role_only));
 
     freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a]));
@@ -9031,7 +9031,7 @@ fn role_only_address_cannot_top_up_owner_weight_to_threshold() {
 fn governance_duplicate_approvers_rejected_with_roles_present() {
     let (env, client, owner_a, _, _, role_only, _) = setup(2);
     grant_all_roles(&env, &client, &role_only);
-    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(client.has_role(&owner_a, &Role::Approver));
 
     let approvers = Vec::from_array(&env, [owner_a.clone(), owner_a.clone()]);
     assert_governance_rejects(&env, &client, &approvers, ContractError::DuplicateOwner);
@@ -9049,7 +9049,7 @@ fn governance_weight_sum_uses_owner_weight_not_roles() {
         setup_three_owner_weighted([2, 2, 1], 4);
 
     // Holding every role does not add weight: A alone (2) is below 4.
-    assert!(client.has_role(&owner_a, &Role::ApproveProposal));
+    assert!(client.has_role(&owner_a, &Role::Approver));
     let approvers = Vec::from_array(&env, [owner_a.clone()]);
     assert_governance_rejects(&env, &client, &approvers, ContractError::ThresholdNotMet);
 
@@ -9123,11 +9123,11 @@ fn approve_rejects_non_owner_holding_approver_role() {
     let id = transfer_proposal(&env, &client, &owner_a, &token_client);
 
     let mut approve_only = Vec::new(&env);
-    approve_only.push_back(Role::ApproveProposal);
+    approve_only.push_back(Role::Approver);
     env.as_contract(&client.address, || {
         update_owner_roles(&env, &non_owner, &approve_only);
     });
-    assert!(client.has_role(&non_owner, &Role::ApproveProposal));
+    assert!(client.has_role(&non_owner, &Role::Approver));
     assert!(!client.is_owner(&non_owner));
 
     assert_eq!(
@@ -9144,14 +9144,14 @@ fn approve_rejects_owner_without_approver_role() {
     let id = transfer_proposal(&env, &client, &owner_a, &token_client);
 
     let mut without_approve = Vec::new(&env);
-    without_approve.push_back(Role::CreateProposal);
-    without_approve.push_back(Role::ExecuteProposal);
+    without_approve.push_back(Role::Proposer);
+    without_approve.push_back(Role::Executor);
     env.as_contract(&client.address, || {
         update_owner_roles(&env, &owner_b, &without_approve);
     });
     assert!(client.is_owner(&owner_b));
-    assert!(!client.has_role(&owner_b, &Role::ApproveProposal));
-    assert!(!client.get_role_members(&Role::ApproveProposal).contains(&owner_b));
+    assert!(!client.has_role(&owner_b, &Role::Approver));
+    assert!(!client.get_role_members(&Role::Approver).contains(&owner_b));
 
     assert_eq!(
         client.try_approve(&owner_b, &id),
@@ -9167,7 +9167,7 @@ fn approve_succeeds_for_owner_with_approver_role() {
     let id = transfer_proposal(&env, &client, &owner_a, &token_client);
 
     assert!(client.is_owner(&owner_b));
-    assert!(client.has_role(&owner_b, &Role::ApproveProposal));
+    assert!(client.has_role(&owner_b, &Role::Approver));
 
     client.approve(&owner_b, &id);
     assert!(client.has_approved(&id, &owner_b));
