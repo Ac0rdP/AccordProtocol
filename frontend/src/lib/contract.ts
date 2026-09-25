@@ -6,7 +6,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { Proposal, ProposalStatus } from "../types/accord";
+import type { Proposal, ProposalStatus, Role } from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
@@ -160,6 +160,53 @@ export function mapProposal(raw: any, threshold: number): Proposal {
 export async function getOwners(): Promise<string[]> {
   const val = await simulateView("get_owners");
   return scValToNative(val) as string[];
+}
+
+function mapRole(raw: unknown): Role | null {
+  const role = typeof raw === "string"
+    ? raw
+    : raw && typeof raw === "object"
+      ? Object.keys(raw as object)[0]
+      : "";
+
+  switch (role.toLowerCase()) {
+    case "owner":
+      return "Owner";
+    case "viewer":
+      return "Viewer";
+    case "guardian":
+      return "Guardian";
+    case "spendinglimit":
+    case "spending_limit":
+    case "spending-limit":
+      return "SpendingLimit";
+    default:
+      return null;
+  }
+}
+
+function mapRoles(raw: unknown): Role[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return Array.from(
+    new Set(values.map(mapRole).filter((role): role is Role => role !== null))
+  );
+}
+
+export async function getRoles(
+  address: string,
+  ownerAddresses: string[] = []
+): Promise<Role[]> {
+  try {
+    const val = await simulateView("get_roles", [
+      nativeToScVal(address, { type: "address" }),
+    ]);
+    return mapRoles(scValToNative(val));
+  } catch (error) {
+    if (ownerAddresses.includes(address)) {
+      return ["Owner"];
+    }
+    return [];
+  }
 }
 
 export async function getThreshold(): Promise<number> {

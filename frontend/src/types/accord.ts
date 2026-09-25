@@ -2,6 +2,8 @@ export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "rev
 
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
 
+export type Role = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
+
 export type ProposalKind =
   | "transfer"
   | "add_owner"
@@ -30,7 +32,10 @@ export type Proposal = {
 
 export type Owner = {
   address: string;
+  fullAddress: string;
   label: string;
+  roles: Role[];
+  weight?: number;
 };
 
 export type DashboardStat = {

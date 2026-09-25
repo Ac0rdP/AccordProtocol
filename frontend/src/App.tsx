@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
+import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
@@ -38,6 +39,7 @@ type OptimisticPatch = {
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
+  const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -350,6 +352,7 @@ export default function App() {
                   owners={owners}
                   threshold={threshold}
                   totalOwners={owners.length}
+                  onManageRoles={setRoleModalTarget}
                 />
               }
             />
@@ -374,6 +377,16 @@ export default function App() {
         <CreateRecurringPaymentModal
           walletAddress={wallet.address}
           onClose={() => setShowCreateRecurring(false)}
+          onSubmitted={refresh}
+        />
+      )}
+      {roleModalTarget && (
+        <GrantRevokeRoleModal
+          walletAddress={wallet.address}
+          ownerAddresses={ownerAddresses}
+          threshold={threshold}
+          initialTargetAddress={roleModalTarget}
+          onClose={() => setRoleModalTarget(null)}
           onSubmitted={refresh}
         />
       )}

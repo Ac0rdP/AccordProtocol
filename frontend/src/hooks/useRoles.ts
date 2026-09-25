@@ -1,6 +1,7 @@
 import { useMemo } from "react";
+import type { Role } from "../types/accord";
 
-export type WalletRole = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
+export type WalletRole = Role;
 
 export type RoleBannerVariant = "viewer" | "role-holder" | "unrecognized";
 
