@@ -254,3 +254,7 @@ Found a vulnerability? See [`docs/SECURITY.md`](./docs/SECURITY.md) for responsi
 ## License
 
 MIT — see [LICENSE](./LICENSE)
+
+## Recent Changes
+- Ongoing improvements and fixes as part of active development.
+- See commit history and open issues for detailed change tracking.

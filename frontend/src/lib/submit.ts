@@ -375,6 +375,16 @@ export async function revokeProposal(
   ]);
 }
 
+export async function disburseRecurring(
+  callerAddress: string,
+  scheduleId: number
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "disburse_recurring", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+  ]);
+}
+
 export async function createProposal(
   callerAddress: string,
   to: string,
@@ -394,6 +404,131 @@ export async function createProposal(
     nativeToScVal(deadlineTs, { type: "u64" }),
     proposalCategoryScVal(category),
   ]);
+}
+
+export async function createDelegation(
+  callerAddress: string,
+  delegate: string,
+  weight: number,
+  expiryTs: bigint
+): Promise<void> {
+  // Contract signature: create_delegation(delegator, delegate, weight, expiry)
+  await buildAndSubmit(callerAddress, "create_delegation", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(delegate, { type: "address" }),
+    nativeToScVal(weight, { type: "u32" }),
+    nativeToScVal(expiryTs, { type: "u64" }),
+  ]);
+}
+
+export async function createSpendingLimitProposal(
+  callerAddress: string,
+  owner: string,
+  tokenAddress: string,
+  amount: bigint,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_set_spending_limit_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(owner, { type: "address" }),
+    nativeToScVal(tokenAddress, { type: "address" }),
+    nativeToScVal(amount, { type: "i128" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+// ─── Guardian / emergency pause ─────────────────────────────────────────────
+
+export async function freeze(
+  callerAddress: string
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "freeze", [
+    nativeToScVal(callerAddress, { type: "address" }),
+  ]);
+}
+
+export async function createSetGuardianProposal(
+  callerAddress: string,
+  newGuardian: string,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_set_guardian_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(newGuardian, { type: "address" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createUnfreezeProposal(
+  callerAddress: string,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_unfreeze_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+// ─── Co-signature helpers ────────────────────────────────────────────────────
+
+export async function buildAndAssembleTx(
+  callerAddress: string,
+  fn: string,
+  args: xdr.ScVal[]
+): Promise<string> {
+  const account = await server.getAccount(callerAddress);
+  const contract = new Contract(CONTRACT_ID);
+
+  const tx = new TransactionBuilder(account, {
+    fee: "100000",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(fn, ...args))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim)) {
+    const err = sim as rpc.Api.SimulateTransactionErrorResponse;
+    throw new Error(`Simulation failed: ${err.error ?? "unknown"}`);
+  }
+
+  const assembled = rpc.assembleTransaction(tx, sim).build();
+  return assembled.toXDR();
+}
+
+export async function signAndSubmitMultiSig(
+  xdrStr: string,
+  networkPassphrase?: string
+): Promise<void> {
+  const passphrase = networkPassphrase ?? NETWORK_PASSPHRASE;
+  const signed = await signTx(xdrStr, passphrase.includes("Public") ? "PUBLIC" : "TESTNET");
+  if (!signed.ok) throw new Error(signed.error);
+
+  const tx = TransactionBuilder.fromXDR(signed.value, passphrase);
+  const sent = await server.sendTransaction(tx);
+
+  if (sent.status === "ERROR") {
+    throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
+  }
+
+  const hash = sent.hash;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const res = await server.getTransaction(hash);
+    if (res.status === "SUCCESS") return;
+    if (res.status === "FAILED") {
+      throw new Error(`Transaction failed on-chain`);
+    }
+  }
+  throw new Error("Transaction not confirmed within 60s");
 }
 
 export async function estimateCreateProposalFee(
@@ -466,7 +601,8 @@ export async function createRecurringPaymentProposal(
   cliffTs: bigint | null,
   endTs: bigint | null,
   cap: bigint | null,
-  category: ProposalCategory
+  category: ProposalCategory,
+  kind: "FixedAmountPerPeriod" | "LinearVesting" = "FixedAmountPerPeriod"
 ): Promise<void> {
   await buildAndSubmit(callerAddress, "create_recurring_payment", [
     nativeToScVal(callerAddress, { type: "address" }),
@@ -479,5 +615,136 @@ export async function createRecurringPaymentProposal(
     optionalU64ScVal(endTs),
     optionalI128ScVal(cap),
     proposalCategoryScVal(category),
+    xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(kind)]),
   ]);
 }
+
+export async function disburseRecurringPayment(
+  callerAddress: string,
+  scheduleId: number
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "disburse_recurring", [
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+  ]);
+}
+
+export async function createCancelRecurringProposal(
+  callerAddress: string,
+  scheduleId: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_cancel_recurring_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createPauseRecurringProposal(
+  callerAddress: string,
+  scheduleId: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_pause_recurring_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createResumeRecurringProposal(
+  callerAddress: string,
+  scheduleId: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_resume_recurring_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createModifyRecurringProposal(
+  callerAddress: string,
+  scheduleId: number,
+  newAmount: bigint | null,
+  newIntervalSecs: bigint | null,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_modify_recurring_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+    optionalI128ScVal(newAmount),
+    optionalU64ScVal(newIntervalSecs),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+// ─── Governance proposal creation ────────────────────────────────────────────
+
+export async function createAddOwnerProposal(
+  callerAddress: string,
+  newOwner: string,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_add_owner_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(newOwner, { type: "address" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createRemoveOwnerProposal(
+  callerAddress: string,
+  ownerToRemove: string,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_remove_owner_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(ownerToRemove, { type: "address" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createChangeThresholdProposal(
+  callerAddress: string,
+  newThreshold: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_change_threshold_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(newThreshold, { type: "u32" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+
+export async function createChangeOwnerWeightProposal(
+  callerAddress: string,
+  targetOwner: string,
+  newWeight: number,
+  description: string,
+  deadlineTs: bigint
+): Promise<void> {
+  await buildAndSubmit(callerAddress, "create_change_weight_proposal", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(targetOwner, { type: "address" }),
+    nativeToScVal(newWeight, { type: "u32" }),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+  ]);
+}
+

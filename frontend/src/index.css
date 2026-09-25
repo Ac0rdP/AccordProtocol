@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Enable class-based dark mode (Tailwind v4 equivalent of darkMode: 'class') */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --animate-fade-in-up: fade-in-up 1s ease-out forwards;
 
