@@ -1,4 +1,10 @@
-import type { Proposal, ProposalCategory } from "../types/accord";
+import type {
+  AnalyticsAmount,
+  AnalyticsQuery,
+  Proposal,
+  ProposalCategory,
+  TreasurySummary,
+} from "../types/accord";
 
 export type CategoryFilter = "all" | ProposalCategory;
 
@@ -188,7 +194,7 @@ export function formatShare(share: number): string {
 
 /**
  * Fetch spend-by-category data from the backend time-series endpoint
- * GET /spend/by-category.  Falls back to an empty array on any error so
+ * GET /spend/by-category. Falls back to an empty array on any error so
  * callers can continue to render the page with local data.
  */
 export async function fetchSpendByCategory(): Promise<SpendByCategoryRow[]> {
@@ -196,6 +202,30 @@ export async function fetchSpendByCategory(): Promise<SpendByCategoryRow[]> {
   const url = apiBase
     ? `${apiBase}/spend/by-category`
     : "/spend/by-category";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as unknown;
+    if (!Array.isArray(data)) return [];
+    const rows: SpendByCategory[] = data.map(
+      (item: Record<string, unknown>) => ({
+        category: String(item.category ?? item.name ?? "Other"),
+        total:
+          typeof item.total === "number"
+            ? item.total
+            : parseFloat(String(item.total || "0")),
+        count:
+          typeof item.count === "number"
+            ? item.count
+            : parseInt(String(item.count || "0"), 10),
+      }),
+    );
+    return enrichWithShares(rows);
+  } catch {
+    return [];
+  }
+}
+
 export type SpendByOwner = {
   owner: string;
   shortOwner: string;
@@ -240,20 +270,6 @@ export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     if (!Array.isArray(data)) return [];
-    const rows: SpendByCategory[] = data.map(
-      (item: Record<string, unknown>) => ({
-        category: String(item.category ?? item.name ?? "Other"),
-        total:
-          typeof item.total === "number"
-            ? item.total
-            : parseFloat(String(item.total || "0")),
-        count:
-          typeof item.count === "number"
-            ? item.count
-            : parseInt(String(item.count || "0"), 10),
-      }),
-    );
-    return enrichWithShares(rows);
     return data
       .map((item: Record<string, unknown>) => {
         const owner = String(item.owner ?? item.address ?? item.proposer ?? "Unknown");
@@ -278,4 +294,98 @@ export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
   }
 }
 
-// TODO: Add tests confirming the analytics aggregations compute the correct totals
+/**
+ * Compute the treasury summary aggregation matching the GET /stats/summary shape.
+ * Aggregates executed transfer disbursements per token, counts active proposals,
+ * counts owners, and locates the single largest outflow within the optional date range.
+ */
+export function computeTreasurySummary(
+  proposals: Proposal[],
+  ownerCount: number,
+  filters?: AnalyticsQuery,
+): TreasurySummary {
+  const activeProposals = proposals.filter((p) =>
+    ["pending", "ready"].includes(p.status),
+  ).length;
+
+  const executedTransfers = proposals.filter((p) => {
+    if (p.status !== "executed" || p.kind !== "transfer") return false;
+
+    if (filters?.token && p.token !== filters.token) return false;
+
+    if (filters?.startDate || filters?.endDate) {
+      const ts = p.deadlineTs * 1000;
+      if (filters.startDate && ts < new Date(filters.startDate).getTime()) {
+        return false;
+      }
+      if (
+        filters.endDate &&
+        ts > new Date(filters.endDate).getTime() + MS_PER_DAY - 1
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const totalsByToken = new Map<string, number>();
+  let largestOutflow: { token: string; amount: AnalyticsAmount } | null = null;
+  let maxAmount = -1;
+
+  for (const p of executedTransfers) {
+    const token = p.token || "XLM";
+    const amount = parseFloat(p.amount) || 0;
+    const current = totalsByToken.get(token) ?? 0;
+    totalsByToken.set(token, current + amount);
+
+    if (amount > maxAmount) {
+      maxAmount = amount;
+      largestOutflow = {
+        token,
+        amount: String(amount),
+      };
+    }
+  }
+
+  const totalDisbursed: Record<string, AnalyticsAmount> = {};
+  for (const [token, total] of totalsByToken.entries()) {
+    totalDisbursed[token] = String(total);
+  }
+
+  return {
+    totalDisbursed,
+    activeProposals,
+    ownerCount,
+    largestOutflow,
+  };
+}
+
+/**
+ * Fetch treasury summary from GET /stats/summary.
+ * Returns TreasurySummary or null on failure.
+ */
+export async function fetchTreasurySummary(
+  query?: AnalyticsQuery,
+): Promise<TreasurySummary | null> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const params = new URLSearchParams();
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+  }
+  const search = params.toString();
+  const url = `${apiBase ? `${apiBase}/stats/summary` : "/stats/summary"}${search ? `?${search}` : ""}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = (await res.json()) as TreasurySummary;
+    return data;
+  } catch {
+    return null;
+  }
+}
+

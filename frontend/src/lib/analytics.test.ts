@@ -7,6 +7,8 @@ import {
   computeSpendByCategory,
   computeSpendByOwner,
   computeTreasuryFlow,
+  computeTreasurySummary,
+  fetchTreasurySummary,
   DEFAULT_ANALYTICS_FILTERS,
   enrichWithShares,
   filterExecutedTransfers,
@@ -226,4 +228,39 @@ describe("computeSpendByOwner", () => {
   });
 });
 
-// TODO: Add tests for the analytics HTTP API covering both successful responses and rejected input.
+describe("computeTreasurySummary", () => {
+  test("aggregates executed transfers, active proposals, owner count, and largest outflow", () => {
+    const proposals = [
+      makeProposal({ id: 1, kind: "transfer", amount: "100", token: "XLM", status: "executed" }),
+      makeProposal({ id: 2, kind: "transfer", amount: "500", token: "XLM", status: "executed" }),
+      makeProposal({ id: 3, kind: "transfer", amount: "50", token: "USDC", status: "executed" }),
+      makeProposal({ id: 4, kind: "transfer", amount: "1000", token: "XLM", status: "pending" }),
+      makeProposal({ id: 5, kind: "add_owner", amount: "-", token: "XLM", status: "ready" }),
+    ];
+
+    const summary = computeTreasurySummary(proposals, 3);
+    expect(summary).toEqual({
+      totalDisbursed: {
+        XLM: "600",
+        USDC: "50",
+      },
+      activeProposals: 2,
+      ownerCount: 3,
+      largestOutflow: {
+        token: "XLM",
+        amount: "500",
+      },
+    });
+  });
+
+  test("handles empty proposals cleanly", () => {
+    const summary = computeTreasurySummary([], 2);
+    expect(summary).toEqual({
+      totalDisbursed: {},
+      activeProposals: 0,
+      ownerCount: 2,
+      largestOutflow: null,
+    });
+  });
+});
+
