@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
   Line,
   LineChart,
@@ -14,7 +12,7 @@ import { jsPDF } from "jspdf";
 import type { Proposal, ProposalCategory } from "../types/accord";
 import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
-import { TreasuryBalanceChart } from "../components/TreasuryBalanceChart";
+import { SpendByCategoryChart } from "../components/SpendByCategoryChart";
 import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
 import {
   getContractUsdcBalance,
@@ -33,7 +31,7 @@ import {
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
-  fetchTreasuryBalanceHistory,
+  enrichWithShares,
   filterExecutedTransfers,
   type AnalyticsFilters,
   type CategoryFilter,
@@ -99,12 +97,10 @@ export function AnalyticsPage() {
 
     loadAnalyticsData()
       .then((data) => {
-        if (active) {
-          setState({ ...data, loading: false, error: null });
-        }
+        if (active) setState({ ...data, loading: false, error: null });
       })
       .catch((err) => {
-        if (active) {
+        if (active)
           setState((prev) => ({
             ...prev,
             loading: false,
@@ -113,7 +109,9 @@ export function AnalyticsPage() {
                 ? err.message
                 : "Failed to load analytics data",
           }));
-        }
+      })
+      .finally(() => {
+        if (!active) return;
       });
 
     return () => {
@@ -147,6 +145,10 @@ export function AnalyticsPage() {
     let active = true;
     loadAnalyticsData()
       .then((data) => {
+        if (active) setState({ ...data, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (active)
         if (active) {
           setState({ ...data, loading: false, error: null });
         }
@@ -174,7 +176,7 @@ export function AnalyticsPage() {
   );
 
   const spendByCategory = useMemo(
-    () => computeSpendByCategory(filteredTransfers),
+    () => enrichWithShares(computeSpendByCategory(filteredTransfers)),
     [filteredTransfers],
   );
 
@@ -416,8 +418,8 @@ export function AnalyticsPage() {
         />
       </div>
 
-      <TreasuryBalanceChart
-        data={state.balanceHistory}
+      <SpendByCategoryChart
+        data={spendByCategory}
         loading={state.loading}
         error={state.error}
         onRetry={fetchData}

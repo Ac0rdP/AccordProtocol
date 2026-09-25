@@ -1,26 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
-import type {
-  DashboardStat,
-  Owner,
-  OwnerWeightChangeEvent,
-  Proposal,
-  RecurringSchedule,
-} from "../types/accord";
+import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
+import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
-import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
-import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
-import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import {
-  getRequiredQuorumWeight,
-  getDueRecurring,
-  getOwnerWeightChangeEvents,
-} from "../lib/contract";
-import { shortenAddr } from "../lib/soroban";
-
-const RECENT_WEIGHT_CHANGES = 5;
+import { canCreate, missingRoleTooltip } from "../lib/soroban";
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -32,7 +17,8 @@ type DashboardPageProps = {
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
   onCreateRecurringPayment: () => void;
-  recurringButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  walletRoles: WalletRole[];
+  roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
 };
@@ -47,7 +33,8 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
-  recurringButtonRef,
+  walletRoles,
+  roleBanner,
   loading,
   error,
 }: DashboardPageProps) {
@@ -55,11 +42,7 @@ export function DashboardPage({
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
-  const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
-  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>(
-    [],
-  );
-  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
+  const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -129,6 +112,19 @@ export function DashboardPage({
     setDismissedError(null);
   }, [error]);
 
+  const showRoleBanner = Boolean(
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key
+  );
+
+  const roleBannerStyles = roleBanner?.variant === "unrecognized"
+    ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+    : "border-sky-500/20 bg-sky-500/10 text-sky-100";
+
+  const createDisabledReason = walletAddress && !canCreate(walletRoles)
+    ? missingRoleTooltip("create")
+    : undefined;
+  const createDisabled = Boolean(createDisabledReason);
+
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
@@ -181,34 +177,29 @@ export function DashboardPage({
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {dueSchedules.length === 0 && !loading && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
-          <h3 className="font-semibold text-sm text-zinc-400 mb-1">
-            Due for disbursement
-          </h3>
-          <p className="text-xs text-zinc-600">
-            No schedules are currently due for disbursement.
-          </p>
-        </div>
-      )}
-
-      {error && !loading && dismissedError !== error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
-          <span>{error}</span>
+        )}
+      {showRoleBanner && roleBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label="Wallet role access"
+          className={`mb-6 flex items-start justify-between rounded-xl border px-4 py-3 text-sm ${roleBannerStyles}`}
+        >
+          <div>
+            <p className="font-medium text-white">{roleBanner.title}</p>
+            <p className="mt-1 leading-5">{roleBanner.message}</p>
+          </div>
           <button
             type="button"
-            onClick={() => {
-              setDismissedError(error);
-            }}
-            className="underline hover:text-red-300 ml-4 shrink-0 focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
+            onClick={() => setDismissedRoleBannerKey(roleBanner.key)}
+            aria-label="Dismiss role access message"
+            className="ml-4 shrink-0 rounded hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
           >
-            Dismiss
+            ✕
           </button>
         </div>
       )}
+
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
           <span>
@@ -240,7 +231,9 @@ export function DashboardPage({
           <button
             type="button"
             onClick={onCreateProposal}
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Plus size={14} />
             New
@@ -249,8 +242,9 @@ export function DashboardPage({
             ref={recurringButtonRef}
             type="button"
             onClick={onCreateRecurringPayment}
-            aria-label="Create recurring payment"
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Repeat2 size={14} />
             Recurring
@@ -301,27 +295,17 @@ export function DashboardPage({
             </button>
           </div>
         ) : (
-          displayedProposals.map((proposal) => {
-            // Sum approval weight by summing known owner weights for approver addresses
-            const approvalWeight = (proposal.approverAddresses || []).reduce(
-              (acc, addr) => acc + (weights[addr] ?? 0),
-              0,
-            );
-            return (
-              <ProposalCard
-                key={proposal.id}
-                proposal={proposal}
-                walletAddress={walletAddress}
-                onApprove={onApprove}
-                onExecute={onExecute}
-                onRevoke={onRevoke}
-                approvalWeight={approvalWeight}
-                quorumWeight={quorumWeight}
-                totalWeight={totalWeight}
-                ownerWeights={weights}
-              />
-            );
-          })
+          displayedProposals.map((proposal) => (
+            <ProposalCard
+              key={proposal.id}
+              proposal={proposal}
+              walletAddress={walletAddress}
+              onApprove={onApprove}
+              onExecute={onExecute}
+              onRevoke={onRevoke}
+              walletRoles={walletRoles}
+            />
+          ))
         )}
       </div>
 

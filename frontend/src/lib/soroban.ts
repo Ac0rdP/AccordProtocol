@@ -24,13 +24,34 @@ export function displayToStroops(value: number): bigint {
   return BigInt(Math.round(value * 10_000_000));
 }
 
-export function weightToPercent(weight: number, totalWeight: number): number {
-  if (totalWeight === 0) return 0;
-  return (weight / totalWeight) * 100;
+export type PermissionAction = "create" | "approve" | "execute";
+
+const OWNER_ROLE = "Owner";
+
+const ACTION_LABELS: Record<PermissionAction, string> = {
+  create: "Creating proposals",
+  approve: "Approving proposals",
+  execute: "Executing proposals",
+};
+
+function hasOwnerRole(roles: readonly string[]): boolean {
+  return roles.includes(OWNER_ROLE);
 }
 
-export function formatWeightPercent(weight: number, totalWeight: number): string {
-  return `${weightToPercent(weight, totalWeight).toFixed(1)}%`;
+export function canCreate(roles: readonly string[]): boolean {
+  return hasOwnerRole(roles);
+}
+
+export function canApprove(roles: readonly string[]): boolean {
+  return hasOwnerRole(roles);
+}
+
+export function canExecute(roles: readonly string[]): boolean {
+  return hasOwnerRole(roles);
+}
+
+export function missingRoleTooltip(action: PermissionAction): string {
+  return `${ACTION_LABELS[action]} requires the ${OWNER_ROLE} role.`;
 }
 
 const CONTRACT_ERRORS: Record<string, string> = {
