@@ -224,3 +224,40 @@ export type TreasuryAnalytics = {
   spendByOwner: OwnerSpendBucket[];
   flow: TreasuryFlowBucket[];
 };
+
+export type AnalyticsApiErrorCode =
+  | "VALIDATION_ERROR"
+  | "INVALID_PARAMETER"
+  | "NOT_FOUND"
+  | "INTERNAL_ERROR"
+  | "BAD_REQUEST";
+
+export type AnalyticsApiErrorDetail = {
+  field?: string;
+  message: string;
+  code?: string;
+};
+
+export type AnalyticsApiErrorResponse = {
+  error: {
+    code: AnalyticsApiErrorCode | string;
+    message: string;
+    details?: AnalyticsApiErrorDetail[];
+  };
+};
+
+export type ParsedAnalyticsQuery = {
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+  category?: ProposalCategory;
+  owner?: string;
+  status?: ProposalStatus;
+  limit: number;
+  offset: number;
+  sort: "deadline" | "amount" | "createdAt";
+  order: "asc" | "desc";
+  granularity?: AnalyticsGranularity;
+  timeSeries?: boolean;
+};
+

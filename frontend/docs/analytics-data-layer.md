@@ -63,3 +63,82 @@ strings and accepts bigint base units (7 decimals by default for Stellar tokens)
 `formatAnalyticsDate` render UTC dates. Numeric timestamps are Unix seconds.
 Invalid values render an em dash. Currency output uses en-US grouping, at least
 two fractional digits (limited by token precision), and rounds excess precision.
+
+## Standardized query parameters (#655)
+
+All analytics endpoints adhere to shared query parameter parsing and validation rules implemented in `src/lib/analyticsApi.ts`:
+
+| Parameter | Type | Default | Constraints / Allowed values | Description |
+| --- | --- | --- | --- | --- |
+| `limit` | integer | `20` | `1` to `100` | Number of items per page. |
+| `offset` | integer | `0` | `≥ 0` | Page offset index. |
+| `sort` | string | `createdAt` | `deadline`, `amount`, `createdAt` | Sort criterion. |
+| `order` | string | `desc` | `asc`, `desc` | Sort direction. |
+| `category` | string | none | `all`, `Transfer`, `Payroll`, `Grant`, `Ops`, `Other` | Filter proposals by category. |
+| `status` | string | none | `all`, `pending`, `ready`, `executed`, `expired`, `revoked` | Filter proposals by status. |
+| `owner` | string | none | string (address or substring) | Filter by proposer/owner address. |
+| `token` | string | none | string (e.g. `XLM`, `USDC`) | Filter by token symbol. |
+| `startDate` | string | none | ISO 8601 date / date-time | Lower bound (inclusive). |
+| `endDate` | string | none | ISO 8601 date / date-time | Upper bound (inclusive). Must be `≥ startDate`. |
+| `granularity`| string | none | `day`, `week`, `month` | Bucket grouping interval. |
+| `timeSeries` | boolean | none | `true`, `false` | Include historical time-series datapoints. |
+
+## Error response format (#655)
+
+Every analytics endpoint uses a uniform error response shape when handling invalid input or request errors:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid query parameters",
+    "details": [
+      {
+        "field": "limit",
+        "message": "Limit must be an integer between 1 and 100",
+        "code": "INVALID_LIMIT"
+      }
+    ]
+  }
+}
+```
+
+Standard error codes:
+- `VALIDATION_ERROR` (HTTP 400): One or more query parameters failed validation.
+- `INVALID_PARAMETER` (HTTP 400): Parameter format or value is malformed.
+- `NOT_FOUND` (HTTP 404): Endpoint or resource not found.
+- `METHOD_NOT_ALLOWED` (HTTP 405): Method is not supported (endpoints are GET only).
+- `INTERNAL_ERROR` (HTTP 500): Server error occurred while fetching or processing data.
+
+## GET /stats/summary endpoint (#654)
+
+Exposes treasury summary statistics matching the dashboard stat card requirements in a single response:
+
+- **Path**: `GET /stats/summary`
+- **Query parameters**:
+  - `startDate` (optional): Filter executed transfers starting from this ISO date.
+  - `endDate` (optional): Filter executed transfers up to this ISO date.
+  - `token` (optional): Filter disbursements and largest outflow to a specific token.
+
+### Response fields (`TreasurySummary`)
+
+```json
+{
+  "totalDisbursed": {
+    "XLM": "2000.0000000",
+    "USDC": "500.0000000"
+  },
+  "activeProposals": 3,
+  "ownerCount": 4,
+  "largestOutflow": {
+    "token": "XLM",
+    "amount": "1500.0000000"
+  }
+}
+```
+
+- `totalDisbursed`: Map of token identifiers to total amounts disbursed by executed transfers within the date range. Serialized as decimal token unit strings.
+- `activeProposals`: Number of currently active proposals (`pending` or `ready`).
+- `ownerCount`: Total count of multisig owners.
+- `largestOutflow`: The single executed transfer proposal with the highest disbursed amount within the date range, or `null` if no transfers exist.
+
