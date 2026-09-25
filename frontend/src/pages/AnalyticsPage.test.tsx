@@ -109,7 +109,7 @@ describe("AnalyticsPage", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText("No spend data matches the selected filters."),
+        screen.getByText("No spend data available for the selected filters."),
       ).toBeInTheDocument(),
     );
     expect(
@@ -133,7 +133,6 @@ describe("AnalyticsPage", () => {
     await waitFor(() =>
       expect(screen.getAllByText("RPC unavailable")).toHaveLength(3),
     );
-
     mockSuccessfulLoad([rawProposal()]);
     const retryButtons = screen.getAllByRole("button", { name: /retry/i });
     fireEvent.click(retryButtons[0]);
