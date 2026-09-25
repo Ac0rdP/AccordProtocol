@@ -519,6 +519,7 @@ pub enum ContractError {
     CannotRemoveLastOwner = 49,
     ThresholdExceedsOwnerCount = 50,
     ScheduleNotActive = 51,
+    MissingRole = 52,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -929,12 +930,26 @@ fn has_role(env: &Env, owner: &Address, role: &Role) -> bool {
     false
 }
 
+/// Requires `owner` to be an owner (`Unauthorized` otherwise) that holds
+/// `role` (`MissingRole` otherwise).
 fn require_role(env: &Env, owner: &Address, role: Role) -> Result<(), ContractError> {
     require_owner_and_weight(env, owner)?;
     if has_role(env, owner, &role) {
         Ok(())
     } else {
-        Err(ContractError::Unauthorized)
+        Err(ContractError::MissingRole)
+    }
+}
+
+/// Like `require_role`, but without the ownership check — for roles a
+/// non-owner may hold, such as an Executor keeper.
+fn require_role_holder(env: &Env, address: &Address, role: Role) -> Result<(), ContractError> {
+    // Surface `NotInitialized` before the role check, as `require_role` does.
+    read_owners_map(env)?;
+    if has_role(env, address, &role) {
+        Ok(())
+    } else {
+        Err(ContractError::MissingRole)
     }
 }
 
@@ -1862,7 +1877,8 @@ impl AccordContract {
     /// Creates a new transfer proposal with one or more asset transfers.
     ///
     /// # Arguments
-    /// * `proposer` - Owner proposing the transfer. Must authorize.
+    /// * `proposer` - Holder of the Proposer role, owner or not. Must authorize.
+    ///   Owner-keyed spending limits apply only when the proposer is an owner.
     /// * `transfers` - Asset transfers to execute (1-3). Each must have a valid token and amount ≥ 1.
     /// * `description` - Human-readable description (max 300 chars).
     /// * `deadline` - Unix timestamp after which the proposal expires.
@@ -1875,7 +1891,12 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        // A non-owner holding the Proposer role may draft transfers; owner
+        // proposers keep their owner-keyed spending limits (checked below).
+        let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
+        if !has_role(&env, &proposer, &Role::CreateProposal) {
+            return Err(ContractError::MissingRole);
+        }
         require_not_frozen(&env)?;
 
         let transfers_len = transfers.len();
@@ -1893,7 +1914,7 @@ impl AccordContract {
             }
         }
 
-        {
+        if proposer_is_owner {
             let mut checked_tokens: Vec<Address> = Vec::new(&env);
             let mut checked_totals: Vec<i128> = Vec::new(&env);
             for transfer in transfers.iter() {
@@ -2638,9 +2659,12 @@ impl AccordContract {
     }
 
     /// Executes a proposal that has reached ready status.
+    ///
+    /// The executor must hold the Executor role but need not be an owner: the
+    /// owners have already authorised the proposal by reaching quorum.
     pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
         executor.require_auth();
-        require_role(&env, &executor, Role::ExecuteProposal)?;
+        require_role_holder(&env, &executor, Role::ExecuteProposal)?;
         require_not_frozen(&env)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -3149,12 +3173,12 @@ impl AccordContract {
     /// to `Expired` and refreshing the active-proposal counter if needed.
     /// Expired status is derived at read time, so no per-proposal write-back is
     /// required here. Non-existent IDs and non-expired proposals are skipped.
-    /// Only owners may call this function.
+    /// The caller must hold the Executor role; it need not be an owner.
     ///
     /// Returns the number of proposals actually swept.
     pub fn cancel_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
         caller.require_auth();
-        require_owner_and_weight(&env, &caller)?;
+        require_role_holder(&env, &caller, Role::ExecuteProposal)?;
 
         let mut swept: u32 = 0;
         let mut swept_ids = Vec::new(&env);

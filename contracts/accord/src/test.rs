@@ -768,7 +768,193 @@ fn create_proposal_rejects_non_owner() {
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
+    );
+}
+
+// ─── Create Proposal: Proposer Role ──────────────────────────────────────────
+//
+// A non-owner holding the Proposer role may draft proposals and skips the
+// owner-keyed spending-limit check; owner proposers are still limited. Roles
+// are arranged with `set_roles` (see the Approve: Owner + Approver Role tests).
+
+#[test]
+fn create_proposal_succeeds_for_non_owner_proposer() {
+    let (env, client, _, _, _, non_owner, token_client) = setup(2);
+    let transfers = t(
+        &env,
+        &Address::generate(&env),
+        1_000_000,
+        &token_client.address,
+    );
+
+    // Without the Proposer role the non-owner is rejected.
+    assert_eq!(
+        client.try_create_proposal(
+            &non_owner,
+            &transfers,
+            &str(&env, "Draft"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    set_roles(&env, &client.address, &non_owner, &[Role::CreateProposal]);
+    assert!(!client.get_owners().contains(&non_owner));
+
+    let id = client.create_proposal(
+        &non_owner,
+        &transfers,
+        &str(&env, "Draft"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.proposer, non_owner);
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    // Proposing does not count as an approval.
+    assert_eq!(proposal.approvals, 0);
+    assert!(!client.has_approved(&id, &non_owner));
+}
+
+#[test]
+fn create_proposal_non_owner_proposer_skips_owner_spending_limit() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let limit: i128 = 1_000_000;
+
+    // A limit keyed to the non-owner's address exists in storage...
+    let limit_id = client.create_spending_limit_proposal(
+        &owner_a,
+        &non_owner,
+        &token_client.address,
+        &limit,
+        &str(&env, "Cap non_owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_id);
+    client.approve(&owner_b, &limit_id);
+    client.execute(&owner_c, &limit_id);
+    assert_eq!(
+        client.get_spending_limit(&non_owner, &token_client.address),
+        Some(limit)
+    );
+
+    // ...but it is not enforced on the non-owner Proposer path.
+    set_roles(&env, &client.address, &non_owner, &[Role::CreateProposal]);
+    let id = client.create_proposal(
+        &non_owner,
+        &t(
+            &env,
+            &Address::generate(&env),
+            limit + 1,
+            &token_client.address,
+        ),
+        &str(&env, "Over owner-keyed limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(client.get_proposal(&id).proposer, non_owner);
+}
+
+#[test]
+fn create_proposal_owner_proposer_still_enforces_spending_limit() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit: i128 = 1_000_000;
+    assert!(client
+        .get_role_members(&Role::CreateProposal)
+        .contains(&owner_a));
+
+    let limit_id = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &limit,
+        &str(&env, "Cap owner_a"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_id);
+    client.approve(&owner_b, &limit_id);
+    client.execute(&owner_c, &limit_id);
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(
+                &env,
+                &Address::generate(&env),
+                limit + 1,
+                &token_client.address,
+            ),
+            &str(&env, "Over limit"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), limit, &token_client.address),
+        &str(&env, "Within limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(client.get_proposal(&id).proposer, owner_a);
+}
+
+#[test]
+fn create_proposal_rejects_caller_without_proposer_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    set_roles(
+        &env,
+        &client.address,
+        &owner_b,
+        &[Role::ApproveProposal, Role::ExecuteProposal],
+    );
+    assert!(!client
+        .get_role_members(&Role::CreateProposal)
+        .contains(&owner_b));
+
+    // One live proposal so an unchanged count is distinguishable from zero.
+    let existing = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Existing"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let active_before = env.as_contract(&client.address, || read_active_count(&env));
+    assert_eq!(active_before, 1);
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_b,
+            &t(
+                &env,
+                &Address::generate(&env),
+                1_000_000,
+                &token_client.address,
+            ),
+            &str(&env, "No Proposer role"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        active_before
+    );
+    assert_eq!(
+        client.try_get_proposal(&(existing + 1)),
+        Err(Ok(ContractError::ProposalNotFound))
     );
 }
 
@@ -1100,6 +1286,117 @@ fn approve_rejects_non_owner() {
         client.try_approve(&non_owner, &id),
         Err(Ok(ContractError::Unauthorized))
     );
+}
+
+// ─── Approve: Owner + Approver Role ──────────────────────────────────────────
+//
+// `approve` requires the caller to be an owner (so it has a weight to
+// accumulate) *and* to hold `Role::ApproveProposal`. Grant/revoke-role
+// proposals do not yet mutate roles on execution, so these tests arrange the
+// role matrix via direct storage manipulation, as `mark_rbac_unmigrated` does.
+
+fn set_roles(env: &Env, contract_id: &Address, who: &Address, roles: &[Role]) {
+    env.as_contract(contract_id, || {
+        let mut role_vec = Vec::new(env);
+        for role in roles.iter() {
+            role_vec.push_back(role.clone());
+        }
+        update_owner_roles(env, who, &role_vec);
+    });
+}
+
+#[test]
+fn approve_succeeds_for_owner_with_approver_role() {
+    let (env, client, owner_a, _, _, token_client) = setup_three_owner_weighted([5, 3, 2], 8);
+    assert!(client.get_owners().contains(&owner_a));
+    assert!(client
+        .get_role_members(&Role::ApproveProposal)
+        .contains(&owner_a));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+
+    assert!(client.has_approved(&id, &owner_a));
+    // The caller's owner weight is accumulated, not a flat count of one.
+    assert_eq!(client.get_proposal(&id).approvals, 5);
+    assert_eq!(
+        client.get_proposal(&id).approvals,
+        client.get_owner_weight(&owner_a)
+    );
+}
+
+#[test]
+fn approve_rejects_owner_without_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    set_roles(
+        &env,
+        &client.address,
+        &owner_b,
+        &[Role::CreateProposal, Role::ExecuteProposal],
+    );
+    assert!(client.get_owners().contains(&owner_b));
+    assert!(!client
+        .get_role_members(&Role::ApproveProposal)
+        .contains(&owner_b));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        client.try_approve(&owner_b, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert!(!client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn approve_rejects_non_owner_with_approver_role() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    set_roles(&env, &client.address, &non_owner, &[Role::ApproveProposal]);
+    assert!(!client.get_owners().contains(&non_owner));
+    assert!(client
+        .get_role_members(&Role::ApproveProposal)
+        .contains(&non_owner));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        client.try_approve(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &non_owner));
+    assert_eq!(client.get_proposal(&id).approvals, 0);
 }
 
 // ─── Weighted Approve ────────────────────────────────────────────────────────
@@ -1631,7 +1928,7 @@ fn execute_rejects_non_owner() {
     client.approve(&owner_b, &id);
     assert_eq!(
         client.try_execute(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -3001,7 +3298,7 @@ fn cancel_expired_rejects_non_owner() {
 
     assert_eq!(
         client.try_cancel_expired(&non_owner, &ids),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -3048,6 +3345,129 @@ fn cancel_expired_unblocks_active_cap() {
         &ProposalCategory::Transfer,
     );
     assert_eq!(new_id, 51);
+}
+
+// ─── Execute & cancel_expired: Executor Role ─────────────────────────────────
+//
+// Both entrypoints require the Executor role but not ownership, so a keeper
+// can finalise proposals the owners have already approved. Roles are arranged
+// with `set_roles` (see the Approve: Owner + Approver Role tests).
+
+#[test]
+fn execute_rejects_owner_without_executor_role() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    set_roles(
+        &env,
+        &client.address,
+        &owner_c,
+        &[Role::CreateProposal, Role::ApproveProposal],
+    );
+    assert!(client.get_owners().contains(&owner_c));
+    assert!(!client
+        .get_role_members(&Role::ExecuteProposal)
+        .contains(&owner_c));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, amount, &token_client.address),
+        &str(&env, "Pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+    assert_eq!(token_client.balance(&recipient), 0);
+}
+
+#[test]
+fn execute_succeeds_for_non_owner_executor_on_ready_proposal() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    set_roles(&env, &client.address, &non_owner, &[Role::ExecuteProposal]);
+    assert!(!client.get_owners().contains(&non_owner));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, amount, &token_client.address),
+        &str(&env, "Pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // The Executor role does not bypass quorum.
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_execute(&non_owner, &id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+
+    client.approve(&owner_b, &id);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+    client.execute(&non_owner, &id);
+
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+    assert_eq!(token_client.balance(&recipient), amount);
+}
+
+#[test]
+fn cancel_expired_rejects_owner_without_executor_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(1);
+    set_roles(
+        &env,
+        &client.address,
+        &owner_b,
+        &[Role::CreateProposal, Role::ApproveProposal],
+    );
+    assert!(client.get_owners().contains(&owner_b));
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000_i128, &token_client.address),
+        &str(&env, "x"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    set_timestamp(&env, DEADLINE + 1);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(id);
+    assert_eq!(
+        client.try_cancel_expired(&owner_b, &ids),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    // An owner holding the Executor role can still sweep the same batch.
+    assert_eq!(client.cancel_expired(&owner_a, &ids), 1);
+}
+
+#[test]
+fn cancel_expired_succeeds_for_non_owner_executor() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(1);
+    set_roles(&env, &client.address, &non_owner, &[Role::ExecuteProposal]);
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000_i128, &token_client.address),
+        &str(&env, "x"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    set_timestamp(&env, DEADLINE + 1);
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(id);
+    assert_eq!(client.cancel_expired(&non_owner, &ids), 1);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Expired);
 }
 
 // ─── Add-Owner Proposals ───────────────────────────────────────────────────────
