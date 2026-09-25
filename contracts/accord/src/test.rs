@@ -9246,3 +9246,203 @@ fn approve_succeeds_for_owner_with_approver_role() {
     assert_eq!(client.get_proposal(&id).approvals, 2);
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
 }
+
+// ─── Issue #605: Role Lifecycle ──────────────────────────────────────────────
+
+#[test]
+fn grant_and_revoke_role_lifecycle() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
+
+    let grant_id = client.create_grant_role_proposal(
+        &owner_a,
+        &non_owner,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant Viewer role"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &grant_id);
+    client.approve(&owner_b, &grant_id);
+    client.execute(&owner_c, &grant_id);
+
+    assert!(client.has_role(&non_owner, &Role::Viewer));
+    assert!(client.get_role_members(&Role::Viewer).contains(&non_owner));
+    
+    let mut role_granted_found = false;
+    for event in env.events().all().iter() {
+        let (_contract_id, topics, _data) = event;
+        if topics.len() > 0 {
+            let topic: Val = topics.get(0).unwrap();
+            if let Ok(sym) = Symbol::try_from_val(&env, &topic) {
+                if sym == Symbol::new(&env, "role_granted") {
+                    role_granted_found = true;
+                }
+            }
+        }
+    }
+    assert!(role_granted_found);
+
+    let revoke_id = client.create_revoke_role_proposal(
+        &owner_a,
+        &non_owner,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Revoke Viewer role"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &revoke_id);
+    client.approve(&owner_b, &revoke_id);
+    client.execute(&owner_c, &revoke_id);
+
+    assert!(!client.has_role(&non_owner, &Role::Viewer));
+    assert!(!client.get_role_members(&Role::Viewer).contains(&non_owner));
+
+    let mut role_revoked_found = false;
+    for event in env.events().all().iter() {
+        let (_contract_id, topics, _data) = event;
+        if topics.len() > 0 {
+            let topic: Val = topics.get(0).unwrap();
+            if let Ok(sym) = Symbol::try_from_val(&env, &topic) {
+                if sym == Symbol::new(&env, "role_revoked") {
+                    role_revoked_found = true;
+                }
+            }
+        }
+    }
+    assert!(role_revoked_found);
+}
+
+// ─── Issue #606: Revoke Approver Role ────────────────────────────────────────
+
+#[test]
+fn revoke_approver_role_blocks_subsequent_approval() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+
+    let revoke_id = client.create_revoke_role_proposal(
+        &owner_a,
+        &owner_b,
+        &Symbol::new(&env, "Approver"),
+        &str(&env, "Revoke Approver from B"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &revoke_id);
+    client.approve(&owner_c, &revoke_id);
+    client.execute(&owner_a, &revoke_id);
+
+    assert!(!client.has_role(&owner_b, &Role::Approver));
+
+    let prop_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 100, &token_client.address),
+        &str(&env, "Test"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    
+    assert_eq!(
+        client.try_approve(&owner_b, &prop_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn revoke_approver_role_rejected_if_strands_quorum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let owner_c = Address::generate(&env);
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner_a.clone());
+    owners.push_back(owner_b.clone());
+    owners.push_back(owner_c.clone());
+
+    let mut weights = Vec::new(&env);
+    weights.push_back(1_u32);
+    weights.push_back(1_u32);
+    weights.push_back(1_u32);
+
+    client.initialize(&owners, &weights, &3, &0);
+    
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_b,
+            &Symbol::new(&env, "Approver"),
+            &str(&env, "Revoke Approver from B"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::WouldBreakQuorum))
+    );
+}
+
+// ─── Issue #607: Concurrent Role Changes ─────────────────────────────────────
+
+#[test]
+fn concurrent_role_proposals_execute_deterministically() {
+    let (env1, client1, owner_a1, owner_b1, owner_c1, non_owner1, _) = setup(2);
+
+    let grant_id1 = client1.create_grant_role_proposal(
+        &owner_a1,
+        &non_owner1,
+        &Symbol::new(&env1, "Viewer"),
+        &str(&env1, "Grant Viewer"),
+        &DEADLINE,
+    );
+    client1.approve(&owner_a1, &grant_id1);
+    client1.approve(&owner_b1, &grant_id1);
+
+    let grant_id2 = client1.create_grant_role_proposal(
+        &owner_a1,
+        &non_owner1,
+        &Symbol::new(&env1, "Viewer"),
+        &str(&env1, "Grant Viewer again"),
+        &DEADLINE,
+    );
+    client1.approve(&owner_a1, &grant_id2);
+    client1.approve(&owner_b1, &grant_id2);
+
+    client1.execute(&owner_c1, &grant_id1);
+    let res1 = client1.try_execute(&owner_c1, &grant_id2);
+    assert_eq!(res1, Err(Ok(ContractError::RoleAlreadyGranted))); 
+
+    let roles1 = client1.get_owner_roles(&non_owner1);
+
+
+    let (env2, client2, owner_a2, owner_b2, owner_c2, non_owner2, _) = setup(2);
+
+    let grant_id1_env2 = client2.create_grant_role_proposal(
+        &owner_a2,
+        &non_owner2,
+        &Symbol::new(&env2, "Viewer"),
+        &str(&env2, "Grant Viewer"),
+        &DEADLINE,
+    );
+    client2.approve(&owner_a2, &grant_id1_env2);
+    client2.approve(&owner_b2, &grant_id1_env2);
+
+    let grant_id2_env2 = client2.create_grant_role_proposal(
+        &owner_a2,
+        &non_owner2,
+        &Symbol::new(&env2, "Viewer"),
+        &str(&env2, "Grant Viewer again"),
+        &DEADLINE,
+    );
+    client2.approve(&owner_a2, &grant_id2_env2);
+    client2.approve(&owner_b2, &grant_id2_env2);
+
+    client2.execute(&owner_c2, &grant_id2_env2);
+    let res2 = client2.try_execute(&owner_c2, &grant_id1_env2);
+    assert_eq!(res2, Err(Ok(ContractError::RoleAlreadyGranted)));
+
+    let roles2 = client2.get_owner_roles(&non_owner2);
+    assert_eq!(roles1, roles2);
+    
+    let mut count = 0;
+    for role in roles1.iter() {
+        if role == Role::Viewer { count += 1; }
+    }
+    assert_eq!(count, 1);
+}
