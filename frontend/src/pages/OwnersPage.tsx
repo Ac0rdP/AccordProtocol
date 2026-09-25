@@ -1,23 +1,36 @@
+import { UserCog } from "lucide-react";
 import type { Owner } from "../types/accord";
 
 type OwnersPageProps = {
   owners: Owner[];
   threshold: number;
   totalOwners: number;
+  onManageRole: () => void;
 };
 
 export function OwnersPage({
   owners,
   threshold,
   totalOwners,
+  onManageRole,
 }: OwnersPageProps) {
   return (
     <>
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold mb-2">Multisig Owners</h1>
-        <p className="text-zinc-400 text-sm">
-          Requires {threshold} of {totalOwners} signers
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="mb-2 text-2xl font-semibold">Multisig Owners</h1>
+          <p className="text-sm text-zinc-400">
+            Requires {threshold} of {totalOwners} signers
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onManageRole}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+        >
+          <UserCog size={14} />
+          Manage Roles
+        </button>
       </div>
 
       {owners.length === 0 ? (
