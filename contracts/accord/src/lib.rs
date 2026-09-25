@@ -519,7 +519,14 @@ pub enum ContractError {
     CannotRemoveLastOwner = 49,
     ThresholdExceedsOwnerCount = 50,
     ScheduleNotActive = 51,
+    /// Thrown when an action requires a role the target does not hold.
     MissingRole = 52,
+    /// Thrown when attempting to grant a role that the target already holds.
+    RoleAlreadyGranted = 53,
+    /// Thrown when attempting to revoke a role that the target does not hold.
+    RoleNotGranted = 54,
+    /// Thrown when a specified role is not valid for the current context.
+    InvalidRole = 55,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
