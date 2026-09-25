@@ -929,22 +929,8 @@ fn has_role(env: &Env, owner: &Address, role: &Role) -> bool {
     false
 }
 
-/// Requires `owner` to be an owner (`Unauthorized` otherwise) that holds
-/// `role` (`MissingRole` otherwise).
-fn require_role(env: &Env, owner: &Address, role: Role) -> Result<(), ContractError> {
-    require_owner_and_weight(env, owner)?;
-    if has_role(env, owner, &role) {
-        Ok(())
-    } else {
-        Err(ContractError::MissingRole)
-    }
-}
-
-/// Like `require_role`, but without the ownership check — for roles a
-/// non-owner may hold, such as an Executor keeper.
-fn require_role_holder(env: &Env, address: &Address, role: Role) -> Result<(), ContractError> {
-    // Surface `NotInitialized` before the role check, as `require_role` does.
-    read_owners_map(env)?;
+/// Requires `address` to hold `role` (`MissingRole` otherwise).
+fn require_role(env: &Env, address: &Address, role: Role) -> Result<(), ContractError> {
     if has_role(env, address, &role) {
         Ok(())
     } else {
@@ -2721,7 +2707,7 @@ impl AccordContract {
     /// owners have already authorised the proposal by reaching quorum.
     pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
         executor.require_auth();
-        require_role_holder(&env, &executor, Role::Executor)?;
+        require_role(&env, &executor, Role::Executor)?;
         require_not_frozen(&env)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -3283,7 +3269,7 @@ impl AccordContract {
     /// Returns the number of proposals actually swept.
     pub fn cancel_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
         caller.require_auth();
-        require_role_holder(&env, &caller, Role::Executor)?;
+        require_role(&env, &caller, Role::Executor)?;
 
         let mut swept: u32 = 0;
         let mut swept_ids = Vec::new(&env);

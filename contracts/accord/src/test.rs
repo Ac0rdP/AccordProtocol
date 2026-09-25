@@ -8714,6 +8714,74 @@ fn get_role_members_returns_holders_and_empty_for_unheld_role() {
 }
 
 #[test]
+fn role_member_storage_helpers_round_trip() {
+    let env = Env::default();
+    let contract_id = env.register(AccordContract, ());
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+    let members = Vec::from_array(&env, [first, second]);
+
+    env.as_contract(&contract_id, || {
+        write_role_members(&env, &Role::Approver, &members);
+
+        assert!(env
+            .storage()
+            .persistent()
+            .has(&role_members_key(&Role::Approver)));
+        assert_eq!(read_role_members(&env, &Role::Approver), members);
+        assert!(read_role_members(&env, &Role::Executor).is_empty());
+    });
+}
+
+#[test]
+fn role_member_index_tracks_grants_and_revocations_without_duplicates() {
+    let env = Env::default();
+    let contract_id = env.register(AccordContract, ());
+    let holder = Address::generate(&env);
+    let roles = Vec::from_array(&env, [Role::Approver]);
+
+    env.as_contract(&contract_id, || {
+        update_owner_roles(&env, &holder, &roles);
+        update_owner_roles(&env, &holder, &roles);
+
+        let members = read_role_members(&env, &Role::Approver);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get(0), Some(holder.clone()));
+        assert_eq!(read_owner_roles(&env, &holder), roles);
+
+        update_owner_roles(&env, &holder, &Vec::new(&env));
+        assert!(read_role_members(&env, &Role::Approver).is_empty());
+        assert!(read_owner_roles(&env, &holder).is_empty());
+    });
+}
+
+#[test]
+fn role_access_helpers_return_held_and_missing_results() {
+    let env = Env::default();
+    let contract_id = env.register(AccordContract, ());
+    let holder = Address::generate(&env);
+    let non_holder = Address::generate(&env);
+    let roles = Vec::from_array(&env, [Role::Approver]);
+
+    env.as_contract(&contract_id, || {
+        write_owner_roles(&env, &holder, &roles);
+
+        assert!(has_role(&env, &holder, &Role::Approver));
+        assert!(!has_role(&env, &holder, &Role::Executor));
+        assert!(!has_role(&env, &non_holder, &Role::Approver));
+        assert_eq!(require_role(&env, &holder, Role::Approver), Ok(()));
+        assert_eq!(
+            require_role(&env, &holder, Role::Executor),
+            Err(ContractError::MissingRole)
+        );
+        assert_eq!(
+            require_role(&env, &non_holder, Role::Approver),
+            Err(ContractError::MissingRole)
+        );
+    });
+}
+
+#[test]
 fn get_role_members_result_is_capped() {
     let (env, client, _, _, _, _, _) = setup(2);
     let mut many = Vec::new(&env);
