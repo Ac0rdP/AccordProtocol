@@ -5,6 +5,7 @@ import {
   buildSpendCsv,
   buildTreasuryCsv,
   computeSpendByCategory,
+  computeSpendByOwner,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
   enrichWithShares,
@@ -196,3 +197,33 @@ describe("formatShare", () => {
   });
 });
 
+describe("computeSpendByOwner", () => {
+  test("sums amounts and counts per owner address, sorted by total descending", () => {
+    const proposals = [
+      makeProposal({ id: 1, proposer: "GPROPOSER11111111111111111111111111111111111111111111111", amount: "100" }),
+      makeProposal({ id: 2, proposer: "GPROPOSER11111111111111111111111111111111111111111111111", amount: "200" }),
+      makeProposal({ id: 3, proposer: "GPROPOSER22222222222222222222222222222222222222222222222", amount: "50" }),
+    ];
+
+    const result = computeSpendByOwner(proposals);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({
+      owner: "GPROPOSER11111111111111111111111111111111111111111111111",
+      shortOwner: "GPROPO...1111",
+      total: 300,
+      count: 2,
+    });
+    expect(result[1]).toEqual({
+      owner: "GPROPOSER22222222222222222222222222222222222222222222222",
+      shortOwner: "GPROPO...2222",
+      total: 50,
+      count: 1,
+    });
+  });
+
+  test("returns empty array for no proposals", () => {
+    expect(computeSpendByOwner([])).toEqual([]);
+  });
+});
+
+// TODO: Add tests for the analytics HTTP API covering both successful responses and rejected input.

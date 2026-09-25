@@ -13,6 +13,7 @@ import type { Proposal, ProposalCategory } from "../types/accord";
 import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
 import { SpendByCategoryChart } from "../components/SpendByCategoryChart";
+import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
 import {
   getContractUsdcBalance,
   getContractXlmBalance,
@@ -26,6 +27,7 @@ import {
   buildSpendCsv,
   buildTreasuryCsv,
   computeSpendByCategory,
+  computeSpendByOwner,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
@@ -121,6 +123,12 @@ export function AnalyticsPage() {
       })
       .catch((err) => {
         if (active)
+        if (active) {
+          setState({ ...data, loading: false, error: null });
+        }
+      })
+      .catch((err) => {
+        if (active) {
           setState((prev) => ({
             ...prev,
             loading: false,
@@ -129,6 +137,7 @@ export function AnalyticsPage() {
                 ? err.message
                 : "Failed to load analytics data",
           }));
+        }
       });
     return () => {
       active = false;
@@ -142,6 +151,11 @@ export function AnalyticsPage() {
 
   const spendByCategory = useMemo(
     () => enrichWithShares(computeSpendByCategory(filteredTransfers)),
+    [filteredTransfers],
+  );
+
+  const spendByOwner = useMemo(
+    () => computeSpendByOwner(filteredTransfers),
     [filteredTransfers],
   );
 
@@ -380,6 +394,13 @@ export function AnalyticsPage() {
 
       <SpendByCategoryChart
         data={spendByCategory}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
+
+      <SpendByOwnerChart
+        data={spendByOwner}
         loading={state.loading}
         error={state.error}
         onRetry={fetchData}

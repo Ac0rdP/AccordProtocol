@@ -213,6 +213,7 @@ describe("Contract Events API", () => {
     expect(proposal.to).toBe("GOWNER...1111");
     expect(proposal.amount).toBe("25");
     expect(proposal.token).toBe("Owner weight");
-  });
 });
+
+// TODO: Add a test proving that replaying a ledger range never double-counts events (idempotency)
 
