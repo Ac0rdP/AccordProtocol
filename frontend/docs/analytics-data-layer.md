@@ -142,3 +142,28 @@ Exposes treasury summary statistics matching the dashboard stat card requirement
 - `ownerCount`: Total count of multisig owners.
 - `largestOutflow`: The single executed transfer proposal with the highest disbursed amount within the date range, or `null` if no transfers exist.
 
+
+## Spend, balance and flow endpoints
+
+Handlers live in `src/lib/analyticsApi.ts` and are routed by `handleAnalyticsRoute`.
+They read from `AnalyticsContext`: `proposals`, plus optional `owners`, `deposits`
+and `balanceSnapshots`. All accept the shared query parameters above.
+
+- `GET /spend/by-owner` — executed transfer spend per owner and token, largest
+  first. Owners in `context.owners` with no spend in range are returned with
+  `total: "0"`, `count: 0`. Supports `startDate`, `endDate`, `token`, `category`, `owner`.
+- `GET /treasury/balance` — latest per-token balances. `timeSeries=true` adds the
+  snapshots in range (ascending). With `endDate`, the current balance is the latest
+  snapshot on or before that day. Supports `token`.
+- `GET /treasury/flow` — `inflow` (deposits) and `outflow` (executed transfers)
+  per token per bucket. `granularity` is `day` (default), `week` (Monday start) or
+  `month`. Empty buckets are zero-filled across the requested range, or across the
+  first-to-last activity when no range is given.
+
+## Range and granularity helpers
+
+`src/lib/analyticsRange.ts` builds inputs for filter controls: `getPresetRange`
+(`7d`, `30d`, `90d`, `ytd`, `all`), `validateDateRange` (rejects malformed or
+inverted ranges), `clampDateRange` (drops bad bounds, swaps inverted ones, applies
+`min`/`max`/`maxDays`), `toApiGranularity` ("Weekly" → `week`), `suggestGranularity`
+and `buildRangeQuery`.
