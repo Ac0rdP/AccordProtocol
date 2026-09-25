@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
+import type { RoleAccessBanner } from "../hooks/useRoles";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
@@ -15,6 +16,7 @@ type DashboardPageProps = {
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
   onCreateRecurringPayment: () => void;
+  roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
 };
@@ -29,6 +31,7 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
+  roleBanner,
   loading,
   error,
 }: DashboardPageProps) {
@@ -36,6 +39,7 @@ export function DashboardPage({
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -53,6 +57,14 @@ export function DashboardPage({
   useEffect(() => {
     setDismissedError(null);
   }, [error]);
+
+  const showRoleBanner = Boolean(
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key
+  );
+
+  const roleBannerStyles = roleBanner?.variant === "unrecognized"
+    ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+    : "border-sky-500/20 bg-sky-500/10 text-sky-100";
 
   return (
     <>
@@ -76,6 +88,28 @@ export function DashboardPage({
             </button>
           </div>
         )}
+      {showRoleBanner && roleBanner && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label="Wallet role access"
+          className={`mb-6 flex items-start justify-between rounded-xl border px-4 py-3 text-sm ${roleBannerStyles}`}
+        >
+          <div>
+            <p className="font-medium text-white">{roleBanner.title}</p>
+            <p className="mt-1 leading-5">{roleBanner.message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDismissedRoleBannerKey(roleBanner.key)}
+            aria-label="Dismiss role access message"
+            className="ml-4 shrink-0 rounded hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
           <span>
