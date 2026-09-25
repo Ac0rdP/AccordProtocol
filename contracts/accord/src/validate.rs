@@ -25,7 +25,7 @@ pub fn validate_description(description: &String) -> Result<(), ContractError> {
         return Err(ContractError::EmptyDescription);
     }
     if description.len() > MAX_DESCRIPTION_LEN {
-        return Err(ContractError::EmptyDescription);
+        return Err(ContractError::DescriptionTooLong);
     }
     Ok(())
 }
