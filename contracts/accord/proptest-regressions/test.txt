@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 153342521380560cfd3c2bbca39230e1c060d780dcdf41dcaca87a9fa1e7b306 # shrinks to owner_count = 20, threshold_seed = 1, weights_gen = [1, 1, 2, 2, 2, 2, 2, 2296, 61038, 68012, 35703, 10696, 18459, 63038, 63897, 46867, 13999, 89430, 35214, 79284], actions = [(7, false), (6, false), (2, true), (9, true), (0, false), (16, true), (17, false), (10, true), (19, true), (10, false), (14, true)]

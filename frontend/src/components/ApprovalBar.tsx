@@ -1,27 +1,47 @@
-type ApprovalBarProps = {
-  approvals: number;
-  threshold: number;
+import React from "react";
+
+export type ApprovalBarProps = {
+  approvalWeight?: number;
+  quorumWeight?: number;
+  totalWeight?: number;
+  approvals?: number;
+  threshold?: number;
   approverAddresses?: string[];
+  approverWeights?: Record<string, number>;
+  label?: string;
 };
 
-export function ApprovalBar({ approvals, threshold, approverAddresses = [] }: ApprovalBarProps) {
+export const ApprovalBar = React.memo(function ApprovalBar({
+  approvalWeight = 0,
+  quorumWeight = 0,
+  totalWeight = 0,
+  approvals = 0,
+  threshold = 0,
+  approverAddresses = [],
+  approverWeights = {},
+}: ApprovalBarProps) {
+  const displayApprovalWeight = approvalWeight || approvals;
+  const displayQuorumWeight = quorumWeight || threshold || 0;
+  const barLength = Math.max(0, threshold || displayQuorumWeight || 0);
+
   return (
-    <div className="flex items-center gap-2" aria-label={`${approvals} of ${threshold} approvals`}>
+    <div className="flex items-center gap-2" aria-label={`${displayApprovalWeight} / ${displayQuorumWeight} weight`}>
       <div className="flex gap-1">
-        {Array.from({ length: threshold }).map((_, i) => {
+        {Array.from({ length: barLength }).map((_, i) => {
           const isApproved = i < approvals;
-          
-          // Truncate the address if this dot represents an approval
+
           let tooltipTitle = undefined;
           if (isApproved && approverAddresses[i]) {
             const addr = approverAddresses[i];
-            tooltipTitle = `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+            const weight = approverWeights[addr];
+            const weightStr = weight !== undefined ? ` · weight ${weight}` : "";
+            tooltipTitle = `${addr.slice(0, 6)}...${addr.slice(-4)}${weightStr}`;
           }
 
           return (
             <div
               key={i}
-              title={tooltipTitle} // Native HTML tooltip
+              title={tooltipTitle}
               className={`w-2 h-2 rounded-full ${
                 isApproved ? "bg-emerald-400" : "bg-zinc-700"
               }`}
@@ -30,8 +50,8 @@ export function ApprovalBar({ approvals, threshold, approverAddresses = [] }: Ap
         })}
       </div>
       <span className="text-xs text-zinc-500 font-mono">
-        {approvals}/{threshold}
+        {displayApprovalWeight} / {displayQuorumWeight} weight
       </span>
     </div>
   );
-}
+});

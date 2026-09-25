@@ -50,6 +50,57 @@ export function DashboardPage({
     return left.deadlineTs - right.deadlineTs;
   });
 
+  // Compute owner weights and quorum weight for weight-based UI
+  const ownerAddresses = owners.map((o) => o.address);
+  const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
+  const [quorumWeight, setQuorumWeight] = useState<number>(0);
+
+  useEffect(() => {
+    let active = true;
+    getRequiredQuorumWeight()
+      .then((w) => {
+        if (active) setQuorumWeight(w);
+      })
+      .catch(() => {
+        /* noop */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getDueRecurring()
+      .then((schedules) => {
+        if (active) setDueSchedules(schedules);
+      })
+      .catch(() => {
+        /* noop */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Recent owner voting-weight changes, newest first.
+  useEffect(() => {
+    let active = true;
+    getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
+      .then((events) => {
+        if (active) setWeightChanges(events);
+      })
+      .catch(() => {
+        /* noop — feed falls back to its empty state */
+      })
+      .finally(() => {
+        if (active) setWeightChangesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (readyCount > prevReadyCount.current) {
       setBannerDismissed(false);
@@ -76,24 +127,55 @@ export function DashboardPage({
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         {dashboardStats.map((s) => (
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
 
-      {error && !loading && dismissedError !== error && (
-          <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-red-400 flex items-center justify-between">
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setDismissedError(error);
-              }}
-              className="underline hover:text-red-300 ml-4 shrink-0 focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded"
-            >
-              Dismiss
-            </button>
+      <GovernanceHealthWidget
+        weights={weights}
+        totalWeight={totalWeight}
+        loading={loading}
+      />
+
+      <HistoricalWeightChart
+        currentTotalWeight={totalWeight}
+        loading={loading}
+      />
+
+      {dueSchedules.length > 0 && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
+          <h3 className="font-semibold text-sm mb-3">
+            Due for disbursement
+            <span className="ml-2 text-xs text-zinc-500 font-normal">
+              {dueSchedules.length}{" "}
+              {dueSchedules.length === 1 ? "schedule" : "schedules"}
+            </span>
+          </h3>
+          <div className="space-y-2">
+            {dueSchedules.map((schedule) => (
+              <div
+                key={schedule.id}
+                className="flex items-center justify-between rounded-lg bg-zinc-800/50 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <span className="text-sm text-white font-medium">
+                    {schedule.amount} {schedule.token ?? ""}
+                  </span>
+                  <span className="text-xs text-zinc-500 ml-2">
+                    Schedule #{schedule.id}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Disburse schedule ${schedule.id} now`}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 shrink-0 ml-3"
+                >
+                  Disburse now
+                </button>
+              </div>
+            ))}
           </div>
         )}
       {showRoleBanner && roleBanner && (
@@ -121,7 +203,8 @@ export function DashboardPage({
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
           <span>
-            {readyCount} {readyCount === 1 ? "proposal is" : "proposals are"} ready to execute.
+            {readyCount} {readyCount === 1 ? "proposal is" : "proposals are"}{" "}
+            ready to execute.
           </span>
           <button
             type="button"
@@ -156,6 +239,7 @@ export function DashboardPage({
             New
           </button>
           <button
+            ref={recurringButtonRef}
             type="button"
             onClick={onCreateRecurringPayment}
             disabled={createDisabled}
@@ -175,9 +259,40 @@ export function DashboardPage({
             <ProposalCardSkeleton />
           </>
         ) : activeProposals.length === 0 ? (
-          <div className="text-center py-16 text-zinc-500 text-sm">
-            <p className="font-semibold mb-2">No active proposals</p>
-            <p>Create a new proposal to start the approval flow.</p>
+          <div className="text-center py-20">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="text-zinc-500"
+              >
+                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </svg>
+            </div>
+            <h3 className="text-sm font-semibold text-zinc-300 mb-1">
+              No active proposals
+            </h3>
+            <p className="text-sm text-zinc-500 mb-5">
+              Proposals let signers vote on transactions before they execute.
+            </p>
+            <button
+              type="button"
+              onClick={onCreateProposal}
+              className="inline-flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg transition-colors font-medium"
+            >
+              <Plus size={14} />
+              Create proposal
+            </button>
           </div>
         ) : (
           displayedProposals.map((proposal) => (
@@ -195,6 +310,47 @@ export function DashboardPage({
       </div>
 
       <div className="mt-8">
+        <h2 className="font-semibold mb-4">Recent Weight Changes</h2>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
+          {weightChangesLoading ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              Loading recent weight changes…
+            </div>
+          ) : weightChanges.length === 0 ? (
+            <div className="px-4 py-6 text-center text-sm text-zinc-500">
+              No voting-weight changes recorded yet.
+            </div>
+          ) : (
+            weightChanges.map((change, index) => (
+              <div
+                key={`${change.owner}-${change.ledger ?? "x"}-${index}`}
+                className="flex items-center justify-between px-4 py-3 gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+                    {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm text-zinc-300 truncate">
+                      {shortenAddr(change.owner)}
+                    </p>
+                    <p className="text-xs text-zinc-500">{change.timestamp}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
+                  <span className="text-zinc-500">{change.oldWeight}</span>
+                  <span aria-hidden className="text-zinc-600">
+                    →
+                  </span>
+                  <span className="text-emerald-400">{change.newWeight}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="mt-8">
         <h2 className="font-semibold mb-4">Signers</h2>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
           {owners.map((owner) => (
@@ -202,11 +358,11 @@ export function DashboardPage({
               key={owner.address}
               className="flex items-center justify-between px-4 py-3"
             >
-              <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
                   {owner.label[0]}
                 </div>
-                <span className="font-mono text-sm text-zinc-300">
+                <span className="font-mono text-sm text-zinc-300 truncate max-w-[180px] sm:max-w-xs">
                   {owner.address}
                 </span>
               </div>

@@ -21,11 +21,11 @@ pub fn validate_deadline(env: &Env, deadline: u64) -> Result<(), ContractError> 
 }
 
 pub fn validate_description(description: &String) -> Result<(), ContractError> {
-    if description.len() == 0 {
+    if description.is_empty() {
         return Err(ContractError::EmptyDescription);
     }
     if description.len() > MAX_DESCRIPTION_LEN {
-        return Err(ContractError::EmptyDescription);
+        return Err(ContractError::DescriptionTooLong);
     }
     Ok(())
 }
@@ -33,6 +33,27 @@ pub fn validate_description(description: &String) -> Result<(), ContractError> {
 pub fn validate_recipient(env: &Env, recipient: &Address) -> Result<(), ContractError> {
     if recipient == &env.current_contract_address() {
         return Err(ContractError::InvalidToken);
+    }
+    Ok(())
+}
+
+pub fn validate_recurring_schedule(
+    start_time: u64,
+    cliff_time: u64,
+    end_time: u64,
+    total_cap: i128,
+    amount_per_period: i128,
+) -> Result<(), ContractError> {
+    if end_time > 0 {
+        if end_time <= start_time {
+            return Err(ContractError::InvalidSchedule);
+        }
+        if cliff_time > 0 && cliff_time > end_time {
+            return Err(ContractError::InvalidSchedule);
+        }
+    }
+    if total_cap > 0 && total_cap < amount_per_period {
+        return Err(ContractError::InvalidCap);
     }
     Ok(())
 }

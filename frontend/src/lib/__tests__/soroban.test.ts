@@ -51,6 +51,42 @@ describe("displayToStroops", () => {
   });
 });
 
+describe("weightToPercent", () => {
+  test("returns the owner share for a normal weight", () => {
+    expect(weightToPercent(5, 20)).toBe(25);
+  });
+
+  test("returns zero for a zero-weight owner", () => {
+    expect(weightToPercent(0, 20)).toBe(0);
+  });
+
+  test("returns 100 for a single-owner total", () => {
+    expect(weightToPercent(7, 7)).toBe(100);
+  });
+
+  test("returns zero when total weight is zero", () => {
+    expect(weightToPercent(5, 0)).toBe(0);
+  });
+});
+
+describe("formatWeightPercent", () => {
+  test("formats a normal weight share with one decimal place", () => {
+    expect(formatWeightPercent(5, 20)).toBe("25.0%");
+  });
+
+  test("formats a zero-weight owner", () => {
+    expect(formatWeightPercent(0, 20)).toBe("0.0%");
+  });
+
+  test("formats a 100-percent single-owner share", () => {
+    expect(formatWeightPercent(7, 7)).toBe("100.0%");
+  });
+
+  test("formats zero when total weight is zero", () => {
+    expect(formatWeightPercent(5, 0)).toBe("0.0%");
+  });
+});
+
 describe("contractErrorMessage", () => {
   test("all 25 contract codes return messages", () => {
     expect(contractErrorMessage("Error(Contract,#1)")).toContain("initialized");

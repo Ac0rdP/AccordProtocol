@@ -1,0 +1,169 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`VotingPowerPreview > renders add_owner preview correctly 1`] = `
+<div>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Total voting weight will increase from
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          5
+        </span>
+         to
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          6
+        </span>
+        .
+      </p>
+      <p>
+        New owner percentage share:
+         
+        <span
+          class="font-mono text-zinc-300"
+        >
+          16.7%
+        </span>
+        .
+      </p>
+      <p
+        class="text-zinc-500 italic mt-1 font-sans"
+      >
+        Note: Test owner addition.
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`VotingPowerPreview > renders change_owner_weight preview correctly 1`] = `
+<div>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Resulting total voting weight:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          12
+        </span>
+        .
+      </p>
+      <p>
+        Owner's new share:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          41.7%
+        </span>
+         
+        (cap:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          50
+          %
+        </span>
+        )
+        .
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`VotingPowerPreview > renders remove_owner preview correctly with warning 1`] = `
+<div>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Owner's current weight:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          3
+        </span>
+        .
+      </p>
+      <p>
+        Resulting total voting weight:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          7
+        </span>
+         
+        (threshold:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          8
+        </span>
+        )
+        .
+      </p>
+    </div>
+    <div
+      class="mt-2 flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 text-amber-300 rounded-lg p-3"
+    >
+      <svg
+        class="w-4 h-4 shrink-0 mt-0.5"
+        fill="currentColor"
+        viewBox="0 0 20 20"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          clip-rule="evenodd"
+          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z"
+          fill-rule="evenodd"
+        />
+      </svg>
+      <div
+        class="leading-normal font-sans"
+      >
+        <p>
+          Warning: Total weight falls below threshold!
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
