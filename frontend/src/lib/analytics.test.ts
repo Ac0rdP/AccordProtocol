@@ -7,8 +7,11 @@ import {
   computeSpendByCategory,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
+  enrichWithShares,
   filterExecutedTransfers,
+  formatShare,
 } from "./analytics";
+
 
 function makeProposal(overrides: Partial<Proposal> = {}): Proposal {
   return {
@@ -159,3 +162,37 @@ describe("buildTreasuryCsv", () => {
     );
   });
 });
+
+describe("enrichWithShares", () => {
+  test("computes percentage share for each category", () => {
+    const rows = [
+      { category: "Grant", total: 600, count: 3 },
+      { category: "Payroll", total: 300, count: 2 },
+      { category: "Ops", total: 100, count: 1 },
+    ];
+    const result = enrichWithShares(rows);
+    expect(result[0].share).toBeCloseTo(60);
+    expect(result[1].share).toBeCloseTo(30);
+    expect(result[2].share).toBeCloseTo(10);
+  });
+
+  test("returns 0 share for all rows when grand total is 0", () => {
+    const rows = [{ category: "Grant", total: 0, count: 1 }];
+    const result = enrichWithShares(rows);
+    expect(result[0].share).toBe(0);
+  });
+
+  test("returns an empty array for empty input", () => {
+    expect(enrichWithShares([])).toEqual([]);
+  });
+});
+
+describe("formatShare", () => {
+  test("formats to one decimal place with % suffix", () => {
+    expect(formatShare(60)).toBe("60.0%");
+    expect(formatShare(33.333)).toBe("33.3%");
+    expect(formatShare(0)).toBe("0.0%");
+    expect(formatShare(100)).toBe("100.0%");
+  });
+});
+
