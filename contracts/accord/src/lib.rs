@@ -24,9 +24,9 @@ pub enum ProposalStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum Role {
-    CreateProposal,
-    ApproveProposal,
-    ExecuteProposal,
+    Proposer,
+    Approver,
+    Executor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,7 +519,14 @@ pub enum ContractError {
     CannotRemoveLastOwner = 49,
     ThresholdExceedsOwnerCount = 50,
     ScheduleNotActive = 51,
+    /// Thrown when an action requires a role the target does not hold.
     MissingRole = 52,
+    /// Thrown when attempting to grant a role that the target already holds.
+    RoleAlreadyGranted = 53,
+    /// Thrown when attempting to revoke a role that the target does not hold.
+    RoleNotGranted = 54,
+    /// Thrown when a specified role is not valid for the current context.
+    InvalidRole = 55,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -611,13 +618,7 @@ fn role_members_key(role: &Role) -> (Symbol, Role) {
 
 const RBAC_VERSION: u32 = 1;
 
-fn default_owner_roles(env: &Env) -> Vec<Role> {
-    let mut roles = Vec::new(env);
-    roles.push_back(Role::CreateProposal);
-    roles.push_back(Role::ApproveProposal);
-    roles.push_back(Role::ExecuteProposal);
-    roles
-}
+pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role::Executor];
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1667,7 +1668,7 @@ impl AccordContract {
         env.storage()
             .instance()
             .set(&governance_version_key(), &true);
-        let roles = default_owner_roles(&env);
+        let roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
         for owner in owners.iter() {
             update_owner_roles(&env, &owner, &roles);
         }
@@ -1776,7 +1777,7 @@ impl AccordContract {
         require_weighted_approvers(&env, &approvers)?;
 
         let owners = read_owners_map(&env)?;
-        let roles = default_owner_roles(&env);
+        let roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
         for owner in owners.keys().iter() {
             update_owner_roles(&env, &owner, &roles);
         }
@@ -1802,7 +1803,7 @@ impl AccordContract {
         description: String,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         if transfers.len() == 0 {
@@ -1898,7 +1899,7 @@ impl AccordContract {
         // A non-owner holding the Proposer role may draft transfers; owner
         // proposers keep their owner-keyed spending limits (checked below).
         let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
-        if !has_role(&env, &proposer, &Role::CreateProposal) {
+        if !has_role(&env, &proposer, &Role::Proposer) {
             return Err(ContractError::MissingRole);
         }
         require_not_frozen(&env)?;
@@ -2151,7 +2152,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let owners = read_owners_map(&env)?;
@@ -2240,7 +2241,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         if limit < 0 {
@@ -2318,7 +2319,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         if new_weight < MIN_OWNER_WEIGHT {
@@ -2406,7 +2407,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         require_owner(&env, &owner_to_remove)?;
@@ -2489,7 +2490,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let total_weight = read_total_weight(&env);
@@ -2562,7 +2563,7 @@ impl AccordContract {
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
         let weight = {
-            require_role(&env, &approver, Role::ApproveProposal)?;
+            require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -2621,7 +2622,7 @@ impl AccordContract {
     pub fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
         let weight = {
-            require_role(&env, &approver, Role::ApproveProposal)?;
+            require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -2668,7 +2669,7 @@ impl AccordContract {
     /// owners have already authorised the proposal by reaching quorum.
     pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), ContractError> {
         executor.require_auth();
-        require_role_holder(&env, &executor, Role::ExecuteProposal)?;
+        require_role_holder(&env, &executor, Role::Executor)?;
         require_not_frozen(&env)?;
 
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -2786,7 +2787,7 @@ impl AccordContract {
                 let key = owners_key();
                 env.storage().persistent().set(&key, &owners);
                 bump_persistent(&env, &key);
-                let roles = default_owner_roles(&env);
+                let roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
                 update_owner_roles(&env, new_owner, &roles);
                 // New owners start at MIN_OWNER_WEIGHT; keep the counter in
                 // lockstep with the implicit default returned by read_owner_weight.
@@ -3182,7 +3183,7 @@ impl AccordContract {
     /// Returns the number of proposals actually swept.
     pub fn cancel_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
         caller.require_auth();
-        require_role_holder(&env, &caller, Role::ExecuteProposal)?;
+        require_role_holder(&env, &caller, Role::Executor)?;
 
         let mut swept: u32 = 0;
         let mut swept_ids = Vec::new(&env);
@@ -3225,7 +3226,7 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         if amount < MIN_AMOUNT {
@@ -3314,7 +3315,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3378,7 +3379,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3442,7 +3443,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3506,7 +3507,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
