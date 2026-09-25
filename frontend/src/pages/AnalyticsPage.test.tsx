@@ -83,7 +83,7 @@ describe("AnalyticsPage", () => {
 
     render(<AnalyticsPage />);
 
-    expect(screen.getAllByText("Loading...")).toHaveLength(2);
+    expect(screen.getAllByText("Loading...")).toHaveLength(3);
   });
 
   test("renders stat cards and charts once data loads", async () => {
@@ -94,7 +94,9 @@ describe("AnalyticsPage", () => {
 
     render(<AnalyticsPage />);
 
-    await waitFor(() => expect(screen.getByText("150.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("150.00")[0]).toBeInTheDocument(),
+    );
     expect(screen.getByText("2")).toBeInTheDocument(); // transaction count
     expect(screen.getByText("1000")).toBeInTheDocument(); // XLM balance
     expect(screen.getByText("500")).toBeInTheDocument(); // USDC balance
@@ -111,6 +113,11 @@ describe("AnalyticsPage", () => {
       ).toBeInTheDocument(),
     );
     expect(
+      screen.getByText(
+        "No spend data available by proposing owner for the selected filters.",
+      ),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText("No treasury flow data matches the selected filters."),
     ).toBeInTheDocument();
   });
@@ -124,14 +131,16 @@ describe("AnalyticsPage", () => {
     render(<AnalyticsPage />);
 
     await waitFor(() =>
-      expect(screen.getAllByText("RPC unavailable")).toHaveLength(2),
+      expect(screen.getAllByText("RPC unavailable")).toHaveLength(3),
     );
 
     mockSuccessfulLoad([rawProposal()]);
     const retryButtons = screen.getAllByRole("button", { name: /retry/i });
     fireEvent.click(retryButtons[0]);
 
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
   });
 
   test("filtering by category narrows the totals shown", async () => {
@@ -141,13 +150,17 @@ describe("AnalyticsPage", () => {
     ]);
 
     render(<AnalyticsPage />);
-    await waitFor(() => expect(screen.getByText("150.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("150.00")[0]).toBeInTheDocument(),
+    );
 
     fireEvent.change(screen.getByLabelText("Category"), {
       target: { value: "Grant" },
     });
 
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
   });
 
   test("filtering by owner substring narrows the totals shown", async () => {
@@ -157,13 +170,17 @@ describe("AnalyticsPage", () => {
     ]);
 
     render(<AnalyticsPage />);
-    await waitFor(() => expect(screen.getByText("150.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("150.00")[0]).toBeInTheDocument(),
+    );
 
     fireEvent.change(screen.getByLabelText("Owner"), {
       target: { value: "alice" },
     });
 
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
   });
 
   test("exports the spend CSV via a download click", async () => {
@@ -172,7 +189,9 @@ describe("AnalyticsPage", () => {
     ]);
 
     render(<AnalyticsPage />);
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /export spend csv/i }));
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
@@ -184,7 +203,9 @@ describe("AnalyticsPage", () => {
     ]);
 
     render(<AnalyticsPage />);
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: /export treasury csv/i }),
@@ -215,7 +236,9 @@ describe("AnalyticsPage", () => {
     ]);
 
     render(<AnalyticsPage />);
-    await waitFor(() => expect(screen.getByText("100.00")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
+    );
 
     fireEvent.click(
       screen.getByRole("button", { name: /download statement/i }),
