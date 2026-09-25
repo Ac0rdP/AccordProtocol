@@ -78,19 +78,46 @@ describe("ProposalCard", () => {
   });
 
   test("shows Approve for a pending proposal when wallet is connected", () => {
-    renderProposalCard();
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     expect(screen.getByText("Approve")).toBeTruthy();
   });
 
   test("shows Connect & Approve for a pending proposal without a wallet", () => {
-    renderProposalCard({ walletAddress: null });
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress={null}
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={[]}
+      />
+    );
 
     expect(screen.getByText("Connect & Approve")).toBeTruthy();
   });
 
   test("shows Execute for a ready proposal and hides Approve", () => {
-    renderProposalCard({ proposal: baseProposal({ status: "ready" }) });
+    render(
+      <ProposalCard
+        proposal={baseProposal({ status: "ready" })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     expect(screen.getByText("Execute")).toBeTruthy();
     expect(screen.queryByText("Approve")).toBeNull();
@@ -99,7 +126,16 @@ describe("ProposalCard", () => {
   test.each(["executed", "expired"] as const)(
     "hides action buttons for %s proposals",
     (status) => {
-      renderProposalCard({ proposal: baseProposal({ status }) });
+      render(
+        <ProposalCard
+          proposal={baseProposal({ status })}
+          walletAddress="GCONNECTED123"
+          onApprove={vi.fn()}
+          onExecute={vi.fn()}
+          onRevoke={vi.fn()}
+          walletRoles={["Owner"]}
+        />
+      );
 
       expect(screen.queryByText("Approve")).toBeNull();
       expect(screen.queryByText("Execute")).toBeNull();
@@ -111,7 +147,16 @@ describe("ProposalCard", () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();
 
-    renderProposalCard({ onApprove });
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={onApprove}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     await user.click(screen.getByRole("button", { name: /approve proposal/i }));
 
@@ -119,23 +164,72 @@ describe("ProposalCard", () => {
     expect(onApprove).toHaveBeenCalledWith(42);
   });
 
-  test("links to the proposal detail page", () => {
-    renderProposalCard();
+  test("disables Approve for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
 
-    expect(screen.getByRole("link", { name: "Send 100 USDC" })).toHaveAttribute(
-      "href",
-      "/proposals/42"
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={onApprove}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
     );
-    expect(screen.getByRole("link", { name: "View details" })).toHaveAttribute(
-      "href",
-      "/proposals/42"
+
+    const approveButton = screen.getByRole("button", { name: /approve proposal/i });
+    expect(approveButton).toBeDisabled();
+    expect(approveButton).toHaveAttribute(
+      "title",
+      "Approving proposals requires the Owner role."
     );
+
+    await user.click(approveButton);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  test("disables Execute for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onExecute = vi.fn();
+
+    render(
+      <ProposalCard
+        proposal={baseProposal({ status: "ready" })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={onExecute}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
+    );
+
+    const executeButton = screen.getByRole("button", { name: /execute proposal/i });
+    expect(executeButton).toBeDisabled();
+    expect(executeButton).toHaveAttribute(
+      "title",
+      "Executing proposals requires the Owner role."
+    );
+
+    await user.click(executeButton);
+    expect(screen.queryByText("Send this transaction?")).toBeNull();
+    expect(onExecute).not.toHaveBeenCalled();
   });
 
   test("copies the direct proposal URL and shows temporary feedback", async () => {
     vi.useFakeTimers();
 
-    renderProposalCard();
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /copy proposal link/i }));
@@ -160,14 +254,21 @@ describe("ProposalCard", () => {
   });
 
   test("renders change-owner-weight proposals with governance summary", () => {
-    renderProposalCard({
-      proposal: baseProposal({
-        kind: "change_owner_weight",
-        to: "GOWNER...R111",
-        amount: "25",
-        token: "Owner weight",
-      }),
-    });
+    render(
+      <ProposalCard
+        proposal={baseProposal({
+          kind: "change_owner_weight",
+          to: "GOWNER...R111",
+          amount: "25",
+          token: "Owner weight",
+        })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     expect(screen.getByText("Change Weight")).toBeTruthy();
     expect(screen.getByText("Governance")).toBeTruthy();

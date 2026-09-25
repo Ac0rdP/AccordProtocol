@@ -1,38 +1,44 @@
-import { useEffect, useState } from "react";
-import { getSpendingLimit } from "../lib/contract";
-import { createSpendingLimitProposal } from "../lib/submit";
-import { displayToStroops, shortenAddr } from "../lib/soroban";
-import { StrKey } from "@stellar/stellar-sdk";
-import type { Owner } from "../types/accord";
-import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import { useDelegations } from "../hooks/useDelegations";
-import { DelegateModal } from "../components/DelegateModal";
-import { RoleModal } from "../components/RoleModal";
-
-const TOKEN_ADDRESSES: Record<string, string> = {
-  XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-  USDC: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
-  EURC: "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
-};
-
-const TOKEN_SYMBOLS = ["XLM", "USDC", "EURC"] as const;
-
-type SpendingLimitMap = Record<string, Record<string, bigint>>;
+import { UserCog } from "lucide-react";
+import type { Owner, Role } from "../types/accord";
 
 type OwnersPageProps = {
   owners: Owner[];
   ownerAddresses: string[];
   threshold: number;
-  walletAddress: string | null;
-  onProposalSubmitted: () => void;
+  totalOwners: number;
+  onManageRoles: (ownerAddress: string) => void;
 };
+
+const ROLE_STYLES: Record<Role, string> = {
+  Owner: "border-emerald-500/20 bg-emerald-500/10 text-emerald-300",
+  Viewer: "border-sky-500/20 bg-sky-500/10 text-sky-300",
+  Guardian: "border-amber-500/20 bg-amber-500/10 text-amber-300",
+  SpendingLimit: "border-violet-500/20 bg-violet-500/10 text-violet-300",
+};
+
+const ROLE_LABELS: Record<Role, string> = {
+  Owner: "Owner",
+  Viewer: "Viewer",
+  Guardian: "Guardian",
+  SpendingLimit: "Spending Limit",
+};
+
+function RoleBadge({ role }: { role: Role }) {
+  return (
+    <span
+      className={`rounded-md border px-2 py-0.5 text-xs font-medium ${ROLE_STYLES[role]}`}
+    >
+      {ROLE_LABELS[role]}
+    </span>
+  );
+}
 
 export function OwnersPage({
   owners,
   ownerAddresses,
   threshold,
-  walletAddress,
-  onProposalSubmitted,
+  totalOwners,
+  onManageRoles,
 }: OwnersPageProps) {
   const {
     weights,
@@ -170,9 +176,9 @@ export function OwnersPage({
   return (
     <>
       <div className="mb-8">
-        <h1 className="text-2xl font-semibold mb-2">Multisig Owners</h1>
-        <p className="text-zinc-400 text-sm">
-          Requires {threshold} of {totalWeight} voting weight
+        <h1 className="mb-2 text-2xl font-semibold">Multisig Owners</h1>
+        <p className="text-sm text-zinc-400">
+          Requires {threshold} of {totalOwners} signers
         </p>
       </div>
 
@@ -186,82 +192,42 @@ export function OwnersPage({
           {visibleOwners.map((owner) => (
             <div
               key={owner.fullAddress}
-              className="flex items-center gap-3 px-4 py-4"
+              className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
             >
-              <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
-                {owner.label[0]}
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm text-zinc-300">{owner.label}</p>
-                  <div className="flex items-center gap-1.5">
-                    {ownerWeightsLoading ? (
-                      <span className="text-xs text-zinc-500">
-                        Loading weight...
+              <div className="flex items-start gap-3">
+                <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+                  {owner.label[0]}
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm text-zinc-300">{owner.label}</p>
+                    {typeof owner.weight === "number" && (
+                      <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+                        Weight {owner.weight}
                       </span>
-                    ) : weightsUnavailable ? (
-                      <span className="text-xs text-red-400">
-                        Weight unavailable
-                      </span>
-                    ) : (
-                      <>
-                        <span className="text-xs text-zinc-400 bg-zinc-800 border border-zinc-700 px-2 py-0.5 rounded-full font-mono">
-                          Raw {owner.weight}
-                        </span>
-                        {owner.effectiveWeight !== null &&
-                          owner.effectiveWeight !== owner.weight && (
-                            <span
-                              title="Effective weight = raw weight minus delegated-away weight plus delegated-in weight"
-                              className={`text-xs px-2 py-0.5 rounded-full font-mono border ${
-                                owner.effectiveWeight > (owner.weight ?? 0)
-                                  ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/30"
-                                  : "text-amber-300 bg-amber-500/10 border-amber-500/30"
-                              }`}
-                            >
-                              Effective {owner.effectiveWeight}
-                            </span>
-                          )}
-                      </>
                     )}
-                    {walletAddress === owner.fullAddress && !ownerWeightsLoading && !weightsUnavailable && (
-                      <button
-                        type="button"
-                        onClick={() => setDelegateModalOpen(true)}
-                        aria-label="Delegate voting weight"
-                        className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-0.5 rounded-full transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
-                      >
-                        Delegate
-                      </button>
+                  </div>
+                  <p className="font-mono text-xs text-zinc-500">{owner.address}</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5" aria-label={`${owner.label} roles`}>
+                    {owner.roles.length > 0 ? (
+                      owner.roles.map((role) => <RoleBadge key={role} role={role} />)
+                    ) : (
+                      <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
+                        No roles
+                      </span>
                     )}
                   </div>
                 </div>
-                <p className="font-mono text-xs text-zinc-500">
-                  {shortenAddr(owner.address)}
-                  {!ownerWeightsLoading && !weightsUnavailable && (
-                    <span className="text-xs text-zinc-400 ml-2">
-                      &middot; {owner.percentage.toFixed(1)}% of voting power
-                    </span>
-                  )}
-                </p>
-                {!delegationsLoading && (owner.outgoing || owner.incoming.length > 0) && (
-                  <div className="mt-2 space-y-1">
-                    {owner.outgoing && (
-                      <p className="text-xs text-zinc-500">
-                        <span className="text-zinc-400">Delegated {owner.outgoing.weight} to</span>{" "}
-                        <span className="font-mono">{shortenAddr(owner.outgoing.delegate)}</span>
-                        <span className="ml-1">&middot; expires {owner.outgoing.expiry}</span>
-                      </p>
-                    )}
-                    {owner.incoming.map((d) => (
-                      <p key={d.delegator} className="text-xs text-zinc-500">
-                        <span className="text-zinc-400">Received {d.weight} from</span>{" "}
-                        <span className="font-mono">{shortenAddr(d.delegator)}</span>
-                        <span className="ml-1">&middot; expires {d.expiry}</span>
-                      </p>
-                    ))}
-                  </div>
-                )}
               </div>
+
+              <button
+                type="button"
+                onClick={() => onManageRoles(owner.fullAddress)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 sm:self-center"
+              >
+                <UserCog size={14} />
+                Manage Roles
+              </button>
             </div>
           ))}
         </div>
