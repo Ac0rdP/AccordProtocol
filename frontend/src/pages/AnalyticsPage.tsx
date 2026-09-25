@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -85,7 +85,7 @@ export function AnalyticsPage() {
     DEFAULT_ANALYTICS_FILTERS,
   );
 
-  const fetchData = () => {
+  const fetchData = useCallback(() => {
     let active = true;
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
@@ -111,9 +111,34 @@ export function AnalyticsPage() {
     return () => {
       active = false;
     };
-  };
+  }, []);
 
-  useEffect(fetchData, []);
+  useEffect(() => {
+    let active = true;
+
+    loadAnalyticsData()
+      .then((data) => {
+        if (active) {
+          setState({ ...data, loading: false, error: null });
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          setState((prev) => ({
+            ...prev,
+            loading: false,
+            error:
+              err instanceof Error
+                ? err.message
+                : "Failed to load analytics data",
+          }));
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const filteredTransfers = useMemo(
     () => filterExecutedTransfers(state.proposals, filters),
