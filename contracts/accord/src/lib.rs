@@ -3226,7 +3226,7 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         if amount < MIN_AMOUNT {
@@ -3315,7 +3315,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3379,7 +3379,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3443,7 +3443,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
@@ -3507,7 +3507,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_owner_and_weight(&env, &proposer)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let schedule = read_recurring_payment(&env, schedule_id)?;
