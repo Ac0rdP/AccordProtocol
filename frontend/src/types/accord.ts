@@ -174,6 +174,19 @@ export type TreasuryBalance = {
   timeSeries?: AnalyticsTimeSeriesPoint[];
 };
 
+/** An indexed treasury balance snapshot. `timestamp` is Unix seconds. */
+export type BalanceSnapshot = {
+  timestamp: number;
+  balances: Record<string, AnalyticsAmount>;
+};
+
+/** An indexed treasury deposit (inflow). `timestamp` is Unix seconds. */
+export type TreasuryDeposit = {
+  timestamp: number;
+  token: string;
+  amount: AnalyticsAmount;
+};
+
 export type CategorySpendBucket = {
   category: ProposalCategory;
   token: string;
