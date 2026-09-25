@@ -154,6 +154,48 @@ export function downloadCsv(filename: string, content: string): void {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * A single row from the spend-by-category endpoint or computed locally.
+ * `share` is always expressed as a percentage string, e.g. "34.5%".
+ */
+export type SpendByCategoryRow = {
+  category: string;
+  total: number;
+  count: number;
+  /** Percentage share of total spend, e.g. 34.5 */
+  share: number;
+};
+
+/**
+ * Normalise a raw SpendByCategory array (without share) into
+ * SpendByCategoryRow[] by computing each category's percentage share.
+ */
+export function enrichWithShares(rows: SpendByCategory[]): SpendByCategoryRow[] {
+  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
+  return rows.map((r) => ({
+    ...r,
+    share: grandTotal > 0 ? (r.total / grandTotal) * 100 : 0,
+  }));
+}
+
+/**
+ * Format a share value as a consistently rounded percentage string.
+ * Always shows exactly one decimal place, e.g. "34.5%".
+ */
+export function formatShare(share: number): string {
+  return `${share.toFixed(1)}%`;
+}
+
+/**
+ * Fetch spend-by-category data from the backend time-series endpoint
+ * GET /spend/by-category.  Falls back to an empty array on any error so
+ * callers can continue to render the page with local data.
+ */
+export async function fetchSpendByCategory(): Promise<SpendByCategoryRow[]> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase
+    ? `${apiBase}/spend/by-category`
+    : "/spend/by-category";
 export type SpendByOwner = {
   owner: string;
   shortOwner: string;
@@ -198,6 +240,20 @@ export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     if (!Array.isArray(data)) return [];
+    const rows: SpendByCategory[] = data.map(
+      (item: Record<string, unknown>) => ({
+        category: String(item.category ?? item.name ?? "Other"),
+        total:
+          typeof item.total === "number"
+            ? item.total
+            : parseFloat(String(item.total || "0")),
+        count:
+          typeof item.count === "number"
+            ? item.count
+            : parseInt(String(item.count || "0"), 10),
+      }),
+    );
+    return enrichWithShares(rows);
     return data
       .map((item: Record<string, unknown>) => {
         const owner = String(item.owner ?? item.address ?? item.proposer ?? "Unknown");

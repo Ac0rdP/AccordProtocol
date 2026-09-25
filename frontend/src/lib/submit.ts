@@ -6,12 +6,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type {
-  Proposal,
-  ProposalCategory,
-  ProposalRole,
-  ProposalStatus,
-} from "../types/accord";
+import type { Proposal, ProposalCategory, ProposalStatus, Role } from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 import { signTx } from "./wallet";
 
@@ -551,7 +546,7 @@ export async function estimateCreateProposalFee(
   ]);
 }
 
-function assertSupportedRole(role: ProposalRole): void {
+function assertSupportedRole(role: Role): void {
   if (role !== "Owner") {
     throw new Error(`Unsupported role: ${role}`);
   }
@@ -560,7 +555,7 @@ function assertSupportedRole(role: ProposalRole): void {
 export async function createGrantRoleProposal(
   callerAddress: string,
   targetAddress: string,
-  role: ProposalRole,
+  role: Role,
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
@@ -577,7 +572,7 @@ export async function createGrantRoleProposal(
 export async function createRevokeRoleProposal(
   callerAddress: string,
   targetAddress: string,
-  role: ProposalRole,
+  role: Role,
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
