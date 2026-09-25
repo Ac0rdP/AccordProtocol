@@ -2819,14 +2819,7 @@ impl AccordContract {
                 bump_persistent(&env, &key);
                 let roles = default_owner_roles(&env);
                 update_owner_roles(&env, new_owner, &roles);
-                // New owners start at MIN_OWNER_WEIGHT; keep the counter in
-                // lockstep with the implicit default returned by read_owner_weight.
-                write_total_weight(
-                    &env,
-                    read_total_weight(&env)
-                        .checked_add(MIN_OWNER_WEIGHT)
-                        .ok_or(ContractError::ArithmeticError)?,
-                );
+                write_total_weight(&env, new_total);
                 env.events().publish(
                     (symbol_short!("a_own"),),
                     AddOwnerExecutedEvent {
