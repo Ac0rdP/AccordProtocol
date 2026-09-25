@@ -434,6 +434,24 @@ pub struct RbacMigratedEvent {
     pub role_version: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleGrantedEvent {
+    pub target: Address,
+    pub role: Role,
+    pub before: Vec<Role>,
+    pub after: Vec<Role>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleRevokedEvent {
+    pub target: Address,
+    pub role: Role,
+    pub before: Vec<Role>,
+    pub after: Vec<Role>,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3161,9 +3179,20 @@ impl AccordContract {
                 if has_role(&env, target, &role) {
                     return Err(ContractError::RoleAlreadyGranted);
                 }
-                let mut roles = read_owner_roles(&env, target);
+                let before = read_owner_roles(&env, target);
+                let mut roles = before.clone();
                 roles.push_back(role.clone());
                 update_owner_roles(&env, target, &roles);
+                let after = read_owner_roles(&env, target);
+                env.events().publish(
+                    (Symbol::new(&env, "role_granted"),),
+                    RoleGrantedEvent {
+                        target: target.clone(),
+                        role: role.clone(),
+                        before,
+                        after,
+                    },
+                );
             }
             ProposalKind::RevokeRole(target, role_sym) => {
                 let role = symbol_to_role(&env, role_sym)?;
@@ -3180,14 +3209,24 @@ impl AccordContract {
                         return Err(ContractError::WouldBreakQuorum);
                     }
                 }
-                let current = read_owner_roles(&env, target);
+                let before = read_owner_roles(&env, target);
                 let mut next = Vec::new(&env);
-                for r in current.iter() {
+                for r in before.iter() {
                     if r != role {
                         next.push_back(r);
                     }
                 }
                 update_owner_roles(&env, target, &next);
+                let after = read_owner_roles(&env, target);
+                env.events().publish(
+                    (Symbol::new(&env, "role_revoked"),),
+                    RoleRevokedEvent {
+                        target: target.clone(),
+                        role: role.clone(),
+                        before,
+                        after,
+                    },
+                );
             }
         }
 
