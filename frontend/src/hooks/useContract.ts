@@ -3,10 +3,15 @@ import {
   getOwners,
   getProposalsPaged,
   getThreshold,
+  getTotalWeight,
   getTotalProposals,
   mapProposal,
   hasApproved,
   getApprovers,
+  getApproverWeight,
+  getOwnerWeight,
+  getRecurringPayments,
+  computeMonthlyOutflow,
 } from "../lib/contract";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 
@@ -50,10 +55,11 @@ export function useContract(walletAddress: string | null): ContractState {
 
     (async () => {
       try {
-        const [ownerAddrs, thresh, total] = await Promise.all([
+        const [ownerAddrs, thresh, total, totalWeight] = await Promise.all([
           getOwners(),
           getThreshold(),
           getTotalProposals(),
+          getTotalWeight(),
         ]);
 
         const raw = total > 0 ? await getProposalsPaged(0, Math.min(total, 50)) : [];
@@ -66,16 +72,22 @@ export function useContract(walletAddress: string | null): ContractState {
           mapped.map(async (p) => {
 
             const approverAddresses = await getApprovers(p.id);
+            const approverWeights: Record<string, number> = {};
+            await Promise.all(
+              approverAddresses.map(async (addr) => {
+                approverWeights[addr] = await getApproverWeight(addr);
+              })
+            );
 
             if (!walletAddress) {
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
             try {
               const approved = await hasApproved(walletAddress, p.id);
-              return { ...p, userHasApproved: approved, approverAddresses };
+              return { ...p, userHasApproved: approved, approverAddresses, approverWeights };
             } catch (err) {
               console.error(`Failed to fetch approval for ${p.id}`, err);
-              return { ...p, userHasApproved: false, approverAddresses };
+              return { ...p, userHasApproved: false, approverAddresses, approverWeights };
             }
           })
         );
@@ -84,10 +96,14 @@ export function useContract(walletAddress: string | null): ContractState {
 
         setProposals(proposalsWithApproval);
         setOwnerAddresses(ownerAddrs);
+        const ownerWeights = await Promise.all(
+          ownerAddrs.map(async (addr) => { const w = await getOwnerWeight(addr); return Number(w); })
+        );
         setOwners(
           ownerAddrs.map((addr, i) => ({
             address: `${addr.slice(0, 6)}...${addr.slice(-4)}`,
             label: addr === walletAddress ? "You" : `Signer ${i + 1}`,
+            weight: ownerWeights[i] ?? 0,
           }))
         );
 
@@ -96,15 +112,32 @@ export function useContract(walletAddress: string | null): ContractState {
         ).length;
         const executed = proposalsWithApproval.filter((p) => p.status === "executed").length;
 
+        let recurringOutflow = "";
+        try {
+          const schedules = await getRecurringPayments();
+          if (!cancelled) {
+            const monthly = computeMonthlyOutflow(schedules);
+            recurringOutflow = monthly > 0 ? `$${monthly.toFixed(2)}` : "$0.00";
+          }
+        } catch {
+          recurringOutflow = "N/A";
+        }
+
         setStats([
           {
             label: "Threshold",
-            value: `${thresh} of ${ownerAddrs.length}`,
-            sub: "signers required",
+            value: `${thresh} of ${totalWeight}`,
+            sub: "voting weight required",
+          },
+          {
+            label: "Total Voting Power",
+            value: String(totalWeight),
+            sub: `${ownerAddrs.length} ${ownerAddrs.length === 1 ? "owner" : "owners"}`,
           },
           { label: "Active", value: String(active), sub: "proposals" },
           { label: "Total", value: String(total), sub: "proposals created" },
           { label: "Executed", value: String(executed), sub: "all time" },
+          { label: "Recurring Outflows", value: recurringOutflow || "$0.00", sub: "per month" },
         ]);
         
         if (!cancelled) {

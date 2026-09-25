@@ -1,5 +1,15 @@
 import { expect, test, describe } from "vitest";
-import { stroopsToDisplay, displayToStroops, contractErrorMessage, formatDeadline, shortenAddr } from "../soroban";
+import {
+  stroopsToDisplay,
+  displayToStroops,
+  weightToPercent,
+  formatWeightPercent,
+  contractErrorMessage,
+  formatDeadline,
+  shortenAddr,
+  formatInterval,
+  formatCountdown,
+} from "../soroban";
 
 describe("stroopsToDisplay", () => {
   test("zero", () => {
@@ -38,6 +48,42 @@ describe("displayToStroops", () => {
 
   test("large values", () => {
     expect(displayToStroops(1000000000)).toBe(10000000000000000n);
+  });
+});
+
+describe("weightToPercent", () => {
+  test("returns the owner share for a normal weight", () => {
+    expect(weightToPercent(5, 20)).toBe(25);
+  });
+
+  test("returns zero for a zero-weight owner", () => {
+    expect(weightToPercent(0, 20)).toBe(0);
+  });
+
+  test("returns 100 for a single-owner total", () => {
+    expect(weightToPercent(7, 7)).toBe(100);
+  });
+
+  test("returns zero when total weight is zero", () => {
+    expect(weightToPercent(5, 0)).toBe(0);
+  });
+});
+
+describe("formatWeightPercent", () => {
+  test("formats a normal weight share with one decimal place", () => {
+    expect(formatWeightPercent(5, 20)).toBe("25.0%");
+  });
+
+  test("formats a zero-weight owner", () => {
+    expect(formatWeightPercent(0, 20)).toBe("0.0%");
+  });
+
+  test("formats a 100-percent single-owner share", () => {
+    expect(formatWeightPercent(7, 7)).toBe("100.0%");
+  });
+
+  test("formats zero when total weight is zero", () => {
+    expect(formatWeightPercent(5, 0)).toBe("0.0%");
   });
 });
 
@@ -106,5 +152,82 @@ describe("shortenAddr", () => {
     const addr = "GBTEST12345678901234567890123456789012345678901234WXYZ";
     const result = shortenAddr(addr);
     expect(result).toMatch(/^.{6}\.\.\..{4}$/);
+  });
+});
+
+describe("formatInterval", () => {
+  test("returns 'Daily' for 86400 seconds", () => {
+    expect(formatInterval(86400)).toBe("Daily");
+  });
+
+  test("returns 'Weekly' for 604800 seconds", () => {
+    expect(formatInterval(604800)).toBe("Weekly");
+  });
+
+  test("returns 'Monthly' for 2592000 seconds", () => {
+    expect(formatInterval(2592000)).toBe("Monthly");
+  });
+
+  test("returns 'Yearly' for 31536000 seconds", () => {
+    expect(formatInterval(31536000)).toBe("Yearly");
+  });
+
+  test("returns 'Every N days' for day multiples", () => {
+    expect(formatInterval(172800)).toBe("Every 2 days");
+  });
+
+  test("returns 'Every N hours' for hour multiples", () => {
+    expect(formatInterval(7200)).toBe("Every 2 hours");
+  });
+
+  test("returns 'Every N mins' for minute multiples", () => {
+    expect(formatInterval(180)).toBe("Every 3 mins");
+  });
+
+  test("returns 'Every Ns' for sub-minute intervals", () => {
+    expect(formatInterval(45)).toBe("Every 45s");
+  });
+
+  test("returns dash for zero or negative", () => {
+    expect(formatInterval(0)).toBe("—");
+    expect(formatInterval(-5)).toBe("—");
+  });
+
+  test("handles bigint input", () => {
+    expect(formatInterval(86400n)).toBe("Daily");
+  });
+
+  test("handles string input", () => {
+    expect(formatInterval("604800")).toBe("Weekly");
+  });
+});
+
+describe("formatCountdown", () => {
+  test("returns 'Due now' for past timestamps", () => {
+    expect(formatCountdown(Date.now() - 1000)).toBe("Due now");
+  });
+
+  test("returns 'Due now' for exactly now", () => {
+    expect(formatCountdown(Date.now())).toBe("Due now");
+  });
+
+  test("returns days and hours for far future", () => {
+    const target = Date.now() + 4 * 86400 * 1000 + 3 * 3600 * 1000;
+    expect(formatCountdown(target)).toMatch(/^next in 4d 3h$/);
+  });
+
+  test("returns hours and minutes for hours ahead", () => {
+    const target = Date.now() + 2 * 3600 * 1000 + 30 * 60 * 1000;
+    expect(formatCountdown(target)).toMatch(/^next in 2h 30m$/);
+  });
+
+  test("returns minutes for minutes ahead", () => {
+    const target = Date.now() + 15 * 60 * 1000;
+    expect(formatCountdown(target)).toMatch(/^next in 15m$/);
+  });
+
+  test("returns '<1m' for less than a minute", () => {
+    const target = Date.now() + 30 * 1000;
+    expect(formatCountdown(target)).toBe("next in <1m");
   });
 });
