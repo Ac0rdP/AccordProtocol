@@ -83,7 +83,7 @@ describe("AnalyticsPage", () => {
 
     render(<AnalyticsPage />);
 
-    expect(screen.getAllByText("Loading...")).toHaveLength(2);
+    expect(screen.getAllByText("Loading...")).toHaveLength(3);
   });
 
   test("renders stat cards and charts once data loads", async () => {
@@ -124,7 +124,7 @@ describe("AnalyticsPage", () => {
     render(<AnalyticsPage />);
 
     await waitFor(() =>
-      expect(screen.getAllByText("RPC unavailable")).toHaveLength(2),
+      expect(screen.getAllByText("RPC unavailable")).toHaveLength(3),
     );
 
     mockSuccessfulLoad([rawProposal()]);

@@ -14,6 +14,7 @@ import { jsPDF } from "jspdf";
 import type { Proposal, ProposalCategory } from "../types/accord";
 import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
+import { TreasuryBalanceChart } from "../components/TreasuryBalanceChart";
 import {
   getContractUsdcBalance,
   getContractXlmBalance,
@@ -30,9 +31,11 @@ import {
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
+  fetchTreasuryBalanceHistory,
   filterExecutedTransfers,
   type AnalyticsFilters,
   type CategoryFilter,
+  type TreasuryBalancePoint,
 } from "../lib/analytics";
 
 const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
@@ -48,6 +51,7 @@ type LoadState = {
   proposals: Proposal[];
   xlmBalance: string | null;
   usdcBalance: string | null;
+  balanceHistory: TreasuryBalancePoint[];
   loading: boolean;
   error: string | null;
 };
@@ -62,12 +66,13 @@ async function loadAnalyticsData(): Promise<
   const raw = total > 0 ? await getProposalsPaged(0, total) : [];
   const proposals = raw.map((p) => mapProposal(p, threshold));
 
-  const [xlmBalance, usdcBalance] = await Promise.all([
+  const [balanceHistory, xlmBalance, usdcBalance] = await Promise.all([
+    fetchTreasuryBalanceHistory().catch(() => []),
     getContractXlmBalance().catch(() => null),
     getContractUsdcBalance().catch(() => null),
   ]);
 
-  return { proposals, xlmBalance, usdcBalance };
+  return { proposals, xlmBalance, usdcBalance, balanceHistory };
 }
 
 export function AnalyticsPage() {
@@ -75,6 +80,7 @@ export function AnalyticsPage() {
     proposals: [],
     xlmBalance: null,
     usdcBalance: null,
+    balanceHistory: [],
     loading: true,
     error: null,
   });
@@ -382,6 +388,13 @@ export function AnalyticsPage() {
           sub="current treasury"
         />
       </div>
+
+      <TreasuryBalanceChart
+        data={state.balanceHistory}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
         <h3 className="font-semibold text-sm mb-4">Spend by Category</h3>

@@ -153,3 +153,39 @@ export function downloadCsv(filename: string, content: string): void {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export type TreasuryBalancePoint = {
+  timestamp: string;
+  xlm: number;
+  usdc: number;
+};
+
+export async function fetchTreasuryBalanceHistory(): Promise<
+  TreasuryBalancePoint[]
+> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase ? `${apiBase}/treasury/balance` : "/treasury/balance";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      return [];
+    }
+    const data = (await res.json()) as unknown;
+    if (Array.isArray(data)) {
+      return data.map((item: Record<string, unknown>) => ({
+        timestamp: String(item.timestamp ?? item.date ?? item.period ?? ""),
+        xlm:
+          typeof item.xlm === "number"
+            ? item.xlm
+            : parseFloat(String(item.xlm || "0")),
+        usdc:
+          typeof item.usdc === "number"
+            ? item.usdc
+            : parseFloat(String(item.usdc || "0")),
+      }));
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
