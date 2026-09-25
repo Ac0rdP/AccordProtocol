@@ -14,6 +14,7 @@ import { jsPDF } from "jspdf";
 import type { Proposal, ProposalCategory } from "../types/accord";
 import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
+import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
 import {
   getContractUsdcBalance,
   getContractXlmBalance,
@@ -27,6 +28,7 @@ import {
   buildSpendCsv,
   buildTreasuryCsv,
   computeSpendByCategory,
+  computeSpendByOwner,
   computeTreasuryFlow,
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
@@ -116,6 +118,8 @@ export function AnalyticsPage() {
   useEffect(() => {
     let active = true;
 
+  useEffect(() => {
+    let active = true;
     loadAnalyticsData()
       .then((data) => {
         if (active) {
@@ -147,6 +151,11 @@ export function AnalyticsPage() {
 
   const spendByCategory = useMemo(
     () => computeSpendByCategory(filteredTransfers),
+    [filteredTransfers],
+  );
+
+  const spendByOwner = useMemo(
+    () => computeSpendByOwner(filteredTransfers),
     [filteredTransfers],
   );
 
@@ -419,6 +428,13 @@ export function AnalyticsPage() {
           </div>
         </AnalyticsSectionState>
       </div>
+
+      <SpendByOwnerChart
+        data={spendByOwner}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
         <h3 className="font-semibold text-sm mb-4">
