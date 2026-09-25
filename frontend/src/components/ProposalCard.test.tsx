@@ -55,6 +55,7 @@ describe("ProposalCard", () => {
         onApprove={vi.fn()}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
       />
     );
 
@@ -69,6 +70,7 @@ describe("ProposalCard", () => {
         onApprove={vi.fn()}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={[]}
       />
     );
 
@@ -83,6 +85,7 @@ describe("ProposalCard", () => {
         onApprove={vi.fn()}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
       />
     );
 
@@ -100,6 +103,7 @@ describe("ProposalCard", () => {
           onApprove={vi.fn()}
           onExecute={vi.fn()}
           onRevoke={vi.fn()}
+          walletRoles={["Owner"]}
         />
       );
 
@@ -120,6 +124,7 @@ describe("ProposalCard", () => {
         onApprove={onApprove}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
       />
     );
 
@@ -127,6 +132,59 @@ describe("ProposalCard", () => {
 
     expect(onApprove).toHaveBeenCalledTimes(1);
     expect(onApprove).toHaveBeenCalledWith(42);
+  });
+
+  test("disables Approve for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={onApprove}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
+    );
+
+    const approveButton = screen.getByRole("button", { name: /approve proposal/i });
+    expect(approveButton).toBeDisabled();
+    expect(approveButton).toHaveAttribute(
+      "title",
+      "Approving proposals requires the Owner role."
+    );
+
+    await user.click(approveButton);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  test("disables Execute for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onExecute = vi.fn();
+
+    render(
+      <ProposalCard
+        proposal={baseProposal({ status: "ready" })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={onExecute}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
+    );
+
+    const executeButton = screen.getByRole("button", { name: /execute proposal/i });
+    expect(executeButton).toBeDisabled();
+    expect(executeButton).toHaveAttribute(
+      "title",
+      "Executing proposals requires the Owner role."
+    );
+
+    await user.click(executeButton);
+    expect(screen.queryByText("Send this transaction?")).toBeNull();
+    expect(onExecute).not.toHaveBeenCalled();
   });
 
   test("copies the direct proposal URL and shows temporary feedback", async () => {
@@ -139,6 +197,7 @@ describe("ProposalCard", () => {
         onApprove={vi.fn()}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
       />
     );
 
@@ -177,6 +236,7 @@ describe("ProposalCard", () => {
         onApprove={vi.fn()}
         onExecute={vi.fn()}
         onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
       />
     );
 

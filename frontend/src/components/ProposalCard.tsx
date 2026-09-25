@@ -3,6 +3,7 @@ import type { Proposal, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { StatusBadge } from "./StatusBadge";
 import { Check, Copy, Link2 } from "lucide-react";
+import { canApprove, canExecute, missingRoleTooltip } from "../lib/soroban";
 
 type ProposalCardProps = {
   proposal: Proposal;
@@ -10,6 +11,7 @@ type ProposalCardProps = {
   onApprove: (id: number) => void;
   onExecute: (id: number) => void;
   onRevoke: (id: number) => void;
+  walletRoles: readonly string[];
 };
 
 const KIND_LABELS = {
@@ -89,9 +91,16 @@ export function ProposalCard({
   onApprove,
   onExecute,
   onRevoke,
+  walletRoles,
 }: ProposalCardProps) {
   const connected = !!walletAddress;
   const showApprove = proposal.status === "pending" && !proposal.userHasApproved;
+  const approveDisabledReason = connected && !canApprove(walletRoles)
+    ? missingRoleTooltip("approve")
+    : undefined;
+  const executeDisabledReason = connected && !canExecute(walletRoles)
+    ? missingRoleTooltip("execute")
+    : undefined;
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedProposer, setCopiedProposer] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
@@ -217,8 +226,10 @@ export function ProposalCard({
             <button
               type="button"
               onClick={() => onApprove(proposal.id)}
+              disabled={Boolean(approveDisabledReason)}
+              title={approveDisabledReason}
               aria-label={connected ? `Approve proposal #${proposal.id}` : `Connect and approve proposal #${proposal.id}`}
-              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-emerald-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
               {connected ? "Approve" : "Connect & Approve"}
             </button>
@@ -235,11 +246,13 @@ export function ProposalCard({
             </button>
           )}
 
-          {connected && proposal.status === "ready" && !awaitingConfirmation && (
+          {connected && proposal.status === "ready" && (!awaitingConfirmation || executeDisabledReason) && (
             <button
               type="button"
               aria-label={`Execute proposal #${proposal.id}`}
-              className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              disabled={Boolean(executeDisabledReason)}
+              title={executeDisabledReason}
+              className="text-xs bg-sky-600 hover:bg-sky-500 text-white px-3 py-1 rounded-lg transition-colors font-medium disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-sky-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               onClick={() => setAwaitingConfirmation(true)}
             >
               Execute

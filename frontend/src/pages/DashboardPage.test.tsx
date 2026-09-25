@@ -14,6 +14,7 @@ const baseProps = {
   onRevoke: vi.fn(),
   onCreateProposal: vi.fn(),
   onCreateRecurringPayment: vi.fn(),
+  walletRoles: ["Owner"],
   roleBanner: null,
   loading: false,
   error: null,
@@ -63,5 +64,28 @@ describe("DashboardPage role access banner", () => {
     );
 
     expect(screen.getByText("Unrecognized wallet")).toBeTruthy();
+  });
+});
+
+describe("DashboardPage role-gated actions", () => {
+  test("disables create actions for a connected wallet without Owner", () => {
+    render(<DashboardPage {...baseProps} walletRoles={["Viewer"]} />);
+
+    const newButton = screen.getByRole("button", { name: "New" });
+    const recurringButton = screen.getByRole("button", { name: "Recurring" });
+
+    expect(newButton).toBeDisabled();
+    expect(recurringButton).toBeDisabled();
+    expect(newButton).toHaveAttribute(
+      "title",
+      "Creating proposals requires the Owner role."
+    );
+  });
+
+  test("keeps create actions enabled for a connected Owner", () => {
+    render(<DashboardPage {...baseProps} walletRoles={["Owner"]} />);
+
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Recurring" })).toBeEnabled();
   });
 });

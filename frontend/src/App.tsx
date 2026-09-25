@@ -330,6 +330,7 @@ export default function App() {
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
                   onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                  walletRoles={walletRoles.roles}
                   roleBanner={walletRoles.banner}
                   loading={loading}
                   error={error}

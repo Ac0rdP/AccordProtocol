@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
-import type { RoleAccessBanner } from "../hooks/useRoles";
+import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
+import { canCreate, missingRoleTooltip } from "../lib/soroban";
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -16,6 +17,7 @@ type DashboardPageProps = {
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
   onCreateRecurringPayment: () => void;
+  walletRoles: WalletRole[];
   roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
@@ -31,6 +33,7 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
+  walletRoles,
   roleBanner,
   loading,
   error,
@@ -65,6 +68,11 @@ export function DashboardPage({
   const roleBannerStyles = roleBanner?.variant === "unrecognized"
     ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
     : "border-sky-500/20 bg-sky-500/10 text-sky-100";
+
+  const createDisabledReason = walletAddress && !canCreate(walletRoles)
+    ? missingRoleTooltip("create")
+    : undefined;
+  const createDisabled = Boolean(createDisabledReason);
 
   return (
     <>
@@ -140,7 +148,9 @@ export function DashboardPage({
           <button
             type="button"
             onClick={onCreateProposal}
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Plus size={14} />
             New
@@ -148,7 +158,9 @@ export function DashboardPage({
           <button
             type="button"
             onClick={onCreateRecurringPayment}
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Repeat2 size={14} />
             Recurring
@@ -176,6 +188,7 @@ export function DashboardPage({
               onApprove={onApprove}
               onExecute={onExecute}
               onRevoke={onRevoke}
+              walletRoles={walletRoles}
             />
           ))
         )}

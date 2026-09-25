@@ -170,6 +170,7 @@ export function HistoryPage({
               onApprove={onApprove}
               onExecute={noop}
               onRevoke={noop}
+              walletRoles={[]}
             />
           ))
         )}

@@ -1,5 +1,15 @@
 import { expect, test, describe } from "vitest";
-import { stroopsToDisplay, displayToStroops, contractErrorMessage, formatDeadline, shortenAddr } from "../soroban";
+import {
+  canApprove,
+  canCreate,
+  canExecute,
+  contractErrorMessage,
+  displayToStroops,
+  formatDeadline,
+  missingRoleTooltip,
+  shortenAddr,
+  stroopsToDisplay,
+} from "../soroban";
 
 describe("stroopsToDisplay", () => {
   test("zero", () => {
@@ -106,5 +116,22 @@ describe("shortenAddr", () => {
     const addr = "GBTEST12345678901234567890123456789012345678901234WXYZ";
     const result = shortenAddr(addr);
     expect(result).toMatch(/^.{6}\.\.\..{4}$/);
+  });
+});
+
+describe("permission helpers", () => {
+  test("allow owner roles to create, approve, and execute", () => {
+    expect(canCreate(["Owner"])).toBe(true);
+    expect(canApprove(["Owner"])).toBe(true);
+    expect(canExecute(["Owner"])).toBe(true);
+  });
+
+  test("block non-owner roles and explain the missing role", () => {
+    expect(canCreate(["Viewer"])).toBe(false);
+    expect(canApprove(["Guardian"])).toBe(false);
+    expect(canExecute([])).toBe(false);
+    expect(missingRoleTooltip("execute")).toBe(
+      "Executing proposals requires the Owner role."
+    );
   });
 });
