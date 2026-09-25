@@ -1,16 +1,8 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
-export type Role =
-  | "owner"
-  | "admin"
-  | "guardian"
-  | "manager"
-  | "operator"
-  | "viewer";
+export type Role = "Proposer" | "Approver" | "Executor" | "Viewer";
 
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
-
-export type Role = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
 
 export type ProposalKind =
   | "transfer"

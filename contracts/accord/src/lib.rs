@@ -27,6 +27,7 @@ pub enum Role {
     Proposer,
     Approver,
     Executor,
+    Viewer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -945,20 +946,23 @@ fn require_role(env: &Env, address: &Address, role: Role) -> Result<(), Contract
 /// compatibility. Returns `InvalidRole` for any other value.
 fn symbol_to_role(env: &Env, sym: &Symbol) -> Result<Role, ContractError> {
     if *sym == Symbol::new(env, "Proposer") || *sym == Symbol::new(env, "CreateProposal") {
-        return Ok(Role::CreateProposal);
+        return Ok(Role::Proposer);
     }
     if *sym == Symbol::new(env, "Approver") || *sym == Symbol::new(env, "ApproveProposal") {
-        return Ok(Role::ApproveProposal);
+        return Ok(Role::Approver);
     }
     if *sym == Symbol::new(env, "Executor") || *sym == Symbol::new(env, "ExecuteProposal") {
-        return Ok(Role::ExecuteProposal);
+        return Ok(Role::Executor);
+    }
+    if *sym == Symbol::new(env, "Viewer") {
+        return Ok(Role::Viewer);
     }
     Err(ContractError::InvalidRole)
 }
 
 /// Returns true if the Symbol denotes the Approver role in any accepted form.
 fn is_approver_symbol(env: &Env, sym: &Symbol) -> bool {
-    matches!(symbol_to_role(env, sym), Ok(Role::ApproveProposal))
+    matches!(symbol_to_role(env, sym), Ok(Role::Approver))
 }
 
 /// Sums the voting weight of all owners that currently hold the Approver role.
@@ -966,7 +970,7 @@ fn total_approver_weight(env: &Env) -> Result<u32, ContractError> {
     let owners = read_owners_map(env)?;
     let mut total: u32 = 0;
     for owner in owners.keys().iter() {
-        if has_role(env, &owner, &Role::ApproveProposal) {
+        if has_role(env, &owner, &Role::Approver) {
             let w = owners.get(owner.clone()).unwrap_or(0);
             total = checked_weight_add(total, w)?;
         }
@@ -983,7 +987,7 @@ fn remaining_approver_weight_after_revoke(
 ) -> Result<u32, ContractError> {
     let owners = read_owners_map(env)?;
     let total = total_approver_weight(env)?;
-    if !has_role(env, target, &Role::ApproveProposal) {
+    if !has_role(env, target, &Role::Approver) {
         return Ok(total);
     }
     if let Some(w) = owners.get(target.clone()) {
@@ -3203,7 +3207,7 @@ impl AccordContract {
                 // Re-validate quorum-stranding at execute time: state may have
                 // drifted since proposal creation (another revoke could have
                 // already reduced approver weight).
-                if role == Role::ApproveProposal {
+                if role == Role::Approver {
                     let threshold = read_threshold(&env)?;
                     let remaining = remaining_approver_weight_after_revoke(&env, target)?;
                     if remaining < threshold {
@@ -3674,7 +3678,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let parsed = symbol_to_role(&env, &role)?;
@@ -3746,7 +3750,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let parsed = symbol_to_role(&env, &role)?;
@@ -3755,7 +3759,7 @@ impl AccordContract {
         }
 
         // Quorum-stranding guard: only applies to Approver revokes.
-        if parsed == Role::ApproveProposal {
+        if parsed == Role::Approver {
             let threshold = read_threshold(&env)?;
             let remaining = remaining_approver_weight_after_revoke(&env, &target)?;
             if remaining < threshold {
