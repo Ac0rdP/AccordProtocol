@@ -1413,15 +1413,13 @@ struct ProposalRevokedEvent {
 |-------|-----------|----------------|-------------|
 | `id` | `u64` | `ScVal::U64` | Proposal ID that was executed |
 | `executor` | `Address` | `ScVal::Address` | Owner who triggered the execution |
-| `to` | `Address` | `ScVal::Address` | Recipient of the transferred tokens |
-| `amount` | `i128` | `ScVal::I128` | Transferred amount (see [Token Amounts](#token-amounts-and-decimals)) |
+| `transfers` | `Vec<Transfer>` | `ScVal::Vec` | Asset transfers carried out by this execution; empty for governance proposals (add/remove owner, change threshold, spending limit). Each `Transfer` has `to: Address`, `token: Address`, `amount: i128` (see [Token Amounts](#token-amounts-and-decimals)) |
 
 ```rust
 struct ProposalExecutedEvent {
     id: u64,
     executor: Address,
-    to: Address,
-    amount: i128,
+    transfers: Vec<Transfer>,
 }
 ```
 
@@ -1495,28 +1493,32 @@ struct RecurringPaymentCreatedEvent {
 
 ### `RecurringPaymentDisbursedEvent`
 
-Emitted on each successful `disburse_recurring` call (`lib.rs:2765` topic `r_disb`).
+Emitted on each successful `disburse_recurring` call (`lib.rs:2165` topic `rpay`).
 
 **Topics:**
 | Index | Value | XDR Type |
 |-------|-------|----------|
 | 0 | Contract address (implicit) | `ScVal::Address` |
-| 1 | `"r_disb"` | `ScVal::Symbol` |
+| 1 | `"rpay"` | `ScVal::Symbol` |
 
 **Data fields:**
 | Field | Rust Type | XDR SCVal Type | Description |
 |-------|-----------|----------------|-------------|
-| `id` | `u64` | `ScVal::U64` | Schedule ID that was disbursed |
+| `schedule_id` | `u64` | `ScVal::U64` | Schedule ID that was disbursed |
 | `recipient` | `Address` | `ScVal::Address` | Recipient that received the transfer |
+| `token` | `Address` | `ScVal::Address` | Token contract address transferred |
 | `amount` | `i128` | `ScVal::I128` | Amount transferred in this disbursement (smallest units) |
 | `total_disbursed` | `i128` | `ScVal::I128` | Cumulative total disbursed after this call |
+| `periods_disbursed` | `u32` | `ScVal::U32` | Cumulative count of successful disbursements after this call |
 
 ```rust
 struct RecurringPaymentDisbursedEvent {
-    id: u64,
+    schedule_id: u64,
     recipient: Address,
+    token: Address,
     amount: i128,
     total_disbursed: i128,
+    periods_disbursed: u32,
 }
 ```
 
