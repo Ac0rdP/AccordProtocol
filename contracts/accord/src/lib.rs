@@ -1604,6 +1604,39 @@ fn linear_vesting_payout(
 #[contract]
 pub struct AccordContract;
 
+// Entrypoint gating matrix (keep synchronized with the public methods below).
+// Operational roles are separate from governance authority: role gates control
+// proposal lifecycle operations, while governance changes remain owner-weight
+// gated. Role-gated entrypoints below must enforce the role listed here.
+//
+// Initialize: initialize (all listed owners authenticate; one-time setup).
+// Migration: migrate_to_weighted_governance (distinct authenticated owners meet
+//   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
+// Proposer: create_recurring_schedule, create_proposal, create_add_owner_proposal,
+//   create_spending_limit_proposal, create_change_weight_proposal,
+//   create_remove_owner_proposal, create_change_threshold_proposal,
+//   create_recurring_proposal, create_cancel_recurring_proposal,
+//   create_pause_recurring_proposal, create_resume_recurring_proposal,
+//   create_modify_recurring_proposal, create_grant_role_proposal,
+//   create_revoke_role_proposal.
+// Approver + owner membership/weight: approve, revoke.
+// Executor role: execute, cancel_expired (owner membership is not required).
+// Owner membership: cancel_recurring_schedule.
+// Permissionless/authenticated caller: disburse_recurring_schedule (permissionless
+//   crank); disburse_recurring (any authenticated caller).
+// Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
+//   set_guardian, unfreeze, upgrade. Guardian-only: freeze.
+// Read-only, no authorization: get_spent_tracker, get_recurring_payment,
+//   get_next_disbursement_time, get_recurring_payments_paged,
+//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   is_governance_migrated, get_role_version, get_roles, has_role,
+//   get_role_members, get_owner_weight, get_owner_weights,
+//   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
+//   get_effective_weight, get_proposal, get_proposals_paged, get_owners,
+//   get_spending_limit, get_owner_spending_limits,
+//   get_remaining_spending_limit, get_threshold, get_required_quorum_weight,
+//   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
+//   get_proposal_approval_progress, is_frozen, get_guardian.
 #[contractimpl]
 impl AccordContract {
     /// One-shot initializer. Sets the list of owners with their individual
@@ -4037,6 +4070,8 @@ impl AccordContract {
     /// Updates the maximum single-owner weight percentage (1..=50). The same
     /// weighted, distinct-owner quorum required for other sensitive operations
     /// authorizes this parameter change.
+    /// Governance authority is intentionally owner-weight-gated, not role-gated;
+    /// see the entrypoint gating matrix above.
     pub fn set_max_single_owner_weight_pct(
         env: Env,
         approvers: Vec<Address>,
@@ -4168,6 +4203,9 @@ impl AccordContract {
     }
 
     // ─── Guardian ─────────────────────────────────────────────────────────────
+
+    // These governance entrypoints intentionally use owner-weight co-signatures,
+    // not operational role checks. See the gating matrix above.
 
     /// Assigns or replaces the guardian address. Requires distinct registered
     /// owners whose combined weight reaches `threshold`.
