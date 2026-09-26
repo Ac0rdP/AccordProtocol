@@ -1,0 +1,48 @@
+name: Indexer & Analytics CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'indexer/**'
+      - 'analytics/**'
+      - 'scripts/**'
+      - 'frontend/src/lib/analytics*'
+      - 'frontend/src/lib/__tests__/analytics*'
+      - 'frontend/src/components/*Chart*'
+      - 'frontend/src/components/StatCard*'
+      - 'frontend/src/components/Analytics*'
+      - 'frontend/src/pages/Analytics*'
+      - 'frontend/package.json'
+      - '.github/workflows/indexer-analytics.yml'
+
+jobs:
+  analytics-test-suite:
+    name: Indexer & Analytics Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix frontend ci
+
+      - name: Type-check frontend and analytics modules
+        run: npx --prefix frontend tsc --noEmit
+
+      - name: Run indexer & analytics test suites
+        run: npm --prefix frontend run test:analytics
+
+      - name: Verify analytics query CLI script
+        run: |
+          node scripts/query-analytics.js --help
