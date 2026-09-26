@@ -96,6 +96,11 @@ export type TreasuryFlowPoint = {
   cumulative: number;
 };
 
+export type TreasuryBalancePoint = {
+  timestamp: string;
+  [token: string]: string | number;
+};
+
 function periodKey(deadlineTs: number): string {
   const d = new Date(deadlineTs * 1000);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -356,6 +361,7 @@ export function computeTreasurySummary(
 
   return {
     totalDisbursed,
+    totalInflows: {},
     activeProposals,
     ownerCount,
     largestOutflow,

@@ -6,7 +6,21 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { Proposal, ProposalStatus, Role } from "../types/accord";
+import type {
+  Delegation,
+  OwnerDelegations,
+  OwnerWeightChangeEvent,
+  Proposal,
+  ProposalCategory,
+  ProposalEvent,
+  ProposalEventType,
+  ProposalStatus,
+  RecurringKind,
+  RecurringPayment,
+  RecurringSchedule,
+  RecurringStatus,
+  Role,
+} from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
@@ -248,6 +262,27 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
   }
 }
 
+const ROLE_ALIASES: Record<string, Role> = {
+  owner: "Owner",
+  admin: "Owner",
+  guardian: "Guardian",
+  manager: "SpendingLimit",
+  operator: "SpendingLimit",
+  viewer: "Viewer",
+  maintainer: "SpendingLimit",
+  administrator: "Owner",
+  proposer: "Proposer",
+  approver: "Approver",
+  executor: "Executor",
+};
+
+function normalizeRole(value: unknown): Role | null {
+  if (typeof value === "string") {
+    const key = value.trim();
+    if (!key) return null;
+    const normalized = key.toLowerCase();
+    return ROLE_ALIASES[normalized] ?? null;
+  }
 function mapRole(raw: unknown): Role | null {
   let key: string;
   if (typeof raw === "string") {
@@ -286,11 +321,35 @@ function mapRoleList(raw: unknown): Role[] {
 
 export async function getRoles(address: string): Promise<Role[]> {
   try {
+    const val = await simulateView("get_role_version");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getRoles(
+  address?: string,
+  ownerAddresses: string[] = [],
+): Promise<Role[]> {
+  if (!address) {
+    try {
+      const val = await simulateView("get_roles");
+      return mapRoleList(scValToNative(val));
+    } catch {
+      return [];
+    }
+  }
+
+  try {
     const val = await simulateView("get_roles", [
       nativeToScVal(address, { type: "address" }),
     ]);
-    return mapRoleList(scValToNative(val));
+    return mapRoles(scValToNative(val));
   } catch {
+    if (ownerAddresses.includes(address)) {
+      return ["Owner"];
+    }
     return [];
   }
 }
@@ -322,12 +381,20 @@ export async function getRoleMembers(role: Role): Promise<string[]> {
   }
 }
 
-export async function getApproverWeight(owner: string): Promise<number> {
+export async function getOwnerWeight(owner: string): Promise<bigint> {
   try {
     const val = await simulateView("get_owner_weight", [
       nativeToScVal(owner, { type: "address" }),
     ]);
-    return Number(scValToNative(val));
+    return safeBigInt(scValToNative(val));
+  } catch {
+    return 0n;
+  }
+}
+
+export async function getApproverWeight(owner: string): Promise<number> {
+  try {
+    return Number(await getOwnerWeight(owner));
   } catch {
     return 0; // Safe fallback when address is not a current owner
   }
@@ -336,6 +403,93 @@ export async function getApproverWeight(owner: string): Promise<number> {
 export async function getOwners(): Promise<string[]> {
   const val = await simulateView("get_owners");
   return scValToNative(val) as string[];
+}
+
+export async function getOwnerWeights(): Promise<Array<{ address: string; weight: number }>> {
+  try {
+    const val = await simulateView("get_owner_weights");
+    const raw = scValToNative(val);
+    if (!Array.isArray(raw)) return [];
+
+    return raw.map((entry) => {
+      const owner =
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).address ??
+            (entry as Record<string, unknown>).owner ??
+            ""
+          : "";
+      const weightValue =
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).weight ??
+            (entry as Record<string, unknown>).value ??
+            0
+          : 0;
+
+      return {
+        address: String(owner),
+        weight: Number(weightValue ?? 0),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function getTotalWeight(): Promise<number> {
+  try {
+    const val = await simulateView("get_total_weight");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getRequiredQuorumWeight(): Promise<number> {
+  try {
+    const val = await simulateView("get_required_quorum_weight");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return getThreshold();
+  }
+}
+
+export async function getWeightCapPct(): Promise<number> {
+  try {
+    const val = await simulateView("get_weight_cap_pct");
+    return Number(scValToNative(val) ?? 50);
+  } catch {
+    return 50;
+  }
+}
+
+function mapRole(raw: unknown): Role | null {
+  const role = typeof raw === "string"
+    ? raw
+    : raw && typeof raw === "object"
+      ? Object.keys(raw as object)[0]
+      : "";
+
+  switch (role.toLowerCase()) {
+    case "owner":
+      return "Owner";
+    case "viewer":
+      return "Viewer";
+    case "guardian":
+      return "Guardian";
+    case "spendinglimit":
+    case "spending_limit":
+    case "spending-limit":
+      return "SpendingLimit";
+    default:
+      return null;
+  }
+}
+
+function mapRoles(raw: unknown): Role[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return Array.from(
+    new Set(values.map(mapRole).filter((role): role is Role => role !== null))
+  );
 }
 
 export async function getThreshold(): Promise<number> {

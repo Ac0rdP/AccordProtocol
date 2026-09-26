@@ -245,6 +245,7 @@ describe("computeTreasurySummary", () => {
         XLM: "600",
         USDC: "50",
       },
+      totalInflows: {},
       activeProposals: 2,
       ownerCount: 3,
       largestOutflow: {
@@ -258,6 +259,7 @@ describe("computeTreasurySummary", () => {
     const summary = computeTreasurySummary([], 2);
     expect(summary).toEqual({
       totalDisbursed: {},
+      totalInflows: {},
       activeProposals: 0,
       ownerCount: 2,
       largestOutflow: null,

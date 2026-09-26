@@ -1,10 +1,12 @@
 import { defineConfig } from "@playwright/test";
+import { ANALYTICS_API_BASE_URL } from "./e2e/analytics-fixture";
 
 const TEST_G = "GDJSB22NWBU7IV44SHHG6WO6AJTUED2KNKWL2DYNJJ5X7M5SG7UVC7JD";
 
 export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,
+  globalSetup: "./e2e/global-setup.ts",
   use: {
     baseURL: "http://localhost:5173",
     headless: true,
@@ -18,6 +20,7 @@ export default defineConfig({
       VITE_CONTRACT_ADDRESS: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
       VITE_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
       VITE_SIM_SOURCE: TEST_G,
+      VITE_API_BASE_URL: ANALYTICS_API_BASE_URL,
     },
   },
 });

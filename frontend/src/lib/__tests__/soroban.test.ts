@@ -6,9 +6,11 @@ import {
   contractErrorMessage,
   displayToStroops,
   formatDeadline,
+  formatWeightPercent,
   missingRoleTooltip,
   shortenAddr,
   stroopsToDisplay,
+  weightToPercent,
 } from "../soroban";
 
 describe("stroopsToDisplay", () => {

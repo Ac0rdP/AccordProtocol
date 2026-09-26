@@ -1,6 +1,13 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
-export type Role = "Proposer" | "Approver" | "Executor" | "Viewer";
+export type Role =
+  | "Owner"
+  | "Viewer"
+  | "Guardian"
+  | "SpendingLimit"
+  | "Proposer"
+  | "Approver"
+  | "Executor";
 
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
 
@@ -11,6 +18,8 @@ export type ProposalKind =
   | "change_threshold"
   | "set_spending_limit"
   | "change_owner_weight"
+  | "grant_role"
+  | "revoke_role"
   | "recurring";
 
 export type Proposal = {
@@ -213,6 +222,7 @@ export type TreasuryFlowBucket = {
 
 export type TreasurySummary = {
   totalDisbursed: Record<string, AnalyticsAmount>;
+  totalInflows: Record<string, AnalyticsAmount>;
   activeProposals: number;
   ownerCount: number;
   largestOutflow: { token: string; amount: AnalyticsAmount } | null;
@@ -273,4 +283,3 @@ export type ParsedAnalyticsQuery = {
   granularity?: AnalyticsGranularity;
   timeSeries?: boolean;
 };
-

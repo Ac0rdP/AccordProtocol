@@ -70,7 +70,7 @@ function CategoryLegend({ rows }: { rows: SpendByCategoryRow[] }) {
   return (
     <ul className="mt-4 space-y-1">
       {rows.map((row, i) => (
-        <li key={row.category} className="flex items-center gap-2 text-xs">
+        <li key={`${row.category}-${i}`} className="flex items-center gap-2 text-xs">
           <span
             className="inline-block w-2.5 h-2.5 rounded-sm flex-shrink-0"
             style={{ backgroundColor: barColour(i) }}
@@ -115,6 +115,11 @@ export function SpendByCategoryChart({
         <p className="text-xs text-zinc-500 mt-0.5">
           Total outflow and share per proposal category
         </p>
+        <p className="sr-only">
+          {data.length
+            ? `Category spend chart with ${data.length} categories. ${data.map((row) => `${row.category}: ${row.total.toFixed(2)} (${formatShare(row.share)})`).join("; ")}.`
+            : "No category spend data is available."}
+        </p>
       </div>
 
       <AnalyticsSectionState
@@ -124,7 +129,11 @@ export function SpendByCategoryChart({
         emptyMessage="No spend data available for the selected filters."
         onRetry={onRetry}
       >
-        <div className="w-full h-56">
+        <div
+          className="w-full h-56"
+          role="img"
+          aria-label={`Spend by category chart with ${data.length} categories`}
+        >
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid
