@@ -71,6 +71,8 @@ export type SpendByCategory = {
   category: string;
   total: number;
   count: number;
+  /** Percentage share of total spend across all categories (0–100). */
+  share: number;
 };
 
 export function computeSpendByCategory(
@@ -85,8 +87,14 @@ export function computeSpendByCategory(
     entry.count += 1;
     totals.set(category, entry);
   }
+  const grandTotal = [...totals.values()].reduce((s, e) => s + e.total, 0);
   return [...totals.entries()]
-    .map(([category, { total, count }]) => ({ category, total, count }))
+    .map(([category, { total, count }]) => ({
+      category,
+      total,
+      count,
+      share: grandTotal > 0 ? (total / grandTotal) * 100 : 0,
+    }))
     .sort((a, b) => b.total - a.total);
 }
 
@@ -137,7 +145,9 @@ export function buildExportFilename(
   return `accord-analytics-${dataset}-${filterRangeLabel(filters)}`;
 }
 
-export function buildSpendCsv(rows: SpendByCategory[]): string {
+export function buildSpendCsv(
+  rows: Array<{ category: string; total: number; count: number }>,
+): string {
   const headers = ["Category", "Total", "Transaction Count"];
   const lines = rows.map(
     (r) => `"${r.category}","${r.total.toFixed(2)}",${r.count}`,
@@ -179,10 +189,13 @@ export type SpendByCategoryRow = {
 };
 
 /**
- * Normalise a raw SpendByCategory array (without share) into
- * SpendByCategoryRow[] by computing each category's percentage share.
+ * Normalise a raw SpendByCategory array (with or without share) into
+ * SpendByCategoryRow[] by computing each category's percentage share
+ * of the grand total. Handles the zero-total case gracefully (share 0).
  */
-export function enrichWithShares(rows: SpendByCategory[]): SpendByCategoryRow[] {
+export function enrichWithShares(
+  rows: Array<{ category: string; total: number; count: number; share?: number }>,
+): SpendByCategoryRow[] {
   const grandTotal = rows.reduce((s, r) => s + r.total, 0);
   return rows.map((r) => ({
     ...r,
@@ -213,7 +226,7 @@ export async function fetchSpendByCategory(): Promise<SpendByCategoryRow[]> {
     if (!res.ok) return [];
     const data = (await res.json()) as unknown;
     if (!Array.isArray(data)) return [];
-    const rows: SpendByCategory[] = data.map(
+    const rows: Array<{ category: string; total: number; count: number }> = data.map(
       (item: Record<string, unknown>) => ({
         category: String(item.category ?? item.name ?? "Other"),
         total:
@@ -514,5 +527,59 @@ export function computeProposalActivity(
       created,
       executed,
     }));
+}
+
+/**
+ * High-level proposal activity metrics for the summary and activity charts.
+ *
+ * Counts proposals created and executed (optionally filtered by category)
+ * and computes the average time from creation to execution across executed
+ * proposals that carry both timestamps. Returns `avgTimeToExecuteMs: null`
+ * when no executed proposal has a measurable duration.
+ */
+export type ProposalActivityMetrics = {
+  created: number;
+  executed: number;
+  /** Average milliseconds from creation to execution, null when unmeasurable. */
+  avgTimeToExecuteMs: number | null;
+};
+
+export function computeProposalActivityMetrics(
+  proposals: Proposal[],
+  category: CategoryFilter = "all",
+): ProposalActivityMetrics {
+  let created = 0;
+  let executed = 0;
+  let totalDurationMs = 0;
+  let measured = 0;
+
+  for (const p of proposals) {
+    if (category !== "all" && (p.category ?? "Other") !== category) continue;
+
+    const createdMs =
+      parseProposalDate(p.createdAt) ??
+      (p.deadlineTs ? p.deadlineTs * 1000 : null);
+    if (createdMs !== null) created += 1;
+
+    if (p.status === "executed") {
+      const executedMs =
+        parseProposalDate(p.executedAt) ??
+        (p.deadlineTs ? p.deadlineTs * 1000 : null);
+      if (executedMs !== null) executed += 1;
+      if (createdMs !== null && executedMs !== null) {
+        const duration = executedMs - createdMs;
+        if (Number.isFinite(duration) && duration >= 0) {
+          totalDurationMs += duration;
+          measured += 1;
+        }
+      }
+    }
+  }
+
+  return {
+    created,
+    executed,
+    avgTimeToExecuteMs: measured > 0 ? totalDurationMs / measured : null,
+  };
 }
 

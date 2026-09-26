@@ -52,12 +52,23 @@ type KindSummaryProps = {
   ownerWeights?: Record<string, number>;
 };
 
+function formatStroops(rawAmount: string): string {
+  const digits = rawAmount.trim();
+  if (!/^-?\d+$/.test(digits)) return digits;
+  const sign = digits.startsWith("-") ? "-" : "";
+  const unsigned = sign ? digits.slice(1) : digits;
+  return `${sign}${unsigned.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+}
+
 function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
   switch (proposal.kind) {
     case "transfer":
       return (
         <Link to={`/proposals/${proposal.id}`} className="block" aria-label={`Send ${proposal.amount} ${proposal.token}`}>
           <p className="text-sm text-zinc-300">Send {proposal.amount} {proposal.token}</p>
+          {proposal.rawAmount !== undefined && (
+            <p className="mt-0.5 font-mono text-xs text-zinc-500">{formatStroops(proposal.rawAmount)} stroops</p>
+          )}
           <p className="mt-0.5 font-mono text-sm text-zinc-500">To {proposal.to}</p>
         </Link>
       );

@@ -27,6 +27,8 @@ export type Proposal = {
   kind: ProposalKind;
   to: string;
   amount: string;
+  /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
+  rawAmount?: string;
   token: string;
   description: string;
   approvals: number;

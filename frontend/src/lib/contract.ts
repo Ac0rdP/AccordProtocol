@@ -106,7 +106,7 @@ function safeBigInt(value: unknown): bigint {
 
 function mapKindDetails(
   kind: unknown,
-): Pick<Proposal, "kind" | "to" | "amount" | "token"> {
+): Pick<Proposal, "kind" | "to" | "amount" | "token"> & { rawAmount?: string } {
   if (!kind || typeof kind !== "object") {
     return {
       kind: "transfer",
@@ -122,13 +122,16 @@ function mapKindDetails(
   const values = Array.isArray(payload) ? payload : [payload];
 
   switch (normalizedVariant) {
-    case "transfer":
+    case "transfer": {
+      const rawStroops = safeBigInt(values[1]);
       return {
         kind: "transfer",
         to: shortenAddr(String(values[0] ?? "Unknown")),
-        amount: stroopsToDisplay(safeBigInt(values[1])),
+        amount: stroopsToDisplay(rawStroops),
+        rawAmount: String(rawStroops),
         token: shortenAddr(String(values[2] ?? "Unknown")),
       };
+    }
     case "addowner":
       return {
         kind: "add_owner",
@@ -198,6 +201,7 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     kind: details.kind,
     to: details.to,
     amount: details.amount,
+    rawAmount: details.rawAmount,
     token: details.token,
     description: String(raw.description),
     approvals: Number(raw.approvals),
@@ -283,7 +287,10 @@ function normalizeRole(value: unknown): Role | null {
     const normalized = key.toLowerCase();
     return ROLE_ALIASES[normalized] ?? null;
   }
-function mapRole(raw: unknown): Role | null {
+  return null;
+}
+
+function mapAccessRole(raw: unknown): Role | null {
   let key: string;
   if (typeof raw === "string") {
     key = raw;
@@ -311,7 +318,7 @@ function mapRoleList(raw: unknown): Role[] {
   if (!Array.isArray(raw)) return [];
   const roles: Role[] = [];
   for (const entry of raw) {
-    const role = mapRole(entry);
+    const role = mapAccessRole(entry);
     if (role && !roles.includes(role)) {
       roles.push(role);
     }
@@ -319,7 +326,7 @@ function mapRoleList(raw: unknown): Role[] {
   return roles;
 }
 
-export async function getRoles(address: string): Promise<Role[]> {
+export async function getRoleVersion(): Promise<number> {
   try {
     const val = await simulateView("get_role_version");
     return Number(scValToNative(val) ?? 0);
