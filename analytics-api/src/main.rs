@@ -69,7 +69,224 @@ fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/proposals", get(proposals::list))
         .route("/proposals/{id}", get(proposals::get_detail))
+        .route("/spend/by-category", get(spend::by_category))
         .with_state(state)
+}
+
+mod spend {
+    use super::*;
+
+    const CATEGORIES: &[&str] = &["Transfer", "Payroll", "Grant", "Ops", "Other"];
+
+    #[derive(Serialize)]
+    pub(super) struct CategorySpendBucket {
+        category: String,
+        token: String,
+        total: String,
+        count: i64,
+        share: f64,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct CategoryTotal {
+        category: String,
+        total: String,
+        count: i64,
+    }
+
+    #[derive(Debug, Default)]
+    struct SpendQuery {
+        token: Option<String>,
+        start_date: Option<DateTime<Utc>>,
+        end_date: Option<DateTime<Utc>>,
+    }
+
+    pub(super) async fn by_category(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<Vec<CategorySpendBucket>>, (StatusCode, Json<proposals::ApiError>)> {
+        let query = parse_query(raw).map_err(|details| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            )
+        })?;
+
+        let mut token_query = QueryBuilder::<Postgres>::new(
+            "SELECT DISTINCT token FROM proposals WHERE contract_id = ",
+        );
+        token_query
+            .push_bind(&state.contract_id)
+            .push(" AND status = 'executed' AND kind = 'transfer'");
+        if let Some(token) = query.token.as_deref() {
+            token_query.push(" AND token = ").push_bind(token);
+        }
+        token_query.push(" ORDER BY token");
+        let mut tokens: Vec<String> = token_query
+            .build_query_scalar()
+            .fetch_all(&state.pool)
+            .await
+            .map_err(proposals::internal_error)?;
+        if tokens.is_empty() {
+            tokens.push(query.token.clone().unwrap_or_else(|| "XLM".to_owned()));
+        }
+
+        let mut buckets = Vec::new();
+        for token in tokens {
+            let mut totals_query = QueryBuilder::<Postgres>::new(
+                "SELECT category, COALESCE(SUM(amount::numeric), 0)::text AS total, \
+                 COUNT(*)::bigint AS count FROM proposals WHERE contract_id = ",
+            );
+            totals_query
+                .push_bind(&state.contract_id)
+                .push(" AND status = 'executed' AND kind = 'transfer' AND token = ")
+                .push_bind(&token);
+            if let Some(start) = query.start_date {
+                totals_query.push(" AND executed_at >= ").push_bind(start);
+            }
+            if let Some(end) = query.end_date {
+                totals_query.push(" AND executed_at <= ").push_bind(end);
+            }
+            totals_query.push(" GROUP BY category");
+            let totals: Vec<CategoryTotal> = totals_query
+                .build_query_as()
+                .fetch_all(&state.pool)
+                .await
+                .map_err(proposals::internal_error)?;
+            buckets.extend(build_buckets(token, totals));
+        }
+
+        Ok(Json(buckets))
+    }
+
+    fn build_buckets(token: String, totals: Vec<CategoryTotal>) -> Vec<CategorySpendBucket> {
+        let totals: HashMap<String, CategoryTotal> = totals
+            .into_iter()
+            .map(|total| (total.category.clone(), total))
+            .collect();
+        let grand_total: f64 = totals
+            .values()
+            .filter_map(|row| row.total.parse::<f64>().ok())
+            .sum();
+
+        CATEGORIES
+            .iter()
+            .map(|category| {
+                let row = totals.get(*category);
+                let total = row
+                    .map(|row| row.total.clone())
+                    .unwrap_or_else(|| "0".to_owned());
+                let amount = total.parse::<f64>().unwrap_or(0.0);
+                CategorySpendBucket {
+                    category: (*category).to_owned(),
+                    token: token.clone(),
+                    total,
+                    count: row.map(|row| row.count).unwrap_or(0),
+                    share: if grand_total == 0.0 {
+                        0.0
+                    } else {
+                        amount / grand_total * 100.0
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn parse_query(
+        raw: HashMap<String, String>,
+    ) -> Result<SpendQuery, Vec<proposals::ErrorDetail>> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !["token", "startDate", "endDate"].contains(&key.as_str()) {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+        let start_date = proposals::parse_date(&raw, "startDate", false, &mut details);
+        let end_date = proposals::parse_date(&raw, "endDate", true, &mut details);
+        if matches!((start_date, end_date), (Some(start), Some(end)) if start > end) {
+            details.push(proposals::detail(
+                "startDate",
+                "must be before or equal to endDate",
+                "INVALID_DATE_RANGE",
+            ));
+        }
+        if !details.is_empty() {
+            return Err(details);
+        }
+        Ok(SpendQuery {
+            token: proposals::nonempty(&raw, "token"),
+            start_date,
+            end_date,
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{CategoryTotal, build_buckets, parse_query};
+        use std::collections::HashMap;
+
+        #[test]
+        fn includes_every_category_with_zeroes() {
+            let buckets = build_buckets("XLM".to_owned(), Vec::new());
+
+            assert_eq!(buckets.len(), 5);
+            assert!(buckets.iter().all(|bucket| bucket.total == "0"));
+            assert!(buckets.iter().all(|bucket| bucket.count == 0));
+            assert!(buckets.iter().all(|bucket| bucket.share == 0.0));
+        }
+
+        #[test]
+        fn computes_shares_for_each_token() {
+            let buckets = build_buckets(
+                "USDC".to_owned(),
+                vec![
+                    CategoryTotal {
+                        category: "Payroll".to_owned(),
+                        total: "75.0000000".to_owned(),
+                        count: 3,
+                    },
+                    CategoryTotal {
+                        category: "Grant".to_owned(),
+                        total: "25.0000000".to_owned(),
+                        count: 1,
+                    },
+                ],
+            );
+
+            let payroll = buckets
+                .iter()
+                .find(|bucket| bucket.category == "Payroll")
+                .unwrap();
+            let grant = buckets
+                .iter()
+                .find(|bucket| bucket.category == "Grant")
+                .unwrap();
+            let ops = buckets
+                .iter()
+                .find(|bucket| bucket.category == "Ops")
+                .unwrap();
+            assert_eq!(payroll.share, 75.0);
+            assert_eq!(grant.share, 25.0);
+            assert_eq!(ops.share, 0.0);
+            assert_eq!(payroll.token, "USDC");
+        }
+
+        #[test]
+        fn rejects_inverted_date_ranges_and_unsupported_parameters() {
+            let error = parse_query(HashMap::from([
+                ("startDate".to_owned(), "2026-09-27".to_owned()),
+                ("endDate".to_owned(), "2026-09-26".to_owned()),
+                ("limit".to_owned(), "5".to_owned()),
+            ]))
+            .unwrap_err();
+
+            assert_eq!(error.len(), 2);
+        }
+    }
 }
 
 async fn root() -> Json<RootResponse> {
@@ -270,14 +487,14 @@ mod proposals {
     }
 
     #[derive(Debug, Serialize)]
-    struct ErrorDetail {
+    pub(super) struct ErrorDetail {
         field: String,
         message: String,
         code: &'static str,
     }
 
     impl ApiError {
-        fn invalid(details: Vec<ErrorDetail>) -> Self {
+        pub(super) fn invalid(details: Vec<ErrorDetail>) -> Self {
             Self {
                 error: ErrorBody {
                     code: "VALIDATION_ERROR",
@@ -496,26 +713,26 @@ mod proposals {
         }
 
         let status = nonempty(&raw, "status");
-        if let Some(value) = status.as_deref().filter(|value| *value != "all") {
-            if !STATUSES.contains(&value) {
-                details.push(detail(
-                    "status",
-                    "is not a supported proposal status",
-                    "INVALID_STATUS",
-                ));
-            }
+        if let Some(value) = status.as_deref().filter(|value| *value != "all")
+            && !STATUSES.contains(&value)
+        {
+            details.push(detail(
+                "status",
+                "is not a supported proposal status",
+                "INVALID_STATUS",
+            ));
         }
         let status = status.filter(|value| value != "all");
 
         let category = nonempty(&raw, "category");
-        if let Some(value) = category.as_deref().filter(|value| *value != "all") {
-            if !CATEGORIES.contains(&value) {
-                details.push(detail(
-                    "category",
-                    "is not a supported proposal category",
-                    "INVALID_CATEGORY",
-                ));
-            }
+        if let Some(value) = category.as_deref().filter(|value| *value != "all")
+            && !CATEGORIES.contains(&value)
+        {
+            details.push(detail(
+                "category",
+                "is not a supported proposal category",
+                "INVALID_CATEGORY",
+            ));
         }
         let category = category.filter(|value| value != "all");
 
@@ -571,7 +788,7 @@ mod proposals {
         }
     }
 
-    fn parse_date(
+    pub(super) fn parse_date(
         raw: &HashMap<String, String>,
         field: &'static str,
         end_of_day: bool,
@@ -597,14 +814,18 @@ mod proposals {
         None
     }
 
-    fn nonempty(raw: &HashMap<String, String>, field: &str) -> Option<String> {
+    pub(super) fn nonempty(raw: &HashMap<String, String>, field: &str) -> Option<String> {
         raw.get(field)
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     }
 
-    fn detail(field: impl Into<String>, message: &str, code: &'static str) -> ErrorDetail {
+    pub(super) fn detail(
+        field: impl Into<String>,
+        message: &str,
+        code: &'static str,
+    ) -> ErrorDetail {
         ErrorDetail {
             field: field.into(),
             message: message.to_owned(),
@@ -612,7 +833,7 @@ mod proposals {
         }
     }
 
-    fn internal_error(error: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+    pub(super) fn internal_error(error: sqlx::Error) -> (StatusCode, Json<ApiError>) {
         tracing::error!(%error, "failed to query indexed proposals");
         (
             StatusCode::INTERNAL_SERVER_ERROR,

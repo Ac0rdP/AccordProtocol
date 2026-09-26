@@ -1,8 +1,12 @@
 # Analytics API
 
-The analytics API is a Rust HTTP service backed by the PostgreSQL datastore shared
-with the indexer. It applies the schema migration on startup. The `proposals` and
-`events` tables follow the datastore model in [the analytics architecture](../docs/ARCHITECTURE.md#132-datastore-schema).
+The analytics API is a Rust HTTP service backed by PostgreSQL. It applies the
+schema migration on startup. The `proposals` and `events` tables follow the
+datastore model in [the analytics architecture](../docs/ARCHITECTURE.md#132-datastore-schema).
+The current `scripts/indexer.js` reference implementation persists to a JSON file;
+it does not yet populate this PostgreSQL schema, so the API needs a PostgreSQL
+indexer adapter or an equivalent ingestion process before it can serve indexed
+records.
 
 ## Run locally
 

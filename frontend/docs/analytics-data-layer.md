@@ -5,8 +5,8 @@ Import `analyticsClient` from `src/lib/analyticsClient.ts` or use
 Set `VITE_API_BASE_URL` to the analytics service URL; the default is same-origin.
 
 The Rust backend in the repository's `analytics-api/` crate currently implements
-`GET /proposals` and `GET /proposals/:id`; the spend, treasury, and summary routes
-remain future work. The types in `src/types/accord.ts` define the frontend
+`GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category`; the remaining
+spend, treasury, and summary routes are future work. The types in `src/types/accord.ts` define the frontend
 integration contract based on the endpoint requirements. Live integration has
 not yet been tested. The proposal-based analytics page stays usable independently
 of the API.

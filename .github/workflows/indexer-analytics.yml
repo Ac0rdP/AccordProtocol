@@ -8,6 +8,10 @@ on:
     paths:
       - 'indexer/**'
       - 'analytics/**'
+      - 'analytics-api/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docker-compose.yml'
       - 'scripts/**'
       - 'frontend/src/lib/analytics*'
       - 'frontend/src/lib/__tests__/analytics*'
@@ -46,3 +50,25 @@ jobs:
       - name: Verify analytics query CLI script
         run: |
           node scripts/query-analytics.js --help
+
+  analytics-api:
+    name: Analytics API Rust Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -p accord-analytics-api -- --check
+
+      - name: Run Clippy
+        run: cargo clippy -p accord-analytics-api --all-targets -- -D warnings
+
+      - name: Run API tests
+        run: cargo test -p accord-analytics-api
