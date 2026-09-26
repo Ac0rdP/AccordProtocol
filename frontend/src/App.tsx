@@ -21,9 +21,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
-import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
-import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
@@ -529,15 +527,6 @@ export default function App() {
           onClose={() => setShowCreateRecurring(false)}
           onSubmitted={refresh}
           triggerRef={recurringButtonRef}
-        />
-      )}
-      {showRoleManagement && (
-        <GrantRevokeRoleModal
-          walletAddress={wallet.address}
-          ownerAddresses={ownerAddresses}
-          threshold={threshold}
-          onClose={() => setShowRoleManagement(false)}
-          onSubmitted={refresh}
         />
       )}
       {roleModalTarget && (

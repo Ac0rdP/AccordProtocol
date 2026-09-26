@@ -1,6 +1,4 @@
 import { useMemo } from "react";
-
-export type WalletRole = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
 import type { Role } from "../types/accord";
 
 export type WalletRole = Role;
@@ -35,6 +33,9 @@ const ROLE_LABELS: Record<WalletRole, string> = {
   Viewer: "Viewer",
   Guardian: "Guardian",
   SpendingLimit: "Spending Limit",
+  Proposer: "Proposer",
+  Approver: "Approver",
+  Executor: "Executor",
 };
 
 function normalizeAddress(address: string): string {
@@ -62,6 +63,12 @@ function parseRole(role: string): WalletRole | null {
     case "spending_limit":
     case "spending-limit":
       return "SpendingLimit";
+    case "proposer":
+      return "Proposer";
+    case "approver":
+      return "Approver";
+    case "executor":
+      return "Executor";
     default:
       return null;
   }

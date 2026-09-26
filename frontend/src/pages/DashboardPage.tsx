@@ -1,11 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
 import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
-import type { DashboardStat, Owner, Proposal } from "../types/accord";
+import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
-import { canCreate, missingRoleTooltip } from "../lib/soroban";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
+import {
+  getDueRecurring,
+  getOwnerWeightChangeEvents,
+} from "../lib/contract";
+import {
+  canCreate,
+  missingRoleTooltip,
+  shortenAddr,
+} from "../lib/soroban";
+import type {
+  DashboardStat,
+  Owner,
+  OwnerWeightChangeEvent,
+  Proposal,
+  RecurringSchedule,
+} from "../types/accord";
+
+const RECENT_WEIGHT_CHANGES = 5;
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -36,13 +55,14 @@ export function DashboardPage({
   walletRoles,
   roleBanner,
   loading,
-  error,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
-  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
+  const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
+  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -50,24 +70,8 @@ export function DashboardPage({
     return left.deadlineTs - right.deadlineTs;
   });
 
-  // Compute owner weights and quorum weight for weight-based UI
-  const ownerAddresses = owners.map((o) => o.address);
+  const ownerAddresses = owners.map((owner) => owner.address);
   const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
-  const [quorumWeight, setQuorumWeight] = useState<number>(0);
-
-  useEffect(() => {
-    let active = true;
-    getRequiredQuorumWeight()
-      .then((w) => {
-        if (active) setQuorumWeight(w);
-      })
-      .catch(() => {
-        /* noop */
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -83,7 +87,6 @@ export function DashboardPage({
     };
   }, []);
 
-  // Recent owner voting-weight changes, newest first.
   useEffect(() => {
     let active = true;
     getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
@@ -108,21 +111,19 @@ export function DashboardPage({
     prevReadyCount.current = readyCount;
   }, [readyCount]);
 
-  useEffect(() => {
-    setDismissedError(null);
-  }, [error]);
-
   const showRoleBanner = Boolean(
-    roleBanner && dismissedRoleBannerKey !== roleBanner.key
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key,
   );
 
-  const roleBannerStyles = roleBanner?.variant === "unrecognized"
-    ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
-    : "border-sky-500/20 bg-sky-500/10 text-sky-100";
+  const roleBannerStyles =
+    roleBanner?.variant === "unrecognized"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+      : "border-sky-500/20 bg-sky-500/10 text-sky-100";
 
-  const createDisabledReason = walletAddress && !canCreate(walletRoles)
-    ? missingRoleTooltip("create")
-    : undefined;
+  const createDisabledReason =
+    walletAddress && !canCreate(walletRoles)
+      ? missingRoleTooltip("create")
+      : undefined;
   const createDisabled = Boolean(createDisabledReason);
 
   return (
@@ -177,7 +178,9 @@ export function DashboardPage({
               </div>
             ))}
           </div>
-        )}
+        </div>
+      )}
+
       {showRoleBanner && roleBanner && (
         <div
           role="status"
@@ -216,6 +219,7 @@ export function DashboardPage({
           </button>
         </div>
       )}
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Active Proposals</h2>
         <div className="flex items-center gap-3">
@@ -239,7 +243,6 @@ export function DashboardPage({
             New
           </button>
           <button
-            ref={recurringButtonRef}
             type="button"
             onClick={onCreateRecurringPayment}
             disabled={createDisabled}
@@ -339,9 +342,7 @@ export function DashboardPage({
                 </div>
                 <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
                   <span className="text-zinc-500">{change.oldWeight}</span>
-                  <span aria-hidden className="text-zinc-600">
-                    →
-                  </span>
+                  <span aria-hidden className="text-zinc-600">→</span>
                   <span className="text-emerald-400">{change.newWeight}</span>
                 </div>
               </div>
@@ -381,3 +382,4 @@ export function DashboardPage({
     </>
   );
 }
+

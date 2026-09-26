@@ -182,6 +182,17 @@ export function formatPercent(value: number, fractionDigits = 1): string {
   return `${Number(rounded) === 0 ? (0).toFixed(fractionDigits) : rounded}%`;
 }
 
+export function weightToPercent(weight: number, totalWeight: number): number {
+  if (!Number.isFinite(weight) || !Number.isFinite(totalWeight) || totalWeight <= 0) {
+    return 0;
+  }
+  return (weight / totalWeight) * 100;
+}
+
+export function formatWeightPercent(weight: number, totalWeight: number, fractionDigits = 1): string {
+  return formatPercent(weightToPercent(weight, totalWeight), fractionDigits);
+}
+
 /** Numeric timestamps are Unix seconds; strings are ISO dates. Always render UTC. */
 export function formatTimeSeriesLabel(
   timestamp: string | number | Date,

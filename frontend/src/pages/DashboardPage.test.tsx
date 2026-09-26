@@ -4,6 +4,15 @@ import { describe, expect, test, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage";
 import type { RoleAccessBanner } from "../hooks/useRoles";
 
+vi.mock("../hooks/useOwnerWeights", () => ({
+  useOwnerWeights: () => ({ weights: {}, totalWeight: 0, loading: false, error: null }),
+}));
+
+vi.mock("../lib/contract", () => ({
+  getDueRecurring: vi.fn().mockResolvedValue([]),
+  getOwnerWeightChangeEvents: vi.fn().mockResolvedValue([]),
+}));
+
 const baseProps = {
   activeProposals: [],
   owners: [],

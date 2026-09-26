@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Proposal } from "../../types/accord";
 import {
-  createErrorResponse,
-  createValidationError,
   handleAnalyticsRoute,
+  handleGetSpendByCategory,
   handleGetSpendByOwner,
   handleGetStatsSummary,
   handleGetTreasuryBalance,
@@ -224,6 +223,7 @@ describe("Analytics API - GET /stats/summary (#654)", () => {
         XLM: "2000",
         USDC: "250",
       },
+      totalInflows: {},
       activeProposals: 2, // pending (id 4) and ready (id 5)
       ownerCount: 4,
       largestOutflow: {
@@ -318,6 +318,58 @@ describe("Analytics API - Router Dispatcher", () => {
     if (res.status === 404) {
       expect(res.error.error.code).toBe("NOT_FOUND");
     }
+  });
+});
+
+describe("GET /spend/by-category", () => {
+  const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const proposals = [
+    createMockProposal({ id: 1, category: "Grant", token: "XLM", amount: "100", deadlineTs: ts("2026-03-10T00:00:00Z") }),
+    createMockProposal({ id: 2, category: "Grant", token: "XLM", amount: "50", deadlineTs: ts("2026-04-10T00:00:00Z") }),
+    createMockProposal({ id: 3, category: "Payroll", token: "XLM", amount: "50", deadlineTs: ts("2026-04-11T00:00:00Z") }),
+    createMockProposal({ id: 4, category: "Payroll", token: "USDC", amount: "40", deadlineTs: ts("2026-04-11T00:00:00Z") }),
+    createMockProposal({ id: 5, category: "Grant", amount: "999", status: "pending" }),
+    createMockProposal({ id: 6, category: "Ops", amount: "999", kind: "add_owner" as Proposal["kind"] }),
+  ];
+  const context = { proposals, ownerCount: 3 };
+
+  it("returns per-category totals and per-token shares from executed transfers only, largest first", () => {
+    const res = handleAnalyticsRoute("GET", "/spend/by-category", undefined, context);
+    expect(res.status).toBe(200);
+    if (res.status !== 200) return;
+    expect(res.data).toEqual([
+      { category: "Grant", token: "XLM", total: "150", count: 2, share: 75 },
+      { category: "Payroll", token: "XLM", total: "50", count: 1, share: 25 },
+      { category: "Payroll", token: "USDC", total: "40", count: 1, share: 100 },
+    ]);
+  });
+
+  it("filters by date range (endDate inclusive of its whole day)", () => {
+    const res = handleGetSpendByCategory({ startDate: "2026-04-01", endDate: "2026-04-10" }, context);
+    if (res.status !== 200) throw new Error("expected 200");
+    expect(res.data).toEqual([
+      { category: "Grant", token: "XLM", total: "50", count: 1, share: 100 },
+    ]);
+  });
+
+  it("defaults an unset category to Other", () => {
+    const res = handleGetSpendByCategory(undefined, {
+      proposals: [createMockProposal({ id: 1, category: undefined, amount: "10" })],
+      ownerCount: 1,
+    });
+    if (res.status !== 200) throw new Error("expected 200");
+    expect(res.data).toEqual([{ category: "Other", token: "XLM", total: "10", count: 1, share: 100 }]);
+  });
+
+  it("returns an empty list when there is no executed transfer spend", () => {
+    const res = handleGetSpendByCategory(undefined, { proposals: [], ownerCount: 0 });
+    if (res.status !== 200) throw new Error("expected 200");
+    expect(res.data).toEqual([]);
+  });
+
+  it("rejects an invalid date range with 400", () => {
+    const res = handleGetSpendByCategory({ startDate: "2026-05-01", endDate: "2026-01-01" }, context);
+    expect(res.status).toBe(400);
   });
 });
 
