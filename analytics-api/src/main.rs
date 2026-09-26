@@ -1,9 +1,14 @@
-use std::{env, net::SocketAddr};
+use std::{collections::HashMap, env, net::SocketAddr};
 
 use anyhow::{Context, Result, bail};
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
-use serde::Serialize;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::{
+    PgPool, QueryBuilder,
+    postgres::{PgPoolOptions, Postgres},
+    types::Json as SqlJson,
+};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -12,6 +17,13 @@ struct Config {
     listen_host: String,
     listen_port: u16,
     database_url: String,
+    contract_id: String,
+}
+
+#[derive(Clone)]
+struct AppState {
+    pool: PgPool,
+    contract_id: String,
 }
 
 impl Config {
@@ -23,15 +35,18 @@ impl Config {
             .context("LISTEN_PORT must be a valid port number")?;
         let database_url = env::var("DATABASE_URL")
             .context("DATABASE_URL must point to the indexer PostgreSQL database")?;
+        let contract_id = env::var("CONTRACT_ID")
+            .context("CONTRACT_ID must identify the Accord contract indexed by this API")?;
 
-        if listen_host.is_empty() {
-            bail!("LISTEN_HOST must not be empty");
+        if listen_host.is_empty() || contract_id.is_empty() {
+            bail!("LISTEN_HOST and CONTRACT_ID must not be empty");
         }
 
         Ok(Self {
             listen_host,
             listen_port,
             database_url,
+            contract_id,
         })
     }
 }
@@ -48,11 +63,12 @@ struct HealthResponse {
     database: &'static str,
 }
 
-fn app(pool: PgPool) -> Router {
+fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
-        .with_state(pool)
+        .route("/proposals", get(proposals::list))
+        .with_state(state)
 }
 
 async fn root() -> Json<RootResponse> {
@@ -62,8 +78,8 @@ async fn root() -> Json<RootResponse> {
     })
 }
 
-async fn health(pool: axum::extract::State<PgPool>) -> impl IntoResponse {
-    match sqlx::query("SELECT 1").execute(&pool.0).await {
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    match sqlx::query("SELECT 1").execute(&state.pool).await {
         Ok(_) => (
             StatusCode::OK,
             Json(HealthResponse {
@@ -80,6 +96,441 @@ async fn health(pool: axum::extract::State<PgPool>) -> impl IntoResponse {
                     database: "disconnected",
                 }),
             )
+        }
+    }
+}
+
+mod proposals {
+    use super::*;
+
+    const STATUSES: &[&str] = &["pending", "ready", "executed", "expired", "revoked"];
+    const CATEGORIES: &[&str] = &["Transfer", "Payroll", "Grant", "Ops", "Other"];
+
+    #[derive(Debug, Deserialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct ProposalRow {
+        id: i64,
+        kind: String,
+        to: String,
+        amount: String,
+        token: String,
+        description: String,
+        approvals: i32,
+        threshold: i32,
+        quorum_weight: Option<i32>,
+        approval_weight: Option<i32>,
+        total_weight: Option<i32>,
+        approver_addresses: SqlJson<Vec<String>>,
+        status: String,
+        deadline: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        proposer: String,
+        category: String,
+        executed_at: Option<DateTime<Utc>>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProposalResponse {
+        id: i64,
+        kind: String,
+        to: String,
+        amount: String,
+        token: String,
+        description: String,
+        approvals: i32,
+        threshold: i32,
+        quorum_weight: Option<i32>,
+        approval_weight: Option<i32>,
+        total_weight: Option<i32>,
+        status: String,
+        deadline: DateTime<Utc>,
+        deadline_ts: i64,
+        created_at: DateTime<Utc>,
+        proposer: String,
+        user_has_approved: bool,
+        approver_addresses: Vec<String>,
+        category: String,
+        executed_at: Option<DateTime<Utc>>,
+    }
+
+    impl From<ProposalRow> for ProposalResponse {
+        fn from(row: ProposalRow) -> Self {
+            Self {
+                id: row.id,
+                kind: row.kind,
+                to: row.to,
+                amount: row.amount,
+                token: row.token,
+                description: row.description,
+                approvals: row.approvals,
+                threshold: row.threshold,
+                quorum_weight: row.quorum_weight,
+                approval_weight: row.approval_weight,
+                total_weight: row.total_weight,
+                status: row.status,
+                deadline_ts: row.deadline.timestamp(),
+                deadline: row.deadline,
+                created_at: row.created_at,
+                proposer: row.proposer,
+                user_has_approved: false,
+                approver_addresses: row.approver_addresses.0,
+                category: row.category,
+                executed_at: row.executed_at,
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct ProposalPage {
+        proposals: Vec<ProposalResponse>,
+        total: i64,
+        limit: i64,
+        offset: i64,
+    }
+
+    #[derive(Debug, Default)]
+    struct ProposalQuery {
+        limit: i64,
+        offset: i64,
+        sort: String,
+        order: String,
+        status: Option<String>,
+        category: Option<String>,
+        owner: Option<String>,
+        token: Option<String>,
+        start_date: Option<DateTime<Utc>>,
+        end_date: Option<DateTime<Utc>>,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct ApiError {
+        error: ErrorBody,
+    }
+
+    #[derive(Serialize)]
+    struct ErrorBody {
+        code: &'static str,
+        message: &'static str,
+        details: Vec<ErrorDetail>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ErrorDetail {
+        field: String,
+        message: String,
+        code: &'static str,
+    }
+
+    impl ApiError {
+        fn invalid(details: Vec<ErrorDetail>) -> Self {
+            Self {
+                error: ErrorBody {
+                    code: "VALIDATION_ERROR",
+                    message: "Invalid query parameters",
+                    details,
+                },
+            }
+        }
+    }
+
+    pub(super) async fn list(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<ProposalPage>, (StatusCode, Json<ApiError>)> {
+        let query = parse_query(raw)
+            .map_err(|details| (StatusCode::BAD_REQUEST, Json(ApiError::invalid(details))))?;
+
+        let mut count = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(*) FROM proposals p WHERE p.contract_id = ",
+        );
+        count.push_bind(&state.contract_id);
+        add_filters(&mut count, &query);
+        let total: i64 = count
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+        let sort_column = match query.sort.as_str() {
+            "deadline" => "p.deadline",
+            "amount" => "p.amount::numeric",
+            _ => "p.created_at",
+        };
+        let direction = if query.order == "asc" { "ASC" } else { "DESC" };
+        let mut rows = QueryBuilder::<Postgres>::new(
+            "SELECT p.proposal_id AS id, p.kind, p.recipient AS to, p.amount, p.token, \
+             p.description, p.approvals, p.threshold, p.quorum_weight, p.approval_weight, \
+             p.total_weight, p.approver_addresses, p.status, p.deadline, p.created_at, \
+             p.proposer, p.category, p.executed_at FROM proposals p WHERE p.contract_id = ",
+        );
+        rows.push_bind(&state.contract_id);
+        add_filters(&mut rows, &query);
+        rows.push(" ORDER BY ");
+        rows.push(sort_column);
+        rows.push(" ");
+        rows.push(direction);
+        rows.push(", p.proposal_id DESC LIMIT ");
+        rows.push_bind(query.limit);
+        rows.push(" OFFSET ");
+        rows.push_bind(query.offset);
+
+        let proposals = rows
+            .build_query_as::<ProposalRow>()
+            .fetch_all(&state.pool)
+            .await
+            .map_err(internal_error)?
+            .into_iter()
+            .map(ProposalResponse::from)
+            .collect();
+
+        Ok(Json(ProposalPage {
+            proposals,
+            total,
+            limit: query.limit,
+            offset: query.offset,
+        }))
+    }
+
+    fn add_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, query: &'a ProposalQuery) {
+        if let Some(status) = query.status.as_deref() {
+            builder.push(" AND p.status = ").push_bind(status);
+        }
+        if let Some(category) = query.category.as_deref() {
+            builder.push(" AND p.category = ").push_bind(category);
+        }
+        if let Some(owner) = query.owner.as_deref() {
+            builder
+                .push(" AND p.proposer ILIKE ")
+                .push_bind(format!("%{owner}%"));
+        }
+        if let Some(token) = query.token.as_deref() {
+            builder.push(" AND p.token = ").push_bind(token);
+        }
+        if let Some(start) = query.start_date {
+            builder.push(" AND p.created_at >= ").push_bind(start);
+        }
+        if let Some(end) = query.end_date {
+            builder.push(" AND p.created_at <= ").push_bind(end);
+        }
+    }
+
+    fn parse_query(raw: HashMap<String, String>) -> Result<ProposalQuery, Vec<ErrorDetail>> {
+        let mut details = Vec::new();
+        let allowed = [
+            "limit",
+            "offset",
+            "sort",
+            "order",
+            "status",
+            "category",
+            "owner",
+            "token",
+            "startDate",
+            "endDate",
+        ];
+        for key in raw.keys() {
+            if !allowed.contains(&key.as_str()) {
+                details.push(detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+
+        let limit = parse_integer(&raw, "limit", 20, 1, 100, &mut details);
+        let offset = parse_integer(&raw, "offset", 0, 0, i64::MAX, &mut details);
+        let sort = raw.get("sort").map(String::as_str).unwrap_or("createdAt");
+        if !["deadline", "amount", "createdAt"].contains(&sort) {
+            details.push(detail(
+                "sort",
+                "must be one of: deadline, amount, createdAt",
+                "INVALID_SORT",
+            ));
+        }
+        let order = raw.get("order").map(String::as_str).unwrap_or("desc");
+        if !["asc", "desc"].contains(&order) {
+            details.push(detail("order", "must be asc or desc", "INVALID_ORDER"));
+        }
+
+        let status = nonempty(&raw, "status");
+        if let Some(value) = status.as_deref().filter(|value| *value != "all") {
+            if !STATUSES.contains(&value) {
+                details.push(detail(
+                    "status",
+                    "is not a supported proposal status",
+                    "INVALID_STATUS",
+                ));
+            }
+        }
+        let status = status.filter(|value| value != "all");
+
+        let category = nonempty(&raw, "category");
+        if let Some(value) = category.as_deref().filter(|value| *value != "all") {
+            if !CATEGORIES.contains(&value) {
+                details.push(detail(
+                    "category",
+                    "is not a supported proposal category",
+                    "INVALID_CATEGORY",
+                ));
+            }
+        }
+        let category = category.filter(|value| value != "all");
+
+        let start_date = parse_date(&raw, "startDate", false, &mut details);
+        let end_date = parse_date(&raw, "endDate", true, &mut details);
+        if matches!((start_date, end_date), (Some(start), Some(end)) if start > end) {
+            details.push(detail(
+                "startDate",
+                "must be before or equal to endDate",
+                "INVALID_DATE_RANGE",
+            ));
+        }
+
+        if !details.is_empty() {
+            return Err(details);
+        }
+        Ok(ProposalQuery {
+            limit,
+            offset,
+            sort: sort.to_owned(),
+            order: order.to_owned(),
+            status,
+            category,
+            owner: nonempty(&raw, "owner"),
+            token: nonempty(&raw, "token"),
+            start_date,
+            end_date,
+        })
+    }
+
+    fn parse_integer(
+        raw: &HashMap<String, String>,
+        field: &'static str,
+        default: i64,
+        min: i64,
+        max: i64,
+        details: &mut Vec<ErrorDetail>,
+    ) -> i64 {
+        let Some(value) = raw.get(field) else {
+            return default;
+        };
+        match value.parse::<i64>() {
+            Ok(parsed) if (min..=max).contains(&parsed) => parsed,
+            _ => {
+                let (message, code) = if field == "limit" {
+                    ("must be an integer between 1 and 100", "INVALID_LIMIT")
+                } else {
+                    ("must be a non-negative integer", "INVALID_OFFSET")
+                };
+                details.push(detail(field, message, code));
+                default
+            }
+        }
+    }
+
+    fn parse_date(
+        raw: &HashMap<String, String>,
+        field: &'static str,
+        end_of_day: bool,
+        details: &mut Vec<ErrorDetail>,
+    ) -> Option<DateTime<Utc>> {
+        let value = nonempty(raw, field)?;
+        if let Ok(date_time) = DateTime::parse_from_rfc3339(&value) {
+            return Some(date_time.with_timezone(&Utc));
+        }
+        if let Ok(date) = NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
+            let time = if end_of_day {
+                NaiveTime::from_hms_nano_opt(23, 59, 59, 999_999_999).unwrap()
+            } else {
+                NaiveTime::MIN
+            };
+            return Some(date.and_time(time).and_utc());
+        }
+        details.push(detail(
+            field,
+            "must be a valid ISO 8601 date or date-time",
+            "INVALID_DATE",
+        ));
+        None
+    }
+
+    fn nonempty(raw: &HashMap<String, String>, field: &str) -> Option<String> {
+        raw.get(field)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn detail(field: impl Into<String>, message: &str, code: &'static str) -> ErrorDetail {
+        ErrorDetail {
+            field: field.into(),
+            message: message.to_owned(),
+            code,
+        }
+    }
+
+    fn internal_error(error: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+        tracing::error!(%error, "failed to query indexed proposals");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: ErrorBody {
+                    code: "INTERNAL_ERROR",
+                    message: "Failed to query indexed proposals",
+                    details: Vec::new(),
+                },
+            }),
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_query;
+        use std::collections::HashMap;
+
+        #[test]
+        fn applies_defaults_and_accepts_filters() {
+            let query = parse_query(HashMap::from([
+                ("status".to_owned(), "executed".to_owned()),
+                ("category".to_owned(), "Payroll".to_owned()),
+                ("owner".to_owned(), "GABC".to_owned()),
+                ("sort".to_owned(), "amount".to_owned()),
+            ]))
+            .unwrap();
+
+            assert_eq!(query.limit, 20);
+            assert_eq!(query.offset, 0);
+            assert_eq!(query.status.as_deref(), Some("executed"));
+            assert_eq!(query.category.as_deref(), Some("Payroll"));
+            assert_eq!(query.sort, "amount");
+        }
+
+        #[test]
+        fn rejects_invalid_filters_and_sort_values() {
+            let error = parse_query(HashMap::from([
+                ("limit".to_owned(), "101".to_owned()),
+                ("status".to_owned(), "active".to_owned()),
+                ("sort".to_owned(), "arbitrary_sql".to_owned()),
+            ]))
+            .unwrap_err();
+
+            assert_eq!(error.len(), 3);
+        }
+
+        #[test]
+        fn date_only_end_date_includes_the_entire_day() {
+            let query = parse_query(HashMap::from([(
+                "endDate".to_owned(),
+                "2026-09-26".to_owned(),
+            )]))
+            .unwrap();
+
+            assert_eq!(
+                query.end_date.unwrap().format("%H:%M:%S").to_string(),
+                "23:59:59"
+            );
         }
     }
 }
@@ -111,28 +562,66 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to listen on {address}"))?;
 
     tracing::info!(%address, "analytics API listening");
-    axum::serve(listener, app(pool)).await?;
+    axum::serve(
+        listener,
+        app(AppState {
+            pool,
+            contract_id: config.contract_id,
+        }),
+    )
+    .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::{body::Body, http::Request};
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
-    use super::app;
+    use super::{AppState, app};
 
     #[tokio::test]
     async fn root_returns_service_status() {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
             .unwrap();
-        let response = app(pool)
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response = app(AppState {
+            pool,
+            contract_id: "test-contract".to_owned(),
+        })
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn proposals_reject_invalid_pagination_with_json_error() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+            .unwrap();
+        let response = app(AppState {
+            pool,
+            contract_id: "test-contract".to_owned(),
+        })
+        .oneshot(
+            Request::builder()
+                .uri("/proposals?limit=101")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(error["error"]["details"][0]["field"], "limit");
     }
 }

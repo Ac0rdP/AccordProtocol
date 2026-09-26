@@ -20,8 +20,9 @@ DATABASE_URL=postgres://accord:accord@localhost:5432/accord_analytics \
 ```
 
 The default address is `127.0.0.1:8080`. Configure it with `LISTEN_HOST` and
-`LISTEN_PORT`. `DATABASE_URL` is required. The API also reads these values from
-a repository-root `.env` file.
+`LISTEN_PORT`. `DATABASE_URL` and `CONTRACT_ID` are required. The API also reads
+these values from a repository-root `.env` file. The `CONTRACT_ID` value scopes
+proposal reads to one indexed Accord contract.
 
 ```sh
 curl http://127.0.0.1:8080/

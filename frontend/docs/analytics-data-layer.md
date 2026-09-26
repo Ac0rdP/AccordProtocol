@@ -4,11 +4,12 @@ Import `analyticsClient` from `src/lib/analyticsClient.ts` or use
 `useTreasuryAnalytics(query, intervalMs)` from `src/hooks/useTreasuryAnalytics.ts`.
 Set `VITE_API_BASE_URL` to the analytics service URL; the default is same-origin.
 
-The backend routes in upstream issues #648–#655 are not implemented on main yet.
-The types in `src/types/accord.ts` define the frontend integration contract below,
-based on those endpoint requirements. Verify the wire shapes with the backend
-when it lands; live integration has not been tested. The existing proposal-based
-analytics page stays usable independently of the API.
+The Rust backend in the repository's `analytics-api/` crate currently implements
+`GET /proposals` and `GET /proposals/:id`; the spend, treasury, and summary routes
+remain future work. The types in `src/types/accord.ts` define the frontend
+integration contract based on the endpoint requirements. Live integration has
+not yet been tested. The proposal-based analytics page stays usable independently
+of the API.
 
 | Client method | GET path | Response type |
 | --- | --- | --- |
