@@ -42,7 +42,8 @@ jobs:
         run: npm --prefix frontend ci
 
       - name: Type-check frontend and analytics modules
-        run: npx --prefix frontend tsc --noEmit
+        working-directory: frontend
+        run: npx tsc --noEmit
 
       - name: Run indexer & analytics test suites
         run: npm --prefix frontend run test:analytics

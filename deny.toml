@@ -11,9 +11,6 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "none"
 unsound = "none"
 yanked = "warn"
-ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "RSA is only present through SQLx's optional MySQL backend, which is not enabled; no fixed release is available." },
-]
 
 [bans]
 multiple-versions = "allow"
@@ -35,6 +32,8 @@ allow = [
     "BSD-1-Clause",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
     "LGPL-2.1-or-later",
     "Unicode-3.0",
     "Unlicense",
