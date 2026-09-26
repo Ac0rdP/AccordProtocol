@@ -1,5 +1,6 @@
 import type {
   AnalyticsAmount,
+  AnalyticsGranularity,
   AnalyticsQuery,
   Proposal,
   ProposalCategory,
@@ -387,5 +388,125 @@ export async function fetchTreasurySummary(
   } catch {
     return null;
   }
+}
+
+export type TreasuryBalancePoint = {
+  timestamp: string;
+  xlm: number;
+  usdc: number;
+};
+
+export async function fetchTreasuryBalanceHistory(): Promise<
+  TreasuryBalancePoint[]
+> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase ? `${apiBase}/treasury/balance` : "/treasury/balance";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      return [];
+    }
+    const data = (await res.json()) as unknown;
+    if (Array.isArray(data)) {
+      return data.map((item: Record<string, unknown>) => ({
+        timestamp: String(item.timestamp ?? item.date ?? item.period ?? ""),
+        xlm:
+          typeof item.xlm === "number"
+            ? item.xlm
+            : parseFloat(String(item.xlm || "0")),
+        usdc:
+          typeof item.usdc === "number"
+            ? item.usdc
+            : parseFloat(String(item.usdc || "0")),
+      }));
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export type ProposalActivityPoint = {
+  period: string;
+  created: number;
+  executed: number;
+};
+
+function parseProposalDate(
+  val: string | number | undefined | null,
+): number | null {
+  if (val === undefined || val === null || val === "") return null;
+  if (typeof val === "number") {
+    return val < 1e11 ? val * 1000 : val;
+  }
+  const numeric = Number(val);
+  if (!isNaN(numeric) && isFinite(numeric) && numeric > 0) {
+    return numeric < 1e11 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(val);
+  if (!isNaN(parsed)) return parsed;
+  return null;
+}
+
+function activityBucketKey(
+  ms: number,
+  granularity: AnalyticsGranularity,
+): string {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") {
+    return `${y}-${String(m + 1).padStart(2, "0")}`;
+  }
+  if (granularity === "day") {
+    return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  // week: start of week (Monday)
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  const mondayMs = Date.UTC(y, m, day) - sinceMonday * 86_400_000;
+  const mon = new Date(mondayMs);
+  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
+}
+
+export function computeProposalActivity(
+  proposals: Proposal[],
+  granularity: AnalyticsGranularity = "day",
+): ProposalActivityPoint[] {
+  const buckets = new Map<string, { created: number; executed: number }>();
+
+  for (const p of proposals) {
+    // Created
+    const createdMs =
+      parseProposalDate(p.createdAt) ??
+      (p.deadlineTs ? p.deadlineTs * 1000 : null);
+    if (createdMs !== null) {
+      const key = activityBucketKey(createdMs, granularity);
+      const entry = buckets.get(key) ?? { created: 0, executed: 0 };
+      entry.created += 1;
+      buckets.set(key, entry);
+    }
+
+    // Executed
+    if (p.status === "executed") {
+      const executedMs =
+        parseProposalDate(p.executedAt) ??
+        (p.deadlineTs ? p.deadlineTs * 1000 : null);
+      if (executedMs !== null) {
+        const key = activityBucketKey(executedMs, granularity);
+        const entry = buckets.get(key) ?? { created: 0, executed: 0 };
+        entry.executed += 1;
+        buckets.set(key, entry);
+      }
+    }
+  }
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, { created, executed }]) => ({
+      period,
+      created,
+      executed,
+    }));
 }
 

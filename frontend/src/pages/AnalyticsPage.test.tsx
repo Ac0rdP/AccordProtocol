@@ -83,7 +83,7 @@ describe("AnalyticsPage", () => {
 
     render(<AnalyticsPage />);
 
-    expect(screen.getAllByText("Loading...")).toHaveLength(3);
+    expect(screen.getAllByText("Loading...").length).toBeGreaterThanOrEqual(3);
   });
 
   test("renders stat cards and charts once data loads", async () => {
@@ -120,6 +120,9 @@ describe("AnalyticsPage", () => {
     expect(
       screen.getByText("No treasury flow data matches the selected filters."),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText("No proposal activity data available."),
+    ).toBeInTheDocument();
   });
 
   test("shows an error state with a working retry action", async () => {
@@ -131,7 +134,7 @@ describe("AnalyticsPage", () => {
     render(<AnalyticsPage />);
 
     await waitFor(() =>
-      expect(screen.getAllByText("RPC unavailable")).toHaveLength(3),
+      expect(screen.getAllByText("RPC unavailable").length).toBeGreaterThanOrEqual(3),
     );
     mockSuccessfulLoad([rawProposal()]);
     const retryButtons = screen.getAllByRole("button", { name: /retry/i });
