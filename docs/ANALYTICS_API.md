@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** `GET /stats/summary` is specified and has a reference implementation of its query validation and response shape (`frontend/src/lib/analyticsApi.ts`). The remaining endpoints below are specified by the frontend's analytics client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a merged backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the up-to-date integration status. The shapes on this page are the contract the frontend already codes against, so a backend can implement them without a frontend change.
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `/health` is a database-backed readiness check; the service root returns its name and status.
 
 ---
 
@@ -82,6 +82,8 @@ Paginated proposal list, filterable the same way the dashboard filters proposals
 
 **Query parameters:** `limit`, `offset`, `sort`, `order`, `category`, `status`, `owner`, `token`, `startDate`, `endDate` (see [Standardized Query Parameters](#standardized-query-parameters)).
 
+`owner` filters by proposer substring. `startDate` and `endDate` filter by proposal creation time; date-only values include the full end date. The service scopes every query to the configured `CONTRACT_ID`.
+
 **Response (`AnalyticsProposalPage`):**
 
 ```json
@@ -135,6 +137,7 @@ A single proposal plus its full event timeline.
 ```
 
 `timeline` entries follow `ProposalEvent` (`frontend/src/types/accord.ts`) — see [Event Payload Schemas](#event-payload-schemas) for how each `type` maps back to a contract-emitted event. Returns `404 NOT_FOUND` if no proposal with that ID has been indexed.
+Timeline records are ordered by ledger sequence and event index, oldest first.
 
 ### `GET /spend/by-category`
 
@@ -152,6 +155,7 @@ Spend aggregated by proposal category, over executed transfers only.
 ```
 
 `share` is the category's percentage of total spend for the same token within the filtered range (0–100).
+The response includes all five categories (`Transfer`, `Payroll`, `Grant`, `Ops`, `Other`) for every matching token, using a zero total/count/share when there is no spend. If no token has been indexed yet, it returns zero rows for `XLM`; a requested token with no activity also receives zero rows. `startDate` and `endDate` filter by execution time, with date-only bounds inclusive of the whole day.
 
 ### `GET /spend/by-owner`
 
