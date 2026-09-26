@@ -248,40 +248,35 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
   }
 }
 
-const ROLE_ALIASES: Record<string, Role> = {
-  owner: "owner",
-  admin: "admin",
-  guardian: "guardian",
-  manager: "manager",
-  operator: "operator",
-  viewer: "viewer",
-  maintainer: "manager",
-  administrator: "admin",
-};
-
-function normalizeRole(value: unknown): Role | null {
-  if (typeof value === "string") {
-    const key = value.trim();
-    if (!key) return null;
-    const normalized = key.toLowerCase();
-    return ROLE_ALIASES[normalized] ?? null;
+function mapRole(raw: unknown): Role | null {
+  let key: string;
+  if (typeof raw === "string") {
+    key = raw;
+  } else if (raw && typeof raw === "object") {
+    key = Object.keys(raw as object)[0] ?? "";
+  } else {
+    return null;
   }
-
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (!entries.length) return null;
-    const variant = String(entries[0][0]);
-    return normalizeRole(variant);
+  
+  switch (key.toLowerCase()) {
+    case "proposer":
+      return "Proposer";
+    case "approver":
+      return "Approver";
+    case "executor":
+      return "Executor";
+    case "viewer":
+      return "Viewer";
+    default:
+      return null;
   }
-
-  return null;
 }
 
 function mapRoleList(raw: unknown): Role[] {
   if (!Array.isArray(raw)) return [];
   const roles: Role[] = [];
   for (const entry of raw) {
-    const role = normalizeRole(entry);
+    const role = mapRole(entry);
     if (role && !roles.includes(role)) {
       roles.push(role);
     }
@@ -289,18 +284,11 @@ function mapRoleList(raw: unknown): Role[] {
   return roles;
 }
 
-export async function getRoleVersion(): Promise<number> {
+export async function getRoles(address: string): Promise<Role[]> {
   try {
-    const val = await simulateView("get_role_version");
-    return Number(scValToNative(val) ?? 0);
-  } catch {
-    return 0;
-  }
-}
-
-export async function getRoles(): Promise<Role[]> {
-  try {
-    const val = await simulateView("get_roles");
+    const val = await simulateView("get_roles", [
+      nativeToScVal(address, { type: "address" }),
+    ]);
     return mapRoleList(scValToNative(val));
   } catch {
     return [];
@@ -309,13 +297,12 @@ export async function getRoles(): Promise<Role[]> {
 
 export async function hasRole(
   walletAddress: string,
-  role: Role | string,
+  role: Role,
 ): Promise<boolean> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("has_role", [
       nativeToScVal(walletAddress, { type: "address" }),
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     return Boolean(scValToNative(val));
   } catch {
@@ -323,11 +310,10 @@ export async function hasRole(
   }
 }
 
-export async function getRoleMembers(role: Role | string): Promise<string[]> {
+export async function getRoleMembers(role: Role): Promise<string[]> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("get_role_members", [
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     const raw = scValToNative(val);
     return Array.isArray(raw) ? raw.map(String) : [];
@@ -350,53 +336,6 @@ export async function getApproverWeight(owner: string): Promise<number> {
 export async function getOwners(): Promise<string[]> {
   const val = await simulateView("get_owners");
   return scValToNative(val) as string[];
-}
-
-function mapRole(raw: unknown): Role | null {
-  const role = typeof raw === "string"
-    ? raw
-    : raw && typeof raw === "object"
-      ? Object.keys(raw as object)[0]
-      : "";
-
-  switch (role.toLowerCase()) {
-    case "owner":
-      return "Owner";
-    case "viewer":
-      return "Viewer";
-    case "guardian":
-      return "Guardian";
-    case "spendinglimit":
-    case "spending_limit":
-    case "spending-limit":
-      return "SpendingLimit";
-    default:
-      return null;
-  }
-}
-
-function mapRoles(raw: unknown): Role[] {
-  const values = Array.isArray(raw) ? raw : [raw];
-  return Array.from(
-    new Set(values.map(mapRole).filter((role): role is Role => role !== null))
-  );
-}
-
-export async function getRoles(
-  address: string,
-  ownerAddresses: string[] = []
-): Promise<Role[]> {
-  try {
-    const val = await simulateView("get_roles", [
-      nativeToScVal(address, { type: "address" }),
-    ]);
-    return mapRoles(scValToNative(val));
-  } catch (error) {
-    if (ownerAddresses.includes(address)) {
-      return ["Owner"];
-    }
-    return [];
-  }
 }
 
 export async function getThreshold(): Promise<number> {
