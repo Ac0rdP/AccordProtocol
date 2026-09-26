@@ -7,6 +7,7 @@ Helper scripts for Accord Protocol.
 | `deploy.sh` | Build WASM, upload and deploy contract to testnet |
 | `fund-account.sh` | Fund a Stellar identity via Friendbot |
 | `check-wasm-size.sh` | Verify WASM stays under size limit |
+| `indexer.js` | **Off-chain indexer** — polls contract events, persists to store, and maintains checkpoints |
 | `keeper-recurring.js` | **Off-chain keeper** — polls due recurring schedules and calls `disburse_recurring` |
 | `query-analytics.js` | **Analytics query CLI** — queries indexed data and prints human-readable tables for spend, treasury flow, and summary metrics |
 

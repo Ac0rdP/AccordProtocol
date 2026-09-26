@@ -599,8 +599,12 @@ fn role_version_key() -> Symbol {
     symbol_short!("ROLEVER")
 }
 
+pub fn role_key(address: &Address) -> (Symbol, Address) {
+    (symbol_short!("ROLES"), address.clone())
+}
+
 fn owner_roles_key(owner: &Address) -> (Symbol, Address) {
-    (symbol_short!("ROLES"), owner.clone())
+    role_key(owner)
 }
 
 fn role_members_key(role: &Role) -> (Symbol, Role) {
@@ -852,8 +856,8 @@ fn write_role_version(env: &Env, version: u32) {
     bump_instance(env);
 }
 
-fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
-    let key = owner_roles_key(owner);
+pub fn read_roles(env: &Env, address: &Address) -> Vec<Role> {
+    let key = role_key(address);
     let roles = env
         .storage()
         .persistent()
@@ -863,6 +867,10 @@ fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
         bump_persistent(env, &key);
     }
     roles
+}
+
+fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
+    read_roles(env, owner)
 }
 
 fn read_role_members(env: &Env, role: &Role) -> Vec<Address> {
@@ -878,10 +886,14 @@ fn read_role_members(env: &Env, role: &Role) -> Vec<Address> {
     members
 }
 
-fn write_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
-    let key = owner_roles_key(owner);
+pub fn write_roles(env: &Env, address: &Address, roles: &Vec<Role>) {
+    let key = role_key(address);
     env.storage().persistent().set(&key, roles);
     bump_persistent(env, &key);
+}
+
+fn write_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
+    write_roles(env, owner, roles);
 }
 
 fn write_role_members(env: &Env, role: &Role, members: &Vec<Address>) {
@@ -2636,7 +2648,7 @@ impl AccordContract {
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        let weight = {
+        let raw_weight = {
             require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
