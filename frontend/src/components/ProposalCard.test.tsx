@@ -352,4 +352,24 @@ describe("ProposalCard", () => {
     renderProposalCard({ proposal: proposalAfterChange });
     expect(screen.getByText("2 / 8 weight")).toBeTruthy();
   });
+
+  test("shows the raw stroop value below the human-readable amount", () => {
+    renderProposalCard({
+      proposal: baseProposal({
+        amount: "5,000",
+        token: "USDC",
+        rawAmount: "50000000000",
+      }),
+    });
+
+    expect(screen.getByText("50,000,000,000 stroops")).toBeTruthy();
+  });
+
+  test("omits the stroop line when no raw amount is present", () => {
+    const { container } = renderProposalCard({
+      proposal: baseProposal({ rawAmount: undefined }),
+    });
+
+    expect(container.textContent).not.toContain("stroops");
+  });
 });
