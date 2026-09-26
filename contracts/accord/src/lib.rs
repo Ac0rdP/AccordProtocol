@@ -2636,7 +2636,7 @@ impl AccordContract {
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        let weight = {
+        let raw_weight = {
             require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
