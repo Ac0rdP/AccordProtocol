@@ -1395,6 +1395,10 @@ fn approve_rejects_non_owner_with_approver_role() {
         client.try_approve(&non_owner, &id),
         Err(Ok(ContractError::Unauthorized))
     );
+    assert_eq!(
+        client.try_revoke(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
     assert!(!client.has_approved(&id, &non_owner));
     assert_eq!(client.get_proposal(&id).approvals, 0);
 }
@@ -9223,10 +9227,31 @@ fn approve_rejects_owner_without_approver_role() {
 
     assert_eq!(
         client.try_approve(&owner_b, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
     assert!(!client.has_approved(&id, &owner_b));
     assert_eq!(client.get_proposal(&id).approvals, 0);
+}
+
+#[test]
+fn revoke_rejects_owner_without_approver_role() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+    client.approve(&owner_b, &id);
+
+    let mut without_approve = Vec::new(&env);
+    without_approve.push_back(Role::Proposer);
+    without_approve.push_back(Role::Executor);
+    env.as_contract(&client.address, || {
+        update_owner_roles(&env, &owner_b, &without_approve);
+    });
+
+    assert_eq!(
+        client.try_revoke(&owner_b, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert!(client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).approvals, 1);
 }
 
 #[test]
@@ -9339,7 +9364,7 @@ fn revoke_approver_role_blocks_subsequent_approval() {
     
     assert_eq!(
         client.try_approve(&owner_b, &prop_id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
