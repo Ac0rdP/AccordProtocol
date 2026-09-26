@@ -1621,6 +1621,15 @@ pub struct AccordContract;
 // proposal lifecycle operations, while governance changes remain owner-weight
 // gated. Role-gated entrypoints below must enforce the role listed here.
 //
+// Check order: on every entrypoint that carries both gates, the role gate runs
+// before the frozen gate, so a call that is both missing the role and blocked by
+// a freeze fails with `MissingRole` rather than `ContractFrozen`. The frozen gate
+// covers the create and execute paths only: `approve`, `revoke` and
+// `cancel_expired` are role-gated but stay callable while frozen, so a freeze
+// cannot strand in-flight approvals or block the expiry sweep. The owner-weight
+// governance entrypoints below carry no frozen gate either, since `unfreeze`
+// must remain callable while frozen.
+//
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
@@ -1985,9 +1994,7 @@ impl AccordContract {
         // A non-owner holding the Proposer role may draft transfers; owner
         // proposers keep their owner-keyed spending limits (checked below).
         let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
-        if !has_role(&env, &proposer, &Role::Proposer) {
-            return Err(ContractError::MissingRole);
-        }
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let transfers_len = transfers.len();
@@ -3354,6 +3361,9 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
+        // A non-owner holding the Proposer role may draft schedules; owner
+        // proposers keep their owner-keyed spending limits (checked below).
+        let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
@@ -3377,13 +3387,15 @@ impl AccordContract {
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
 
-        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
-            let already_spent = effective_spent(&env, &proposer, &token);
-            let cumulative = amount
-                .checked_add(already_spent)
-                .ok_or(ContractError::ArithmeticError)?;
-            if cumulative > limit {
-                return Err(ContractError::SpendingLimitExceeded);
+        if proposer_is_owner {
+            if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+                let already_spent = effective_spent(&env, &proposer, &token);
+                let cumulative = amount
+                    .checked_add(already_spent)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
             }
         }
 

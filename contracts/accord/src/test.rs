@@ -9472,6 +9472,216 @@ fn concurrent_role_proposals_execute_deterministically() {
     assert_eq!(count, 1);
 }
 
+// ─── Issue #577: Role / Frozen Check Precedence ───────────────────────────────
+// Every entrypoint carrying both gates runs the role gate first, so a caller
+// that is both missing the role and blocked by a freeze sees `MissingRole`.
+// The frozen gate itself covers the create and execute paths only; `approve`,
+// `revoke` and `cancel_expired` stay callable while frozen.
+
+/// Freezes the multisig with the two owners needed to pass the threshold-2
+/// weighted check on `set_guardian`.
+fn freeze_with_owner_pair(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+) {
+    freeze_with_new_guardian(
+        env,
+        client,
+        &Vec::from_array(env, [owner_a.clone(), owner_b.clone()]),
+    );
+}
+
+#[test]
+fn creation_path_reports_missing_role_before_contract_frozen() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    // `owner_c` keeps its governance weight but loses every operational role.
+    clear_roles(&env, &client, &owner_c);
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+    assert!(client.is_frozen());
+
+    // Doubly-failing call: the contract is frozen and the caller has no role.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_c,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Pay"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_create_change_threshold_proposal(
+            &owner_c,
+            &3,
+            &str(&env, "Raise threshold"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_c,
+            &non_owner,
+            &Symbol::new(&env, "Viewer"),
+            &str(&env, "Grant Viewer"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    // Same entrypoints with the role present: the frozen gate now decides.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Pay"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_create_change_threshold_proposal(
+            &owner_b,
+            &3,
+            &str(&env, "Raise threshold"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_b,
+            &non_owner,
+            &Symbol::new(&env, "Viewer"),
+            &str(&env, "Grant Viewer"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn recurring_creation_path_reports_missing_role_before_contract_frozen() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    clear_roles(&env, &client, &owner_c);
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_c,
+            &non_owner,
+            &token_client.address,
+            &1_000_i128,
+            &86_400_u64,
+            &NOW,
+            &DEADLINE,
+            &NOW,
+            &10_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Payroll"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_a,
+            &non_owner,
+            &token_client.address,
+            &1_000_i128,
+            &86_400_u64,
+            &NOW,
+            &DEADLINE,
+            &NOW,
+            &10_000_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "Payroll"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn execution_path_reports_missing_role_before_contract_frozen() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+
+    clear_roles(&env, &client, &owner_c);
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+
+    // Doubly-failing call: frozen, and the caller lost the Executor role.
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    // Role present: the frozen gate decides, and nothing is spent.
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+    assert_eq!(token_client.balance(&non_owner), 0);
+}
+
+#[test]
+fn approval_path_reports_missing_role_and_stays_callable_while_frozen() {
+    let (env, client, owner_a, owner_b, owner_c, _non_owner, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+    client.approve(&owner_a, &id);
+
+    clear_roles(&env, &client, &owner_c);
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+
+    // The role gate still decides first: the missing Approver role is the only
+    // failure, so the frozen state cannot mask it.
+    assert_eq!(
+        client.try_approve(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    // The frozen gate deliberately does not cover the approval path.
+    client.approve(&owner_b, &id);
+    assert!(client.has_approved(&id, &owner_b));
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+
+    client.revoke(&owner_b, &id);
+    assert!(!client.has_approved(&id, &owner_b));
+    assert_eq!(
+        client.try_revoke(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+}
+
+#[test]
+fn cancel_expired_stays_callable_while_frozen() {
+    let (env, client, owner_a, owner_b, owner_c, _non_owner, token_client) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+    clear_roles(&env, &client, &owner_c);
+
+    let mut l = env.ledger().get();
+    l.timestamp = DEADLINE + 1;
+    env.ledger().set(l);
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+    let ids = Vec::from_array(&env, [id]);
+
+    // The expiry sweep carries a role gate but no frozen gate, so a freeze
+    // cannot leave expired proposals stuck forever.
+    assert_eq!(client.cancel_expired(&owner_a, &ids), 1);
+    assert_eq!(
+        client.try_cancel_expired(&owner_c, &ids),
+        Err(Ok(ContractError::MissingRole))
+    );
 #[test]
 fn test_role_enum_and_storage_helpers_roundtrip_and_persistence() {
     use crate::{read_roles, role_key, write_roles, Role};
