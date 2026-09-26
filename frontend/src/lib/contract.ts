@@ -283,22 +283,35 @@ function normalizeRole(value: unknown): Role | null {
     const normalized = key.toLowerCase();
     return ROLE_ALIASES[normalized] ?? null;
   }
-
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (!entries.length) return null;
-    const variant = String(entries[0][0]);
-    return normalizeRole(variant);
+function mapRole(raw: unknown): Role | null {
+  let key: string;
+  if (typeof raw === "string") {
+    key = raw;
+  } else if (raw && typeof raw === "object") {
+    key = Object.keys(raw as object)[0] ?? "";
+  } else {
+    return null;
   }
-
-  return null;
+  
+  switch (key.toLowerCase()) {
+    case "proposer":
+      return "Proposer";
+    case "approver":
+      return "Approver";
+    case "executor":
+      return "Executor";
+    case "viewer":
+      return "Viewer";
+    default:
+      return null;
+  }
 }
 
 function mapRoleList(raw: unknown): Role[] {
   if (!Array.isArray(raw)) return [];
   const roles: Role[] = [];
   for (const entry of raw) {
-    const role = normalizeRole(entry);
+    const role = mapRole(entry);
     if (role && !roles.includes(role)) {
       roles.push(role);
     }
@@ -306,7 +319,7 @@ function mapRoleList(raw: unknown): Role[] {
   return roles;
 }
 
-export async function getRoleVersion(): Promise<number> {
+export async function getRoles(address: string): Promise<Role[]> {
   try {
     const val = await simulateView("get_role_version");
     return Number(scValToNative(val) ?? 0);
@@ -343,13 +356,12 @@ export async function getRoles(
 
 export async function hasRole(
   walletAddress: string,
-  role: Role | string,
+  role: Role,
 ): Promise<boolean> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("has_role", [
       nativeToScVal(walletAddress, { type: "address" }),
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     return Boolean(scValToNative(val));
   } catch {
@@ -357,11 +369,10 @@ export async function hasRole(
   }
 }
 
-export async function getRoleMembers(role: Role | string): Promise<string[]> {
+export async function getRoleMembers(role: Role): Promise<string[]> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("get_role_members", [
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     const raw = scValToNative(val);
     return Array.isArray(raw) ? raw.map(String) : [];

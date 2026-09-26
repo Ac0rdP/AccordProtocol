@@ -15,12 +15,25 @@ import { SpendByCategoryChart } from "../components/SpendByCategoryChart";
 import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
 import { useTreasuryAnalytics } from "../hooks/useTreasuryAnalytics";
 import { formatCurrency } from "../lib/soroban";
+import { TreasuryBalanceChart } from "../components/TreasuryBalanceChart";
+import { ProposalActivityChart } from "../components/ProposalActivityChart";
+import {
+  getContractUsdcBalance,
+  getContractXlmBalance,
+  getProposalsPaged,
+  getThreshold,
+  getTotalProposals,
+  mapProposal,
+} from "../lib/contract";
 import {
   buildExportFilename,
   buildSpendCsv,
   buildTreasuryCsv,
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
+  enrichWithShares,
+  fetchTreasuryBalanceHistory,
+  filterExecutedTransfers,
   type AnalyticsFilters,
   type CategoryFilter,
   type SpendByCategoryRow,
@@ -108,6 +121,44 @@ export function AnalyticsPage() {
   );
   const query = useMemo(() => toQuery(filters), [filters]);
   const { data, loading, error, refresh } = useTreasuryAnalytics(query);
+
+  const fetchData = useCallback(() => {
+    let active = true;
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+
+    loadAnalyticsData()
+      .then((data) => {
+        if (active) setState({ ...data, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (active)
+          setState((prev) => ({
+            ...prev,
+            loading: false,
+            error:
+              err instanceof Error
+                ? err.message
+                : "Failed to load analytics data",
+          }));
+      })
+      .finally(() => {
+        if (!active) return;
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    return fetchData();
+  }, [fetchData]);
+
+  const filteredTransfers = useMemo(
+    () => filterExecutedTransfers(state.proposals, filters),
+    [state.proposals, filters],
+  );
+
   const spendByCategory = useMemo(
     () => toSpendByCategory(data?.spendByCategory ?? []),
     [data?.spendByCategory],
@@ -175,6 +226,26 @@ export function AnalyticsPage() {
         <StatCard label="Total Inflows" value={loading ? "…" : formatTotals(data?.summary.totalInflows ?? {})} sub="into the treasury" />
         <StatCard label="Active Proposals" value={loading ? "…" : String(data?.summary.activeProposals ?? 0)} sub="pending or ready" />
       </div>
+      <SpendByCategoryChart
+        data={spendByCategory}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
+
+      <ProposalActivityChart
+        proposals={state.proposals}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
+
+      <TreasuryBalanceChart
+        data={state.balanceHistory}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
 
       <SpendByCategoryChart data={spendByCategory} loading={loading} error={error} onRetry={refresh} />
       <SpendByOwnerChart data={spendByOwner} loading={loading} error={error} onRetry={refresh} />

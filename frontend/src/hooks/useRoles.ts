@@ -1,5 +1,8 @@
 import { useMemo } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { getRoles } from "../lib/contract";
 import type { Role } from "../types/accord";
+import { useEventPolling } from "./useEventPolling";
 
 export type WalletRole = Role;
 
@@ -81,133 +84,40 @@ function parseRoleAssignments(raw: string | undefined): RoleAssignments {
     const [address, rolesValue] = entry.split(":");
     const normalizedAddress = normalizeAddress(address ?? "");
     if (!normalizedAddress || !rolesValue) return assignments;
+export function useRoles(address: string | null) {
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-    const roles = rolesValue
-      .split("|")
-      .map(parseRole)
-      .filter((role): role is WalletRole => role !== null);
-
-    if (roles.length > 0) {
-      assignments[normalizedAddress] = roles;
+  const fetchRoles = useCallback(async () => {
+    if (!address) {
+      setRoles([]);
+      return;
     }
+    try {
+      const fetchedRoles = await getRoles(address);
+      setRoles(fetchedRoles);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch roles");
+    } finally {
+      setLoading(false);
+    }
+  }, [address]);
 
-    return assignments;
-  }, {});
-}
+  useEffect(() => {
+    // Reset/clear cached roles when the address changes
+    setRoles([]);
+    setError(null);
+    if (address) {
+      setLoading(true);
+      fetchRoles();
+    } else {
+      setLoading(false);
+    }
+  }, [address, fetchRoles]);
 
-const CONFIGURED_VIEWER_ADDRESSES = parseAddressList(
-  import.meta.env.VITE_VIEWER_ADDRESSES
-);
-const CONFIGURED_ROLE_ASSIGNMENTS = parseRoleAssignments(
-  import.meta.env.VITE_ROLE_ASSIGNMENTS
-);
+  useEventPolling(fetchRoles, 5000);
 
-function uniqueRoles(roles: WalletRole[]): WalletRole[] {
-  return Array.from(new Set(roles));
-}
-
-function formatRoleList(roles: WalletRole[]): string {
-  const labels = roles.map((role) => ROLE_LABELS[role]);
-  if (labels.length === 1) return labels[0];
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
-}
-
-export function getWalletRoles({
-  walletAddress,
-  ownerAddresses,
-  viewerAddresses = CONFIGURED_VIEWER_ADDRESSES,
-  roleAssignments = CONFIGURED_ROLE_ASSIGNMENTS,
-}: UseRolesArgs): WalletRole[] {
-  if (!walletAddress) return [];
-
-  const normalizedWallet = normalizeAddress(walletAddress);
-  const roles: WalletRole[] = [];
-
-  if (ownerAddresses.map(normalizeAddress).includes(normalizedWallet)) {
-    roles.push("Owner");
-  }
-
-  if (viewerAddresses.map(normalizeAddress).includes(normalizedWallet)) {
-    roles.push("Viewer");
-  }
-
-  const assignedRoles = roleAssignments[normalizedWallet] ?? [];
-  roles.push(...assignedRoles);
-
-  return uniqueRoles(roles);
-}
-
-export function getRoleAccessBanner({
-  walletAddress,
-  roles,
-  loading = false,
-  error = null,
-}: {
-  walletAddress: string | null;
-  roles: WalletRole[];
-  loading?: boolean;
-  error?: string | null;
-}): RoleAccessBanner | null {
-  if (!walletAddress || loading || error) return null;
-  if (roles.includes("Owner")) return null;
-
-  const nonViewerRoles = roles.filter((role) => role !== "Viewer");
-
-  if (roles.includes("Viewer") && nonViewerRoles.length === 0) {
-    return {
-      key: `viewer:${walletAddress}`,
-      variant: "viewer",
-      title: "Viewer access",
-      message:
-        "This wallet is recognized as a Viewer. You can inspect activity, but you cannot create, approve, or execute proposals.",
-    };
-  }
-
-  if (nonViewerRoles.length > 0) {
-    const roleList = formatRoleList(nonViewerRoles);
-    return {
-      key: `role-holder:${walletAddress}:${nonViewerRoles.join("|")}`,
-      variant: "role-holder",
-      title: "Limited role access",
-      message: `This wallet holds ${roleList}. You can use role-specific permissions, but owner-only proposal actions are unavailable.`,
-    };
-  }
-
-  return {
-    key: `unrecognized:${walletAddress}`,
-    variant: "unrecognized",
-    title: "Unrecognized wallet",
-    message:
-      "This wallet is not assigned a role in this Accord. You can view public activity, but protected actions are unavailable.",
-  };
-}
-
-export function useRoles(args: UseRolesArgs): WalletRoles {
-  const {
-    walletAddress,
-    ownerAddresses,
-    viewerAddresses = CONFIGURED_VIEWER_ADDRESSES,
-    roleAssignments = CONFIGURED_ROLE_ASSIGNMENTS,
-    loading = false,
-    error = null,
-  } = args;
-
-  const roles = useMemo(
-    () =>
-      getWalletRoles({
-        walletAddress,
-        ownerAddresses,
-        viewerAddresses,
-        roleAssignments,
-      }),
-    [walletAddress, ownerAddresses, viewerAddresses, roleAssignments]
-  );
-
-  const banner = useMemo(
-    () => getRoleAccessBanner({ walletAddress, roles, loading, error }),
-    [walletAddress, roles, loading, error]
-  );
-
-  return { roles, banner };
+  return { roles, loading, error };
 }

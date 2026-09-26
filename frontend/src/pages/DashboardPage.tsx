@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
 import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
+import type { WalletRole } from "../hooks/useRoles";
+import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
@@ -37,7 +39,6 @@ type DashboardPageProps = {
   onCreateProposal: () => void;
   onCreateRecurringPayment: () => void;
   walletRoles: WalletRole[];
-  roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
 };
@@ -53,7 +54,6 @@ export function DashboardPage({
   onCreateProposal,
   onCreateRecurringPayment,
   walletRoles,
-  roleBanner,
   loading,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
@@ -119,6 +119,11 @@ export function DashboardPage({
     roleBanner?.variant === "unrecognized"
       ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
       : "border-sky-500/20 bg-sky-500/10 text-sky-100";
+  useEffect(() => {
+    setDismissedError(null);
+  }, [error]);
+
+
 
   const createDisabledReason =
     walletAddress && !canCreate(walletRoles)
@@ -202,6 +207,7 @@ export function DashboardPage({
           </button>
         </div>
       )}
+
 
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">

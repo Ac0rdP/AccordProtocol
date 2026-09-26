@@ -9471,3 +9471,67 @@ fn concurrent_role_proposals_execute_deterministically() {
     }
     assert_eq!(count, 1);
 }
+
+#[test]
+fn test_role_enum_and_storage_helpers_roundtrip_and_persistence() {
+    use crate::{read_roles, role_key, write_roles, Role};
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let addr1 = Address::generate(&env);
+    let addr2 = Address::generate(&env);
+
+    // Test role_key
+    let key1 = role_key(&addr1);
+    let key2 = role_key(&addr2);
+    assert_ne!(key1, key2);
+
+    // Initial read returns empty Vec
+    let initial_roles = read_roles(&env, &addr1);
+    assert_eq!(initial_roles.len(), 0);
+
+    // Test all four Role variants: Proposer, Approver, Executor, Viewer
+    let all_roles = Vec::from_array(
+        &env,
+        [Role::Proposer, Role::Approver, Role::Executor, Role::Viewer],
+    );
+    write_roles(&env, &addr1, &all_roles);
+
+    // Round-trip verification
+    let stored_roles = read_roles(&env, &addr1);
+    assert_eq!(stored_roles.len(), 4);
+    assert!(stored_roles.contains(Role::Proposer));
+    assert!(stored_roles.contains(Role::Approver));
+    assert!(stored_roles.contains(Role::Executor));
+    assert!(stored_roles.contains(Role::Viewer));
+
+    // Address isolation: addr2 is still empty
+    assert_eq!(read_roles(&env, &addr2).len(), 0);
+
+    // Update roles for addr1 (e.g., only Viewer)
+    let viewer_only = Vec::from_array(&env, [Role::Viewer]);
+    write_roles(&env, &addr1, &viewer_only);
+    let updated_roles = read_roles(&env, &addr1);
+    assert_eq!(updated_roles.len(), 1);
+    assert!(updated_roles.contains(Role::Viewer));
+    assert!(!updated_roles.contains(Role::Proposer));
+
+    // Role storage persists across contract invocations
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    let weights = Vec::from_array(&env, [1]);
+    client.initialize(&owners, &weights, &1, &0);
+
+    let custom_user = Address::generate(&env);
+    let custom_roles = Vec::from_array(&env, [Role::Proposer, Role::Executor]);
+    write_roles(&env, &custom_user, &custom_roles);
+
+    // Invoking contract views/methods
+    assert_eq!(client.get_owners().len(), 1);
+    let read_back = read_roles(&env, &custom_user);
+    assert_eq!(read_back.len(), 2);
+    assert!(read_back.contains(Role::Proposer));
+    assert!(read_back.contains(Role::Executor));
+}

@@ -546,12 +546,6 @@ export async function estimateCreateProposalFee(
   ]);
 }
 
-function assertSupportedRole(role: Role): void {
-  if (role !== "Owner") {
-    throw new Error(`Unsupported role: ${role}`);
-  }
-}
-
 export async function createGrantRoleProposal(
   callerAddress: string,
   targetAddress: string,
@@ -559,11 +553,10 @@ export async function createGrantRoleProposal(
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_add_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_grant_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
@@ -576,11 +569,10 @@ export async function createRevokeRoleProposal(
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_remove_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_revoke_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);

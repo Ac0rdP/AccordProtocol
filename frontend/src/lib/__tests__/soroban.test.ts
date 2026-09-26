@@ -158,18 +158,39 @@ describe("shortenAddr", () => {
 });
 
 describe("permission helpers", () => {
-  test("allow owner roles to create, approve, and execute", () => {
-    expect(canCreate(["Owner"])).toBe(true);
-    expect(canApprove(["Owner"])).toBe(true);
-    expect(canExecute(["Owner"])).toBe(true);
+  test("canCreate returns true when Proposer role is present", () => {
+    expect(canCreate(["Proposer", "Viewer"])).toBe(true);
   });
 
-  test("block non-owner roles and explain the missing role", () => {
-    expect(canCreate(["Viewer"])).toBe(false);
-    expect(canApprove(["Guardian"])).toBe(false);
-    expect(canExecute([])).toBe(false);
+  test("canCreate returns false when Proposer role is absent", () => {
+    expect(canCreate(["Approver", "Executor"])).toBe(false);
+  });
+
+  test("canApprove returns true when Approver role is present", () => {
+    expect(canApprove(["Approver", "Viewer"])).toBe(true);
+  });
+
+  test("canApprove returns false when Approver role is absent", () => {
+    expect(canApprove(["Proposer", "Executor"])).toBe(false);
+  });
+
+  test("canExecute returns true when Executor role is present", () => {
+    expect(canExecute(["Executor", "Viewer"])).toBe(true);
+  });
+
+  test("canExecute returns false when Executor role is absent", () => {
+    expect(canExecute(["Proposer", "Approver"])).toBe(false);
+  });
+
+  test("missingRoleTooltip returns the correct role requirement message", () => {
     expect(missingRoleTooltip("execute")).toBe(
-      "Executing proposals requires the Owner role."
+      "Executing proposals requires the Executor role."
+    );
+    expect(missingRoleTooltip("create")).toBe(
+      "Creating proposals requires the Proposer role."
+    );
+    expect(missingRoleTooltip("approve")).toBe(
+      "Approving proposals requires the Approver role."
     );
   });
 });
