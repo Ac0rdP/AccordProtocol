@@ -169,7 +169,8 @@ export function DashboardPage({
               </div>
             ))}
           </div>
-        )}
+        </div>
+      )}
 
 
       {readyCount > 0 && !bannerDismissed && (

@@ -14,6 +14,8 @@ import { StatCard } from "../components/StatCard";
 import { AnalyticsSectionState } from "../components/AnalyticsSectionState";
 import { SpendByCategoryChart } from "../components/SpendByCategoryChart";
 import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
+import { TreasuryBalanceChart } from "../components/TreasuryBalanceChart";
+import { ProposalActivityChart } from "../components/ProposalActivityChart";
 import {
   getContractUsdcBalance,
   getContractXlmBalance,
@@ -32,6 +34,7 @@ import {
   DEFAULT_ANALYTICS_FILTERS,
   downloadCsv,
   enrichWithShares,
+  fetchTreasuryBalanceHistory,
   filterExecutedTransfers,
   type AnalyticsFilters,
   type CategoryFilter,
@@ -120,56 +123,8 @@ export function AnalyticsPage() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-
-    loadAnalyticsData()
-      .then((data) => {
-        if (active) {
-          setState({ ...data, loading: false, error: null });
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          setState((prev) => ({
-            ...prev,
-            loading: false,
-            error:
-              err instanceof Error
-                ? err.message
-                : "Failed to load analytics data",
-          }));
-        }
-      });
-
-  useEffect(() => {
-    let active = true;
-    loadAnalyticsData()
-      .then((data) => {
-        if (active) setState({ ...data, loading: false, error: null });
-      })
-      .catch((err) => {
-        if (active)
-        if (active) {
-          setState({ ...data, loading: false, error: null });
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          setState((prev) => ({
-            ...prev,
-            loading: false,
-            error:
-              err instanceof Error
-                ? err.message
-                : "Failed to load analytics data",
-          }));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
+    return fetchData();
+  }, [fetchData]);
 
   const filteredTransfers = useMemo(
     () => filterExecutedTransfers(state.proposals, filters),
@@ -426,42 +381,19 @@ export function AnalyticsPage() {
         onRetry={fetchData}
       />
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
-        <h3 className="font-semibold text-sm mb-4">Spend by Category</h3>
-        <AnalyticsSectionState
-          loading={state.loading}
-          error={state.error}
-          empty={isEmpty}
-          emptyMessage="No spend data matches the selected filters."
-          onRetry={fetchData}
-        >
-          <div className="w-full h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={spendByCategory}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(113, 113, 122, 0.3)"
-                />
-                <XAxis
-                  dataKey="category"
-                  stroke="#71717a"
-                  style={{ fontSize: "0.75rem" }}
-                />
-                <YAxis stroke="#71717a" style={{ fontSize: "0.75rem" }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#18181b",
-                    border: "1px solid #3f3f46",
-                    borderRadius: "0.5rem",
-                  }}
-                  labelStyle={{ color: "#e4e4e7" }}
-                />
-                <Bar dataKey="total" fill="#10b981" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </AnalyticsSectionState>
-      </div>
+      <ProposalActivityChart
+        proposals={state.proposals}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
+
+      <TreasuryBalanceChart
+        data={state.balanceHistory}
+        loading={state.loading}
+        error={state.error}
+        onRetry={fetchData}
+      />
 
       <SpendByOwnerChart
         data={spendByOwner}
