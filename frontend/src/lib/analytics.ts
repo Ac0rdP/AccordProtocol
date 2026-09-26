@@ -75,17 +75,77 @@ export type SpendByCategory = {
   share: number;
 };
 
+/** All known proposal categories — used to zero-fill buckets with no spend. */
+export const KNOWN_SPEND_CATEGORIES = [
+  "Transfer",
+  "Payroll",
+  "Grant",
+  "Ops",
+  "Other",
+] as const;
+
+export type SpendFilterOptions = {
+  /** yyyy-mm-dd (inclusive), ""/undefined = no bound. */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive), ""/undefined = no bound. */
+  endDate?: string;
+  /** Only executed transfer proposals are aggregated; disable to sum raw input. */
+  executedOnly?: boolean;
+  /** When true, categories with no spend are returned with zero totals. */
+  includeZeroCategories?: boolean;
+};
+
+function inSpendDateRange(deadlineTs: number, opts?: SpendFilterOptions): boolean {
+  if (!opts || (!opts.startDate && !opts.endDate)) return true;
+  const ts = deadlineTs * 1000;
+  if (opts.startDate && ts < new Date(opts.startDate).getTime()) return false;
+  if (opts.endDate && ts > new Date(opts.endDate).getTime() + MS_PER_DAY - 1)
+    return false;
+  return true;
+}
+
+function normalizeCategory(category: string | undefined): string {
+  if (!category) return "Other";
+  const lower = category.toLowerCase();
+  for (const known of KNOWN_SPEND_CATEGORIES) {
+    if (known.toLowerCase() === lower) return known;
+  }
+  // Preserve legacy lowercase labels (e.g. "transfer") by capitalizing them
+  // when they match a known category case-insensitively is handled above;
+  // anything else falls back to the raw label or "Other".
+  return category || "Other";
+}
+
+/**
+ * Total executed-transfer spending grouped by proposal category.
+ *
+ * Reads executed transfer proposals with their category and amounts, sums
+ * amounts per category, supports an optional date range, zero-fills
+ * categories without spending when `includeZeroCategories` is set, and is a
+ * pure re-computation (no cached state) so re-running after new events stays
+ * correct.
+ */
 export function computeSpendByCategory(
   proposals: Proposal[],
+  options?: SpendFilterOptions,
 ): SpendByCategory[] {
+  const executedOnly = options?.executedOnly ?? true;
   const totals = new Map<string, { total: number; count: number }>();
   for (const p of proposals) {
-    const category = p.category ?? "Other";
+    if (executedOnly && (p.status !== "executed" || p.kind !== "transfer"))
+      continue;
+    if (!inSpendDateRange(p.deadlineTs, options)) continue;
+    const category = normalizeCategory(p.category as string | undefined);
     const amount = parseFloat(p.amount) || 0;
     const entry = totals.get(category) ?? { total: 0, count: 0 };
     entry.total += amount;
     entry.count += 1;
     totals.set(category, entry);
+  }
+  if (options?.includeZeroCategories) {
+    for (const known of KNOWN_SPEND_CATEGORIES) {
+      if (!totals.has(known)) totals.set(known, { total: 0, count: 0 });
+    }
   }
   const grandTotal = [...totals.values()].reduce((s, e) => s + e.total, 0);
   return [...totals.entries()]
@@ -95,11 +155,13 @@ export function computeSpendByCategory(
       count,
       share: grandTotal > 0 ? (total / grandTotal) * 100 : 0,
     }))
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => b.total - a.total || a.category.localeCompare(b.category));
 }
 
 export type TreasuryFlowPoint = {
   period: string;
+  /** Inflow for the window (0 when no deposits supplied). Optional for backward compat. */
+  inflow?: number;
   outflow: number;
   cumulative: number;
 };
@@ -109,28 +171,180 @@ export type TreasuryBalancePoint = {
   [token: string]: string | number;
 };
 
+/** A treasury ledger entry (deposit/inflow) used for flow bucketing. */
+export type TreasuryLedgerEntry = {
+  /** Unix seconds. */
+  timestamp: number;
+  amount: string | number;
+  /** "inflow" deposits vs "outflow" executed transfers. */
+  direction: "inflow" | "outflow";
+};
+
+export type FlowGranularity = "day" | "week" | "month";
+
+export type TreasuryFlowOptions = {
+  granularity?: FlowGranularity;
+  /** yyyy-mm-dd (inclusive). */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive). */
+  endDate?: string;
+  /** Inflow ledger entries (deposits); proposals supply outflows. */
+  deposits?: Array<{ timestamp: number; amount: string | number }>;
+  /** Extra outflow ledger entries beyond executed proposals. */
+  extraOutflows?: Array<{ timestamp: number; amount: string | number }>;
+};
+
+function flowBucketKey(ms: number, granularity: FlowGranularity): string {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") {
+    return `${y}-${String(m + 1).padStart(2, "0")}`;
+  }
+  if (granularity === "day") {
+    return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  const mondayMs = Date.UTC(y, m, day) - sinceMonday * MS_PER_DAY;
+  const mon = new Date(mondayMs);
+  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
+}
+
+function flowBucketStartMs(ms: number, granularity: FlowGranularity): number {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") return Date.UTC(y, m, 1);
+  const midnight = Date.UTC(y, m, day);
+  if (granularity === "day") return midnight;
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return midnight - sinceMonday * MS_PER_DAY;
+}
+
+function nextFlowBucket(start: number, granularity: FlowGranularity): number {
+  if (granularity === "day") return start + MS_PER_DAY;
+  if (granularity === "week") return start + 7 * MS_PER_DAY;
+  const d = new Date(start);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+}
+
+function flowBucketLabel(startMs: number, granularity: FlowGranularity): string {
+  const d = new Date(startMs);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  if (granularity === "month") return `${y}-${mo}`;
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${day}`;
+}
+
 function periodKey(deadlineTs: number): string {
   const d = new Date(deadlineTs * 1000);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+/**
+ * Treasury inflow vs outflow bucketed by day/week/month with zero-filled
+ * empty windows and a configurable date range.
+ *
+ * Outflows come from executed transfer proposals (plus optional
+ * `extraOutflows`); inflows come from `deposits`. Without an explicit date
+ * range, buckets span the first to last activity so charts are continuous.
+ * Recomputing is pure — no cached state — so new events are picked up on the
+ * next call.
+ */
 export function computeTreasuryFlow(
   proposals: Proposal[],
+  options?: TreasuryFlowOptions,
 ): TreasuryFlowPoint[] {
-  const byPeriod = new Map<string, number>();
+  const granularity = options?.granularity ?? "month";
+  const deposits = options?.deposits ?? [];
+  const extraOutflows = options?.extraOutflows ?? [];
+
+  type Bucket = { inflow: number; outflow: number };
+  const sums = new Map<string, Bucket>();
+  const bucketStartByKey = new Map<string, number>();
+  const eventTimes: number[] = [];
+
+  const record = (ms: number, inflow: number, outflow: number) => {
+    const start = flowBucketStartMs(ms, granularity);
+    const key = flowBucketKey(ms, granularity);
+    bucketStartByKey.set(key, start);
+    const entry = sums.get(key) ?? { inflow: 0, outflow: 0 };
+    entry.inflow += inflow;
+    entry.outflow += outflow;
+    sums.set(key, entry);
+    eventTimes.push(ms);
+  };
+
   for (const p of proposals) {
-    const period = periodKey(p.deadlineTs);
-    const amount = parseFloat(p.amount) || 0;
-    byPeriod.set(period, (byPeriod.get(period) ?? 0) + amount);
+    if (p.status !== "executed" || p.kind !== "transfer") continue;
+    const ms = p.deadlineTs * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, 0, parseFloat(p.amount) || 0);
+  }
+  for (const d of deposits) {
+    const ms = d.timestamp * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, parseFloat(String(d.amount)) || 0, 0);
+  }
+  for (const o of extraOutflows) {
+    const ms = o.timestamp * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, 0, parseFloat(String(o.amount)) || 0);
   }
 
+  if (eventTimes.length === 0 && !options?.startDate && !options?.endDate) {
+    return [];
+  }
+
+  let rangeStart: number | undefined;
+  let rangeEnd: number | undefined;
+  if (options?.startDate) rangeStart = new Date(options.startDate).getTime();
+  else if (eventTimes.length) rangeStart = Math.min(...eventTimes);
+  if (options?.endDate) rangeEnd = new Date(options.endDate).getTime();
+  else if (eventTimes.length) rangeEnd = Math.max(...eventTimes);
+  if (rangeStart === undefined || rangeEnd === undefined || rangeStart > rangeEnd) {
+    return [];
+  }
+
+  // Legacy default: monthly outflow-only aggregation keyed by yyyy-mm with a
+  // running cumulative, zero-filling empty months in range.
+  const result: TreasuryFlowPoint[] = [];
   let cumulative = 0;
-  return [...byPeriod.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([period, outflow]) => {
-      cumulative += outflow;
-      return { period, outflow, cumulative };
+  const first = flowBucketStartMs(rangeStart, granularity);
+  const last = flowBucketStartMs(rangeEnd, granularity);
+  for (let t = first; t <= last; t = nextFlowBucket(t, granularity)) {
+    const key = flowBucketKey(t, granularity);
+    const entry = sums.get(key) ?? { inflow: 0, outflow: 0 };
+    cumulative += entry.outflow;
+    result.push({
+      period: granularity === "month" ? key : flowBucketLabel(t, granularity),
+      inflow: entry.inflow,
+      outflow: entry.outflow,
+      cumulative,
     });
+  }
+  return result;
 }
 
 function filterRangeLabel(filters: AnalyticsFilters): string {
@@ -257,15 +471,63 @@ function formatShortOwner(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
-export function computeSpendByOwner(proposals: Proposal[]): SpendByOwner[] {
+export type SpendByOwnerOptions = {
+  /** yyyy-mm-dd (inclusive). */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive). */
+  endDate?: string;
+  /** Only executed transfer proposals are aggregated. */
+  executedOnly?: boolean;
+};
+
+/**
+ * Total executed-transfer spending grouped by proposing owner.
+ *
+ * Reads executed transfer proposals with their proposer and amounts, sums
+ * amounts per proposer, supports an optional time range, returns zero totals
+ * for `allOwners` entries without spending, and is a pure re-computation so
+ * re-running after new events stays correct.
+ */
+export function computeSpendByOwner(
+  proposals: Proposal[],
+  allOwners?: string[] | SpendByOwnerOptions,
+  maybeOptions?: SpendByOwnerOptions,
+): SpendByOwner[] {
+  // Overloads: (proposals), (proposals, options), (proposals, allOwners, options).
+  let owners: string[] | undefined;
+  let options: SpendByOwnerOptions | undefined;
+  if (Array.isArray(allOwners)) {
+    owners = allOwners;
+    options = maybeOptions;
+  } else {
+    options = allOwners as SpendByOwnerOptions | undefined;
+  }
+  const executedOnly = options?.executedOnly ?? true;
   const totals = new Map<string, { total: number; count: number }>();
   for (const p of proposals) {
+    if (executedOnly && (p.status !== "executed" || p.kind !== "transfer"))
+      continue;
+    if (options?.startDate || options?.endDate) {
+      const ts = p.deadlineTs * 1000;
+      if (options.startDate && ts < new Date(options.startDate).getTime())
+        continue;
+      if (
+        options.endDate &&
+        ts > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+      )
+        continue;
+    }
     const owner = p.proposer || "Unknown";
     const amount = parseFloat(p.amount) || 0;
     const entry = totals.get(owner) ?? { total: 0, count: 0 };
     entry.total += amount;
     entry.count += 1;
     totals.set(owner, entry);
+  }
+  if (owners) {
+    for (const owner of owners) {
+      if (!totals.has(owner)) totals.set(owner, { total: 0, count: 0 });
+    }
   }
   return [...totals.entries()]
     .map(([owner, { total, count }]) => ({
@@ -274,7 +536,7 @@ export function computeSpendByOwner(proposals: Proposal[]): SpendByOwner[] {
       total,
       count,
     }))
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => b.total - a.total || a.owner.localeCompare(b.owner));
 }
 
 /**
