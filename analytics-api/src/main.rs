@@ -68,6 +68,7 @@ fn app(state: AppState) -> Router {
         .route("/", get(root))
         .route("/health", get(health))
         .route("/proposals", get(proposals::list))
+        .route("/proposals/{id}", get(proposals::get_detail))
         .with_state(state)
 }
 
@@ -131,7 +132,7 @@ mod proposals {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    struct ProposalResponse {
+    pub(super) struct ProposalResponse {
         id: i64,
         kind: String,
         to: String,
@@ -189,6 +190,58 @@ mod proposals {
         offset: i64,
     }
 
+    #[derive(Serialize)]
+    pub(super) struct ProposalDetail {
+        proposal: ProposalResponse,
+        timeline: Vec<EventResponse>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EventResponse {
+        #[serde(rename = "type")]
+        event_type: String,
+        actor: String,
+        timestamp: DateTime<Utc>,
+        ledger: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        schedule_id: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        amount: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recipient: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        details: Option<String>,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct EventRow {
+        topic: String,
+        actor: String,
+        occurred_at: DateTime<Utc>,
+        ledger: i64,
+        data: SqlJson<serde_json::Value>,
+    }
+
+    impl From<EventRow> for EventResponse {
+        fn from(row: EventRow) -> Self {
+            let data = row.data.0;
+            Self {
+                event_type: row.topic,
+                actor: row.actor,
+                timestamp: row.occurred_at,
+                ledger: row.ledger,
+                schedule_id: json_i64(&data, "schedule_id"),
+                amount: json_string(&data, "amount"),
+                token: json_string(&data, "token"),
+                recipient: json_string(&data, "recipient"),
+                details: json_string(&data, "details"),
+            }
+        }
+    }
+
     #[derive(Debug, Default)]
     struct ProposalQuery {
         limit: i64,
@@ -212,6 +265,7 @@ mod proposals {
     struct ErrorBody {
         code: &'static str,
         message: &'static str,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         details: Vec<ErrorDetail>,
     }
 
@@ -229,6 +283,26 @@ mod proposals {
                     code: "VALIDATION_ERROR",
                     message: "Invalid query parameters",
                     details,
+                },
+            }
+        }
+
+        fn parameter(message: &'static str) -> Self {
+            Self {
+                error: ErrorBody {
+                    code: "INVALID_PARAMETER",
+                    message,
+                    details: Vec::new(),
+                },
+            }
+        }
+
+        fn not_found() -> Self {
+            Self {
+                error: ErrorBody {
+                    code: "NOT_FOUND",
+                    message: "Proposal not found",
+                    details: Vec::new(),
                 },
             }
         }
@@ -290,6 +364,73 @@ mod proposals {
             limit: query.limit,
             offset: query.offset,
         }))
+    }
+
+    pub(super) async fn get_detail(
+        State(state): State<AppState>,
+        axum::extract::Path(raw_id): axum::extract::Path<String>,
+    ) -> Result<Json<ProposalDetail>, (StatusCode, Json<ApiError>)> {
+        let id = raw_id
+            .parse::<i64>()
+            .ok()
+            .filter(|id| *id >= 0)
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::parameter(
+                        "Proposal id must be a non-negative integer",
+                    )),
+                )
+            })?;
+
+        let proposal = sqlx::query_as::<_, ProposalRow>(
+            "SELECT p.proposal_id AS id, p.kind, p.recipient AS to, p.amount, p.token, \
+             p.description, p.approvals, p.threshold, p.quorum_weight, p.approval_weight, \
+             p.total_weight, p.approver_addresses, p.status, p.deadline, p.created_at, \
+             p.proposer, p.category, p.executed_at FROM proposals p \
+             WHERE p.contract_id = $1 AND p.proposal_id = $2",
+        )
+        .bind(&state.contract_id)
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError::not_found())))?;
+
+        let events = sqlx::query_as::<_, EventRow>(
+            "SELECT topic, actor, occurred_at, ledger, data FROM events \
+             WHERE contract_id = $1 AND proposal_id = $2 \
+             ORDER BY ledger ASC, event_index ASC",
+        )
+        .bind(&state.contract_id)
+        .bind(id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(internal_error)?
+        .into_iter()
+        .map(EventResponse::from)
+        .collect();
+
+        Ok(Json(ProposalDetail {
+            proposal: ProposalResponse::from(proposal),
+            timeline: events,
+        }))
+    }
+
+    fn json_string(data: &serde_json::Value, key: &str) -> Option<String> {
+        data.get(key).and_then(|value| match value {
+            serde_json::Value::String(value) => Some(value.clone()),
+            serde_json::Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+    }
+
+    fn json_i64(data: &serde_json::Value, key: &str) -> Option<i64> {
+        data.get(key).and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
     }
 
     fn add_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, query: &'a ProposalQuery) {
@@ -623,5 +764,29 @@ mod tests {
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
         assert_eq!(error["error"]["details"][0]["field"], "limit");
+    }
+
+    #[tokio::test]
+    async fn proposal_detail_rejects_malformed_ids() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+            .unwrap();
+        let response = app(AppState {
+            pool,
+            contract_id: "test-contract".to_owned(),
+        })
+        .oneshot(
+            Request::builder()
+                .uri("/proposals/not-a-number")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_PARAMETER");
     }
 }

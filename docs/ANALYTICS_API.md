@@ -137,6 +137,7 @@ A single proposal plus its full event timeline.
 ```
 
 `timeline` entries follow `ProposalEvent` (`frontend/src/types/accord.ts`) — see [Event Payload Schemas](#event-payload-schemas) for how each `type` maps back to a contract-emitted event. Returns `404 NOT_FOUND` if no proposal with that ID has been indexed.
+Timeline records are ordered by ledger sequence and event index, oldest first.
 
 ### `GET /spend/by-category`
 
