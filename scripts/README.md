@@ -8,6 +8,148 @@ Helper scripts for Accord Protocol.
 | `fund-account.sh` | Fund a Stellar identity via Friendbot |
 | `check-wasm-size.sh` | Verify WASM stays under size limit |
 | `keeper-recurring.js` | **Off-chain keeper** — polls due recurring schedules and calls `disburse_recurring` |
+| `query-analytics.js` | **Analytics query CLI** — queries indexed data and prints human-readable tables for spend, treasury flow, and summary metrics |
+
+---
+
+## Indexer Configuration & Local Run Guide
+
+The off-chain indexer polls Soroban RPC for events emitted by the Accord multisig contract (`created`, `approved`, `revoked`, `executed`, `rpay`, etc.), decodes XDR topics and values, persists them to a datastore, and updates materialized aggregates (proposal statuses, spend-by-category, spend-by-owner, and treasury inflow/outflow time series). See [ARCHITECTURE.md §13](../docs/ARCHITECTURE.md#13-indexer--analytics-architecture) and [ANALYTICS_API.md](../docs/ANALYTICS_API.md) for architecture details.
+
+### Configuration Reference
+
+The indexer reads configuration from environment variables or a `.env` file in the repository root:
+
+| Variable | Required | Default | Example Value | Description |
+|---|---|---|---|---|
+| `SOROBAN_RPC_URL` / `VITE_SOROBAN_RPC_URL` | **yes** | `https://soroban-testnet.stellar.org` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint URL |
+| `CONTRACT_ID` / `VITE_CONTRACT_ADDRESS` | **yes** | — | `CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS` | Deployed Accord contract ID (`C...`) |
+| `NETWORK_PASSPHRASE` / `VITE_NETWORK_PASSPHRASE` | no | `Test SDF Network ; September 2015` | `Test SDF Network ; September 2015` | Passphrase for network (`Standalone Network ; February 2017` for local quickstart) |
+| `START_LEDGER` | no | Latest or deployment ledger | `1000` | Sequence number to begin event ingestion from |
+| `STORE_PATH` / `INDEXER_STORE_PATH` | no | `./data/indexer-store.json` | `./data/indexer-store.json` | Filesystem path for persisted indexer store and checkpoints |
+| `POLL_INTERVAL_MS` / `INDEXER_POLL_INTERVAL_MS` | no | `5000` | `5000` | Interval between polling cycles in milliseconds |
+| `LOG_LEVEL` | no | `info` | `debug` | Logging level (`debug`, `info`, `warn`, `error`) |
+
+Example `.env`:
+
+```env
+SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+CONTRACT_ID=CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS
+NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+START_LEDGER=1000000
+STORE_PATH=./data/indexer-store.json
+POLL_INTERVAL_MS=5000
+LOG_LEVEL=info
+```
+
+### Step-by-Step Instructions for a First Local Run
+
+1. **Install dependencies:**
+   Ensure Node.js (≥ 18) and frontend dependencies are installed:
+   ```bash
+   npm --prefix frontend install
+   ```
+
+2. **Configure environment:**
+   Create a `.env` file in the project root with your deployed contract address and target RPC endpoint:
+   ```bash
+   cp .env.example .env # or create .env with variables above
+   ```
+
+3. **Run the indexer:**
+   Start the indexer service or run with explicit environment variables:
+   ```bash
+   CONTRACT_ID=CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS \
+   SOROBAN_RPC_URL=https://soroban-testnet.stellar.org \
+   START_LEDGER=1000 \
+   STORE_PATH=./data/indexer-store.json \
+   node scripts/query-analytics.js summary
+   ```
+
+4. **Expected Output:**
+   On startup, the indexer verifies RPC connectivity, determines the starting ledger from the saved checkpoint (or `START_LEDGER` if uninitialized), and begins processing event batches:
+   ```text
+   [INFO] Accord Indexer starting...
+   [INFO] RPC endpoint: https://soroban-testnet.stellar.org
+   [INFO] Contract ID: CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS
+   [INFO] Resuming from checkpoint ledger: 1000000
+   [INFO] Ingesting ledger range 1000000..1000100 (found 3 events)
+   [INFO] Processed event [executed] id=42 tx=a1b2...
+   [INFO] Checkpoint updated to ledger: 1000100
+   ```
+
+### Replaying History and Resetting the Local Store
+
+- **Resetting the Local Store:**
+  To completely clear the local store and checkpoint data:
+  ```bash
+  rm -f ./data/indexer-store.json
+  ```
+  On the next run, the indexer will initialize a fresh empty store.
+
+- **Replaying History:**
+  To replay all events from a specific point in time or from the deployment ledger:
+  1. Stop the indexer process.
+  2. Remove or backup the current store file:
+     ```bash
+     mv ./data/indexer-store.json ./data/indexer-store.bak.json
+     ```
+  3. Run the indexer with `START_LEDGER` set to the desired starting ledger:
+     ```bash
+     START_LEDGER=1000 STORE_PATH=./data/indexer-store.json node scripts/query-analytics.js summary
+     ```
+  **Why replay is safe and idempotent:**
+  - Events are keyed by `(contract_id, ledger, tx_hash, event_index)`. Re-processing an already ingested range performs idempotent upserts and produces no duplicate records.
+  - Materialized aggregates (spend by category, spend by owner, treasury balance snapshots) are derived by folding raw events in order rather than incrementing independent counters.
+
+---
+
+## query-analytics.js — Analytics Query CLI
+
+A command-line tool to inspect and query indexed analytics data from the terminal without needing a browser.
+
+### Features
+- Aggregates spend by proposal category with totals, counts, and percentage shares.
+- Buckets treasury inflow and outflow by date and granularity (`day`, `week`, `month`).
+- Summarizes high-level metrics (total disbursed per token, active proposal count, largest outflow).
+- Renders results in clean, formatted console tables.
+- Gracefully handles empty stores, missing files, and invalid CLI arguments without stack traces.
+
+### Commands
+
+#### 1. Spend by Category
+Aggregates executed transfer spend grouped by category:
+```bash
+node scripts/query-analytics.js spend-by-category
+node scripts/query-analytics.js spend-by-category --token=USDC
+node scripts/query-analytics.js spend-by-category --start=2026-09-01 --end=2026-09-30
+```
+
+#### 2. Treasury Flow
+Inspects inflows and outflows over time:
+```bash
+node scripts/query-analytics.js treasury-flow
+node scripts/query-analytics.js treasury-flow --granularity=month
+node scripts/query-analytics.js treasury-flow --token=XLM --granularity=week
+```
+
+#### 3. Summary
+Displays high-level multisig metrics:
+```bash
+node scripts/query-analytics.js summary
+node scripts/query-analytics.js summary --token=USDC
+```
+
+### Options & Flags
+
+| Flag | Description | Default |
+|---|---|---|
+| `--file=<path>` | Path to the indexed datastore JSON file | Value of `STORE_PATH` or `INDEXER_STORE_PATH` |
+| `--token=<symbol>` | Filter queries to a specific token (`XLM`, `USDC`, etc.) | All tokens |
+| `--start=<iso-date>` | Filter starting date (e.g. `2026-09-01`) | None |
+| `--end=<iso-date>` | Filter ending date (e.g. `2026-09-30`) | None |
+| `--granularity=<g>` | Time bucket granularity: `day`, `week`, or `month` | `day` |
+| `--help`, `-h` | Display usage instructions and available options | — |
 
 ---
 
