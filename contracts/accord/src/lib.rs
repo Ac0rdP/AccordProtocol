@@ -3342,6 +3342,9 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
+        // A non-owner holding the Proposer role may draft schedules; owner
+        // proposers keep their owner-keyed spending limits (checked below).
+        let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
@@ -3365,13 +3368,15 @@ impl AccordContract {
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
 
-        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
-            let already_spent = effective_spent(&env, &proposer, &token);
-            let cumulative = amount
-                .checked_add(already_spent)
-                .ok_or(ContractError::ArithmeticError)?;
-            if cumulative > limit {
-                return Err(ContractError::SpendingLimitExceeded);
+        if proposer_is_owner {
+            if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+                let already_spent = effective_spent(&env, &proposer, &token);
+                let cumulative = amount
+                    .checked_add(already_spent)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
             }
         }
 
