@@ -26,32 +26,30 @@ export function displayToStroops(value: number): bigint {
 
 export type PermissionAction = "create" | "approve" | "execute";
 
-const OWNER_ROLE = "Owner";
-
 const ACTION_LABELS: Record<PermissionAction, string> = {
   create: "Creating proposals",
   approve: "Approving proposals",
   execute: "Executing proposals",
 };
 
-function hasOwnerRole(roles: readonly string[]): boolean {
-  return roles.includes(OWNER_ROLE);
-}
-
 export function canCreate(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Proposer");
 }
 
 export function canApprove(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Approver");
 }
 
 export function canExecute(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Executor");
 }
 
 export function missingRoleTooltip(action: PermissionAction): string {
-  return `${ACTION_LABELS[action]} requires the ${OWNER_ROLE} role.`;
+  const roleReq = 
+    action === "create" ? "Proposer" :
+    action === "approve" ? "Approver" :
+    action === "execute" ? "Executor" : "required";
+  return `${ACTION_LABELS[action]} requires the ${roleReq} role.`;
 }
 
 const CONTRACT_ERRORS: Record<string, string> = {
