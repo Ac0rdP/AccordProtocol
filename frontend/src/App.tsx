@@ -151,12 +151,7 @@ export default function App() {
       ),
     [proposals]
   );
-  const walletRoles = useRoles({
-    walletAddress: wallet.address,
-    ownerAddresses,
-    loading,
-    error,
-  });
+  const { roles: walletRolesList } = useRoles(wallet.address);
 
   const { address, connect } = wallet;
 
@@ -475,8 +470,7 @@ export default function App() {
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
                   onCreateRecurringPayment={() => setShowCreateRecurring(true)}
-                  walletRoles={walletRoles.roles}
-                  roleBanner={walletRoles.banner}
+                  walletRoles={walletRolesList}
                   loading={loading}
                   error={error}
                 />
