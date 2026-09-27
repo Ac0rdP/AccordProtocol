@@ -1,6 +1,17 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { getLatestLedger, getContractEvents, mapProposal } from "../contract";
+import {
+  getLatestLedger,
+  getContractEvents,
+  getProposalEvents,
+  mapProposal,
+  dedupeContractEvents,
+} from "../contract";
 import { rpc } from "@stellar/stellar-sdk";
+
+const { mockGetLatestLedger, mockGetEvents } = vi.hoisted(() => ({
+  mockGetLatestLedger: vi.fn(),
+  mockGetEvents: vi.fn(),
+}));
 
 // Mock the rpc.Server instance directly through vi
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -213,7 +224,20 @@ describe("Contract Events API", () => {
     expect(proposal.to).toBe("GOWNER...1111");
     expect(proposal.amount).toBe("25");
     expect(proposal.token).toBe("Owner weight");
-});
+  });
 
-// TODO: Add a test proving that replaying a ledger range never double-counts events (idempotency)
+  test("deduplicates overlapping event polls by ledger, tx hash, and event index", () => {
+    const events = [
+      { ledger: 200, txHash: "tx-b", eventIndex: 2, value: "later" },
+      { ledger: 100, txHash: "tx-a", eventIndex: 1, value: "first" },
+      { ledger: 100, txHash: "tx-a", eventIndex: 1, value: "duplicate" },
+      { ledger: 150, txHash: "tx-c", eventIndex: 0, value: "middle" },
+    ];
+
+    const deduped = dedupeContractEvents(events);
+
+    expect(deduped).toHaveLength(3);
+    expect(deduped.map((event) => event.value)).toEqual(["first", "middle", "later"]);
+  });
+});
 

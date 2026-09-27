@@ -226,6 +226,25 @@ function parseVal(scVal) {
   }
 }
 
+function canonicalEventIdentity(rawEvent, fallbackIndex = 0) {
+  const ledger = Number(rawEvent?.ledger ?? 0);
+  const txHash = String(rawEvent?.txHash ?? rawEvent?.transactionHash ?? rawEvent?.tx_hash ?? "");
+  const eventIndex = Number(
+    rawEvent?.eventIndex ?? rawEvent?.event_index ?? rawEvent?.eventIndex ?? fallbackIndex
+  );
+  return `${ledger}:${txHash}:${eventIndex}`;
+}
+
+function sortEventsByLedgerAndIndex(events) {
+  return [...events].sort((a, b) => {
+    const ledgerDelta = Number(a.ledger ?? 0) - Number(b.ledger ?? 0);
+    if (ledgerDelta !== 0) return ledgerDelta;
+    const eventDelta = Number(a.eventIndex ?? 0) - Number(b.eventIndex ?? 0);
+    if (eventDelta !== 0) return eventDelta;
+    return String(a.txHash ?? "").localeCompare(String(b.txHash ?? ""));
+  });
+}
+
 function decodeEvent(rawEvent, index) {
   const topics = Array.isArray(rawEvent.topic)
     ? rawEvent.topic.map(parseVal)
@@ -234,7 +253,8 @@ function decodeEvent(rawEvent, index) {
 
   const topicName = String(topics[0] ?? "").toLowerCase();
   const ledger = rawEvent.ledger;
-  const id = rawEvent.id || `${ledger}:${rawEvent.txHash || ""}:${index}`;
+  const eventIndex = Number(rawEvent.eventIndex ?? rawEvent.event_index ?? index ?? 0);
+  const id = rawEvent.id || canonicalEventIdentity(rawEvent, index);
 
   return {
     id,
@@ -243,6 +263,7 @@ function decodeEvent(rawEvent, index) {
     value,
     ledger,
     txHash: rawEvent.txHash,
+    eventIndex,
     ledgerClosedAt: rawEvent.ledgerClosedAt,
   };
 }
@@ -371,7 +392,7 @@ async function main() {
         limit: 100,
       });
 
-      const rawEvents = res.events || [];
+      const rawEvents = sortEventsByLedgerAndIndex(res.events || []);
       const latestSeen = res.latestLedger || currentLedger;
 
       log(`[INFO] Ingesting ledger range ${currentLedger}..${latestSeen} (found ${rawEvents.length} events)`);
@@ -387,13 +408,16 @@ async function main() {
 
         for (let i = 0; i < rawEvents.length; i++) {
           const decoded = decodeEvent(rawEvents[i], i);
-          if (!existingEventIds.has(decoded.id)) {
+          const eventKey = canonicalEventIdentity(rawEvents[i], i);
+          if (!existingEventIds.has(decoded.id) && !existingEventIds.has(eventKey)) {
             existingEventIds.add(decoded.id);
+            existingEventIds.add(eventKey);
             store.events.push(decoded);
           }
           applyEventToProposals(decoded, proposalsMap);
         }
 
+        store.events = sortEventsByLedgerAndIndex(store.events);
         store.proposals = [...proposalsMap.values()];
       }
 
