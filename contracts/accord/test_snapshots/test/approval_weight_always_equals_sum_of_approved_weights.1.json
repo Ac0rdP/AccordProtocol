@@ -3826,37 +3826,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 518400
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "APPR"
-                  },
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "bool": false
+                "u32": 52
               }
             }
           },
@@ -3886,7 +3856,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 54
               }
             }
           },
@@ -3916,7 +3886,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 27
               }
             }
           },
@@ -3946,7 +3916,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 49
               }
             }
           },
@@ -3976,7 +3946,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 11
               }
             }
           },
@@ -4006,7 +3976,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 62
               }
             }
           },
@@ -4036,37 +4006,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 518400
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "APPR"
-                  },
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "bool": false
+                "u32": 69
               }
             }
           },
@@ -4096,7 +4036,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 11
               }
             }
           },
@@ -4126,7 +4066,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 64
               }
             }
           },
@@ -4156,7 +4096,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 64
               }
             }
           },
@@ -4186,37 +4126,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 518400
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "APPR"
-                  },
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABMPZO"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "bool": false
+                "u32": 47
               }
             }
           },
@@ -4246,7 +4156,7 @@
               },
               "durability": "persistent",
               "val": {
-                "bool": true
+                "u32": 90
               }
             }
           },

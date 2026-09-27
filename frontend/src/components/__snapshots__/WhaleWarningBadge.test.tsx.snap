@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`WhaleWarningBadge > renders non-triggered (balanced) state 1`] = `
+<div
+  aria-label="No whale warning active"
+  class="inline-flex items-center gap-1.5 rounded-md border border-zinc-700/50 bg-zinc-800/40 px-2.5 py-1 text-xs text-zinc-400 font-mono"
+  role="status"
+>
+  <span
+    class="h-2 w-2 rounded-full bg-zinc-500"
+  />
+  <span>
+    Balanced Voting Power
+  </span>
+</div>
+`;
+
+exports[`WhaleWarningBadge > renders triggered state with share percentage 1`] = `
+<div
+  aria-label="Whale warning active"
+  class="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-300 shadow-sm"
+  role="alert"
+>
+  <svg
+    aria-hidden="true"
+    class="h-4 w-4 shrink-0 text-amber-400"
+    fill="currentColor"
+    viewBox="0 0 20 20"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      clip-rule="evenodd"
+      d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+      fill-rule="evenodd"
+    />
+  </svg>
+  <span>
+    Whale Warning: Single owner controls 65% of voting power (exceeds 50% threshold)
+  </span>
+</div>
+`;

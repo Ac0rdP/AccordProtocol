@@ -30,6 +30,16 @@ exports[`StatusBadge > renders pending status 1`] = `
 </span>
 `;
 
+exports[`StatusBadge > renders ready badge at the weighted-quorum transition boundary 1`] = `
+<span
+  aria-label="Status: ready"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+  role="status"
+>
+  ready
+</span>
+`;
+
 exports[`StatusBadge > renders ready status 1`] = `
 <span
   aria-label="Status: ready"

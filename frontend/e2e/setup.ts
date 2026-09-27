@@ -18,7 +18,11 @@ const TEST_WALLET = "GDJSB22NWBU7IV44SHHG6WO6AJTUED2KNKWL2DYNJJ5X7M5SG7UVC7JD";
 // window.postMessage so the event.source === window check inside n() passes.
 const FREIGHTER_STUB = `
 (function () {
-  var WALLET = "${TEST_WALLET}";
+  var DEFAULT_WALLET = "${TEST_WALLET}";
+
+  function currentWallet() {
+    return window.__TEST_WALLET__ || DEFAULT_WALLET;
+  }
 
   window.freighter = true;
 
@@ -36,11 +40,11 @@ const FREIGHTER_STUB = `
     switch (msg.type) {
       case "REQUEST_PUBLIC_KEY":
       case "REQUEST_ACCESS":
-        resp.publicKey = WALLET;
+        resp.publicKey = currentWallet();
         break;
       case "SUBMIT_TRANSACTION":
         resp.signedTransaction = msg.transactionXdr;
-        resp.signerAddress = WALLET;
+        resp.signerAddress = currentWallet();
         break;
       case "REQUEST_NETWORK_DETAILS":
         resp.networkDetails = {

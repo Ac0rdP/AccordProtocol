@@ -7,23 +7,28 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
+import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
+import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
+import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
+import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
-import { ProposalDetailPage } from "./pages/ProposalDetailPage";
-import { SettingsPage } from "./pages/SettingsPage";
+import { RecurringPage } from "./pages/RecurringPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
+  { label: "recurring", to: "/app/recurring" },
   { label: "history", to: "/app/history" },
+  { label: "analytics", to: "/app/analytics" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
   { label: "docs", to: "/docs" },
@@ -36,6 +41,8 @@ type OptimisticPatch = {
 
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
+  const [showCreateRecurring, setShowCreateRecurring] = useState(false);
+  const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -45,6 +52,7 @@ export default function App() {
   );
   // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
   const newProposalButtonRef = useRef<HTMLButtonElement>(null);
+  const recurringButtonRef = useRef<HTMLButtonElement>(null);
 
   const wallet = useWallet();
   const navigate = useNavigate();
@@ -87,6 +95,15 @@ export default function App() {
     }
     wasShowCreateRef.current = showCreate;
   }, [showCreate]);
+
+  // Return focus to the Recurring trigger when modal transitions from open → closed
+  const wasShowRecurringRef = useRef(false);
+  useEffect(() => {
+    if (!showCreateRecurring && wasShowRecurringRef.current) {
+      recurringButtonRef.current?.focus();
+    }
+    wasShowRecurringRef.current = showCreateRecurring;
+  }, [showCreateRecurring]);
 
   useEffect(() => {
     if (!wallet.address && txPending) {
@@ -132,14 +149,18 @@ export default function App() {
       ),
     [proposals]
   );
-  const isOwner = Boolean(
-    wallet.address && ownerAddresses.includes(wallet.address),
-  );
-  const showReadOnlyBanner = Boolean(
-    wallet.address && !loading && !error && !isOwner,
-  );
+  const { roles: walletRolesList } = useRoles(wallet.address);
 
   const { address, connect } = wallet;
+
+  const ownerWeightForWallet = useCallback(
+    (addr: string | null | undefined) => {
+      if (!addr) return 0;
+      const index = ownerAddresses.indexOf(addr);
+      return index >= 0 ? owners[index]?.weight ?? 0 : 0;
+    },
+    [ownerAddresses, owners]
+  );
 
   const withTx = useCallback(
     async (
@@ -176,18 +197,22 @@ export default function App() {
       return withTx(() => approveProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = proposal.approvals + 1;
-    const status = approvals >= proposal.threshold ? "ready" : proposal.status;
+    const approvalWeight = (proposal.approvalWeight ?? 0) + myWeight;
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+    const status = approvalWeight >= quorumWeight ? "ready" : proposal.status;
 
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: true,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const handleExecute = useCallback((id: number) =>
     withTx(() => executeProposal(wallet.address!, id), {
@@ -201,9 +226,13 @@ export default function App() {
       return withTx(() => revokeProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = Math.max(proposal.approvals - 1, 0);
+    const approvalWeight = Math.max((proposal.approvalWeight ?? 0) - myWeight, 0);
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+
     const status =
-      approvals >= proposal.threshold && proposal.status === "ready"
+      approvalWeight >= quorumWeight && proposal.status === "ready"
         ? "ready"
         : "pending";
 
@@ -211,11 +240,12 @@ export default function App() {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: false,
       },
     });
-  }, [proposals, wallet.address, withTx]);
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
@@ -384,13 +414,6 @@ export default function App() {
           </div>
         )}
 
-        {showReadOnlyBanner && (
-          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            You are connected in read-only mode. This wallet is not a multisig
-            owner.
-          </div>
-        )}
-
         {!wallet.installed ? (
           <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
             <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-300">
@@ -444,7 +467,8 @@ export default function App() {
                   onExecute={handleExecute}
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
-                  createProposalButtonRef={newProposalButtonRef}
+                  onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                  walletRoles={walletRolesList}
                   loading={loading}
                   error={error}
                 />
@@ -457,6 +481,13 @@ export default function App() {
               }
             />
             <Route
+              path="recurring"
+              element={
+                <RecurringPage walletAddress={wallet.address} />
+              }
+            />
+            <Route path="analytics" element={<AnalyticsPage />} />
+            <Route
               path="owners"
               element={
                 <OwnersPage
@@ -464,31 +495,7 @@ export default function App() {
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
                   totalOwners={owners.length}
-                  walletAddress={wallet.address}
-                  onProposalSubmitted={refresh}
-                />
-              }
-            />
-            <Route path="settings" element={<SettingsPage stats={stats} walletAddress={wallet.address} ownerAddresses={ownerAddresses} onProposalSubmitted={refresh} />} />
-            <Route
-              path="/proposals/:id"
-              element={
-                <ProposalDetailPage
-                  proposals={proposals}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
-                />
-              }
-            />
-            <Route
-              path="proposals/:id"
-              element={
-                <ProposalDetailPage
-                  proposals={proposals}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
+                  onManageRoles={setRoleModalTarget}
                 />
               }
             />
@@ -506,6 +513,24 @@ export default function App() {
           onClose={() => setShowCreate(false)}
           onSubmitted={refresh}
           triggerRef={newProposalButtonRef}
+        />
+      )}
+      {showCreateRecurring && (
+        <CreateRecurringPaymentModal
+          walletAddress={wallet.address}
+          onClose={() => setShowCreateRecurring(false)}
+          onSubmitted={refresh}
+          triggerRef={recurringButtonRef}
+        />
+      )}
+      {roleModalTarget && (
+        <GrantRevokeRoleModal
+          walletAddress={wallet.address}
+          ownerAddresses={ownerAddresses}
+          threshold={threshold}
+          initialTargetAddress={roleModalTarget}
+          onClose={() => setRoleModalTarget(null)}
+          onSubmitted={refresh}
         />
       )}
     </div>

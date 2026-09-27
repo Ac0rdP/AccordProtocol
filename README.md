@@ -173,6 +173,8 @@ cd contracts/accord && cargo test
 
 Full API reference: [`docs/CONTRACT_API.md`](./docs/CONTRACT_API.md)
 
+Analytics HTTP API and indexed event schemas: [`docs/ANALYTICS_API.md`](./docs/ANALYTICS_API.md) — how those events flow into the indexer: [`docs/ARCHITECTURE.md` §13](./docs/ARCHITECTURE.md#13-indexer--analytics-architecture)
+
 ---
 
 ## Common Commands
@@ -254,3 +256,7 @@ Found a vulnerability? See [`docs/SECURITY.md`](./docs/SECURITY.md) for responsi
 ## License
 
 MIT — see [LICENSE](./LICENSE)
+
+## Recent Changes
+- Ongoing improvements and fixes as part of active development.
+- See commit history and open issues for detailed change tracking.

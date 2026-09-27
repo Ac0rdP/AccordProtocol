@@ -4,6 +4,8 @@ import {
   getContractUsdcBalance,
   getGuardian,
   isFrozen,
+  getRoleVersion,
+  getRoles,
 } from "../lib/contract";
 import {
   freeze,
@@ -36,6 +38,11 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
   const [guardian, setGuardian] = useState<string>("—");
   const [frozen, setFrozen] = useState(false);
   const [guardianLoading, setGuardianLoading] = useState(true);
+
+  // RBAC state
+  const [roleVersion, setRoleVersion] = useState<string>("v1");
+  const [userRoles, setUserRoles] = useState<string[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(true);
 
   // Freeze control
   const [showFreezeConfirm, setShowFreezeConfirm] = useState(false);
@@ -72,24 +79,30 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
     let cancelled = false;
     async function load() {
       setBalanceLoading(true);
-      const [xlm, usdc, g, f] = await Promise.all([
+      setRolesLoading(true);
+      const [xlm, usdc, g, f, rv, roles] = await Promise.all([
         getContractXlmBalance().catch(() => "—"),
         getContractUsdcBalance().catch(() => "—"),
         getGuardian().catch(() => "—"),
         isFrozen().catch(() => false),
+        getRoleVersion().catch(() => "v1"),
+        getRoles(walletAddress).catch(() => []),
       ]);
       if (!cancelled) {
         setXlmBalance(xlm);
         setUsdcBalance(usdc);
         setGuardian(g);
         setFrozen(f);
+        setRoleVersion(rv);
+        setUserRoles(roles);
         setBalanceLoading(false);
         setGuardianLoading(false);
+        setRolesLoading(false);
       }
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [walletAddress]);
 
   async function handleCopy() {
     try {
@@ -231,6 +244,40 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
           <div className="text-sm text-zinc-500 mb-2">Threshold</div>
           <div className="text-sm text-zinc-100">{threshold}</div>
+        </div>
+      </div>
+
+      {/* Role & RBAC Summary */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
+        <h2 className="text-lg font-semibold mb-4">Role & RBAC Summary</h2>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-zinc-500 mb-1">Contract Role Version</p>
+              <p className="font-mono text-sm text-zinc-100">{roleVersion}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-zinc-500 mb-1">Connected Wallet Roles</p>
+              {rolesLoading ? (
+                <div className="h-5 w-24 bg-zinc-800 animate-pulse rounded" />
+              ) : !walletAddress ? (
+                <p className="text-xs text-zinc-400 italic">Disconnected — connect wallet to view permissions</p>
+              ) : userRoles.length === 0 ? (
+                <p className="text-xs text-zinc-400">No active roles</p>
+              ) : (
+                <div className="flex items-center gap-1.5 justify-end">
+                  {userRoles.map((role) => (
+                    <span
+                      key={role}
+                      className="text-xs px-2.5 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                    >
+                      {role}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 

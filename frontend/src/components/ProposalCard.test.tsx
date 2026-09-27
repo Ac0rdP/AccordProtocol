@@ -21,13 +21,15 @@ vi.mock("../hooks/useContract", () => ({
 const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   id: 42,
   kind: "transfer",
-  category: "transfer",
   to: "GABCDE...WXYZ",
   amount: "100",
   token: "USDC",
   description: "Test proposal",
   approvals: 1,
   threshold: 2,
+  quorumWeight: 10,
+  approvalWeight: 5,
+  totalWeight: 20,
   status: "pending",
   deadline: "Jun 24, 2026",
   deadlineTs: 1782259200,
@@ -76,19 +78,46 @@ describe("ProposalCard", () => {
   });
 
   test("shows Approve for a pending proposal when wallet is connected", () => {
-    renderProposalCard();
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     expect(screen.getByText("Approve")).toBeTruthy();
   });
 
   test("shows Connect & Approve for a pending proposal without a wallet", () => {
-    renderProposalCard({ walletAddress: null });
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress={null}
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={[]}
+      />
+    );
 
     expect(screen.getByText("Connect & Approve")).toBeTruthy();
   });
 
   test("shows Execute for a ready proposal and hides Approve", () => {
-    renderProposalCard({ proposal: baseProposal({ status: "ready" }) });
+    render(
+      <ProposalCard
+        proposal={baseProposal({ status: "ready" })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     expect(screen.getByText("Execute")).toBeTruthy();
     expect(screen.queryByText("Approve")).toBeNull();
@@ -97,7 +126,16 @@ describe("ProposalCard", () => {
   test.each(["executed", "expired"] as const)(
     "hides action buttons for %s proposals",
     (status) => {
-      renderProposalCard({ proposal: baseProposal({ status }) });
+      render(
+        <ProposalCard
+          proposal={baseProposal({ status })}
+          walletAddress="GCONNECTED123"
+          onApprove={vi.fn()}
+          onExecute={vi.fn()}
+          onRevoke={vi.fn()}
+          walletRoles={["Owner"]}
+        />
+      );
 
       expect(screen.queryByText("Approve")).toBeNull();
       expect(screen.queryByText("Execute")).toBeNull();
@@ -109,7 +147,16 @@ describe("ProposalCard", () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();
 
-    renderProposalCard({ onApprove });
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={onApprove}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     await user.click(screen.getByRole("button", { name: /approve proposal/i }));
 
@@ -117,23 +164,72 @@ describe("ProposalCard", () => {
     expect(onApprove).toHaveBeenCalledWith(42);
   });
 
-  test("links to the proposal detail page", () => {
-    renderProposalCard();
+  test("disables Approve for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
 
-    expect(screen.getByRole("link", { name: "Send 100 USDC" })).toHaveAttribute(
-      "href",
-      "/proposals/42"
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={onApprove}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
     );
-    expect(screen.getByRole("link", { name: "View details" })).toHaveAttribute(
-      "href",
-      "/proposals/42"
+
+    const approveButton = screen.getByRole("button", { name: /approve proposal/i });
+    expect(approveButton).toBeDisabled();
+    expect(approveButton).toHaveAttribute(
+      "title",
+      "Approving proposals requires the Owner role."
     );
+
+    await user.click(approveButton);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  test("disables Execute for a connected wallet without Owner", async () => {
+    const user = userEvent.setup();
+    const onExecute = vi.fn();
+
+    render(
+      <ProposalCard
+        proposal={baseProposal({ status: "ready" })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={onExecute}
+        onRevoke={vi.fn()}
+        walletRoles={["Viewer"]}
+      />
+    );
+
+    const executeButton = screen.getByRole("button", { name: /execute proposal/i });
+    expect(executeButton).toBeDisabled();
+    expect(executeButton).toHaveAttribute(
+      "title",
+      "Executing proposals requires the Owner role."
+    );
+
+    await user.click(executeButton);
+    expect(screen.queryByText("Send this transaction?")).toBeNull();
+    expect(onExecute).not.toHaveBeenCalled();
   });
 
   test("copies the direct proposal URL and shows temporary feedback", async () => {
     vi.useFakeTimers();
 
-    renderProposalCard();
+    render(
+      <ProposalCard
+        proposal={baseProposal()}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /copy proposal link/i }));
@@ -155,5 +251,125 @@ describe("ProposalCard", () => {
       screen.getByRole("button", { name: /copy proposal link/i })
     ).toBeTruthy();
     vi.useRealTimers();
+  });
+
+  test("renders change-owner-weight proposals with governance summary", () => {
+    render(
+      <ProposalCard
+        proposal={baseProposal({
+          kind: "change_owner_weight",
+          to: "GOWNER...R111",
+          amount: "25",
+          token: "Owner weight",
+        })}
+        walletAddress="GCONNECTED123"
+        onApprove={vi.fn()}
+        onExecute={vi.fn()}
+        onRevoke={vi.fn()}
+        walletRoles={["Owner"]}
+      />
+    );
+
+    expect(screen.getByText("Change Weight")).toBeTruthy();
+    expect(screen.getByText("Governance")).toBeTruthy();
+    expect(screen.getByText("Owner GOWNER...R111")).toBeTruthy();
+    expect(screen.getByText("New weight: 25")).toBeTruthy();
+  });
+
+  // ── Stale-weight / snapshotted quorum tests ────────────────────────────────
+  //
+  // A proposal's quorum is fixed at creation time (snapshotted in quorumWeight).
+  // If owner weights change after the proposal is created, the UI must show the
+  // snapshotted quorum — not the live total weight — so that approval progress
+  // is measured against the original requirement.
+
+  test("ApprovalBar receives the snapshotted quorumWeight, not the live totalWeight", () => {
+    // Snapshot: quorumWeight=10, totalWeight=20 (at creation)
+    // After a weight change the live total is now 35 — but the bar must still
+    // show progress against the original quorumWeight of 10.
+    const proposal = baseProposal({
+      approvalWeight: 7,
+      quorumWeight: 10,   // snapshotted at creation
+      totalWeight: 35,    // live total after a weight change
+    });
+
+    renderProposalCard({ proposal });
+
+    // The label rendered by ApprovalBar reads "approvalWeight / quorumWeight weight"
+    expect(screen.getByText("7 / 10 weight")).toBeTruthy();
+  });
+
+  test("quorum label uses snapshot even when live total diverges significantly", () => {
+    // Snapshot quorumWeight=5; live totalWeight has grown to 100 after many
+    // weight increases. Progress must still be measured against 5.
+    const proposal = baseProposal({
+      approvalWeight: 3,
+      quorumWeight: 5,
+      totalWeight: 100,
+    });
+
+    renderProposalCard({ proposal });
+
+    expect(screen.getByText("3 / 5 weight")).toBeTruthy();
+  });
+
+  test("fully approved proposal shows 100% against snapshotted quorum, not live total", () => {
+    // approvalWeight meets quorumWeight (snapshot) even though totalWeight is higher.
+    const proposal = baseProposal({
+      approvalWeight: 10,
+      quorumWeight: 10,
+      totalWeight: 50,
+      status: "ready",
+    });
+
+    renderProposalCard({ proposal });
+
+    expect(screen.getByText("10 / 10 weight")).toBeTruthy();
+  });
+
+  test("snapshot quorum remains unchanged after a weight-change proposal would alter live total", () => {
+    // Two proposals created before and after a weight change.
+    // Both must still show their original snapshotted quorumWeight.
+    const proposalBeforeChange = baseProposal({
+      id: 1,
+      approvalWeight: 2,
+      quorumWeight: 6,   // threshold at creation: 6
+      totalWeight: 12,   // live total now higher after weight change
+    });
+
+    const { unmount } = renderProposalCard({ proposal: proposalBeforeChange });
+    expect(screen.getByText("2 / 6 weight")).toBeTruthy();
+    unmount();
+
+    // A proposal created after the weight change has a different snapshot.
+    const proposalAfterChange = baseProposal({
+      id: 2,
+      approvalWeight: 2,
+      quorumWeight: 8,   // threshold may differ post-change
+      totalWeight: 12,
+    });
+
+    renderProposalCard({ proposal: proposalAfterChange });
+    expect(screen.getByText("2 / 8 weight")).toBeTruthy();
+  });
+
+  test("shows the raw stroop value below the human-readable amount", () => {
+    renderProposalCard({
+      proposal: baseProposal({
+        amount: "5,000",
+        token: "USDC",
+        rawAmount: "50000000000",
+      }),
+    });
+
+    expect(screen.getByText("50,000,000,000 stroops")).toBeTruthy();
+  });
+
+  test("omits the stroop line when no raw amount is present", () => {
+    const { container } = renderProposalCard({
+      proposal: baseProposal({ rawAmount: undefined }),
+    });
+
+    expect(container.textContent).not.toContain("stroops");
   });
 });

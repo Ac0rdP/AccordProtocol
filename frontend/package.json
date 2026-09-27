@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:analytics": "vitest run src/lib/analytics.test.ts src/lib/__tests__/analytics* src/components/SpendByCategoryChart.test.tsx src/components/SpendByOwnerChart.test.tsx src/components/TreasuryBalanceChart.test.tsx src/components/StatCard.test.tsx src/components/AnalyticsSectionState.test.tsx",
     "e2e": "playwright test",
     "test:e2e": "vite preview --port 5173 & playwright test"
   },
@@ -16,10 +17,12 @@
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^15.1.0",
     "@tailwindcss/vite": "^4.2.4",
+    "jspdf": "^4.2.1",
     "lucide-react": "^1.21.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.18.0",
+    "recharts": "^3.10.1",
     "tailwindcss": "^4.2.4"
   },
   "devDependencies": {

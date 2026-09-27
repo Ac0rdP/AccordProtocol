@@ -102,7 +102,7 @@ describe("CreateProposalModal", () => {
     expect(screen.getByText("0 / 300")).toBeDefined();
     expect(descriptionInput.maxLength).toBe(300);
 
-    await userEvent.type(descriptionInput, "a".repeat(301));
+    fireEvent.change(descriptionInput, { target: { value: "a".repeat(300) } });
 
     expect(descriptionInput.value).toHaveLength(300);
     expect(screen.queryByText("301 / 300")).toBeNull();

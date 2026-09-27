@@ -1,0 +1,847 @@
+import type {
+  AnalyticsAmount,
+  AnalyticsGranularity,
+  AnalyticsQuery,
+  Proposal,
+  ProposalCategory,
+  TreasurySummary,
+} from "../types/accord";
+
+export type CategoryFilter = "all" | ProposalCategory;
+
+export type AnalyticsFilters = {
+  /** yyyy-mm-dd (inclusive), "" = no lower bound */
+  startDate: string;
+  /** yyyy-mm-dd (inclusive), "" = no upper bound */
+  endDate: string;
+  category: CategoryFilter;
+  /** Substring match against the proposer address, "" = all owners */
+  owner: string;
+};
+
+export const DEFAULT_ANALYTICS_FILTERS: AnalyticsFilters = {
+  startDate: "",
+  endDate: "",
+  category: "all",
+  owner: "",
+};
+
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Executed transfer proposals are the only proposals with a real monetary
+ * amount attached (governance actions like add_owner/change_threshold use
+ * "-"/"—" placeholders) - this is the source dataset for every analytics
+ * chart, card, and export.
+ */
+export function filterExecutedTransfers(
+  proposals: Proposal[],
+  filters: AnalyticsFilters,
+): Proposal[] {
+  return proposals.filter((p) => {
+    if (p.status !== "executed" || p.kind !== "transfer") return false;
+
+    const category = p.category ?? "Other";
+    if (filters.category !== "all" && category !== filters.category)
+      return false;
+
+    if (
+      filters.owner &&
+      !p.proposer.toLowerCase().includes(filters.owner.toLowerCase())
+    ) {
+      return false;
+    }
+
+    if (filters.startDate || filters.endDate) {
+      const ts = p.deadlineTs * 1000;
+      if (filters.startDate && ts < new Date(filters.startDate).getTime())
+        return false;
+      if (
+        filters.endDate &&
+        ts > new Date(filters.endDate).getTime() + MS_PER_DAY - 1
+      )
+        return false;
+    }
+
+    return true;
+  });
+}
+
+export type SpendByCategory = {
+  category: string;
+  total: number;
+  count: number;
+  /** Percentage share of total spend across all categories (0–100). */
+  share: number;
+};
+
+/** All known proposal categories — used to zero-fill buckets with no spend. */
+export const KNOWN_SPEND_CATEGORIES = [
+  "Transfer",
+  "Payroll",
+  "Grant",
+  "Ops",
+  "Other",
+] as const;
+
+export type SpendFilterOptions = {
+  /** yyyy-mm-dd (inclusive), ""/undefined = no bound. */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive), ""/undefined = no bound. */
+  endDate?: string;
+  /** Only executed transfer proposals are aggregated; disable to sum raw input. */
+  executedOnly?: boolean;
+  /** When true, categories with no spend are returned with zero totals. */
+  includeZeroCategories?: boolean;
+};
+
+function inSpendDateRange(deadlineTs: number, opts?: SpendFilterOptions): boolean {
+  if (!opts || (!opts.startDate && !opts.endDate)) return true;
+  const ts = deadlineTs * 1000;
+  if (opts.startDate && ts < new Date(opts.startDate).getTime()) return false;
+  if (opts.endDate && ts > new Date(opts.endDate).getTime() + MS_PER_DAY - 1)
+    return false;
+  return true;
+}
+
+function normalizeCategory(category: string | undefined): string {
+  if (!category) return "Other";
+  const lower = category.toLowerCase();
+  for (const known of KNOWN_SPEND_CATEGORIES) {
+    if (known.toLowerCase() === lower) return known;
+  }
+  // Preserve legacy lowercase labels (e.g. "transfer") by capitalizing them
+  // when they match a known category case-insensitively is handled above;
+  // anything else falls back to the raw label or "Other".
+  return category || "Other";
+}
+
+/**
+ * Total executed-transfer spending grouped by proposal category.
+ *
+ * Reads executed transfer proposals with their category and amounts, sums
+ * amounts per category, supports an optional date range, zero-fills
+ * categories without spending when `includeZeroCategories` is set, and is a
+ * pure re-computation (no cached state) so re-running after new events stays
+ * correct.
+ */
+export function computeSpendByCategory(
+  proposals: Proposal[],
+  options?: SpendFilterOptions,
+): SpendByCategory[] {
+  const executedOnly = options?.executedOnly ?? true;
+  const totals = new Map<string, { total: number; count: number }>();
+  for (const p of proposals) {
+    if (executedOnly && (p.status !== "executed" || p.kind !== "transfer"))
+      continue;
+    if (!inSpendDateRange(p.deadlineTs, options)) continue;
+    const category = normalizeCategory(p.category as string | undefined);
+    const amount = parseFloat(p.amount) || 0;
+    const entry = totals.get(category) ?? { total: 0, count: 0 };
+    entry.total += amount;
+    entry.count += 1;
+    totals.set(category, entry);
+  }
+  if (options?.includeZeroCategories) {
+    for (const known of KNOWN_SPEND_CATEGORIES) {
+      if (!totals.has(known)) totals.set(known, { total: 0, count: 0 });
+    }
+  }
+  const grandTotal = [...totals.values()].reduce((s, e) => s + e.total, 0);
+  return [...totals.entries()]
+    .map(([category, { total, count }]) => ({
+      category,
+      total,
+      count,
+      share: grandTotal > 0 ? (total / grandTotal) * 100 : 0,
+    }))
+    .sort((a, b) => b.total - a.total || a.category.localeCompare(b.category));
+}
+
+export type TreasuryFlowPoint = {
+  period: string;
+  /** Inflow for the window (0 when no deposits supplied). Optional for backward compat. */
+  inflow?: number;
+  outflow: number;
+  cumulative: number;
+};
+
+export type TreasuryBalancePoint = {
+  timestamp: string;
+  [token: string]: string | number;
+};
+
+/** A treasury ledger entry (deposit/inflow) used for flow bucketing. */
+export type TreasuryLedgerEntry = {
+  /** Unix seconds. */
+  timestamp: number;
+  amount: string | number;
+  /** "inflow" deposits vs "outflow" executed transfers. */
+  direction: "inflow" | "outflow";
+};
+
+export type FlowGranularity = "day" | "week" | "month";
+
+export type TreasuryFlowOptions = {
+  granularity?: FlowGranularity;
+  /** yyyy-mm-dd (inclusive). */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive). */
+  endDate?: string;
+  /** Inflow ledger entries (deposits); proposals supply outflows. */
+  deposits?: Array<{ timestamp: number; amount: string | number }>;
+  /** Extra outflow ledger entries beyond executed proposals. */
+  extraOutflows?: Array<{ timestamp: number; amount: string | number }>;
+};
+
+function flowBucketKey(ms: number, granularity: FlowGranularity): string {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") {
+    return `${y}-${String(m + 1).padStart(2, "0")}`;
+  }
+  if (granularity === "day") {
+    return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  const mondayMs = Date.UTC(y, m, day) - sinceMonday * MS_PER_DAY;
+  const mon = new Date(mondayMs);
+  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
+}
+
+function flowBucketStartMs(ms: number, granularity: FlowGranularity): number {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") return Date.UTC(y, m, 1);
+  const midnight = Date.UTC(y, m, day);
+  if (granularity === "day") return midnight;
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return midnight - sinceMonday * MS_PER_DAY;
+}
+
+function nextFlowBucket(start: number, granularity: FlowGranularity): number {
+  if (granularity === "day") return start + MS_PER_DAY;
+  if (granularity === "week") return start + 7 * MS_PER_DAY;
+  const d = new Date(start);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+}
+
+function flowBucketLabel(startMs: number, granularity: FlowGranularity): string {
+  const d = new Date(startMs);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  if (granularity === "month") return `${y}-${mo}`;
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${mo}-${day}`;
+}
+
+function periodKey(deadlineTs: number): string {
+  const d = new Date(deadlineTs * 1000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Treasury inflow vs outflow bucketed by day/week/month with zero-filled
+ * empty windows and a configurable date range.
+ *
+ * Outflows come from executed transfer proposals (plus optional
+ * `extraOutflows`); inflows come from `deposits`. Without an explicit date
+ * range, buckets span the first to last activity so charts are continuous.
+ * Recomputing is pure — no cached state — so new events are picked up on the
+ * next call.
+ */
+export function computeTreasuryFlow(
+  proposals: Proposal[],
+  options?: TreasuryFlowOptions,
+): TreasuryFlowPoint[] {
+  const granularity = options?.granularity ?? "month";
+  const deposits = options?.deposits ?? [];
+  const extraOutflows = options?.extraOutflows ?? [];
+
+  type Bucket = { inflow: number; outflow: number };
+  const sums = new Map<string, Bucket>();
+  const bucketStartByKey = new Map<string, number>();
+  const eventTimes: number[] = [];
+
+  const record = (ms: number, inflow: number, outflow: number) => {
+    const start = flowBucketStartMs(ms, granularity);
+    const key = flowBucketKey(ms, granularity);
+    bucketStartByKey.set(key, start);
+    const entry = sums.get(key) ?? { inflow: 0, outflow: 0 };
+    entry.inflow += inflow;
+    entry.outflow += outflow;
+    sums.set(key, entry);
+    eventTimes.push(ms);
+  };
+
+  for (const p of proposals) {
+    if (p.status !== "executed" || p.kind !== "transfer") continue;
+    const ms = p.deadlineTs * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, 0, parseFloat(p.amount) || 0);
+  }
+  for (const d of deposits) {
+    const ms = d.timestamp * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, parseFloat(String(d.amount)) || 0, 0);
+  }
+  for (const o of extraOutflows) {
+    const ms = o.timestamp * 1000;
+    if (options?.startDate && ms < new Date(options.startDate).getTime())
+      continue;
+    if (
+      options?.endDate &&
+      ms > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+    )
+      continue;
+    record(ms, 0, parseFloat(String(o.amount)) || 0);
+  }
+
+  if (eventTimes.length === 0 && !options?.startDate && !options?.endDate) {
+    return [];
+  }
+
+  let rangeStart: number | undefined;
+  let rangeEnd: number | undefined;
+  if (options?.startDate) rangeStart = new Date(options.startDate).getTime();
+  else if (eventTimes.length) rangeStart = Math.min(...eventTimes);
+  if (options?.endDate) rangeEnd = new Date(options.endDate).getTime();
+  else if (eventTimes.length) rangeEnd = Math.max(...eventTimes);
+  if (rangeStart === undefined || rangeEnd === undefined || rangeStart > rangeEnd) {
+    return [];
+  }
+
+  // Legacy default: monthly outflow-only aggregation keyed by yyyy-mm with a
+  // running cumulative, zero-filling empty months in range.
+  const result: TreasuryFlowPoint[] = [];
+  let cumulative = 0;
+  const first = flowBucketStartMs(rangeStart, granularity);
+  const last = flowBucketStartMs(rangeEnd, granularity);
+  for (let t = first; t <= last; t = nextFlowBucket(t, granularity)) {
+    const key = flowBucketKey(t, granularity);
+    const entry = sums.get(key) ?? { inflow: 0, outflow: 0 };
+    cumulative += entry.outflow;
+    result.push({
+      period: granularity === "month" ? key : flowBucketLabel(t, granularity),
+      inflow: entry.inflow,
+      outflow: entry.outflow,
+      cumulative,
+    });
+  }
+  return result;
+}
+
+function filterRangeLabel(filters: AnalyticsFilters): string {
+  if (!filters.startDate && !filters.endDate) return "all-time";
+  return `${filters.startDate || "start"}_to_${filters.endDate || "now"}`;
+}
+
+export function buildExportFilename(
+  dataset: string,
+  filters: AnalyticsFilters,
+): string {
+  return `accord-analytics-${dataset}-${filterRangeLabel(filters)}`;
+}
+
+export function buildSpendCsv(
+  rows: Array<{ category: string; total: number; count: number }>,
+): string {
+  const headers = ["Category", "Total", "Transaction Count"];
+  const lines = rows.map(
+    (r) => `"${r.category}","${r.total.toFixed(2)}",${r.count}`,
+  );
+  return [headers.join(","), ...lines].join("\n");
+}
+
+export function buildTreasuryCsv(rows: TreasuryFlowPoint[]): string {
+  const headers = ["Period", "Outflow", "Cumulative Outflow"];
+  const lines = rows.map(
+    (r) =>
+      `"${r.period}","${r.outflow.toFixed(2)}","${r.cumulative.toFixed(2)}"`,
+  );
+  return [headers.join(","), ...lines].join("\n");
+}
+
+export function downloadCsv(filename: string, content: string): void {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * A single row from the spend-by-category endpoint or computed locally.
+ * `share` is always expressed as a percentage string, e.g. "34.5%".
+ */
+export type SpendByCategoryRow = {
+  category: string;
+  total: number;
+  count: number;
+  /** Percentage share of total spend, e.g. 34.5 */
+  share: number;
+};
+
+/**
+ * Normalise a raw SpendByCategory array (with or without share) into
+ * SpendByCategoryRow[] by computing each category's percentage share
+ * of the grand total. Handles the zero-total case gracefully (share 0).
+ */
+export function enrichWithShares(
+  rows: Array<{ category: string; total: number; count: number; share?: number }>,
+): SpendByCategoryRow[] {
+  const grandTotal = rows.reduce((s, r) => s + r.total, 0);
+  return rows.map((r) => ({
+    ...r,
+    share: grandTotal > 0 ? (r.total / grandTotal) * 100 : 0,
+  }));
+}
+
+/**
+ * Format a share value as a consistently rounded percentage string.
+ * Always shows exactly one decimal place, e.g. "34.5%".
+ */
+export function formatShare(share: number): string {
+  return `${share.toFixed(1)}%`;
+}
+
+/**
+ * Fetch spend-by-category data from the backend time-series endpoint
+ * GET /spend/by-category. Falls back to an empty array on any error so
+ * callers can continue to render the page with local data.
+ */
+export async function fetchSpendByCategory(): Promise<SpendByCategoryRow[]> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase
+    ? `${apiBase}/spend/by-category`
+    : "/spend/by-category";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as unknown;
+    if (!Array.isArray(data)) return [];
+    const rows: Array<{ category: string; total: number; count: number }> = data.map(
+      (item: Record<string, unknown>) => ({
+        category: String(item.category ?? item.name ?? "Other"),
+        total:
+          typeof item.total === "number"
+            ? item.total
+            : parseFloat(String(item.total || "0")),
+        count:
+          typeof item.count === "number"
+            ? item.count
+            : parseInt(String(item.count || "0"), 10),
+      }),
+    );
+    return enrichWithShares(rows);
+  } catch {
+    return [];
+  }
+}
+
+export type SpendByOwner = {
+  owner: string;
+  shortOwner: string;
+  total: number;
+  count: number;
+};
+
+function formatShortOwner(addr: string): string {
+  if (!addr || addr.length < 10) return addr || "Unknown";
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
+export type SpendByOwnerOptions = {
+  /** yyyy-mm-dd (inclusive). */
+  startDate?: string;
+  /** yyyy-mm-dd (inclusive). */
+  endDate?: string;
+  /** Only executed transfer proposals are aggregated. */
+  executedOnly?: boolean;
+};
+
+/**
+ * Total executed-transfer spending grouped by proposing owner.
+ *
+ * Reads executed transfer proposals with their proposer and amounts, sums
+ * amounts per proposer, supports an optional time range, returns zero totals
+ * for `allOwners` entries without spending, and is a pure re-computation so
+ * re-running after new events stays correct.
+ */
+export function computeSpendByOwner(
+  proposals: Proposal[],
+  allOwners?: string[] | SpendByOwnerOptions,
+  maybeOptions?: SpendByOwnerOptions,
+): SpendByOwner[] {
+  // Overloads: (proposals), (proposals, options), (proposals, allOwners, options).
+  let owners: string[] | undefined;
+  let options: SpendByOwnerOptions | undefined;
+  if (Array.isArray(allOwners)) {
+    owners = allOwners;
+    options = maybeOptions;
+  } else {
+    options = allOwners as SpendByOwnerOptions | undefined;
+  }
+  const executedOnly = options?.executedOnly ?? true;
+  const totals = new Map<string, { total: number; count: number }>();
+  for (const p of proposals) {
+    if (executedOnly && (p.status !== "executed" || p.kind !== "transfer"))
+      continue;
+    if (options?.startDate || options?.endDate) {
+      const ts = p.deadlineTs * 1000;
+      if (options.startDate && ts < new Date(options.startDate).getTime())
+        continue;
+      if (
+        options.endDate &&
+        ts > new Date(options.endDate).getTime() + MS_PER_DAY - 1
+      )
+        continue;
+    }
+    const owner = p.proposer || "Unknown";
+    const amount = parseFloat(p.amount) || 0;
+    const entry = totals.get(owner) ?? { total: 0, count: 0 };
+    entry.total += amount;
+    entry.count += 1;
+    totals.set(owner, entry);
+  }
+  if (owners) {
+    for (const owner of owners) {
+      if (!totals.has(owner)) totals.set(owner, { total: 0, count: 0 });
+    }
+  }
+  return [...totals.entries()]
+    .map(([owner, { total, count }]) => ({
+      owner,
+      shortOwner: formatShortOwner(owner),
+      total,
+      count,
+    }))
+    .sort((a, b) => b.total - a.total || a.owner.localeCompare(b.owner));
+}
+
+/**
+ * Fetch spend-by-owner data from GET /spend/by-owner endpoint.
+ * Returns an array of SpendByOwner objects or [] on error.
+ */
+export async function fetchSpendByOwner(): Promise<SpendByOwner[]> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase ? `${apiBase}/spend/by-owner` : "/spend/by-owner";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as unknown;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((item: Record<string, unknown>) => {
+        const owner = String(item.owner ?? item.address ?? item.proposer ?? "Unknown");
+        const total =
+          typeof item.total === "number"
+            ? item.total
+            : parseFloat(String(item.total || "0")) || 0;
+        const count =
+          typeof item.count === "number"
+            ? item.count
+            : parseInt(String(item.count || "0"), 10) || 0;
+        return {
+          owner,
+          shortOwner: formatShortOwner(owner),
+          total,
+          count,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Compute the treasury summary aggregation matching the GET /stats/summary shape.
+ * Aggregates executed transfer disbursements per token, counts active proposals,
+ * counts owners, and locates the single largest outflow within the optional date range.
+ */
+export function computeTreasurySummary(
+  proposals: Proposal[],
+  ownerCount: number,
+  filters?: AnalyticsQuery,
+): TreasurySummary {
+  const activeProposals = proposals.filter((p) =>
+    ["pending", "ready"].includes(p.status),
+  ).length;
+
+  const executedTransfers = proposals.filter((p) => {
+    if (p.status !== "executed" || p.kind !== "transfer") return false;
+
+    if (filters?.token && p.token !== filters.token) return false;
+
+    if (filters?.startDate || filters?.endDate) {
+      const ts = p.deadlineTs * 1000;
+      if (filters.startDate && ts < new Date(filters.startDate).getTime()) {
+        return false;
+      }
+      if (
+        filters.endDate &&
+        ts > new Date(filters.endDate).getTime() + MS_PER_DAY - 1
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const totalsByToken = new Map<string, number>();
+  let largestOutflow: { token: string; amount: AnalyticsAmount } | null = null;
+  let maxAmount = -1;
+
+  for (const p of executedTransfers) {
+    const token = p.token || "XLM";
+    const amount = parseFloat(p.amount) || 0;
+    const current = totalsByToken.get(token) ?? 0;
+    totalsByToken.set(token, current + amount);
+
+    if (amount > maxAmount) {
+      maxAmount = amount;
+      largestOutflow = {
+        token,
+        amount: String(amount),
+      };
+    }
+  }
+
+  const totalDisbursed: Record<string, AnalyticsAmount> = {};
+  for (const [token, total] of totalsByToken.entries()) {
+    totalDisbursed[token] = String(total);
+  }
+
+  return {
+    totalDisbursed,
+    totalInflows: {},
+    activeProposals,
+    ownerCount,
+    largestOutflow,
+  };
+}
+
+/**
+ * Fetch treasury summary from GET /stats/summary.
+ * Returns TreasurySummary or null on failure.
+ */
+export async function fetchTreasurySummary(
+  query?: AnalyticsQuery,
+): Promise<TreasurySummary | null> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const params = new URLSearchParams();
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+  }
+  const search = params.toString();
+  const url = `${apiBase ? `${apiBase}/stats/summary` : "/stats/summary"}${search ? `?${search}` : ""}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = (await res.json()) as TreasurySummary;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export type TreasuryBalancePoint = {
+  timestamp: string;
+  xlm: number;
+  usdc: number;
+};
+
+export async function fetchTreasuryBalanceHistory(): Promise<
+  TreasuryBalancePoint[]
+> {
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+  const url = apiBase ? `${apiBase}/treasury/balance` : "/treasury/balance";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      return [];
+    }
+    const data = (await res.json()) as unknown;
+    if (Array.isArray(data)) {
+      return data.map((item: Record<string, unknown>) => ({
+        timestamp: String(item.timestamp ?? item.date ?? item.period ?? ""),
+        xlm:
+          typeof item.xlm === "number"
+            ? item.xlm
+            : parseFloat(String(item.xlm || "0")),
+        usdc:
+          typeof item.usdc === "number"
+            ? item.usdc
+            : parseFloat(String(item.usdc || "0")),
+      }));
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export type ProposalActivityPoint = {
+  period: string;
+  created: number;
+  executed: number;
+};
+
+function parseProposalDate(
+  val: string | number | undefined | null,
+): number | null {
+  if (val === undefined || val === null || val === "") return null;
+  if (typeof val === "number") {
+    return val < 1e11 ? val * 1000 : val;
+  }
+  const numeric = Number(val);
+  if (!isNaN(numeric) && isFinite(numeric) && numeric > 0) {
+    return numeric < 1e11 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(val);
+  if (!isNaN(parsed)) return parsed;
+  return null;
+}
+
+function activityBucketKey(
+  ms: number,
+  granularity: AnalyticsGranularity,
+): string {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const day = d.getUTCDate();
+  if (granularity === "month") {
+    return `${y}-${String(m + 1).padStart(2, "0")}`;
+  }
+  if (granularity === "day") {
+    return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  // week: start of week (Monday)
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  const mondayMs = Date.UTC(y, m, day) - sinceMonday * 86_400_000;
+  const mon = new Date(mondayMs);
+  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
+}
+
+export function computeProposalActivity(
+  proposals: Proposal[],
+  granularity: AnalyticsGranularity = "day",
+): ProposalActivityPoint[] {
+  const buckets = new Map<string, { created: number; executed: number }>();
+
+  for (const p of proposals) {
+    // Created
+    const createdMs =
+      parseProposalDate(p.createdAt) ??
+      (p.deadlineTs ? p.deadlineTs * 1000 : null);
+    if (createdMs !== null) {
+      const key = activityBucketKey(createdMs, granularity);
+      const entry = buckets.get(key) ?? { created: 0, executed: 0 };
+      entry.created += 1;
+      buckets.set(key, entry);
+    }
+
+    // Executed
+    if (p.status === "executed") {
+      const executedMs =
+        parseProposalDate(p.executedAt) ??
+        (p.deadlineTs ? p.deadlineTs * 1000 : null);
+      if (executedMs !== null) {
+        const key = activityBucketKey(executedMs, granularity);
+        const entry = buckets.get(key) ?? { created: 0, executed: 0 };
+        entry.executed += 1;
+        buckets.set(key, entry);
+      }
+    }
+  }
+
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, { created, executed }]) => ({
+      period,
+      created,
+      executed,
+    }));
+}
+
+/**
+ * High-level proposal activity metrics for the summary and activity charts.
+ *
+ * Counts proposals created and executed (optionally filtered by category)
+ * and computes the average time from creation to execution across executed
+ * proposals that carry both timestamps. Returns `avgTimeToExecuteMs: null`
+ * when no executed proposal has a measurable duration.
+ */
+export type ProposalActivityMetrics = {
+  created: number;
+  executed: number;
+  /** Average milliseconds from creation to execution, null when unmeasurable. */
+  avgTimeToExecuteMs: number | null;
+};
+
+export function computeProposalActivityMetrics(
+  proposals: Proposal[],
+  category: CategoryFilter = "all",
+): ProposalActivityMetrics {
+  let created = 0;
+  let executed = 0;
+  let totalDurationMs = 0;
+  let measured = 0;
+
+  for (const p of proposals) {
+    if (category !== "all" && (p.category ?? "Other") !== category) continue;
+
+    const createdMs =
+      parseProposalDate(p.createdAt) ??
+      (p.deadlineTs ? p.deadlineTs * 1000 : null);
+    if (createdMs !== null) created += 1;
+
+    if (p.status === "executed") {
+      const executedMs =
+        parseProposalDate(p.executedAt) ??
+        (p.deadlineTs ? p.deadlineTs * 1000 : null);
+      if (executedMs !== null) executed += 1;
+      if (createdMs !== null && executedMs !== null) {
+        const duration = executedMs - createdMs;
+        if (Number.isFinite(duration) && duration >= 0) {
+          totalDurationMs += duration;
+          measured += 1;
+        }
+      }
+    }
+  }
+
+  return {
+    created,
+    executed,
+    avgTimeToExecuteMs: measured > 0 ? totalDurationMs / measured : null,
+  };
+}
+

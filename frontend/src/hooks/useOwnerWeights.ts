@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getOwnerWeight } from "../lib/contract";
+import { getOwnerWeights } from "../lib/contract";
 
 type OwnerWeightState = {
   weights: Record<string, number>;
@@ -15,6 +15,8 @@ export function useOwnerWeights(ownerAddresses: string[]) {
     loading: ownerAddresses.length > 0,
     error: null,
   });
+
+  const serializedAddresses = ownerAddresses.join(",");
 
   useEffect(() => {
     let cancelled = false;
@@ -38,10 +40,7 @@ export function useOwnerWeights(ownerAddresses: string[]) {
     async function fetchWeights() {
       setState((s: OwnerWeightState) => ({ ...s, loading: true, error: null }));
       try {
-        const weightPromises = ownerAddresses.map((addr) =>
-          getOwnerWeight(addr).then((w) => ({ address: addr, weight: w }))
-        );
-        const results = await Promise.all(weightPromises);
+        const results = await getOwnerWeights();
         if (cancelled) return;
 
         const weightMap: Record<string, number> = {};
@@ -74,7 +73,8 @@ export function useOwnerWeights(ownerAddresses: string[]) {
     return () => {
       cancelled = true;
     };
-  }, [ownerAddresses]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serializedAddresses]);
 
   return state;
 }

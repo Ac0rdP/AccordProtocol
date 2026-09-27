@@ -10,12 +10,13 @@ import {
 import {
   getOwners,
   getThreshold,
-  getOwnerWeight,
+  getOwnerWeights,
   getTotalWeight,
   getRequiredQuorumWeight,
   getWeightCapPct,
 } from "../lib/contract";
-import { displayToStroops } from "../lib/soroban";
+import { displayToStroops, formatWeightPercent } from "../lib/soroban";
+import { VotingPowerPreview } from "./VotingPowerPreview";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { ProposalKind } from "../types/accord";
 // Testnet token addresses — swap for mainnet when ready
@@ -193,12 +194,14 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
         const weightMap: Record<string, number> = {};
         let computedSum = 0;
-        for (const addr of ownerAddrs) {
-          try {
-            const w = await getOwnerWeight(addr);
-            weightMap[addr] = w;
-            computedSum += w;
-          } catch {
+        try {
+          const ownerWeights = await getOwnerWeights();
+          for (const entry of ownerWeights) {
+            weightMap[entry.address] = entry.weight;
+            computedSum += entry.weight;
+          }
+        } catch {
+          for (const addr of ownerAddrs) {
             weightMap[addr] = 1;
             computedSum += 1;
           }
@@ -761,12 +764,13 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             
             {/* Live Voting-Power Preview (MIN_OWNER_WEIGHT = 1) */}
             {ownerAddress && StrKey.isValidEd25519PublicKey(ownerAddress.trim()) && (
-              <div className="mt-3 text-xs text-zinc-400 bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3 space-y-1">
-                <p className="text-zinc-300 font-medium font-sans">Live Impact Preview</p>
-                <p>Total voting weight will increase from <span className="font-mono text-zinc-200">{totalWeight}</span> to <span className="font-mono text-zinc-200">{totalWeight + 1}</span>.</p>
-                <p>New owner percentage share: <span className="font-mono text-zinc-300">{(totalWeight + 1 > 0 ? (1 / (totalWeight + 1)) * 100 : 0).toFixed(1)}%</span>.</p>
-                <p className="text-zinc-500 italic mt-1 font-sans">Note: The contract assigns a minimum weight of 1 (MIN_OWNER_WEIGHT) to newly added owners. Custom weights are not supported during owner creation.</p>
-              </div>
+              <VotingPowerPreview
+                beforeWeight={totalWeight}
+                afterWeight={totalWeight + 1}
+                totalWeight={totalWeight + 1}
+                type="add_owner"
+                note="Note: The contract assigns a minimum weight of 1 (MIN_OWNER_WEIGHT) to newly added owners. Custom weights are not supported during owner creation."
+              />
             )}
           </div>
         )}
@@ -792,25 +796,28 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             </select>
             
             {/* Live Quorum-Impact Warning */}
-            {selectedOwner && (
-              <div className="mt-3 text-xs space-y-1">
-                <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3">
-                  <p className="text-zinc-300 font-medium font-sans mb-1">Live Impact Preview</p>
-                  <p>Owner's current weight: <span className="font-mono text-zinc-200">{currentWeights[selectedOwner] ?? 1}</span>.</p>
-                  <p>Resulting total voting weight: <span className="font-mono text-zinc-200">{totalWeight - (currentWeights[selectedOwner] ?? 1)}</span> (threshold: <span className="font-mono text-zinc-200">{quorumWeight}</span>).</p>
-                </div>
-                {totalWeight - (currentWeights[selectedOwner] ?? 1) < quorumWeight && (
-                  <div className="mt-2 flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 text-amber-300 rounded-lg p-3">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 shrink-0 mt-0.5">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                    </svg>
-                    <p className="leading-normal font-sans">
-                      <strong>Warning:</strong> Removing this owner drops remaining total weight ({totalWeight - (currentWeights[selectedOwner] ?? 1)}) below the required quorum threshold ({quorumWeight}). Future proposals will not be executable.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
+            {selectedOwner && (() => {
+              const currentWeight = currentWeights[selectedOwner] ?? 1;
+              const resultingTotalWeight = totalWeight - currentWeight;
+              const isQuorumBroken = resultingTotalWeight < quorumWeight;
+              return (
+                <VotingPowerPreview
+                  beforeWeight={currentWeight}
+                  afterWeight={0}
+                  totalWeight={resultingTotalWeight}
+                  threshold={quorumWeight}
+                  type="remove_owner"
+                  warning={{
+                    show: isQuorumBroken,
+                    message: (
+                      <p>
+                        <strong>Warning:</strong> Removing this owner drops remaining total weight ({resultingTotalWeight}) below the required quorum threshold ({quorumWeight}). Future proposals will not be executable.
+                      </p>
+                    )
+                  }}
+                />
+              );
+            })()}
           </div>
         )}
 
@@ -882,23 +889,21 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               const exceedsCap = newSharePct > weightCapPct;
 
               return (
-                <div className="mt-3 text-xs space-y-1">
-                  <div className="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3">
-                    <p className="text-zinc-300 font-medium font-sans mb-1">Live Impact Preview</p>
-                    <p>Resulting total voting weight: <span className="font-mono text-zinc-200">{nextTotalW}</span>.</p>
-                    <p>Owner's new share: <span className="font-mono text-zinc-200">{newSharePct.toFixed(1)}%</span> (cap: <span className="font-mono text-zinc-200">{weightCapPct}%</span>).</p>
-                  </div>
-                  {exceedsCap && (
-                    <div className="mt-2 flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 text-amber-300 rounded-lg p-3">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 shrink-0 mt-0.5">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-                      </svg>
-                      <p className="leading-normal font-sans">
+                <VotingPowerPreview
+                  beforeWeight={oldW}
+                  afterWeight={wVal}
+                  totalWeight={nextTotalW}
+                  weightCapPct={weightCapPct}
+                  type="change_owner_weight"
+                  warning={{
+                    show: exceedsCap,
+                    message: (
+                      <p>
                         <strong>Warning:</strong> Resulting weight share ({newSharePct.toFixed(1)}%) exceeds the contract's configured max weight cap ({weightCapPct}%). This weight change proposal may be rejected by the contract upon execution.
                       </p>
-                    </div>
-                  )}
-                </div>
+                    )
+                  }}
+                />
               );
             })()}
           </div>
@@ -971,6 +976,8 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
   function renderPreview() {
     const dl = formatDeadlineDate(deadline);
+    const quorumPercentage = totalWeight > 0 ? formatWeightPercent(quorumWeight, totalWeight) : "—";
+    
     return (
       <>
         <div className="space-y-3">
@@ -1042,6 +1049,18 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               <dt className="text-xs text-zinc-500">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{dl}</dd>
             </div>
+            <div>
+              <dt className="text-xs text-zinc-500">Required Quorum</dt>
+              <dd className="mt-1 text-sm text-zinc-200">
+                {quorumWeight > 0 ? (
+                  <>
+                    <span className="font-mono">{quorumWeight}</span> weight ({quorumPercentage} of total voting power)
+                  </>
+                ) : (
+                  <span className="text-zinc-400">Not available</span>
+                )}
+              </dd>
+            </div>
           </dl>
         </div>
 
@@ -1103,6 +1122,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           {step === "type" && renderTypeSelector()}
           {step === "form" && renderForm()}
           {step === "preview" && renderPreview()}
+          {step === "confirm" && renderConfirm()}
         </div>
       </div>
     </div>
