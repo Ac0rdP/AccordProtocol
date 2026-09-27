@@ -117,8 +117,8 @@ describe("computeTreasuryFlow", () => {
     ];
 
     expect(computeTreasuryFlow(proposals)).toEqual([
-      { period: "2026-01", outflow: 150, cumulative: 150 },
-      { period: "2026-02", outflow: 25, cumulative: 175 },
+      { period: "2026-01", inflow: 0, outflow: 150, cumulative: 150 },
+      { period: "2026-02", inflow: 0, outflow: 25, cumulative: 175 },
     ]);
   });
 

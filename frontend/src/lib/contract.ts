@@ -1010,7 +1010,12 @@ export async function getProposalEvents(
               eventPropId = Number(topics[1]);
             }
 
-            if (eventPropId === proposalId) {
+            // Owner-weight-change events carry no proposal id (OwnerWeightChangedEvent
+            // is { owner, old_weight, new_weight, new_total_weight }) yet they are
+            // part of a proposal's governance history, so include them in every
+            // proposal timeline interleaved chronologically with approve/revoke/execute.
+            const isWeightChange = eventType === "owner_weight_changed";
+            if (eventPropId === proposalId || isWeightChange) {
               const rawActor = String(
                 nativeValue.approver ??
                   nativeValue.executor ??
@@ -1020,6 +1025,8 @@ export async function getProposalEvents(
                   nativeValue.sender ??
                   nativeValue.admin ??
                   nativeValue.owner ??
+                  nativeValue.target ??
+                  nativeValue.target_owner ??
                   "",
               );
               const actor = rawActor ? shortenAddr(rawActor) : "Unknown";
@@ -1123,11 +1130,25 @@ export async function getProposalEvents(
                 if (reason) parts.push(reason);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "owner_weight_changed") {
-                if (
-                  nativeValue.old_weight !== undefined &&
-                  nativeValue.new_weight !== undefined
-                ) {
-                  details = `Weight: ${nativeValue.old_weight} → ${nativeValue.new_weight}`;
+                const oldW =
+                  nativeValue.old_weight ??
+                  nativeValue.oldWeight ??
+                  nativeValue.previous_weight ??
+                  nativeValue.previousWeight;
+                const newW =
+                  nativeValue.new_weight ??
+                  nativeValue.newWeight ??
+                  nativeValue.weight;
+                if (oldW !== undefined && newW !== undefined) {
+                  const ownerLabel =
+                    nativeValue.owner ??
+                    nativeValue.target ??
+                    nativeValue.target_owner ??
+                    rawActor;
+                  const shortOwner = ownerLabel
+                    ? shortenAddr(String(ownerLabel))
+                    : actor;
+                  details = `${shortOwner} Weight: ${String(oldW)} → ${String(newW)}`;
                 }
               }
 
