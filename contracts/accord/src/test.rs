@@ -9166,7 +9166,11 @@ fn removed_owner_with_stale_roles_cannot_cosign_governance() {
     // Even if role storage were left populated for the removed owner, it has
     // no owner weight and cannot co-sign.
     grant_all_roles(&env, &client, &owner_c);
-    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a.clone(), owner_b]));
+    freeze_with_new_guardian(
+        &env,
+        &client,
+        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
+    );
 
     let approvers = Vec::from_array(&env, [owner_a, owner_c]);
     assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
@@ -9744,4 +9748,384 @@ fn test_role_enum_and_storage_helpers_roundtrip_and_persistence() {
     assert_eq!(read_back.len(), 2);
     assert!(read_back.contains(Role::Proposer));
     assert!(read_back.contains(Role::Executor));
+}
+
+// ─── Role Management via Governance: Creation Path ────────────────────────────
+// `create_grant_role_proposal` / `create_revoke_role_proposal` must store the
+// matching `ProposalKind`, validate exactly like the other governance creators,
+// and emit a `ProposalCreatedEvent`.
+
+/// Pulls the `ProposalCreatedEvent` out of the last invocation. Must be called
+/// immediately after the creating call: `events().all()` only reports events
+/// published by the most recent invocation.
+fn last_created_event(env: &Env, client: &AccordContractClient) -> ProposalCreatedEvent {
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let created = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(env);
+            topic == symbol_short!("created")
+        })
+        .expect("expected a 'created' event");
+    let data = match &created.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    data.into_val(env)
+}
+
+/// The id the next created proposal will receive. Instance storage is only
+/// reachable from inside the contract's own context.
+fn next_proposal_id(env: &Env, client: &AccordContractClient) -> u64 {
+    env.as_contract(&client.address, || read_next_id(env))
+}
+
+#[test]
+fn grant_role_proposal_stores_kind_and_emits_creation_event() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+    let role = Symbol::new(&env, "Viewer");
+
+    let id = client.create_grant_role_proposal(
+        &owner_a,
+        &non_owner,
+        &role,
+        &str(&env, "Grant Viewer"),
+        &DEADLINE,
+    );
+    let event = last_created_event(&env, &client);
+
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.id, id);
+    assert_eq!(proposal.proposer, owner_a);
+    assert_eq!(
+        proposal.kind,
+        ProposalKind::GrantRole(non_owner.clone(), role.clone())
+    );
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    assert_eq!(proposal.approvals, 0);
+    assert_eq!(proposal.approval_weight, 0);
+    // Quorum is snapshotted at creation, not read live at execution.
+    assert_eq!(proposal.quorum_weight, client.get_threshold());
+    assert_eq!(proposal.category, ProposalCategory::Other);
+    // Creating the proposal must not grant anything yet.
+    assert!(!client.has_role(&non_owner, &Role::Viewer));
+
+    assert_eq!(event.id, id);
+    assert_eq!(event.proposer, owner_a);
+    assert_eq!(event.threshold, client.get_threshold());
+    assert_eq!(event.quorum_weight, client.get_threshold());
+    assert_eq!(event.total_weight_at_creation, client.get_total_weight());
+    assert_eq!(event.category, ProposalCategory::Other);
+    assert!(event.transfers.is_empty());
+}
+
+#[test]
+fn revoke_role_proposal_stores_kind_and_emits_creation_event() {
+    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
+    // Owners hold the default role set, so `Executor` is live on owner_c.
+    assert!(client.has_role(&owner_c, &Role::Executor));
+    let role = Symbol::new(&env, "Executor");
+
+    let id = client.create_revoke_role_proposal(
+        &owner_a,
+        &owner_c,
+        &role,
+        &str(&env, "Revoke Executor"),
+        &DEADLINE,
+    );
+    let event = last_created_event(&env, &client);
+
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.id, id);
+    assert_eq!(proposal.proposer, owner_a);
+    assert_eq!(
+        proposal.kind,
+        ProposalKind::RevokeRole(owner_c.clone(), role.clone())
+    );
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    assert_eq!(proposal.quorum_weight, client.get_threshold());
+    // The role is still held: only execution may remove it.
+    assert!(client.has_role(&owner_c, &Role::Executor));
+    assert_eq!(client.get_role_members(&Role::Executor).len(), 3);
+
+    assert_eq!(event.id, id);
+    assert_eq!(event.proposer, owner_a);
+    assert_eq!(event.quorum_weight, client.get_threshold());
+    assert_eq!(event.total_weight_at_creation, client.get_total_weight());
+    assert_eq!(event.category, ProposalCategory::Other);
+    assert!(event.transfers.is_empty());
+
+    // Ids are handed out sequentially across both entrypoints.
+    let next = client.create_grant_role_proposal(
+        &owner_a,
+        &non_owner,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant Viewer"),
+        &DEADLINE,
+    );
+    assert_eq!(next, id + 1);
+}
+
+#[test]
+fn role_proposal_creation_rejects_duplicate_and_missing_role() {
+    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
+    grant_all_roles(&env, &client, &non_owner);
+
+    // Granting a role the target already holds.
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &Symbol::new(&env, "Approver"),
+            &str(&env, "Duplicate grant"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::RoleAlreadyGranted))
+    );
+    // Revoking a role the target does not hold.
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &non_owner,
+            &Symbol::new(&env, "Viewer"),
+            &str(&env, "Missing revoke"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::RoleNotGranted))
+    );
+    // An unparseable role symbol is rejected before anything is stored.
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &Symbol::new(&env, "NotARole"),
+            &str(&env, "Bad role"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidRole))
+    );
+    // A rejected creation must not consume a proposal id.
+    assert_eq!(
+        next_proposal_id(&env, &client),
+        client.create_grant_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Viewer"),
+            &str(&env, "Grant Viewer"),
+            &DEADLINE,
+        )
+    );
+    assert!(!client.has_role(&non_owner, &Role::Viewer));
+}
+
+/// Both role creators must reject the same inputs, with the same errors, as
+/// `create_change_threshold_proposal` — the entrypoint they are specified to
+/// mirror.
+#[test]
+fn role_proposal_validation_matches_governance_entrypoints() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
+    let grant_role = || Symbol::new(&env, "Viewer");
+    let desc = || str(&env, "Grant Viewer");
+    let long_desc = "a".repeat(MAX_DESCRIPTION_LEN as usize + 1);
+    let too_far = NOW + MAX_PROPOSAL_DURATION + 1;
+
+    // Missing Proposer role.
+    clear_roles(&env, &client, &owner_c);
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_c,
+            &non_owner,
+            &grant_role(),
+            &desc(),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_c,
+            &owner_a,
+            &Symbol::new(&env, "Executor"),
+            &desc(),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    grant_all_roles(&env, &client, &owner_c);
+
+    // Empty description.
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &grant_role(),
+            &str(&env, ""),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::EmptyDescription))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &str(&env, ""),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::EmptyDescription))
+    );
+
+    // Over-long description.
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &grant_role(),
+            &str(&env, &long_desc),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::DescriptionTooLong))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &str(&env, &long_desc),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::DescriptionTooLong))
+    );
+
+    // Deadline not in the future.
+    assert_eq!(
+        client.try_create_grant_role_proposal(&owner_a, &non_owner, &grant_role(), &desc(), &NOW),
+        Err(Ok(ContractError::InvalidDeadline))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &desc(),
+            &NOW,
+        ),
+        Err(Ok(ContractError::InvalidDeadline))
+    );
+
+    // Deadline beyond MAX_PROPOSAL_DURATION: `InvalidDuration`, exactly as
+    // `create_change_threshold_proposal` reports it.
+    assert_eq!(
+        client.try_create_change_threshold_proposal(&owner_a, &3, &desc(), &too_far),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &grant_role(),
+            &desc(),
+            &too_far,
+        ),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &desc(),
+            &too_far,
+        ),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+
+    // Nothing above was stored.
+    assert_eq!(next_proposal_id(&env, &client), 1);
+
+    // Frozen contract: the role check still runs first.
+    freeze_with_new_guardian(
+        &env,
+        &client,
+        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
+    );
+    assert!(client.is_frozen());
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &grant_role(),
+            &desc(),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &desc(),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(next_proposal_id(&env, &client), 1);
+}
+
+#[test]
+fn role_proposal_creation_enforces_active_proposal_cap() {
+    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
+    for i in 0..MAX_ACTIVE_PROPOSALS {
+        let id = if i % 2 == 0 {
+            client.create_grant_role_proposal(
+                &owner_a,
+                &non_owner,
+                &Symbol::new(&env, "Viewer"),
+                &str(&env, &format!("Grant {}", i)),
+                &DEADLINE,
+            )
+        } else {
+            client.create_revoke_role_proposal(
+                &owner_a,
+                &owner_c,
+                &Symbol::new(&env, "Executor"),
+                &str(&env, &format!("Revoke {}", i)),
+                &DEADLINE,
+            )
+        };
+        assert_eq!(id, i as u64 + 1);
+    }
+
+    // The 51st active proposal is rejected for both entrypoints.
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_a,
+            &non_owner,
+            &Symbol::new(&env, "Viewer"),
+            &str(&env, "51st"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::TooManyActiveProposals))
+    );
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_c,
+            &Symbol::new(&env, "Executor"),
+            &str(&env, "51st"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::TooManyActiveProposals))
+    );
+    assert_eq!(
+        next_proposal_id(&env, &client),
+        MAX_ACTIVE_PROPOSALS as u64 + 1
+    );
 }

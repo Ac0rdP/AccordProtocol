@@ -3744,7 +3744,18 @@ impl AccordContract {
         }
 
         validate_description(&description)?;
-        validate_deadline(&env, deadline)?;
+        // Inlined rather than using `validate_deadline` so the too-far case
+        // reports `InvalidDuration`, matching every other proposal-creation
+        // entrypoint (`create_change_threshold_proposal` and friends) and the
+        // documented error table. `validate_deadline` collapses both cases into
+        // `InvalidDeadline`.
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
@@ -3825,7 +3836,16 @@ impl AccordContract {
         }
 
         validate_description(&description)?;
-        validate_deadline(&env, deadline)?;
+        // Mirrors `create_grant_role_proposal`: `InvalidDuration` for a
+        // deadline beyond `MAX_PROPOSAL_DURATION`, matching the other
+        // proposal-creation entrypoints and the documented error table.
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
