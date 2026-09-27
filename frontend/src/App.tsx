@@ -21,9 +21,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
-import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
-import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
@@ -44,7 +42,7 @@ type OptimisticPatch = {
 export default function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
-  const [showRoleManagement, setShowRoleManagement] = useState(false);
+  const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
@@ -502,7 +500,7 @@ export default function App() {
                   ownerAddresses={ownerAddresses}
                   threshold={threshold}
                   totalOwners={owners.length}
-                  onManageRole={() => setShowRoleManagement(true)}
+                  onManageRoles={setRoleModalTarget}
                 />
               }
             />
@@ -530,12 +528,13 @@ export default function App() {
           triggerRef={recurringButtonRef}
         />
       )}
-      {showRoleManagement && (
+      {roleModalTarget && (
         <GrantRevokeRoleModal
           walletAddress={wallet.address}
           ownerAddresses={ownerAddresses}
           threshold={threshold}
-          onClose={() => setShowRoleManagement(false)}
+          initialTargetAddress={roleModalTarget}
+          onClose={() => setRoleModalTarget(null)}
           onSubmitted={refresh}
         />
       )}

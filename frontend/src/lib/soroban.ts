@@ -24,13 +24,32 @@ export function displayToStroops(value: number): bigint {
   return BigInt(Math.round(value * 10_000_000));
 }
 
-export function weightToPercent(weight: number, totalWeight: number): number {
-  if (totalWeight === 0) return 0;
-  return (weight / totalWeight) * 100;
+export type PermissionAction = "create" | "approve" | "execute";
+
+const ACTION_LABELS: Record<PermissionAction, string> = {
+  create: "Creating proposals",
+  approve: "Approving proposals",
+  execute: "Executing proposals",
+};
+
+export function canCreate(roles: readonly string[]): boolean {
+  return roles.includes("Proposer");
 }
 
-export function formatWeightPercent(weight: number, totalWeight: number): string {
-  return `${weightToPercent(weight, totalWeight).toFixed(1)}%`;
+export function canApprove(roles: readonly string[]): boolean {
+  return roles.includes("Approver");
+}
+
+export function canExecute(roles: readonly string[]): boolean {
+  return roles.includes("Executor");
+}
+
+export function missingRoleTooltip(action: PermissionAction): string {
+  const roleReq = 
+    action === "create" ? "Proposer" :
+    action === "approve" ? "Approver" :
+    action === "execute" ? "Executor" : "required";
+  return `${ACTION_LABELS[action]} requires the ${roleReq} role.`;
 }
 
 const CONTRACT_ERRORS: Record<string, string> = {
@@ -159,6 +178,17 @@ export function formatPercent(value: number, fractionDigits = 1): string {
   if (!Number.isFinite(value) || !Number.isInteger(fractionDigits) || fractionDigits < 0 || fractionDigits > 100) return "—";
   const rounded = value.toFixed(fractionDigits);
   return `${Number(rounded) === 0 ? (0).toFixed(fractionDigits) : rounded}%`;
+}
+
+export function weightToPercent(weight: number, totalWeight: number): number {
+  if (!Number.isFinite(weight) || !Number.isFinite(totalWeight) || totalWeight <= 0) {
+    return 0;
+  }
+  return (weight / totalWeight) * 100;
+}
+
+export function formatWeightPercent(weight: number, totalWeight: number, fractionDigits = 1): string {
+  return formatPercent(weightToPercent(weight, totalWeight), fractionDigits);
 }
 
 /** Numeric timestamps are Unix seconds; strings are ISO dates. Always render UTC. */

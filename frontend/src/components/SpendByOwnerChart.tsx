@@ -80,6 +80,11 @@ export function SpendByOwnerChart({
         <p className="text-xs text-zinc-500 mt-0.5">
           Treasury activity and total spend driven per owner address
         </p>
+        <p className="sr-only">
+          {data.length
+            ? `Owner spend chart with ${data.length} owners. ${data.map((row) => `${row.owner}: ${row.total.toFixed(2)} across ${row.count} transactions`).join("; ")}.`
+            : "No owner spend data is available."}
+        </p>
       </div>
 
       <AnalyticsSectionState
@@ -89,7 +94,11 @@ export function SpendByOwnerChart({
         emptyMessage="No spend data available by proposing owner for the selected filters."
         onRetry={onRetry}
       >
-        <div className="w-full h-56">
+        <div
+          className="w-full h-56"
+          role="img"
+          aria-label={`Spend by proposing owner chart with ${data.length} owners`}
+        >
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={data}
@@ -130,7 +139,7 @@ export function SpendByOwnerChart({
         <ul className="mt-4 space-y-1 divide-y divide-zinc-800/40">
           {data.map((row, i) => (
             <li
-              key={row.owner}
+              key={`${row.owner}-${i}`}
               className="flex items-center gap-2 pt-1 text-xs"
             >
               <span

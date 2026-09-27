@@ -1,16 +1,15 @@
 export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
 
 export type Role =
-  | "owner"
-  | "admin"
-  | "guardian"
-  | "manager"
-  | "operator"
-  | "viewer";
+  | "Owner"
+  | "Viewer"
+  | "Guardian"
+  | "SpendingLimit"
+  | "Proposer"
+  | "Approver"
+  | "Executor";
 
 export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
-
-export type ProposalRole = "Owner";
 
 export type ProposalKind =
   | "transfer"
@@ -19,6 +18,8 @@ export type ProposalKind =
   | "change_threshold"
   | "set_spending_limit"
   | "change_owner_weight"
+  | "grant_role"
+  | "revoke_role"
   | "recurring";
 
 export type Proposal = {
@@ -26,6 +27,8 @@ export type Proposal = {
   kind: ProposalKind;
   to: string;
   amount: string;
+  /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
+  rawAmount?: string;
   token: string;
   description: string;
   approvals: number;
@@ -47,13 +50,10 @@ export type Proposal = {
 
 export type Owner = {
   address: string;
+  fullAddress: string;
   label: string;
+  roles: Role[];
   weight?: number;
-};
-
-export type OwnerWeight = {
-  address: string;
-  weight: number;
 };
 
 export type DashboardStat = {
@@ -185,6 +185,19 @@ export type TreasuryBalance = {
   timeSeries?: AnalyticsTimeSeriesPoint[];
 };
 
+/** An indexed treasury balance snapshot. `timestamp` is Unix seconds. */
+export type BalanceSnapshot = {
+  timestamp: number;
+  balances: Record<string, AnalyticsAmount>;
+};
+
+/** An indexed treasury deposit (inflow). `timestamp` is Unix seconds. */
+export type TreasuryDeposit = {
+  timestamp: number;
+  token: string;
+  amount: AnalyticsAmount;
+};
+
 export type CategorySpendBucket = {
   category: ProposalCategory;
   token: string;
@@ -211,6 +224,7 @@ export type TreasuryFlowBucket = {
 
 export type TreasurySummary = {
   totalDisbursed: Record<string, AnalyticsAmount>;
+  totalInflows: Record<string, AnalyticsAmount>;
   activeProposals: number;
   ownerCount: number;
   largestOutflow: { token: string; amount: AnalyticsAmount } | null;
@@ -234,4 +248,40 @@ export type TreasuryAnalytics = {
   spendByCategory: CategorySpendBucket[];
   spendByOwner: OwnerSpendBucket[];
   flow: TreasuryFlowBucket[];
+};
+
+export type AnalyticsApiErrorCode =
+  | "VALIDATION_ERROR"
+  | "INVALID_PARAMETER"
+  | "NOT_FOUND"
+  | "INTERNAL_ERROR"
+  | "BAD_REQUEST";
+
+export type AnalyticsApiErrorDetail = {
+  field?: string;
+  message: string;
+  code?: string;
+};
+
+export type AnalyticsApiErrorResponse = {
+  error: {
+    code: AnalyticsApiErrorCode | string;
+    message: string;
+    details?: AnalyticsApiErrorDetail[];
+  };
+};
+
+export type ParsedAnalyticsQuery = {
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+  category?: ProposalCategory;
+  owner?: string;
+  status?: ProposalStatus;
+  limit: number;
+  offset: number;
+  sort: "deadline" | "amount" | "createdAt";
+  order: "asc" | "desc";
+  granularity?: AnalyticsGranularity;
+  timeSeries?: boolean;
 };

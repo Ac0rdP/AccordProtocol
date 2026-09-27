@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:analytics": "vitest run src/lib/analytics.test.ts src/lib/__tests__/analytics* src/components/SpendByCategoryChart.test.tsx src/components/SpendByOwnerChart.test.tsx src/components/TreasuryBalanceChart.test.tsx src/components/StatCard.test.tsx src/components/AnalyticsSectionState.test.tsx",
     "e2e": "playwright test",
     "test:e2e": "vite preview --port 5173 & playwright test"
   },

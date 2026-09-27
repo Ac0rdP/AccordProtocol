@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getOwners,
+  getRoles,
   getProposalsPaged,
   getThreshold,
   getTotalWeight,
@@ -92,17 +93,26 @@ export function useContract(walletAddress: string | null): ContractState {
           })
         );
 
+        const ownerRoles = await Promise.all(
+          ownerAddrs.map((addr: string) => getRoles(addr, ownerAddrs))
+        );
+
         if (cancelled) return;
 
         setProposals(proposalsWithApproval);
         setOwnerAddresses(ownerAddrs);
         const ownerWeights = await Promise.all(
-          ownerAddrs.map(async (addr) => { const w = await getOwnerWeight(addr); return Number(w); })
+          ownerAddrs.map(async (addr: string) => {
+            const w = await getOwnerWeight(addr);
+            return Number(w);
+          })
         );
         setOwners(
-          ownerAddrs.map((addr, i) => ({
+          ownerAddrs.map((addr: string, i: number) => ({
             address: `${addr.slice(0, 6)}...${addr.slice(-4)}`,
+            fullAddress: addr,
             label: addr === walletAddress ? "You" : `Signer ${i + 1}`,
+            roles: ownerRoles[i] ?? [],
             weight: ownerWeights[i] ?? 0,
           }))
         );

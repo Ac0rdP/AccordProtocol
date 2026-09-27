@@ -4,11 +4,17 @@ import {
   buildExportFilename,
   buildSpendCsv,
   buildTreasuryCsv,
+  computeProposalActivityMetrics,
   computeSpendByCategory,
   computeSpendByOwner,
   computeTreasuryFlow,
+  computeTreasurySummary,
+  computeProposalActivity,
+  fetchTreasurySummary,
   DEFAULT_ANALYTICS_FILTERS,
+  enrichWithShares,
   filterExecutedTransfers,
+  formatShare,
 } from "./analytics";
 
 
@@ -63,10 +69,12 @@ describe("computeSpendByCategory", () => {
       makeProposal({ id: 3, category: "Payroll", amount: "500" }),
     ];
 
-    expect(computeSpendByCategory(proposals)).toEqual([
-      { category: "Payroll", total: 500, count: 1 },
-      { category: "Grant", total: 150, count: 2 },
-    ]);
+    const result = computeSpendByCategory(proposals);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ category: "Payroll", total: 500, count: 1 });
+    expect(result[0].share).toBeCloseTo((500 / 650) * 100);
+    expect(result[1]).toMatchObject({ category: "Grant", total: 150, count: 2 });
+    expect(result[1].share).toBeCloseTo((150 / 650) * 100);
   });
 
   test("buckets undefined category as 'Other' and ignores unparseable amounts", () => {
@@ -75,8 +83,17 @@ describe("computeSpendByCategory", () => {
       makeProposal({ id: 2, category: undefined, amount: "-" }),
     ];
 
+    const result = computeSpendByCategory(proposals);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ category: "Other", total: 25, count: 2 });
+    expect(result[0].share).toBeCloseTo(100);
+  });
+
+  test("returns zero shares when the grand total is zero", () => {
+    const proposals = [makeProposal({ id: 1, category: "Grant", amount: "-" })];
+
     expect(computeSpendByCategory(proposals)).toEqual([
-      { category: "Other", total: 25, count: 2 },
+      { category: "Grant", total: 0, count: 1, share: 0 },
     ]);
   });
 
@@ -100,8 +117,8 @@ describe("computeTreasuryFlow", () => {
     ];
 
     expect(computeTreasuryFlow(proposals)).toEqual([
-      { period: "2026-01", outflow: 150, cumulative: 150 },
-      { period: "2026-02", outflow: 25, cumulative: 175 },
+      { period: "2026-01", inflow: 0, outflow: 150, cumulative: 150 },
+      { period: "2026-02", inflow: 0, outflow: 25, cumulative: 175 },
     ]);
   });
 
@@ -162,6 +179,39 @@ describe("buildTreasuryCsv", () => {
   });
 });
 
+describe("enrichWithShares", () => {
+  test("computes percentage share for each category", () => {
+    const rows = [
+      { category: "Grant", total: 600, count: 3 },
+      { category: "Payroll", total: 300, count: 2 },
+      { category: "Ops", total: 100, count: 1 },
+    ];
+    const result = enrichWithShares(rows);
+    expect(result[0].share).toBeCloseTo(60);
+    expect(result[1].share).toBeCloseTo(30);
+    expect(result[2].share).toBeCloseTo(10);
+  });
+
+  test("returns 0 share for all rows when grand total is 0", () => {
+    const rows = [{ category: "Grant", total: 0, count: 1 }];
+    const result = enrichWithShares(rows);
+    expect(result[0].share).toBe(0);
+  });
+
+  test("returns an empty array for empty input", () => {
+    expect(enrichWithShares([])).toEqual([]);
+  });
+});
+
+describe("formatShare", () => {
+  test("formats to one decimal place with % suffix", () => {
+    expect(formatShare(60)).toBe("60.0%");
+    expect(formatShare(33.333)).toBe("33.3%");
+    expect(formatShare(0)).toBe("0.0%");
+    expect(formatShare(100)).toBe("100.0%");
+  });
+});
+
 describe("computeSpendByOwner", () => {
   test("sums amounts and counts per owner address, sorted by total descending", () => {
     const proposals = [
@@ -191,4 +241,172 @@ describe("computeSpendByOwner", () => {
   });
 });
 
-// TODO: Add tests for the analytics HTTP API covering both successful responses and rejected input.
+describe("computeTreasurySummary", () => {
+  test("aggregates executed transfers, active proposals, owner count, and largest outflow", () => {
+    const proposals = [
+      makeProposal({ id: 1, kind: "transfer", amount: "100", token: "XLM", status: "executed" }),
+      makeProposal({ id: 2, kind: "transfer", amount: "500", token: "XLM", status: "executed" }),
+      makeProposal({ id: 3, kind: "transfer", amount: "50", token: "USDC", status: "executed" }),
+      makeProposal({ id: 4, kind: "transfer", amount: "1000", token: "XLM", status: "pending" }),
+      makeProposal({ id: 5, kind: "add_owner", amount: "-", token: "XLM", status: "ready" }),
+    ];
+
+    const summary = computeTreasurySummary(proposals, 3);
+    expect(summary).toEqual({
+      totalDisbursed: {
+        XLM: "600",
+        USDC: "50",
+      },
+      totalInflows: {},
+      activeProposals: 2,
+      ownerCount: 3,
+      largestOutflow: {
+        token: "XLM",
+        amount: "500",
+      },
+    });
+  });
+
+  test("handles empty proposals cleanly", () => {
+    const summary = computeTreasurySummary([], 2);
+    expect(summary).toEqual({
+      totalDisbursed: {},
+      totalInflows: {},
+      activeProposals: 0,
+      ownerCount: 2,
+      largestOutflow: null,
+    });
+  });
+});
+
+describe("computeProposalActivity", () => {
+  test("computes created and executed counts per day", () => {
+    const proposals = [
+      makeProposal({
+        id: 1,
+        status: "executed",
+        createdAt: "2026-09-01T10:00:00Z",
+        executedAt: "2026-09-02T12:00:00Z",
+      }),
+      makeProposal({
+        id: 2,
+        status: "pending",
+        createdAt: "2026-09-01T11:00:00Z",
+      }),
+      makeProposal({
+        id: 3,
+        status: "executed",
+        createdAt: "2026-09-02T08:00:00Z",
+        executedAt: "2026-09-02T16:00:00Z",
+      }),
+    ];
+
+    const result = computeProposalActivity(proposals, "day");
+    expect(result).toEqual([
+      { period: "2026-09-01", created: 2, executed: 0 },
+      { period: "2026-09-02", created: 1, executed: 2 },
+    ]);
+  });
+
+  test("aggregates by month when requested", () => {
+    const proposals = [
+      makeProposal({
+        id: 1,
+        status: "executed",
+        createdAt: "2026-08-15T10:00:00Z",
+        executedAt: "2026-09-01T12:00:00Z",
+      }),
+      makeProposal({
+        id: 2,
+        status: "executed",
+        createdAt: "2026-09-05T10:00:00Z",
+        executedAt: "2026-09-10T12:00:00Z",
+      }),
+    ];
+
+    const result = computeProposalActivity(proposals, "month");
+    expect(result).toEqual([
+      { period: "2026-08", created: 1, executed: 0 },
+      { period: "2026-09", created: 1, executed: 2 },
+    ]);
+  });
+
+  test("returns empty array for empty proposals", () => {
+    expect(computeProposalActivity([])).toEqual([]);
+  });
+});
+
+describe("computeProposalActivityMetrics", () => {
+  test("counts created/executed and averages time-to-execute", () => {
+    const proposals = [
+      makeProposal({
+        id: 1,
+        status: "executed",
+        createdAt: "2026-09-01T10:00:00Z",
+        executedAt: "2026-09-01T12:00:00Z",
+      }),
+      makeProposal({
+        id: 2,
+        status: "pending",
+        createdAt: "2026-09-01T11:00:00Z",
+      }),
+      makeProposal({
+        id: 3,
+        status: "executed",
+        createdAt: "2026-09-02T08:00:00Z",
+        executedAt: "2026-09-02T12:00:00Z",
+      }),
+    ];
+
+    const metrics = computeProposalActivityMetrics(proposals);
+    expect(metrics.created).toBe(3);
+    expect(metrics.executed).toBe(2);
+    // (2h + 4h) / 2 = 3h in ms
+    expect(metrics.avgTimeToExecuteMs).toBeCloseTo(3 * 3_600_000);
+  });
+
+  test("supports filtering by category", () => {
+    const proposals = [
+      makeProposal({
+        id: 1,
+        status: "executed",
+        category: "Grant",
+        createdAt: "2026-09-01T10:00:00Z",
+        executedAt: "2026-09-01T12:00:00Z",
+      }),
+      makeProposal({
+        id: 2,
+        status: "executed",
+        category: "Payroll",
+        createdAt: "2026-09-01T10:00:00Z",
+        executedAt: "2026-09-01T14:00:00Z",
+      }),
+    ];
+
+    const grant = computeProposalActivityMetrics(proposals, "Grant");
+    expect(grant).toEqual({
+      created: 1,
+      executed: 1,
+      avgTimeToExecuteMs: 2 * 3_600_000,
+    });
+
+    const ops = computeProposalActivityMetrics(proposals, "Ops");
+    expect(ops).toEqual({ created: 0, executed: 0, avgTimeToExecuteMs: null });
+  });
+
+  test("returns null average when no executed proposal is measurable", () => {
+    const metrics = computeProposalActivityMetrics([
+      makeProposal({ id: 1, status: "pending" }),
+    ]);
+    expect(metrics).toEqual({
+      created: 1,
+      executed: 0,
+      avgTimeToExecuteMs: null,
+    });
+    expect(
+      computeProposalActivityMetrics([]),
+    ).toEqual({ created: 0, executed: 0, avgTimeToExecuteMs: null });
+  });
+});
+
+

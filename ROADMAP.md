@@ -138,6 +138,32 @@ The project is actively working toward **v0.2.0** (below). Open issues for this 
 
 ---
 
+## v0.6.0 — Treasury analytics
+
+**Theme:** Give owners and stakeholders a historical, aggregate view of treasury activity — spend by category and owner, balance trends, and inflow/outflow — backed by an off-chain indexer so those queries don't require re-reading every proposal on every page load.
+
+**Targeted features:**
+
+- Off-chain indexer that reads Accord contract events from Soroban RPC, decodes them, and persists them with a resumable, replay-safe checkpoint
+- Analytics HTTP API (`GET /proposals`, `/proposals/:id`, `/spend/by-category`, `/spend/by-owner`, `/treasury/balance`, `/treasury/flow`, `/stats/summary`) with standardized query parameters and error responses
+- Treasury Analytics frontend page: stat cards, spend-by-category and spend-by-owner charts, treasury outflow trend, date/category/owner filters, and CSV/PDF export
+- Documentation covering the indexer architecture, the analytics API reference, and a user-facing guide
+
+**Acceptance criteria:**
+
+- [ ] Indexer persists a checkpoint and resumes from it after a restart without re-processing already-ingested ledgers
+- [ ] Replaying an already-indexed ledger range produces no duplicate records (idempotent writes)
+- [ ] All seven analytics endpoints are implemented, validate query parameters per the standardized rules, and return the documented error format
+- [ ] Analytics page renders stat cards, both spend charts, and the treasury flow chart, with working filters and CSV/PDF export
+- [ ] Architecture doc covers the indexer's data flow, datastore schema, and checkpointing ([ARCHITECTURE.md §13](./docs/ARCHITECTURE.md#13-indexer--analytics-architecture))
+- [ ] Analytics API reference documents every endpoint and event payload schema ([ANALYTICS_API.md](./docs/ANALYTICS_API.md))
+- [ ] User guide and glossary cover the analytics page and indexer terminology ([treasury-analytics.md](./docs/guides/treasury-analytics.md), [GLOSSARY.md](./docs/GLOSSARY.md))
+- [ ] Frontend lint, build, and tests pass (`npm run lint && npm run build`)
+
+**Docs:** [Indexer & Analytics Architecture](./docs/ARCHITECTURE.md#13-indexer--analytics-architecture) · [Analytics API Reference](./docs/ANALYTICS_API.md) · [Treasury Analytics guide](./docs/guides/treasury-analytics.md)
+
+---
+
 ## v1.0.0 — Mainnet launch
 
 **Theme:** Ship a production-grade, audited multisig treasury system ready for real funds on Stellar mainnet.

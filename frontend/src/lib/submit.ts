@@ -6,12 +6,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type {
-  Proposal,
-  ProposalCategory,
-  ProposalRole,
-  ProposalStatus,
-} from "../types/accord";
+import type { Proposal, ProposalCategory, ProposalStatus, Role } from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 import { signTx } from "./wallet";
 
@@ -551,24 +546,17 @@ export async function estimateCreateProposalFee(
   ]);
 }
 
-function assertSupportedRole(role: ProposalRole): void {
-  if (role !== "Owner") {
-    throw new Error(`Unsupported role: ${role}`);
-  }
-}
-
 export async function createGrantRoleProposal(
   callerAddress: string,
   targetAddress: string,
-  role: ProposalRole,
+  role: Role,
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_add_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_grant_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
@@ -577,15 +565,14 @@ export async function createGrantRoleProposal(
 export async function createRevokeRoleProposal(
   callerAddress: string,
   targetAddress: string,
-  role: ProposalRole,
+  role: Role,
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_remove_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_revoke_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);

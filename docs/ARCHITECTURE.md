@@ -751,10 +751,12 @@ The contract address plus one topic string together uniquely identify a stream o
 
 | Topics          | Data Type                                                      | Consumer            |
 | --------------- | -------------------------------------------------------------- | ------------------- |
-| `("created",)`  | `ProposalCreatedEvent { id, proposer, to, amount, threshold }` | Proposal feed       |
+| `("created",)`  | `ProposalCreatedEvent { id, proposer, threshold, category, transfers, quorum_weight, total_weight_at_creation }` | Proposal feed       |
 | `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold, weight, cumulative_weight }` | Approval bar update |
 | `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals, weight, cumulative_weight }`             | Approval bar update |
-| `("executed",)` | `ProposalExecutedEvent { id, executor, to, amount }`           | Execution history   |
+| `("executed",)` | `ProposalExecutedEvent { id, executor, transfers }`             | Execution history   |
+
+These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 
 ### Indexing Accord Events
 
@@ -855,7 +857,9 @@ The same panel also serves as a diagnostic tool: if an execute call fails with `
 | [DESIGN.md](DESIGN.md)                                                    | Design decisions — why the protocol is built the way it is     |
 | [docs/guides/connecting-your-wallet.md](guides/connecting-your-wallet.md) | End-user guide: Freighter setup and Testnet funding            |
 | [docs/guides/reading-the-dashboard.md](guides/reading-the-dashboard.md)   | End-user guide: proposal list, status badges, and approval bar |
+| [docs/guides/treasury-analytics.md](guides/treasury-analytics.md)        | End-user guide: analytics charts, filters, and exports          |
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
+| [ANALYTICS_API.md](ANALYTICS_API.md)                                      | Analytics HTTP API and indexed event schema reference          |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
 
 ## 12. Owner-Authorization Check Resource Cost
@@ -927,6 +931,160 @@ MemAlloc                           88299          46535
 No follow-up action is required. The owner-map lookup does not pose a resource-limit risk, and the headroom is sufficient for the rest of each entrypoint's business logic.
 
 > **Note**: These measurements were obtained running Rust natively in test mode (not compiled to WASM). Soroban SDK's own documentation notes that CPU and memory costs are *likely to be underestimated* when running natively compared to actual WASM execution. The true WASM costs may be higher, but given the large headroom (less than 1% of limits), this margin of error does not change the conclusion.
+
+## 13. Indexer & Analytics Architecture
+
+Section 7 explains why standard RPC nodes only retain events for a limited window and recommends a dedicated indexer for anything that needs longer history — auditing, dashboards, and the treasury analytics page. This section documents the reference design for that indexer and the analytics layer built on top of it: the end-to-end data flow, the datastore schema, checkpointing and replay safety, and how each indexed record maps back to a contract-emitted event.
+
+This is the architecture the analytics HTTP contract in [ANALYTICS_API.md](ANALYTICS_API.md) is built against. The frontend's analytics client, hooks, and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/hooks/useTreasuryAnalytics.ts`, `frontend/src/types/accord.ts`) already implement the consuming side of this contract — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for that integration's current status. Until the indexer service lands, the Analytics page (`frontend/src/pages/AnalyticsPage.tsx`) computes the same charts and totals directly from proposals read over Soroban RPC (see [§13.6](#136-relationship-to-direct-rpc-reads)).
+
+### 13.1 Data Flow
+
+```text
+┌───────────────────────────┐
+│  Accord Contract          │
+│  emits events on every    │
+│  create/approve/execute/  │
+│  governance/recurring call│
+└─────────────┬─────────────┘
+              │ env.events().publish((topic,), data)
+              ▼
+┌───────────────────────────┐
+│  Soroban RPC getEvents     │
+│  filtered by contract ID   │
+│  paginated by startLedger  │
+└─────────────┬─────────────┘
+              │ (1) poll from last checkpoint
+              ▼
+┌───────────────────────────┐
+│  Indexer: Fetch            │
+│  reads events since the    │
+│  last processed ledger     │
+└─────────────┬─────────────┘
+              │ (2) raw ScVal event
+              ▼
+┌───────────────────────────┐
+│  Indexer: Decode           │
+│  ScVal → typed event record│
+│  (topic ⇒ Rust event type) │
+└─────────────┬─────────────┘
+              │ (3) typed record
+              ▼
+┌───────────────────────────┐
+│  Indexer: Persist          │
+│  upsert into the events    │
+│  table, keyed so replays   │
+│  can't duplicate a row     │
+└─────────────┬─────────────┘
+              │ (4) new/changed rows
+              ▼
+┌───────────────────────────┐
+│  Indexer: Aggregate        │
+│  update materialized       │
+│  proposals, balances, and  │
+│  spend/flow rollups        │
+└─────────────┬─────────────┘
+              │ (5) advance checkpoint
+              ▼
+┌───────────────────────────┐
+│  Datastore                 │
+│  events · proposals ·      │
+│  balances · spend rollups  │
+│  · checkpoints             │
+└─────────────┬─────────────┘
+              │ (6) SQL/query reads
+              ▼
+┌───────────────────────────┐
+│  Analytics API             │
+│  GET /proposals, /spend/*, │
+│  /treasury/*, /stats/*     │
+│  (see ANALYTICS_API.md)    │
+└─────────────┬─────────────┘
+              │ (7) JSON over HTTP
+              ▼
+┌───────────────────────────┐
+│  Frontend Analytics Page   │
+│  charts, stat cards,       │
+│  CSV/PDF export            │
+└───────────────────────────┘
+```
+
+Steps 1–4 run continuously on a poll loop (the same `startLedger`-driven pagination described in [§7 — Indexing Accord Events](#indexing-accord-events)); step 4's aggregation is derived from the raw event log rather than incremented independently, so an aggregate can always be rebuilt by replaying steps 1–4 from ledger zero. Step 5 only advances after steps 3 and 4 both commit, which is what makes a crash mid-batch safe to resume (see [§13.3](#133-checkpointing-resume-and-idempotency)).
+
+### 13.2 Datastore Schema
+
+| Table / collection | Holds | Key relationships |
+| --- | --- | --- |
+| `events` | The raw, decoded event log — one row per emitted event, in emission order. Fields: `contract_id`, `ledger`, `tx_hash`, `event_index`, `topic`, `occurred_at` (ledger close time), and `data` (the decoded event payload, shaped per [§13.4](#134-event-type-to-storage-mapping)). | The append-only source of truth. Every other table is a materialized view derived from `events` and can be rebuilt from it. `data.id` / `data.schedule_id` links a row to a `proposals` or `recurring_schedules` row where applicable. |
+| `proposals` | One row per proposal, materialized by folding a proposal's `created` → `approved`/`revoked` → `executed`/expiry events into the current view the API returns from `GET /proposals` and `GET /proposals/:id`. Mirrors the on-chain `Proposal` fields (§3) plus derived fields (`createdAt`, `executedAt`) that only exist as event timestamps, not contract storage. | Keyed by `(contract_id, proposal_id)`. `timeline` in `AnalyticsProposalDetail` is the ordered slice of `events` rows for that proposal ID. |
+| `recurring_schedules` | One row per recurring payment schedule, materialized the same way from `r_crt` / `rpay` / `r_pause` / `r_resum` / `r_mod` / `r_cncl` events, mirroring the on-chain `RecurringPayment` struct (§6.1). | Keyed by `(contract_id, schedule_id)`. Feeds spend rollups the same way executed transfers do. |
+| `treasury_balance_snapshots` | Point-in-time token balances, one row per `(token, timestamp)`, recomputed whenever an executed transfer or recurring disbursement changes the contract's holdings. Backs `TreasuryBalance.timeSeries` and `GET /treasury/balance`. | Derived from `events` (transfer/disbursement rows), not read from the token contract directly — see [§13.6](#136-relationship-to-direct-rpc-reads) for why the current frontend reads balances on-chain instead. |
+| `spend_by_category` / `spend_by_owner` | Aggregation buckets over executed transfers only (governance actions carry no monetary amount) grouped by `ProposalCategory` or proposer address, with running totals, counts, and percentage `share`. Backs `GET /spend/by-category` / `GET /spend/by-owner`. | Derived from `proposals` rows where `status = executed` and `kind = transfer`, matching the same filter the frontend already applies client-side in `filterExecutedTransfers` (`frontend/src/lib/analytics.ts`). |
+| `treasury_flow` | Per-period (day/week/month, per `granularity`) inflow and outflow totals per token. Backs `GET /treasury/flow`. | Derived from `events`, bucketed by the `occurred_at` of each executed transfer/disbursement. |
+| `checkpoints` | One row per indexed contract, storing the last successfully processed ledger sequence and the timestamp it was recorded. | Read on indexer startup to resume; written only after a batch's `events` rows and aggregate updates both commit (§13.3). |
+
+### 13.3 Checkpointing, Resume, and Idempotency
+
+**Checkpoint.** A checkpoint is the ledger sequence number through which the indexer has fully processed events — conceptually the same cursor the frontend keeps client-side as `lastSeenLedger` in `useEventPolling` (`frontend/src/hooks/useEventPolling.ts`), except the indexer persists its checkpoint to the `checkpoints` table instead of holding it only in memory.
+
+**Resume.** On startup (or after any crash or deploy), the indexer reads its last checkpoint and calls `getEvents` with `startLedger = checkpoint + 1`, so it never re-scans ledgers it has already fully committed and never skips a ledger it hasn't. A fresh indexer with no checkpoint row starts from the contract's deployment ledger (or the oldest ledger the configured RPC/archival node retains — see [Event Availability](#event-availability)).
+
+**Idempotency.** Every row written to `events` is keyed by the natural tuple `(contract_id, ledger, tx_hash, event_index)`, which is unique and immutable by construction — Soroban assigns it once at emission and it never changes on replay. Persisting a batch is therefore an *upsert* on that key, not a blind insert: reprocessing a ledger range the indexer already ingested (because a batch was retried after a crash before its checkpoint was written, for example) writes the same rows again and changes nothing. This is what the indexer idempotency test (`frontend/src/lib/__tests__/contract-events.test.ts`) verifies — replaying a ledger range produces no duplicate records.
+
+**Why replaying is safe.** Two properties make replay safe rather than merely harmless:
+
+1. **The raw event log is immutable and content-addressed.** Once `(contract_id, ledger, tx_hash, event_index)` is written, re-writing the same key with the same payload is a no-op by definition — Soroban ledger history doesn't change after the fact, so the same query against the same ledger range always returns the same events.
+2. **Aggregates are recomputed, not incremented.** `proposals`, `recurring_schedules`, `treasury_balance_snapshots`, `spend_by_category`/`spend_by_owner`, and `treasury_flow` are all derived by folding `events` rows in order, not by adding a delta to a running counter on each poll. A partially-applied batch (crash after writing `events` but before the aggregate update, or vice versa) is corrected on the next run by re-deriving the affected aggregate rows from `events`, rather than by tracking which increments already landed.
+
+Together, these mean the indexer can safely re-run any range of ledgers — after a crash, a bug fix, or a full historical backfill — without special-casing "have I seen this before."
+
+### 13.4 Event Type to Storage Mapping
+
+Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 22 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
+
+| Topic | Event struct (`contracts/accord/src/lib.rs`) | Updates |
+| --- | --- | --- |
+| `created` | `ProposalCreatedEvent` | `proposals` (insert), `events` |
+| `approved` | `ProposalApprovedEvent` | `proposals` (approval progress), `events` |
+| `revoked` | `ProposalRevokedEvent` | `proposals` (approval progress), `events` |
+| `executed` | `ProposalExecutedEvent` | `proposals` (status), `spend_by_category`, `spend_by_owner`, `treasury_flow`, `treasury_balance_snapshots`, `events` |
+| `a_own` | `AddOwnerExecutedEvent` | `events` (owner-count context for `GET /stats/summary`'s `ownerCount`) |
+| `r_own` | `RemoveOwnerExecutedEvent` | `events` (owner-count context) |
+| `c_thr` | `ChangeThresholdExecutedEvent` | `events` |
+| `s_lim` | `SetSpendingLimitExecutedEvent` | `events` |
+| `c_wgt` | `OwnerWeightChangedEvent` | `events` |
+| `migrated` | `GovernanceMigratedEvent` | `events` |
+| `rbac_migrated` | `RbacMigratedEvent` | `events` |
+| `role_granted` | `RoleGrantedEvent` | `events` |
+| `role_revoked` | `RoleRevokedEvent` | `events` |
+| `r_crt` | `RecurringPaymentCreatedEvent` | `recurring_schedules` (insert), `events` |
+| `rpay` | `RecurringPaymentDisbursedEvent` | `recurring_schedules` (totals), `spend_by_category`, `spend_by_owner`, `treasury_flow`, `treasury_balance_snapshots`, `events` |
+| `r_pause` | `RecurringPaymentPausedEvent` | `recurring_schedules` (status), `events` |
+| `r_resum` | `RecurringPaymentResumedEvent` | `recurring_schedules` (status), `events` |
+| `r_mod` | `RecurringPaymentModifiedEvent` | `recurring_schedules` (schedule fields), `events` |
+| `r_cncl` | `RecurringPaymentCancelledEvent` | `recurring_schedules` (status), `events` |
+| `guard_set` | `GuardianSetEvent` | `events` |
+| `frozen` | `FrozenEvent` | `events` |
+| `unfrozen` | `UnfrozenEvent` | `events` |
+| `upgraded` | `UpgradeExecutedEvent` | `events` |
+
+Only `executed` and `rpay` move real tokens, so only those two feed the spend and treasury-flow aggregates — the same rule the frontend already applies client-side (`filterExecutedTransfers` in `frontend/src/lib/analytics.ts`). Every other event type is still indexed into `events` (and, where it changes proposal or schedule state, into the corresponding materialized table) because `GET /proposals/:id`'s `timeline` and `GET /proposals/:id`'s audit trail need the full history, not just the transfers.
+
+### 13.5 Analytics API Surface
+
+The indexed datastore is served over HTTP by the analytics API — the endpoint list, query parameters, response shapes, and error format are documented in full in [ANALYTICS_API.md](ANALYTICS_API.md). In summary, the API exposes:
+
+- `GET /proposals` and `GET /proposals/:id` — paginated proposal list and single-proposal detail (with event timeline)
+- `GET /spend/by-category` and `GET /spend/by-owner` — spend aggregation buckets
+- `GET /treasury/balance` and `GET /treasury/flow` — balance snapshots and inflow/outflow buckets
+- `GET /stats/summary` — the dashboard stat-card rollup (`totalDisbursed`, `activeProposals`, `ownerCount`, `largestOutflow`)
+
+### 13.6 Relationship to Direct RPC Reads
+
+The indexer and analytics API are not the only way Accord data reaches the frontend. Section 8 describes the frontend's own polling strategy — reading proposals directly over Soroban RPC and re-fetching on a timer — which the dashboard and (currently) the Analytics page both use. The two paths serve different needs:
+
+- **Direct RPC reads** (§8) always reflect current contract state exactly, at the cost of being limited to whatever `get_proposals_paged` and similar view calls can answer in one request — there's no server-side aggregation, and history beyond current state requires re-deriving it client-side from whatever proposals are loaded.
+- **The indexer/analytics path** (this section) can answer aggregate and historical questions (spend by category over the last quarter, a balance time series) that would otherwise require fetching and reducing every proposal on every page load, but it necessarily lags the chain by however long a poll cycle takes to reach and process the relevant ledger — see the [Treasury Analytics guide](guides/treasury-analytics.md#data-freshness) for how that lag shows up to an end user.
 
 ## Security Note: Governance Controls vs Spending Limits
 

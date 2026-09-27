@@ -1,14 +1,16 @@
 import { expect, test, describe } from "vitest";
 import {
-  stroopsToDisplay,
-  displayToStroops,
-  weightToPercent,
-  formatWeightPercent,
+  canApprove,
+  canCreate,
+  canExecute,
   contractErrorMessage,
+  displayToStroops,
   formatDeadline,
+  formatWeightPercent,
+  missingRoleTooltip,
   shortenAddr,
-  formatInterval,
-  formatCountdown,
+  stroopsToDisplay,
+  weightToPercent,
 } from "../soroban";
 
 describe("stroopsToDisplay", () => {
@@ -155,79 +157,40 @@ describe("shortenAddr", () => {
   });
 });
 
-describe("formatInterval", () => {
-  test("returns 'Daily' for 86400 seconds", () => {
-    expect(formatInterval(86400)).toBe("Daily");
+describe("permission helpers", () => {
+  test("canCreate returns true when Proposer role is present", () => {
+    expect(canCreate(["Proposer", "Viewer"])).toBe(true);
   });
 
-  test("returns 'Weekly' for 604800 seconds", () => {
-    expect(formatInterval(604800)).toBe("Weekly");
+  test("canCreate returns false when Proposer role is absent", () => {
+    expect(canCreate(["Approver", "Executor"])).toBe(false);
   });
 
-  test("returns 'Monthly' for 2592000 seconds", () => {
-    expect(formatInterval(2592000)).toBe("Monthly");
+  test("canApprove returns true when Approver role is present", () => {
+    expect(canApprove(["Approver", "Viewer"])).toBe(true);
   });
 
-  test("returns 'Yearly' for 31536000 seconds", () => {
-    expect(formatInterval(31536000)).toBe("Yearly");
+  test("canApprove returns false when Approver role is absent", () => {
+    expect(canApprove(["Proposer", "Executor"])).toBe(false);
   });
 
-  test("returns 'Every N days' for day multiples", () => {
-    expect(formatInterval(172800)).toBe("Every 2 days");
+  test("canExecute returns true when Executor role is present", () => {
+    expect(canExecute(["Executor", "Viewer"])).toBe(true);
   });
 
-  test("returns 'Every N hours' for hour multiples", () => {
-    expect(formatInterval(7200)).toBe("Every 2 hours");
+  test("canExecute returns false when Executor role is absent", () => {
+    expect(canExecute(["Proposer", "Approver"])).toBe(false);
   });
 
-  test("returns 'Every N mins' for minute multiples", () => {
-    expect(formatInterval(180)).toBe("Every 3 mins");
-  });
-
-  test("returns 'Every Ns' for sub-minute intervals", () => {
-    expect(formatInterval(45)).toBe("Every 45s");
-  });
-
-  test("returns dash for zero or negative", () => {
-    expect(formatInterval(0)).toBe("—");
-    expect(formatInterval(-5)).toBe("—");
-  });
-
-  test("handles bigint input", () => {
-    expect(formatInterval(86400n)).toBe("Daily");
-  });
-
-  test("handles string input", () => {
-    expect(formatInterval("604800")).toBe("Weekly");
-  });
-});
-
-describe("formatCountdown", () => {
-  test("returns 'Due now' for past timestamps", () => {
-    expect(formatCountdown(Date.now() - 1000)).toBe("Due now");
-  });
-
-  test("returns 'Due now' for exactly now", () => {
-    expect(formatCountdown(Date.now())).toBe("Due now");
-  });
-
-  test("returns days and hours for far future", () => {
-    const target = Date.now() + 4 * 86400 * 1000 + 3 * 3600 * 1000;
-    expect(formatCountdown(target)).toMatch(/^next in 4d 3h$/);
-  });
-
-  test("returns hours and minutes for hours ahead", () => {
-    const target = Date.now() + 2 * 3600 * 1000 + 30 * 60 * 1000;
-    expect(formatCountdown(target)).toMatch(/^next in 2h 30m$/);
-  });
-
-  test("returns minutes for minutes ahead", () => {
-    const target = Date.now() + 15 * 60 * 1000;
-    expect(formatCountdown(target)).toMatch(/^next in 15m$/);
-  });
-
-  test("returns '<1m' for less than a minute", () => {
-    const target = Date.now() + 30 * 1000;
-    expect(formatCountdown(target)).toBe("next in <1m");
+  test("missingRoleTooltip returns the correct role requirement message", () => {
+    expect(missingRoleTooltip("execute")).toBe(
+      "Executing proposals requires the Executor role."
+    );
+    expect(missingRoleTooltip("create")).toBe(
+      "Creating proposals requires the Proposer role."
+    );
+    expect(missingRoleTooltip("approve")).toBe(
+      "Approving proposals requires the Approver role."
+    );
   });
 });

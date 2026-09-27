@@ -27,6 +27,7 @@ pub enum Role {
     Proposer,
     Approver,
     Executor,
+    Viewer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -598,8 +599,12 @@ fn role_version_key() -> Symbol {
     symbol_short!("ROLEVER")
 }
 
+pub fn role_key(address: &Address) -> (Symbol, Address) {
+    (symbol_short!("ROLES"), address.clone())
+}
+
 fn owner_roles_key(owner: &Address) -> (Symbol, Address) {
-    (symbol_short!("ROLES"), owner.clone())
+    role_key(owner)
 }
 
 fn role_members_key(role: &Role) -> (Symbol, Role) {
@@ -851,8 +856,8 @@ fn write_role_version(env: &Env, version: u32) {
     bump_instance(env);
 }
 
-fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
-    let key = owner_roles_key(owner);
+pub fn read_roles(env: &Env, address: &Address) -> Vec<Role> {
+    let key = role_key(address);
     let roles = env
         .storage()
         .persistent()
@@ -862,6 +867,10 @@ fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
         bump_persistent(env, &key);
     }
     roles
+}
+
+fn read_owner_roles(env: &Env, owner: &Address) -> Vec<Role> {
+    read_roles(env, owner)
 }
 
 fn read_role_members(env: &Env, role: &Role) -> Vec<Address> {
@@ -877,10 +886,14 @@ fn read_role_members(env: &Env, role: &Role) -> Vec<Address> {
     members
 }
 
-fn write_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
-    let key = owner_roles_key(owner);
+pub fn write_roles(env: &Env, address: &Address, roles: &Vec<Role>) {
+    let key = role_key(address);
     env.storage().persistent().set(&key, roles);
     bump_persistent(env, &key);
+}
+
+fn write_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
+    write_roles(env, owner, roles);
 }
 
 fn write_role_members(env: &Env, role: &Role, members: &Vec<Address>) {
@@ -945,20 +958,23 @@ fn require_role(env: &Env, address: &Address, role: Role) -> Result<(), Contract
 /// compatibility. Returns `InvalidRole` for any other value.
 fn symbol_to_role(env: &Env, sym: &Symbol) -> Result<Role, ContractError> {
     if *sym == Symbol::new(env, "Proposer") || *sym == Symbol::new(env, "CreateProposal") {
-        return Ok(Role::CreateProposal);
+        return Ok(Role::Proposer);
     }
     if *sym == Symbol::new(env, "Approver") || *sym == Symbol::new(env, "ApproveProposal") {
-        return Ok(Role::ApproveProposal);
+        return Ok(Role::Approver);
     }
     if *sym == Symbol::new(env, "Executor") || *sym == Symbol::new(env, "ExecuteProposal") {
-        return Ok(Role::ExecuteProposal);
+        return Ok(Role::Executor);
+    }
+    if *sym == Symbol::new(env, "Viewer") {
+        return Ok(Role::Viewer);
     }
     Err(ContractError::InvalidRole)
 }
 
 /// Returns true if the Symbol denotes the Approver role in any accepted form.
 fn is_approver_symbol(env: &Env, sym: &Symbol) -> bool {
-    matches!(symbol_to_role(env, sym), Ok(Role::ApproveProposal))
+    matches!(symbol_to_role(env, sym), Ok(Role::Approver))
 }
 
 /// Sums the voting weight of all owners that currently hold the Approver role.
@@ -966,7 +982,7 @@ fn total_approver_weight(env: &Env) -> Result<u32, ContractError> {
     let owners = read_owners_map(env)?;
     let mut total: u32 = 0;
     for owner in owners.keys().iter() {
-        if has_role(env, &owner, &Role::ApproveProposal) {
+        if has_role(env, &owner, &Role::Approver) {
             let w = owners.get(owner.clone()).unwrap_or(0);
             total = checked_weight_add(total, w)?;
         }
@@ -983,7 +999,7 @@ fn remaining_approver_weight_after_revoke(
 ) -> Result<u32, ContractError> {
     let owners = read_owners_map(env)?;
     let total = total_approver_weight(env)?;
-    if !has_role(env, target, &Role::ApproveProposal) {
+    if !has_role(env, target, &Role::Approver) {
         return Ok(total);
     }
     if let Some(w) = owners.get(target.clone()) {
@@ -1600,6 +1616,48 @@ fn linear_vesting_payout(
 #[contract]
 pub struct AccordContract;
 
+// Entrypoint gating matrix (keep synchronized with the public methods below).
+// Operational roles are separate from governance authority: role gates control
+// proposal lifecycle operations, while governance changes remain owner-weight
+// gated. Role-gated entrypoints below must enforce the role listed here.
+//
+// Check order: on every entrypoint that carries both gates, the role gate runs
+// before the frozen gate, so a call that is both missing the role and blocked by
+// a freeze fails with `MissingRole` rather than `ContractFrozen`. The frozen gate
+// covers the create and execute paths only: `approve`, `revoke` and
+// `cancel_expired` are role-gated but stay callable while frozen, so a freeze
+// cannot strand in-flight approvals or block the expiry sweep. The owner-weight
+// governance entrypoints below carry no frozen gate either, since `unfreeze`
+// must remain callable while frozen.
+//
+// Initialize: initialize (all listed owners authenticate; one-time setup).
+// Migration: migrate_to_weighted_governance (distinct authenticated owners meet
+//   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
+// Proposer: create_recurring_schedule, create_proposal, create_add_owner_proposal,
+//   create_spending_limit_proposal, create_change_weight_proposal,
+//   create_remove_owner_proposal, create_change_threshold_proposal,
+//   create_recurring_proposal, create_cancel_recurring_proposal,
+//   create_pause_recurring_proposal, create_resume_recurring_proposal,
+//   create_modify_recurring_proposal, create_grant_role_proposal,
+//   create_revoke_role_proposal.
+// Approver + owner membership/weight: approve, revoke.
+// Executor role: execute, cancel_expired (owner membership is not required).
+// Owner membership: cancel_recurring_schedule.
+// Permissionless/authenticated caller: disburse_recurring_schedule (permissionless
+//   crank); disburse_recurring (any authenticated caller).
+// Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
+//   set_guardian, unfreeze, upgrade. Guardian-only: freeze.
+// Read-only, no authorization: get_spent_tracker, get_recurring_payment,
+//   get_next_disbursement_time, get_recurring_payments_paged,
+//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   is_governance_migrated, get_role_version, get_roles, has_role,
+//   get_role_members, get_owner_weight, get_owner_weights,
+//   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
+//   get_effective_weight, get_proposal, get_proposals_paged, get_owners,
+//   get_spending_limit, get_owner_spending_limits,
+//   get_remaining_spending_limit, get_threshold, get_required_quorum_weight,
+//   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
+//   get_proposal_approval_progress, is_frozen, get_guardian.
 #[contractimpl]
 impl AccordContract {
     /// One-shot initializer. Sets the list of owners with their individual
@@ -1936,9 +1994,7 @@ impl AccordContract {
         // A non-owner holding the Proposer role may draft transfers; owner
         // proposers keep their owner-keyed spending limits (checked below).
         let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
-        if !has_role(&env, &proposer, &Role::Proposer) {
-            return Err(ContractError::MissingRole);
-        }
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let transfers_len = transfers.len();
@@ -2599,7 +2655,7 @@ impl AccordContract {
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        let weight = {
+        let raw_weight = {
             require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
@@ -3203,7 +3259,7 @@ impl AccordContract {
                 // Re-validate quorum-stranding at execute time: state may have
                 // drifted since proposal creation (another revoke could have
                 // already reduced approver weight).
-                if role == Role::ApproveProposal {
+                if role == Role::Approver {
                     let threshold = read_threshold(&env)?;
                     let remaining = remaining_approver_weight_after_revoke(&env, target)?;
                     if remaining < threshold {
@@ -3305,6 +3361,9 @@ impl AccordContract {
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
+        // A non-owner holding the Proposer role may draft schedules; owner
+        // proposers keep their owner-keyed spending limits (checked below).
+        let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
@@ -3328,13 +3387,15 @@ impl AccordContract {
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
 
-        if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
-            let already_spent = effective_spent(&env, &proposer, &token);
-            let cumulative = amount
-                .checked_add(already_spent)
-                .ok_or(ContractError::ArithmeticError)?;
-            if cumulative > limit {
-                return Err(ContractError::SpendingLimitExceeded);
+        if proposer_is_owner {
+            if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
+                let already_spent = effective_spent(&env, &proposer, &token);
+                let cumulative = amount
+                    .checked_add(already_spent)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
             }
         }
 
@@ -3674,7 +3735,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let parsed = symbol_to_role(&env, &role)?;
@@ -3683,7 +3744,18 @@ impl AccordContract {
         }
 
         validate_description(&description)?;
-        validate_deadline(&env, deadline)?;
+        // Inlined rather than using `validate_deadline` so the too-far case
+        // reports `InvalidDuration`, matching every other proposal-creation
+        // entrypoint (`create_change_threshold_proposal` and friends) and the
+        // documented error table. `validate_deadline` collapses both cases into
+        // `InvalidDeadline`.
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
@@ -3746,7 +3818,7 @@ impl AccordContract {
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
-        require_role(&env, &proposer, Role::CreateProposal)?;
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
         let parsed = symbol_to_role(&env, &role)?;
@@ -3755,7 +3827,7 @@ impl AccordContract {
         }
 
         // Quorum-stranding guard: only applies to Approver revokes.
-        if parsed == Role::ApproveProposal {
+        if parsed == Role::Approver {
             let threshold = read_threshold(&env)?;
             let remaining = remaining_approver_weight_after_revoke(&env, &target)?;
             if remaining < threshold {
@@ -3764,7 +3836,16 @@ impl AccordContract {
         }
 
         validate_description(&description)?;
-        validate_deadline(&env, deadline)?;
+        // Mirrors `create_grant_role_proposal`: `InvalidDuration` for a
+        // deadline beyond `MAX_PROPOSAL_DURATION`, matching the other
+        // proposal-creation entrypoints and the documented error table.
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
@@ -4033,6 +4114,8 @@ impl AccordContract {
     /// Updates the maximum single-owner weight percentage (1..=50). The same
     /// weighted, distinct-owner quorum required for other sensitive operations
     /// authorizes this parameter change.
+    /// Governance authority is intentionally owner-weight-gated, not role-gated;
+    /// see the entrypoint gating matrix above.
     pub fn set_max_single_owner_weight_pct(
         env: Env,
         approvers: Vec<Address>,
@@ -4164,6 +4247,9 @@ impl AccordContract {
     }
 
     // ─── Guardian ─────────────────────────────────────────────────────────────
+
+    // These governance entrypoints intentionally use owner-weight co-signatures,
+    // not operational role checks. See the gating matrix above.
 
     /// Assigns or replaces the guardian address. Requires distinct registered
     /// owners whose combined weight reaches `threshold`.

@@ -7,13 +7,22 @@ import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
-import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import {
-  getRequiredQuorumWeight,
   getDueRecurring,
   getOwnerWeightChangeEvents,
 } from "../lib/contract";
-import { shortenAddr } from "../lib/soroban";
+import {
+  canCreate,
+  missingRoleTooltip,
+  shortenAddr,
+} from "../lib/soroban";
+import type {
+  DashboardStat,
+  Owner,
+  OwnerWeightChangeEvent,
+  Proposal,
+  RecurringSchedule,
+} from "../types/accord";
 
 const RECENT_WEIGHT_CHANGES = 5;
 
@@ -44,7 +53,6 @@ export function DashboardPage({
   onCreateRecurringPayment,
   roleBanner,
   loading,
-  error,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -58,24 +66,8 @@ export function DashboardPage({
     return left.deadlineTs - right.deadlineTs;
   });
 
-  // Compute owner weights and quorum weight for weight-based UI
-  const ownerAddresses = owners.map((o) => o.address);
+  const ownerAddresses = owners.map((owner) => owner.address);
   const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
-  const [quorumWeight, setQuorumWeight] = useState<number>(0);
-
-  useEffect(() => {
-    let active = true;
-    getRequiredQuorumWeight()
-      .then((w) => {
-        if (active) setQuorumWeight(w);
-      })
-      .catch(() => {
-        /* noop */
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -91,7 +83,6 @@ export function DashboardPage({
     };
   }, []);
 
-  // Recent owner voting-weight changes, newest first.
   useEffect(() => {
     let active = true;
     getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
@@ -116,6 +107,14 @@ export function DashboardPage({
     prevReadyCount.current = readyCount;
   }, [readyCount]);
 
+  const showRoleBanner = Boolean(
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key,
+  );
+
+  const roleBannerStyles =
+    roleBanner?.variant === "unrecognized"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+      : "border-sky-500/20 bg-sky-500/10 text-sky-100";
   useEffect(() => {
     setDismissedError(null);
   }, [error]);
@@ -219,6 +218,7 @@ export function DashboardPage({
           </button>
         </div>
       )}
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Active Proposals</h2>
         <div className="flex items-center gap-3">
@@ -234,17 +234,19 @@ export function DashboardPage({
           <button
             type="button"
             onClick={onCreateProposal}
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Plus size={14} />
             New
           </button>
           <button
-            ref={recurringButtonRef}
             type="button"
             onClick={onCreateRecurringPayment}
-            aria-label="Create recurring payment"
-            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            disabled={createDisabled}
+            title={createDisabledReason}
+            className="inline-flex items-center gap-1.5 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-zinc-800"
           >
             <Repeat2 size={14} />
             Recurring
@@ -295,27 +297,17 @@ export function DashboardPage({
             </button>
           </div>
         ) : (
-          displayedProposals.map((proposal) => {
-            // Sum approval weight by summing known owner weights for approver addresses
-            const approvalWeight = (proposal.approverAddresses || []).reduce(
-              (acc, addr) => acc + (weights[addr] ?? 0),
-              0,
-            );
-            return (
-              <ProposalCard
-                key={proposal.id}
-                proposal={proposal}
-                walletAddress={walletAddress}
-                onApprove={onApprove}
-                onExecute={onExecute}
-                onRevoke={onRevoke}
-                approvalWeight={approvalWeight}
-                quorumWeight={quorumWeight}
-                totalWeight={totalWeight}
-                ownerWeights={weights}
-              />
-            );
-          })
+          displayedProposals.map((proposal) => (
+            <ProposalCard
+              key={proposal.id}
+              proposal={proposal}
+              walletAddress={walletAddress}
+              onApprove={onApprove}
+              onExecute={onExecute}
+              onRevoke={onRevoke}
+              walletRoles={walletRoles}
+            />
+          ))
         )}
       </div>
 
@@ -349,9 +341,7 @@ export function DashboardPage({
                 </div>
                 <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
                   <span className="text-zinc-500">{change.oldWeight}</span>
-                  <span aria-hidden className="text-zinc-600">
-                    →
-                  </span>
+                  <span aria-hidden className="text-zinc-600">→</span>
                   <span className="text-emerald-400">{change.newWeight}</span>
                 </div>
               </div>
@@ -391,3 +381,4 @@ export function DashboardPage({
     </>
   );
 }
+

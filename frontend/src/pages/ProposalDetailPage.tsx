@@ -3,7 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import { ApprovalBar } from "../components/ApprovalBar";
 import { StatusBadge } from "../components/StatusBadge";
 import type { Proposal, ProposalEvent } from "../types/accord";
-import { getProposalEvents, getOwners, getRequiredQuorumWeight } from "../lib/contract";
+import {
+  getHistoricalWeightChangeEvents,
+  getOwners,
+  getProposalEvents,
+  getRequiredQuorumWeight,
+} from "../lib/contract";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 
 type ProposalDetailPageProps = {
@@ -77,12 +82,45 @@ export function ProposalDetailPage({
     setLoadingEvents(true);
     setEventsError(null);
 
-    getProposalEvents(proposal.id)
-      .then((data) => {
-        if (active) {
-          setEvents(data);
-          setLoadingEvents(false);
+    Promise.all([
+      getProposalEvents(proposal.id).catch(() => [] as ProposalEvent[]),
+      // Weight-change (c_wgt) events carry no proposal id, so load the
+      // global history and interleave it chronologically with the
+      // proposal-scoped approve/revoke/execute entries.
+      getHistoricalWeightChangeEvents().catch(() => []),
+    ])
+      .then(([proposalEvents, weightChanges]) => {
+        if (!active) return;
+        const weightEvents: ProposalEvent[] = weightChanges.map((change) => ({
+          type: "owner_weight_changed",
+          actor: change.owner,
+          timestamp: change.timestamp,
+          ledger: change.ledger,
+          details: `${change.owner} Weight: ${change.oldWeight} → ${change.newWeight}`,
+        }));
+        // De-duplicate in case the proposal event feed already contains the
+        // same weight-change entries (same ledger + owner + weights).
+        const seen = new Set(
+          proposalEvents.map(
+            (e) => `${e.type}|${e.ledger}|${e.actor}|${e.details}`,
+          ),
+        );
+        const merged = [...proposalEvents];
+        for (const e of weightEvents) {
+          const key = `${e.type}|${e.ledger}|${e.actor}|${e.details}`;
+          // Also match shortened-actor variants produced by getProposalEvents.
+          const shortKey = `${e.type}|${e.ledger}`;
+          const already = [...seen].some(
+            (k) => k === key || k.startsWith(shortKey),
+          );
+          if (!already) {
+            merged.push(e);
+            seen.add(key);
+          }
         }
+        merged.sort((a, b) => (a.ledger ?? 0) - (b.ledger ?? 0));
+        setEvents(merged);
+        setLoadingEvents(false);
       })
       .catch((err) => {
         if (active) {
@@ -264,21 +302,27 @@ export function ProposalDetailPage({
                 label = "Recurring Payment Cancelled";
               }
 
+              const isWeightChange =
+                norm === "ownerweightchanged" ||
+                norm === "cwgt" ||
+                norm === "ownerweightchange";
               const details =
                 event.details ||
-                (event.scheduleId !== undefined || event.amount
-                  ? [
-                      event.scheduleId !== undefined ? `Schedule #${event.scheduleId}` : null,
-                      event.amount
-                        ? event.token
-                          ? `${event.amount} ${event.token}`
-                          : event.amount
-                        : null,
-                      event.recipient ? `to ${event.recipient}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")
-                  : null);
+                (isWeightChange
+                  ? `${event.actor} Weight changed`
+                  : event.scheduleId !== undefined || event.amount
+                    ? [
+                        event.scheduleId !== undefined ? `Schedule #${event.scheduleId}` : null,
+                        event.amount
+                          ? event.token
+                            ? `${event.amount} ${event.token}`
+                            : event.amount
+                          : null,
+                        event.recipient ? `to ${event.recipient}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : null);
 
               return (
                 <div

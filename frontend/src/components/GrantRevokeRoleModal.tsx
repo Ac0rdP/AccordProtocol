@@ -5,7 +5,7 @@ import {
   createGrantRoleProposal,
   createRevokeRoleProposal,
 } from "../lib/submit";
-import type { ProposalRole } from "../types/accord";
+import type { Role } from "../types/accord";
 
 type RoleAction = "grant" | "revoke";
 
@@ -13,11 +13,12 @@ type Props = {
   walletAddress: string | null;
   ownerAddresses: string[];
   threshold: number;
+  initialTargetAddress?: string;
   onClose: () => void;
   onSubmitted: () => void;
 };
 
-const ROLE_OPTIONS: ProposalRole[] = ["Owner"];
+const ROLE_OPTIONS: Role[] = ["Owner"];
 const MAX_OWNERS = 20;
 const MAX_DESCRIPTION_LENGTH = 300;
 const MAX_PROPOSAL_DURATION_DAYS = 90;
@@ -43,12 +44,13 @@ export function GrantRevokeRoleModal({
   walletAddress,
   ownerAddresses,
   threshold,
+  initialTargetAddress = "",
   onClose,
   onSubmitted,
 }: Props) {
-  const [targetAddress, setTargetAddress] = useState("");
-  const [targetTouched, setTargetTouched] = useState(false);
-  const [role, setRole] = useState<ProposalRole>("Owner");
+  const [targetAddress, setTargetAddress] = useState(initialTargetAddress);
+  const [targetTouched, setTargetTouched] = useState(Boolean(initialTargetAddress));
+  const [role, setRole] = useState<Role>("Owner");
   const [action, setAction] = useState<RoleAction>("grant");
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState(defaultDeadline);
@@ -59,6 +61,11 @@ export function GrantRevokeRoleModal({
   const trimmedTarget = targetAddress.trim();
   const currentOwners = new Set(ownerAddresses);
   const targetHasRole = currentOwners.has(trimmedTarget);
+
+  useEffect(() => {
+    setTargetAddress(initialTargetAddress);
+    setTargetTouched(Boolean(initialTargetAddress));
+  }, [initialTargetAddress]);
 
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null;
@@ -252,7 +259,7 @@ export function GrantRevokeRoleModal({
               <label className="mb-1.5 block text-xs text-zinc-400">Role</label>
               <select
                 value={role}
-                onChange={(e) => setRole(e.target.value as ProposalRole)}
+                onChange={(e) => setRole(e.target.value as Role)}
                 className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm text-white focus:border-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
               >
                 {ROLE_OPTIONS.map((option) => (

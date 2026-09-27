@@ -1,6 +1,6 @@
 # Glossary
 
-This glossary defines the Stellar, Soroban, and Accord-specific terms used throughout this repository's documentation, so contributors and users don't need prior blockchain experience to follow along. It covers three term families: **Stellar network** concepts (the underlying public ledger), **Soroban platform** concepts (the smart contract runtime Stellar provides), and **Accord protocol** concepts (the multisig logic this project implements on top of Soroban). Where a term is explained in more depth elsewhere in the docs, a "See also" link points you there.
+This glossary defines the Stellar, Soroban, and Accord-specific terms used throughout this repository's documentation, so contributors and users don't need prior blockchain experience to follow along. It covers four term families: **Stellar network** concepts (the underlying public ledger), **Soroban platform** concepts (the smart contract runtime Stellar provides), **Accord protocol** concepts (the multisig logic this project implements on top of Soroban), and **analytics & indexer** concepts (the off-chain event-indexing and treasury-reporting layer built on top of the contract). Where a term is explained in more depth elsewhere in the docs, a "See also" link points you there.
 
 ---
 
@@ -162,3 +162,43 @@ See also: [Deployment — Migrating to Weighted Governance](./DEPLOYMENT.md#migr
 **Weighted approval**
 Weighted approval is the voting model where each owner has a distinct voting weight (rather than each owner having an equal vote), and a proposal reaches quorum when the sum of approving owners' weights meets or exceeds the proposal's quorum_weight. This enables asymmetric governance structures, such as giving founders larger voting power while still requiring multisig approval.
 See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle).
+
+---
+
+## Analytics & Indexer Terms
+
+**Indexer**
+An indexer is an off-chain service that continuously reads a contract's emitted events from Soroban RPC, decodes them into typed records, and persists them in its own datastore — so consumers can query event history and aggregates without depending on the limited retention window of a standard RPC node. Accord's reference indexer design is documented as the source for the treasury analytics API.
+See also: [Architecture §7 — Indexing Accord Events](./ARCHITECTURE.md#indexing-accord-events), [Architecture §13 — Indexer & Analytics Architecture](./ARCHITECTURE.md#13-indexer--analytics-architecture).
+
+**Checkpoint (indexer)**
+A checkpoint is the ledger sequence number through which an indexer has fully processed events, persisted so the indexer can resume from where it left off after a restart or crash instead of re-scanning from the beginning. It plays the same role as the `lastSeenLedger` cursor the frontend already keeps in memory while polling for new events.
+See also: [Architecture §13.3 — Checkpointing, Resume, and Idempotency](./ARCHITECTURE.md#133-checkpointing-resume-and-idempotency).
+
+**Idempotent replay**
+Idempotent replay means that re-processing a ledger range an indexer has already ingested — for example after a crash before a checkpoint was written — writes the same records again without creating duplicates or double-counting an aggregate. Accord's indexer design achieves this by keying every stored event on the immutable tuple of contract, ledger, transaction, and event index, and by recomputing aggregates from the stored event log rather than incrementing them in place.
+See also: [Architecture §13.3](./ARCHITECTURE.md#133-checkpointing-resume-and-idempotency).
+
+**Spend by category**
+Spend by category is an analytics aggregation that totals executed transfer amounts grouped by proposal category (`Transfer`, `Payroll`, `Grant`, `Ops`, `Other`), along with each category's percentage share of total spend. It powers the Analytics page's "Spend by Category" chart and the `GET /spend/by-category` endpoint.
+See also: [Treasury Analytics guide](./guides/treasury-analytics.md#the-charts), [ANALYTICS_API.md](./ANALYTICS_API.md#get-spendby-category).
+
+**Spend by owner**
+Spend by owner is the same aggregation as spend by category, grouped by the proposer address instead — how much each owner has moved through executed transfers. It powers the Analytics page's "Spend by Owner" chart and the `GET /spend/by-owner` endpoint.
+See also: [Treasury Analytics guide](./guides/treasury-analytics.md#the-charts), [ANALYTICS_API.md](./ANALYTICS_API.md#get-spendby-owner).
+
+**Treasury flow**
+Treasury flow is a time-bucketed view of inflow (deposits to the contract) and outflow (executed transfers and recurring disbursements) per token, grouped by a chosen granularity (day, week, or month). It powers the "Treasury Outflow Over Time" chart and the `GET /treasury/flow` endpoint.
+See also: [Treasury Analytics guide](./guides/treasury-analytics.md#the-charts), [ANALYTICS_API.md](./ANALYTICS_API.md#get-treasuryflow).
+
+**Time-series snapshot**
+A time-series snapshot is a single point in a balance history — a timestamp paired with the contract's per-token balances at that moment. A series of these points lets the analytics API answer "what was our balance over time," not just "what is it right now."
+See also: [ANALYTICS_API.md — GET /treasury/balance](./ANALYTICS_API.md#get-treasurybalance).
+
+**Analytics API**
+The analytics API is the HTTP interface the indexer's datastore is served through — endpoints for proposal history, spend and treasury aggregates, and dashboard summary statistics, all documented with their query parameters, response shapes, and error format.
+See also: [ANALYTICS_API.md](./ANALYTICS_API.md).
+
+**Granularity**
+Granularity is the bucket size (`day`, `week`, or `month`) used to group time-series analytics data, such as treasury flow or balance history, into intervals. It's supplied as a query parameter on the endpoints that support historical bucketing.
+See also: [ANALYTICS_API.md — Standardized Query Parameters](./ANALYTICS_API.md#standardized-query-parameters).

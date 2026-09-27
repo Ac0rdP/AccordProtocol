@@ -22,7 +22,7 @@ export const ApprovalBar = React.memo(function ApprovalBar({
 }: ApprovalBarProps) {
   const displayApprovalWeight = approvalWeight || approvals;
   const displayQuorumWeight = quorumWeight || threshold || 0;
-  const barLength = Math.max(0, threshold || displayQuorumWeight || 0);
+  const barLength = Math.max(0, totalWeight || threshold || displayQuorumWeight || 0);
 
   return (
     <div className="flex items-center gap-2" aria-label={`${displayApprovalWeight} / ${displayQuorumWeight} weight`}>
