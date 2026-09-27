@@ -326,9 +326,20 @@ async function simulateContractView(
 }
 
 export async function getContractXlmBalance(): Promise<string> {
-  const entry = await server.getAccountEntry(CONTRACT_ID);
-  const stroops = BigInt(entry.balance().toString());
-  return stroopsToDisplay(stroops);
+  const xlmToken = import.meta.env.VITE_XLM_TOKEN_ADDRESS as string;
+  if (!xlmToken) return "N/A";
+  try {
+    const val = await simulateContractView(xlmToken, "balance", [
+      nativeToScVal(CONTRACT_ID, { type: "address" }),
+    ]);
+    const raw = scValToNative(val);
+    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+      return stroopsToDisplay(BigInt(raw));
+    }
+    return "0";
+  } catch {
+    return "—";
+  }
 }
 
 export async function getContractUsdcBalance(): Promise<string> {
