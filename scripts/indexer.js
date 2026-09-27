@@ -108,6 +108,11 @@ const RPC_URL =
   process.env.VITE_SOROBAN_RPC_URL ||
   "https://soroban-testnet.stellar.org";
 
+const NETWORK_PASSPHRASE =
+  process.env.NETWORK_PASSPHRASE ||
+  process.env.VITE_NETWORK_PASSPHRASE ||
+  "Test SDF Network ; September 2015";
+
 const STORE_PATH =
   argStore ||
   process.env.STORE_PATH ||
@@ -126,6 +131,10 @@ const START_LEDGER_CONFIG =
   process.env.START_LEDGER ||
   null;
 
+const SNAPSHOT_INTERVAL_LEDGERS = Number(
+  process.env.SNAPSHOT_INTERVAL_LEDGERS || 1
+);
+
 // ─── Configuration Validation ────────────────────────────────────────────────
 if (!CONTRACT_ID) {
   console.error(
@@ -141,14 +150,27 @@ try {
   process.exit(1);
 }
 
-function log(msg) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] ${msg}`);
+if (!Number.isInteger(SNAPSHOT_INTERVAL_LEDGERS) || SNAPSHOT_INTERVAL_LEDGERS < 1) {
+  console.error("Error: SNAPSHOT_INTERVAL_LEDGERS must be a positive integer.");
+  process.exit(1);
 }
 
-function warn(msg) {
-  const ts = new Date().toISOString();
-  console.warn(`[${ts}] WARN ${msg}`);
+function log(event, fields = {}) {
+  console.log(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: "info",
+    event,
+    ...fields,
+  }));
+}
+
+function warn(event, fields = {}) {
+  console.warn(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level: "warn",
+    event,
+    ...fields,
+  }));
 }
 
 function sleep(ms) {
@@ -167,6 +189,8 @@ function loadStore() {
       },
       events: [],
       proposals: [],
+      balances: {},
+      balanceSnapshots: [],
     };
   }
 
@@ -186,6 +210,8 @@ function loadStore() {
         checkpoint: { lastLedger: 0, updatedAt: null },
         events: [],
         proposals: parsed,
+        balances: {},
+        balanceSnapshots: [],
       };
     }
 
@@ -193,6 +219,8 @@ function loadStore() {
       checkpoint: parsed.checkpoint || { lastLedger: 0, updatedAt: null },
       events: Array.isArray(parsed.events) ? parsed.events : [],
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
+      balances: parsed.balances && typeof parsed.balances === "object" ? parsed.balances : {},
+      balanceSnapshots: Array.isArray(parsed.balanceSnapshots) ? parsed.balanceSnapshots : [],
     };
   } catch (err) {
     console.error(`Error: Failed to read or parse store at ${resolvedStorePath}: ${err.message}`);
@@ -265,24 +293,45 @@ function applyEventToProposals(event, proposalsMap) {
     amount: "0",
     token: "XLM",
     status: "pending",
-    createdAt: timestamp,
+    createdAt: null,
+    readyAt: null,
     executedAt: null,
+    lifecycle: {
+      createdAt: null,
+      readyAt: null,
+      executedAt: null,
+    },
+  };
+  existing.lifecycle ||= {
+    createdAt: existing.createdAt || null,
+    readyAt: existing.readyAt || null,
+    executedAt: existing.executedAt || null,
   };
 
   if (topic === "created" || topic === "proposal_created") {
     existing.proposer = String(value.proposer || existing.proposer);
     existing.category = String(value.category || existing.category);
     existing.status = "pending";
-    existing.createdAt = timestamp;
+    existing.createdAt = existing.createdAt || timestamp;
+    existing.lifecycle.createdAt = existing.lifecycle.createdAt || timestamp;
 
     if (Array.isArray(value.transfers) && value.transfers.length > 0) {
       const firstTransfer = value.transfers[0];
       existing.token = String(firstTransfer.token || existing.token);
       existing.amount = String(firstTransfer.amount || existing.amount);
     }
+  } else if (topic === "approved" || topic === "proposal_approved") {
+    const approvals = Number(value.approvals ?? value.cumulative_weight ?? 0);
+    const threshold = Number(value.threshold ?? 0);
+    if (threshold > 0 && approvals >= threshold) {
+      existing.status = "ready";
+      existing.readyAt = existing.readyAt || timestamp;
+      existing.lifecycle.readyAt = existing.lifecycle.readyAt || timestamp;
+    }
   } else if (topic === "executed" || topic === "proposal_executed") {
     existing.status = "executed";
-    existing.executedAt = timestamp;
+    existing.executedAt = existing.executedAt || timestamp;
+    existing.lifecycle.executedAt = existing.lifecycle.executedAt || timestamp;
     if (Array.isArray(value.transfers) && value.transfers.length > 0) {
       const firstTransfer = value.transfers[0];
       existing.token = String(firstTransfer.token || existing.token);
@@ -290,7 +339,8 @@ function applyEventToProposals(event, proposalsMap) {
     }
   } else if (topic === "rpay" || topic === "recurring_payment_disbursed") {
     existing.status = "executed";
-    existing.executedAt = timestamp;
+    existing.executedAt = existing.executedAt || timestamp;
+    existing.lifecycle.executedAt = existing.lifecycle.executedAt || timestamp;
     if (value.amount) existing.amount = String(value.amount);
     if (value.token) existing.token = String(value.token);
   }
@@ -298,32 +348,66 @@ function applyEventToProposals(event, proposalsMap) {
   proposalsMap.set(numId, existing);
 }
 
+function amountToNumber(amount) {
+  const value = Number(amount);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function applyEventToBalances(event, balances) {
+  if (!event.value || typeof event.value !== "object") return;
+
+  const transfers = Array.isArray(event.value.transfers)
+    ? event.value.transfers
+    : event.topic === "rpay" || event.topic === "recurring_payment_disbursed"
+      ? [event.value]
+      : [];
+
+  for (const transfer of transfers) {
+    const token = String(transfer.token || "XLM");
+    balances[token] = (balances[token] || 0) - amountToNumber(transfer.amount);
+  }
+}
+
+function persistBalanceSnapshot(store, ledger) {
+  const lastSnapshot = store.balanceSnapshots[store.balanceSnapshots.length - 1];
+  if (lastSnapshot && ledger - lastSnapshot.ledger < SNAPSHOT_INTERVAL_LEDGERS) return;
+
+  store.balanceSnapshots.push({
+    ledger,
+    timestamp: new Date().toISOString(),
+    balances: { ...store.balances },
+  });
+}
+
 // ─── Main Indexing Cycle ─────────────────────────────────────────────────────
 async function main() {
   const server = new rpc.Server(RPC_URL);
 
-  log(`[INFO] Accord Indexer starting...`);
-  log(`[INFO] RPC endpoint: ${RPC_URL}`);
-  log(`[INFO] Contract ID: ${CONTRACT_ID}`);
-  log(`[INFO] Store path: ${resolvedStorePath}`);
-  log(`[INFO] Mode: ${ONCE ? "one-shot (--once)" : `continuous (interval: ${POLL_INTERVAL_MS}ms)`}`);
+  log("indexer_started", {
+    rpcUrl: RPC_URL,
+    contractId: CONTRACT_ID,
+    networkPassphrase: NETWORK_PASSPHRASE,
+    storePath: resolvedStorePath,
+    mode: ONCE ? "once" : "follow",
+    pollIntervalMs: POLL_INTERVAL_MS,
+  });
 
   let store = loadStore();
 
   let startLedger;
   if (store.checkpoint && store.checkpoint.lastLedger > 0) {
     startLedger = store.checkpoint.lastLedger + 1;
-    log(`[INFO] Resuming from checkpoint ledger: ${store.checkpoint.lastLedger}`);
+    log("checkpoint_loaded", { checkpoint: store.checkpoint.lastLedger });
   } else if (START_LEDGER_CONFIG) {
     startLedger = parseInt(START_LEDGER_CONFIG, 10);
-    log(`[INFO] Starting from configured START_LEDGER: ${startLedger}`);
+    log("start_ledger_configured", { startLedger });
   } else {
     try {
       const latest = await server.getLatestLedger();
       startLedger = Math.max(1, latest.sequence - 100);
-      log(`[INFO] No checkpoint found. Starting from ledger: ${startLedger}`);
+      log("start_ledger_defaulted", { startLedger, latestLedger: latest.sequence });
     } catch (err) {
-      log(`[WARN] Failed to fetch latest ledger on startup: ${err.message}. Starting from ledger 1.`);
+      warn("startup_latest_ledger_failed", { error: err.message });
       startLedger = 1;
     }
   }
@@ -333,7 +417,7 @@ async function main() {
   const onSignal = () => {
     if (!running) process.exit(1);
     running = false;
-    log(`[INFO] Received shutdown signal — completing current cycle...`);
+    log("shutdown_requested");
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -346,15 +430,15 @@ async function main() {
       const latest = await server.getLatestLedger();
       chainHead = latest.sequence;
     } catch (err) {
-      warn(`Failed to query latest ledger: ${err.message}`);
+      warn("latest_ledger_failed", { error: err.message });
     }
 
     if (chainHead !== null && currentLedger > chainHead) {
       if (ONCE) {
-        log(`[INFO] Already caught up with chain head (${chainHead}). Exiting (--once).`);
+        log("indexer_caught_up", { ledgerHeight: chainHead, checkpoint: currentLedger - 1, lag: 0 });
         break;
       }
-      log(`[INFO] Caught up to chain head (${chainHead}). Waiting ${Math.round(POLL_INTERVAL_MS / 1000)}s before next poll...`);
+      log("indexer_caught_up", { ledgerHeight: chainHead, checkpoint: currentLedger - 1, lag: 0 });
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
@@ -374,7 +458,7 @@ async function main() {
       const rawEvents = res.events || [];
       const latestSeen = res.latestLedger || currentLedger;
 
-      log(`[INFO] Ingesting ledger range ${currentLedger}..${latestSeen} (found ${rawEvents.length} events)`);
+      let eventsProcessed = 0;
 
       if (rawEvents.length > 0) {
         // Map existing proposals
@@ -390,6 +474,8 @@ async function main() {
           if (!existingEventIds.has(decoded.id)) {
             existingEventIds.add(decoded.id);
             store.events.push(decoded);
+            applyEventToBalances(decoded, store.balances);
+            eventsProcessed += 1;
           }
           applyEventToProposals(decoded, proposalsMap);
         }
@@ -404,22 +490,30 @@ async function main() {
         updatedAt: new Date().toISOString(),
       };
 
+      persistBalanceSnapshot(store, newCheckpoint);
       saveStore(store);
-      log(`[INFO] Checkpoint updated to ledger: ${newCheckpoint}`);
+      const ledgerHeight = chainHead ?? latestSeen;
+      log("indexing_cycle_completed", {
+        ledgerHeight,
+        checkpoint: newCheckpoint,
+        eventsProcessed,
+        lag: Math.max(0, ledgerHeight - newCheckpoint),
+        balanceSnapshotLedger: store.balanceSnapshots.at(-1)?.ledger ?? null,
+      });
 
       currentLedger = newCheckpoint + 1;
 
       if (ONCE) {
-        log(`[INFO] Completed one-shot ingestion cycle. Exiting.`);
+        log("one_shot_completed");
         break;
       }
 
       if (chainHead !== null && currentLedger > chainHead) {
-        log(`[INFO] Caught up to chain head (${chainHead}). Waiting ${Math.round(POLL_INTERVAL_MS / 1000)}s before next poll...`);
+        log("indexer_caught_up", { ledgerHeight: chainHead, checkpoint: newCheckpoint, lag: 0 });
         await sleep(POLL_INTERVAL_MS);
       }
     } catch (err) {
-      warn(`Transient error polling RPC: ${err.message}. Retrying in ${Math.round(POLL_INTERVAL_MS / 1000)}s...`);
+      warn("indexing_cycle_failed", { error: err.message, checkpoint: store.checkpoint.lastLedger });
       if (ONCE) {
         console.error(`Error: Ingestion failed in --once mode: ${err.message}`);
         process.exit(1);
@@ -428,7 +522,7 @@ async function main() {
     }
   }
 
-  log(`[INFO] Indexer stopped cleanly.`);
+  log("indexer_stopped");
   process.exit(0);
 }
 
