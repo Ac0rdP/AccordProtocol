@@ -7,6 +7,7 @@ import {
   scValToNative,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import { parseTokenTransferEvent, parseAccordEvent } from "./events.js";
 import { openLedgerStore } from "./ledger.js";
 import { indexEventBatch } from "./indexing.js";
 
@@ -40,7 +41,39 @@ async function indexAvailableEvents() {
   if (indexing) return;
   indexing = true;
   try {
-    await indexEventBatch({ stellar, store, tokens, treasuryAddress, startLedger, pageLimit });
+    let cursor = store.getState("event_cursor");
+    let nextLedger = Number(store.getState("next_ledger") ?? startLedger);
+    let pages = 0;
+
+    while (pages < 100) {
+      const response = await stellar.getEvents({
+        ...(cursor ? { cursor } : { startLedger: nextLedger }),
+        filters: [{ type: "contract", contractIds: [treasuryAddress, ...tokens.map(({ address }) => address)] }],
+        limit: pageLimit,
+      });
+
+      for (const event of response.events) {
+        const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
+        if (transferEntry) store.recordTransfer(transferEntry);
+
+        const accordEntry = parseAccordEvent(event, treasuryAddress);
+        if (accordEntry) store.recordAccordEvent(accordEntry);
+      }
+
+      if (response.events.length === pageLimit) {
+        if (!response.cursor || response.cursor === cursor) {
+          throw new Error("RPC event pagination did not advance its cursor");
+        }
+        cursor = response.cursor;
+        store.setState("event_cursor", cursor);
+        pages += 1;
+        continue;
+      }
+
+      store.setState("next_ledger", Number(response.latestLedger) + 1);
+      store.setState("event_cursor", "");
+      break;
+    }
   } finally {
     indexing = false;
   }
@@ -128,6 +161,22 @@ const api = createServer((request, response) => {
         offset,
       });
       return sendJson(response, 200, { entries });
+    }
+    if (request.method === "GET" && url.pathname === "/events") {
+      const topic = url.searchParams.get("topic");
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
+      const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
+      if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
+        throw new Error("limit and offset must be non-negative integers");
+      }
+      const events = store.getAccordEvents({
+        topic,
+        from: parseDateParam(url.searchParams.get("from"), "from"),
+        to: parseDateParam(url.searchParams.get("to"), "to"),
+        limit,
+        offset,
+      });
+      return sendJson(response, 200, { events });
     }
     if (request.method === "GET" && url.pathname === "/reconciliation") {
       return sendJson(response, 200, { results: store.getLatestReconciliations() });

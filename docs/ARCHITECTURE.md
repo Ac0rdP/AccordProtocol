@@ -49,6 +49,8 @@
 | `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
 | `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
 
+See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
+
 ## 3. Storage Layout (Soroban)
 
 ### Instance Storage (low-cost, short TTL)
