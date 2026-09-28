@@ -7,8 +7,8 @@ import {
   scValToNative,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
-import { parseTokenTransferEvent } from "./events.js";
 import { openLedgerStore } from "./ledger.js";
+import { indexEventBatch } from "./indexing.js";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -29,7 +29,6 @@ const tokens = [
   { name: "XLM", address: required("XLM_TOKEN_ADDRESS") },
   { name: "USDC", address: required("USDC_TOKEN_ADDRESS") },
 ];
-const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
 const tokenAddresses = new Map(tokens.map(({ name, address }) => [name, address]));
 const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite");
 const stellar = new rpc.Server(rpcUrl);
@@ -41,36 +40,7 @@ async function indexAvailableEvents() {
   if (indexing) return;
   indexing = true;
   try {
-    let cursor = store.getState("event_cursor");
-    let nextLedger = Number(store.getState("next_ledger") ?? startLedger);
-    let pages = 0;
-
-    while (pages < 100) {
-      const response = await stellar.getEvents({
-        ...(cursor ? { cursor } : { startLedger: nextLedger }),
-        filters: [{ type: "contract", contractIds: tokens.map(({ address }) => address) }],
-        limit: pageLimit,
-      });
-
-      for (const event of response.events) {
-        const entry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-        if (entry) store.recordTransfer(entry);
-      }
-
-      if (response.events.length === pageLimit) {
-        if (!response.cursor || response.cursor === cursor) {
-          throw new Error("RPC event pagination did not advance its cursor");
-        }
-        cursor = response.cursor;
-        store.setState("event_cursor", cursor);
-        pages += 1;
-        continue;
-      }
-
-      store.setState("next_ledger", Number(response.latestLedger) + 1);
-      store.setState("event_cursor", "");
-      break;
-    }
+    await indexEventBatch({ stellar, store, tokens, treasuryAddress, startLedger, pageLimit });
   } finally {
     indexing = false;
   }
