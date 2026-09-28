@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { Keypair, nativeToScVal, StrKey, xdr } from "@stellar/stellar-sdk";
 import { parseTokenTransferEvent } from "../src/events.js";
+import { indexEventBatch } from "../src/indexing.js";
 import { openLedgerStore } from "../src/ledger.js";
 
 const tempDirectories = [];
@@ -16,11 +17,11 @@ function encoded(value, type) {
   return xdr.ScVal.fromXDR(nativeToScVal(value, { type }).toXDR("base64"), "base64");
 }
 
-function event({ id = "event-1", from = sender, to = treasury, amount = 125n } = {}) {
+function event({ id = "event-1", from = sender, to = treasury, amount = 125n, ledger = 42 } = {}) {
   return {
     id,
     contractId: tokenAddress,
-    ledger: 42,
+    ledger,
     ledgerClosedAt: "2026-09-27T12:00:00Z",
     txHash: "transaction-hash",
     topic: [encoded("transfer", "symbol"), encoded(from, "address"), encoded(to, "address")],
@@ -94,6 +95,50 @@ describe("treasury ledger", () => {
 
     assert.equal(store.getLatestReconciliations().length, 1);
     assert.equal(store.getLatestReconciliations()[0].drift, "0");
+    store.close();
+  });
+
+  it("replays configured ledgers across pages before handing off to live indexing", async () => {
+    const store = createStore();
+    const responses = [
+      {
+        events: [
+          event({ id: "event-1", amount: 10n }),
+          event({ id: "event-2", amount: 20n }),
+        ],
+        cursor: "page-1",
+        latestLedger: 42,
+      },
+      {
+        events: [event({ id: "event-3", amount: 30n, ledger: 43 })],
+        latestLedger: 43,
+      },
+    ];
+    const requests = [];
+    const stellar = {
+      getEvents: async (request) => {
+        requests.push(request);
+        return responses.shift();
+      },
+    };
+
+    await indexEventBatch({
+      stellar,
+      store,
+      tokens: [{ name: "USDC", address: tokenAddress }],
+      treasuryAddress: treasury,
+      startLedger: 40,
+      pageLimit: 2,
+    });
+
+    assert.equal(requests[0].startLedger, 40);
+    assert.equal(requests[1].cursor, "page-1");
+    assert.deepEqual(
+      store.getEntries({ token: "USDC", limit: 10, offset: 0 }).map(({ eventId, balance }) => [eventId, balance]),
+      [["event-1", "10"], ["event-2", "30"], ["event-3", "60"]]
+    );
+    assert.equal(store.getState("next_ledger"), "44");
+    assert.equal(store.getState("event_cursor"), "");
     store.close();
   });
 });

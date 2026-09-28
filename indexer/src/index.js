@@ -9,6 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { parseTokenTransferEvent, parseAccordEvent } from "./events.js";
 import { openLedgerStore } from "./ledger.js";
+import { indexEventBatch } from "./indexing.js";
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -29,7 +30,6 @@ const tokens = [
   { name: "XLM", address: required("XLM_TOKEN_ADDRESS") },
   { name: "USDC", address: required("USDC_TOKEN_ADDRESS") },
 ];
-const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
 const tokenAddresses = new Map(tokens.map(({ name, address }) => [name, address]));
 const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite");
 const stellar = new rpc.Server(rpcUrl);
