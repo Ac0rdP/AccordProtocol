@@ -1,0 +1,199 @@
+{
+  "migrated": {
+    "struct": "GovernanceMigratedEvent",
+    "fields": {
+      "owner_count": "u32",
+      "total_weight": "u32"
+    }
+  },
+  "rbac_migrated": {
+    "struct": "RbacMigratedEvent",
+    "fields": {
+      "owner_count": "u32",
+      "role_version": "u32"
+    }
+  },
+  "created": {
+    "struct": "ProposalCreatedEvent",
+    "fields": {
+      "id": "u64",
+      "proposer": "Address",
+      "threshold": "u32",
+      "category": "ProposalCategory",
+      "transfers": "Vec<Transfer>",
+      "quorum_weight": "u32",
+      "total_weight_at_creation": "u32"
+    }
+  },
+  "rpay": {
+    "struct": "RecurringPaymentDisbursedEvent",
+    "fields": {
+      "schedule_id": "u64",
+      "recipient": "Address",
+      "token": "Address",
+      "amount": "i128",
+      "total_disbursed": "i128",
+      "periods_disbursed": "u32"
+    }
+  },
+  "approved": {
+    "struct": "ProposalApprovedEvent",
+    "fields": {
+      "id": "u64",
+      "approver": "Address",
+      "approvals": "u32",
+      "threshold": "u32",
+      "weight": "u32",
+      "cumulative_weight": "u32"
+    }
+  },
+  "revoked": {
+    "struct": "ProposalRevokedEvent",
+    "fields": {
+      "id": "u64",
+      "approver": "Address",
+      "approvals": "u32",
+      "weight": "u32",
+      "cumulative_weight": "u32"
+    }
+  },
+  "executed": {
+    "struct": "ProposalExecutedEvent",
+    "fields": {
+      "id": "u64",
+      "executor": "Address",
+      "transfers": "Vec<Transfer>"
+    }
+  },
+  "guard_set": {
+    "struct": "GuardianSetEvent",
+    "fields": {
+      "guardian": "Address"
+    }
+  },
+  "frozen": {
+    "struct": "FrozenEvent",
+    "fields": {
+      "guardian": "Address"
+    }
+  },
+  "unfrozen": {
+    "struct": "UnfrozenEvent",
+    "fields": {
+      "approvers": "Vec<Address>"
+    }
+  },
+  "r_pause": {
+    "struct": "RecurringPaymentPausedEvent",
+    "fields": {
+      "id": "u64",
+      "caller": "Address"
+    }
+  },
+  "r_resum": {
+    "struct": "RecurringPaymentResumedEvent",
+    "fields": {
+      "id": "u64",
+      "caller": "Address"
+    }
+  },
+  "r_mod": {
+    "struct": "RecurringPaymentModifiedEvent",
+    "fields": {
+      "schedule_id": "u64",
+      "previous_amount": "i128",
+      "new_amount": "i128",
+      "previous_interval": "u64",
+      "new_interval": "u64",
+      "previous_end_time": "u64",
+      "new_end_time": "u64"
+    }
+  },
+  "r_crt": {
+    "struct": "RecurringPaymentCreatedEvent",
+    "fields": {
+      "id": "u64",
+      "proposer": "Address",
+      "recipient": "Address",
+      "token": "Address",
+      "amount": "i128",
+      "interval_secs": "u64",
+      "start_time": "u64",
+      "end_time": "u64",
+      "cliff_time": "u64",
+      "total_cap": "i128",
+      "kind": "RecurringKind"
+    }
+  },
+  "r_cncl": {
+    "struct": "RecurringPaymentCancelledEvent",
+    "fields": {
+      "id": "u64",
+      "caller": "Address"
+    }
+  },
+  "upgraded": {
+    "struct": "UpgradeExecutedEvent",
+    "fields": {
+      "caller": "Address",
+      "new_wasm_hash": "BytesN<32>"
+    }
+  },
+  "a_own": {
+    "struct": "AddOwnerExecutedEvent",
+    "fields": {
+      "new_owner": "Address",
+      "owner_count": "u32"
+    }
+  },
+  "r_own": {
+    "struct": "RemoveOwnerExecutedEvent",
+    "fields": {
+      "removed_owner": "Address",
+      "owner_count": "u32"
+    }
+  },
+  "c_thr": {
+    "struct": "ChangeThresholdExecutedEvent",
+    "fields": {
+      "previous_threshold": "u32",
+      "new_threshold": "u32"
+    }
+  },
+  "s_lim": {
+    "struct": "SetSpendingLimitExecutedEvent",
+    "fields": {
+      "owner": "Address",
+      "token": "Address",
+      "previous_limit": "Option<i128>",
+      "new_limit": "i128"
+    }
+  },
+  "c_wgt": {
+    "struct": "OwnerWeightChangedEvent",
+    "fields": {
+      "owner": "Address",
+      "old_weight": "u32",
+      "new_weight": "u32",
+      "new_total_weight": "u32"
+    }
+  },
+  "role_granted": {
+    "struct": "RoleGrantedEvent",
+    "fields": {
+      "target": "Address",
+      "role": "Role",
+      "before": "Vec<Role>",
+      "after": "Vec<Role>"
+    }
+  },
+  "role_revoked": {
+    "struct": "RoleRevokedEvent",
+    "fields": {
+      "target": "Address",
+      "role": "Role",
+      "before": "Vec<Role>",
+      "after": "Vec<Role>"
+    }
+  }
+}
