@@ -31,6 +31,19 @@ export function openLedgerStore(databasePath) {
       token TEXT PRIMARY KEY,
       balance TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS accord_events (
+      id INTEGER PRIMARY KEY,
+      event_id TEXT NOT NULL UNIQUE,
+      topic TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      ledger INTEGER NOT NULL,
+      transaction_hash TEXT,
+      occurred_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS accord_events_time_idx
+      ON accord_events (occurred_at, id);
+    CREATE INDEX IF NOT EXISTS accord_events_topic_time_idx
+      ON accord_events (topic, occurred_at, id);
     CREATE TABLE IF NOT EXISTS indexer_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -53,6 +66,11 @@ export function openLedgerStore(databasePath) {
       event_id, token, token_address, direction, amount, balance, ledger,
       transaction_hash, occurred_at, from_address, to_address
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertAccordEvent = database.prepare(`
+    INSERT INTO accord_events (
+      event_id, topic, payload, ledger, transaction_hash, occurred_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
   `);
   const selectBalance = database.prepare(
     "SELECT balance FROM token_balances WHERE token = ?"
@@ -123,6 +141,52 @@ export function openLedgerStore(databasePath) {
         FROM ledger_entries ${where}
         ORDER BY ledger ASC, id ASC LIMIT ? OFFSET ?
       `).all(...values, limit, offset);
+    },
+
+    recordAccordEvent(entry) {
+      try {
+        insertAccordEvent.run(
+          entry.eventId,
+          entry.topic,
+          JSON.stringify(entry.payload),
+          entry.ledger,
+          entry.transactionHash ?? null,
+          entry.occurredAt
+        );
+        return true;
+      } catch (error) {
+        if (String(error.message).includes("UNIQUE constraint failed: accord_events.event_id")) {
+          return false;
+        }
+        throw error;
+      }
+    },
+
+    getAccordEvents({ topic, from, to, limit, offset }) {
+      const clauses = [];
+      const values = [];
+      if (topic) {
+        clauses.push("topic = ?");
+        values.push(topic);
+      }
+      if (from) {
+        clauses.push("occurred_at >= ?");
+        values.push(from);
+      }
+      if (to) {
+        clauses.push("occurred_at <= ?");
+        values.push(to);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      return database.prepare(`
+        SELECT event_id AS eventId, topic, payload, ledger,
+          transaction_hash AS transactionHash, occurred_at AS occurredAt
+        FROM accord_events ${where}
+        ORDER BY ledger ASC, id ASC LIMIT ? OFFSET ?
+      `).all(...values, limit, offset).map((row) => ({
+        ...row,
+        payload: JSON.parse(row.payload),
+      }));
     },
 
     setState(key, value) {
