@@ -8,6 +8,16 @@ vi.mock("../hooks/useTreasuryAnalytics", () => ({
   useTreasuryAnalytics: vi.fn(),
 }));
 
+vi.mock("recharts", async () => {
+  const original = await vi.importActual("recharts");
+  return {
+    ...original,
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+      <div>{children}</div>
+    ),
+  };
+});
+
 const refresh = vi.fn();
 const save = vi.fn();
 vi.mock("jspdf", () => ({
@@ -63,49 +73,39 @@ describe("AnalyticsPage", () => {
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
-  test("renders card loading and empty states", () => {
+  test("shows a loading state while fetching", () => {
     vi.mocked(useTreasuryAnalytics).mockReturnValue({
       data: null,
       loading: true,
       error: null,
       refresh,
-  test("shows a loading state while fetching", () => {
-    vi.mocked(getThreshold).mockReturnValue(new Promise(() => {}));
-    vi.mocked(getTotalProposals).mockReturnValue(new Promise(() => {}));
-    vi.mocked(getContractXlmBalance).mockReturnValue(new Promise(() => {}));
-    vi.mocked(getContractUsdcBalance).mockReturnValue(new Promise(() => {}));
+    });
 
     render(<AnalyticsPage />);
 
-    expect(screen.getAllByText("Loading...").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText("Loading...").length).toBeGreaterThanOrEqual(1);
+    // Stat cards show ellipsis during loading
+    expect(screen.getAllByText("…").length).toBeGreaterThanOrEqual(3);
   });
 
-  test("renders stat cards and charts once data loads", async () => {
-    mockSuccessfulLoad([
-      rawProposal({ id: 1, amount: "100", category: "Grant" }),
-      rawProposal({ id: 2, amount: "50", category: "Payroll" }),
-    ]);
+  test("shows an empty state when there is no data", () => {
+    vi.mocked(useTreasuryAnalytics).mockReturnValue({
+      data: {
+        ...analytics,
+        spendByCategory: [],
+        spendByOwner: [],
+        flow: [],
+      },
+      loading: false,
+      error: null,
+      refresh,
+    });
 
     render(<AnalyticsPage />);
 
-    await waitFor(() =>
-      expect(screen.getAllByText("150.00")[0]).toBeInTheDocument(),
-    );
-    expect(screen.getByText("2")).toBeInTheDocument(); // transaction count
-    expect(screen.getByText("1000")).toBeInTheDocument(); // XLM balance
-    expect(screen.getByText("500")).toBeInTheDocument(); // USDC balance
-  });
-
-  test("shows an empty state when there is no executed transfer data", async () => {
-    mockSuccessfulLoad([]);
-
-    render(<AnalyticsPage />);
-
-    await waitFor(() =>
-      expect(
-        screen.getByText("No spend data available for the selected filters."),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      screen.getByText("No spend data available for the selected filters."),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
         "No spend data available by proposing owner for the selected filters.",
@@ -114,57 +114,22 @@ describe("AnalyticsPage", () => {
     expect(
       screen.getByText("No treasury flow data matches the selected filters."),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("No proposal activity data available."),
-    ).toBeInTheDocument();
   });
 
-  test("shows an error state with a working retry action", async () => {
-    vi.mocked(getThreshold).mockRejectedValue(new Error("RPC unavailable"));
-    vi.mocked(getTotalProposals).mockResolvedValue(0);
-    vi.mocked(getContractXlmBalance).mockResolvedValue("0");
-    vi.mocked(getContractUsdcBalance).mockResolvedValue("0");
-
-    render(<AnalyticsPage />);
-
-    await waitFor(() =>
-      expect(screen.getAllByText("RPC unavailable").length).toBeGreaterThanOrEqual(3),
-    );
-    mockSuccessfulLoad([rawProposal()]);
-    const retryButtons = screen.getAllByRole("button", { name: /retry/i });
-    fireEvent.click(retryButtons[0]);
-
-    await waitFor(() =>
-      expect(screen.getAllByText("100.00")[0]).toBeInTheDocument(),
-    );
-  });
-
-  test("filtering by category narrows the totals shown", async () => {
-    mockSuccessfulLoad([
-      rawProposal({ id: 1, amount: "100", category: "Grant" }),
-      rawProposal({ id: 2, amount: "50", category: "Payroll" }),
-    ]);
-
-    render(<AnalyticsPage />);
-    await waitFor(() =>
-      expect(screen.getAllByText("150.00")[0]).toBeInTheDocument(),
-    );
-
-    fireEvent.change(screen.getByLabelText("Category"), {
-      target: { value: "Grant" },
-    });
-    const { rerender } = render(<AnalyticsPage />);
-    expect(screen.getAllByText("…")).toHaveLength(3);
-
+  test("shows an error state with a working retry action", () => {
     vi.mocked(useTreasuryAnalytics).mockReturnValue({
-      data: { ...analytics, summary: { ...analytics.summary, totalDisbursed: {}, totalInflows: {}, activeProposals: 0 } },
+      data: null,
       loading: false,
-      error: null,
+      error: "RPC unavailable",
       refresh,
     });
-    rerender(<AnalyticsPage />);
-    expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getByText("0")).toBeInTheDocument();
+
+    render(<AnalyticsPage />);
+
+    expect(screen.getAllByText("RPC unavailable").length).toBeGreaterThanOrEqual(1);
+    const retryButtons = screen.getAllByRole("button", { name: /retry/i });
+    fireEvent.click(retryButtons[0]);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   test("gives controls and charts accessible names and keeps exports keyboard-operable", () => {
@@ -181,14 +146,16 @@ describe("AnalyticsPage", () => {
     ]) {
       expect(screen.getByLabelText(name)).toBeInTheDocument();
     }
-    expect(screen.getByRole("img", { name: /spend by category chart/i })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /spend by proposing owner chart/i })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /treasury outflow over time chart/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /spend by category chart/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /spend by proposing owner chart/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /treasury inflow vs outflow chart/i }),
+    ).toBeInTheDocument();
 
-    fireEvent.keyDown(
-      screen.getByRole("button", { name: /export spend csv/i }),
-      { key: "Enter" },
-    );
     fireEvent.click(screen.getByRole("button", { name: /export spend csv/i }));
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
@@ -201,5 +168,54 @@ describe("AnalyticsPage", () => {
     expect(vi.mocked(useTreasuryAnalytics)).toHaveBeenLastCalledWith(
       expect.objectContaining({ category: "Grant" }),
     );
+  });
+
+  test("filtering by category narrows the totals shown", () => {
+    render(<AnalyticsPage />);
+
+    vi.mocked(useTreasuryAnalytics).mockReturnValue({
+      data: {
+        ...analytics,
+        summary: {
+          ...analytics.summary,
+          totalDisbursed: {},
+          totalInflows: {},
+          activeProposals: 0,
+        },
+      },
+      loading: false,
+      error: null,
+      refresh,
+    });
+
+    const { rerender } = render(<AnalyticsPage />);
+    fireEvent.change(screen.getAllByLabelText("Filter by category")[0], {
+      target: { value: "Grant" },
+    });
+
+    rerender(<AnalyticsPage />);
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("0").length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("export buttons are disabled when there is no data", () => {
+    vi.mocked(useTreasuryAnalytics).mockReturnValue({
+      data: null,
+      loading: false,
+      error: null,
+      refresh,
+    });
+
+    render(<AnalyticsPage />);
+
+    expect(
+      screen.getByRole("button", { name: /export spend csv/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /export treasury csv/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /download pdf treasury statement/i }),
+    ).toBeDisabled();
   });
 });

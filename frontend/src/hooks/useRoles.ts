@@ -84,6 +84,17 @@ function parseRoleAssignments(raw: string | undefined): RoleAssignments {
     const [address, rolesValue] = entry.split(":");
     const normalizedAddress = normalizeAddress(address ?? "");
     if (!normalizedAddress || !rolesValue) return assignments;
+    const parsedRoles = rolesValue
+      .split("|")
+      .map(parseRole)
+      .filter((r): r is WalletRole => r !== null);
+    if (parsedRoles.length > 0) {
+      assignments[normalizedAddress] = parsedRoles;
+    }
+    return assignments;
+  }, {});
+}
+
 export function useRoles(address: string | null) {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
