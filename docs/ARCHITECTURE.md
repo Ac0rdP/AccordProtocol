@@ -49,6 +49,8 @@
 | `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
 | `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
 
+See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
+
 ## 3. Storage Layout (Soroban)
 
 ### Instance Storage (low-cost, short TTL)
@@ -794,7 +796,25 @@ For long-term event history, use one of the following:
 
 See issue #103 and the TTL documentation in Section 3 for context on how on-chain data persistence works more broadly.
 
-## 8. Frontend Polling Strategy
+### Treasury Ledger and Reconciliation
+
+The standalone Node indexer in `indexer/` polls Soroban RPC token-contract events for the configured XLM and USDC contracts. It records successful token `transfer` events where the Accord contract is the sender or recipient. These token events are the source of truth for both deposits and executed outflows; the Accord `executed` event is not counted separately, so the same transfer is never recorded twice.
+
+Each SQLite ledger row stores the token, direction, positive amount in the token's smallest unit, event ledger and timestamp, transaction hash, endpoints, and resulting running balance. RPC event IDs are unique keys, making replay after a restart idempotent. The database also stores its event cursor, latest per-token reconciliation results, and current implied balances.
+
+Configure the indexer with `ACCORD_CONTRACT_ID`, `XLM_TOKEN_ADDRESS`, `USDC_TOKEN_ADDRESS`, `SIM_SOURCE`, and `INDEXER_START_LEDGER`. The start ledger must be the beginning of the history to account for. Since standard RPC nodes retain events only for a limited window, a historical start ledger requires an archival RPC endpoint; the indexer requires this setting rather than silently treating an incomplete history as complete. Copy the root `.env.example` to `.env`, fill in these values, then run `npm install` and `npm start` from `indexer/`. Node.js 22.13 or newer is required.
+
+Indexing polls every 5 seconds by default. A separate reconciliation task runs every 60 seconds, reads each token's on-chain `balance(ACCORD_CONTRACT_ID)` through RPC simulation, compares it with the ledger balance, logs non-zero drift, and stores the latest result without pausing event polling. Both intervals can be changed with `INDEX_INTERVAL_MS` and `RECONCILE_INTERVAL_MS`.
+
+The local HTTP API listens on `127.0.0.1:8787` by default:
+
+- `GET /ledger?token=USDC&from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z` returns ledger rows for an optional token and inclusive time window. `limit` and `offset` support pagination.
+- `GET /reconciliation` returns the latest stored actual/implied balances and drift for each token, as strings in smallest units.
+- `GET /health` returns the current indexing checkpoint.
+
+`DATABASE_PATH`, `HOST`, and `PORT` can override the SQLite path and API bind settings. Keep the API bound to localhost unless it is placed behind an authenticated service.
+
+## 7. Frontend Polling Strategy
 
 1. Load current proposals on mount, then poll every 15-30s for active proposals.
 2. After a confirmed transaction (approve, execute), re-fetch the affected proposal immediately for optimistic UI.

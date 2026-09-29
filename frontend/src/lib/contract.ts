@@ -724,9 +724,20 @@ async function simulateContractView(
 }
 
 export async function getContractXlmBalance(): Promise<string> {
-  const entry = await server.getAccountEntry(CONTRACT_ID);
-  const stroops = BigInt(entry.balance().toString());
-  return stroopsToDisplay(stroops);
+  const xlmToken = import.meta.env.VITE_XLM_TOKEN_ADDRESS as string;
+  if (!xlmToken) return "N/A";
+  try {
+    const val = await simulateContractView(xlmToken, "balance", [
+      nativeToScVal(CONTRACT_ID, { type: "address" }),
+    ]);
+    const raw = scValToNative(val);
+    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+      return stroopsToDisplay(BigInt(raw));
+    }
+    return "0";
+  } catch {
+    return "—";
+  }
 }
 
 export async function getContractUsdcBalance(): Promise<string> {
@@ -821,6 +832,47 @@ function formatEventTimestamp(
     return `Ledger #${ledger}`;
   }
   return "Just now";
+}
+
+export function canonicalEventKey(event: {
+  ledger?: number | string;
+  txHash?: string;
+  tx_hash?: string;
+  eventIndex?: number | string | bigint;
+  event_index?: number | string | bigint;
+}): string {
+  const ledger = Number(event?.ledger ?? 0);
+  const txHash = String(event?.txHash ?? event?.tx_hash ?? "");
+  const eventIndex = Number(event?.eventIndex ?? event?.event_index ?? 0);
+  return `${ledger}:${txHash}:${eventIndex}`;
+}
+
+export function dedupeContractEvents<T extends {
+  ledger?: number | string;
+  txHash?: string;
+  tx_hash?: string;
+  eventIndex?: number | string | bigint;
+  event_index?: number | string | bigint;
+}>(events: T[]): T[] {
+  const seen = new Set<string>();
+  return [...events]
+    .filter((event) => {
+      const key = canonicalEventKey(event);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => {
+      const ledgerDelta = Number(a.ledger ?? 0) - Number(b.ledger ?? 0);
+      if (ledgerDelta !== 0) return ledgerDelta;
+      const eventDelta =
+        Number(a.eventIndex ?? a.event_index ?? 0) -
+        Number(b.eventIndex ?? b.event_index ?? 0);
+      if (eventDelta !== 0) return eventDelta;
+      return String(a.txHash ?? a.tx_hash ?? "").localeCompare(
+        String(b.txHash ?? b.tx_hash ?? ""),
+      );
+    });
 }
 
 function resolveEventType(
@@ -945,9 +997,10 @@ export async function getProposalEvents(
     });
 
     const events: ProposalEvent[] = [];
+    const rawEvents = dedupeContractEvents(res.events ?? []);
 
-    if (res.events && Array.isArray(res.events)) {
-      for (const rawEv of res.events) {
+    if (rawEvents.length > 0) {
+      for (const rawEv of rawEvents) {
         try {
           const rawTopic = Array.isArray(rawEv.topic)
             ? rawEv.topic
