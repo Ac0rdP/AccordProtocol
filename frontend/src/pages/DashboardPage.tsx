@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
-import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
-import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import type { WalletRole } from "../hooks/useRoles";
+import type { RoleAccessBanner } from "../hooks/useRoles";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
@@ -38,7 +36,7 @@ type DashboardPageProps = {
   onRevoke: (id: number) => void;
   onCreateProposal: () => void;
   onCreateRecurringPayment: () => void;
-  walletRoles: WalletRole[];
+  roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
 };
@@ -53,16 +51,14 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
-  walletRoles,
+  roleBanner,
   loading,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
-  const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
-  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
-  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -123,13 +119,13 @@ export function DashboardPage({
     setDismissedError(null);
   }, [error]);
 
+  const showRoleBanner = Boolean(
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key
+  );
 
-
-  const createDisabledReason =
-    walletAddress && !canCreate(walletRoles)
-      ? missingRoleTooltip("create")
-      : undefined;
-  const createDisabled = Boolean(createDisabledReason);
+  const roleBannerStyles = roleBanner?.variant === "unrecognized"
+    ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+    : "border-sky-500/20 bg-sky-500/10 text-sky-100";
 
   return (
     <>
@@ -183,9 +179,7 @@ export function DashboardPage({
               </div>
             ))}
           </div>
-        </div>
-      )}
-
+        )}
       {showRoleBanner && roleBanner && (
         <div
           role="status"
@@ -207,7 +201,6 @@ export function DashboardPage({
           </button>
         </div>
       )}
-
 
       {readyCount > 0 && !bannerDismissed && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 mb-6 text-sm text-emerald-400 flex items-center justify-between">
