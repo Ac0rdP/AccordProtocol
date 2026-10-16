@@ -11148,3 +11148,239 @@ fn total_weight_bound_holds_with_delegations_active() {
     assert_eq!(client.get_effective_weight(&c), 4);
     assert_eq!(sum_effective_weights(&client), total);
 }
+
+// ─── ContractError completeness (#749) ───────────────────────────────────────
+//
+// Every `ContractError` variant must have a unique code inside the contract
+// error range and a matching row in docs/CONTRACT_API.md. Adding a variant
+// fails to compile until it is named in `contract_error_name`, after which
+// the scan below finds it and the docs check fails until it is documented.
+
+/// Codes are expected in `1..=MAX_CONTRACT_ERROR_CODE`; 0 is never used.
+const MAX_CONTRACT_ERROR_CODE: u32 = 999;
+/// Codes scanned when discovering variants; far above the expected range so
+/// an out-of-range variant is still found and reported.
+const CONTRACT_ERROR_SCAN_LIMIT: u32 = 100_000;
+
+const CONTRACT_API_DOC: &str = include_str!("../../../docs/CONTRACT_API.md");
+
+/// Exhaustive on purpose: no wildcard arm, so a new variant is a compile error here.
+fn contract_error_name(error: ContractError) -> &'static str {
+    match error {
+        ContractError::AlreadyInitialized => "AlreadyInitialized",
+        ContractError::NotInitialized => "NotInitialized",
+        ContractError::Unauthorized => "Unauthorized",
+        ContractError::InvalidThreshold => "InvalidThreshold",
+        ContractError::InvalidOwners => "InvalidOwners",
+        ContractError::ProposalNotFound => "ProposalNotFound",
+        ContractError::ProposalNotActive => "ProposalNotActive",
+        ContractError::AlreadyApproved => "AlreadyApproved",
+        ContractError::NotApproved => "NotApproved",
+        ContractError::ThresholdNotMet => "ThresholdNotMet",
+        ContractError::ProposalExpired => "ProposalExpired",
+        ContractError::InvalidAmount => "InvalidAmount",
+        ContractError::InvalidDeadline => "InvalidDeadline",
+        ContractError::InvalidToken => "InvalidToken",
+        ContractError::TransferFailed => "TransferFailed",
+        ContractError::EmptyDescription => "EmptyDescription",
+        ContractError::DescriptionTooLong => "DescriptionTooLong",
+        ContractError::TooManyActiveProposals => "TooManyActiveProposals",
+        ContractError::DuplicateOwner => "DuplicateOwner",
+        ContractError::ArithmeticError => "ArithmeticError",
+        ContractError::InvalidDuration => "InvalidDuration",
+        ContractError::InvalidRecipient => "InvalidRecipient",
+        ContractError::TimeLockActive => "TimeLockActive",
+        ContractError::WouldBreakThreshold => "WouldBreakThreshold",
+        ContractError::OwnerNotFound => "OwnerNotFound",
+        ContractError::ContractFrozen => "ContractFrozen",
+        ContractError::NoGuardian => "NoGuardian",
+        ContractError::InvalidInterval => "InvalidInterval",
+        ContractError::InvalidSchedule => "InvalidSchedule",
+        ContractError::InvalidCap => "InvalidCap",
+        ContractError::SpendingLimitExceeded => "SpendingLimitExceeded",
+        ContractError::RecurringPaymentNotFound => "RecurringPaymentNotFound",
+        ContractError::RecurringPaymentNotDue => "RecurringPaymentNotDue",
+        ContractError::RecurringPaymentComplete => "RecurringPaymentComplete",
+        ContractError::RecurringPaymentInactive => "RecurringPaymentInactive",
+        ContractError::RecurringIntervalNotElapsed => "RecurringIntervalNotElapsed",
+        ContractError::TooManyActiveRecurring => "TooManyActiveRecurring",
+        ContractError::ScheduleAlreadyCancelled => "ScheduleAlreadyCancelled",
+        ContractError::ScheduleAlreadyPaused => "ScheduleAlreadyPaused",
+        ContractError::ScheduleNotPaused => "ScheduleNotPaused",
+        ContractError::ScheduleTerminal => "ScheduleTerminal",
+        ContractError::InvalidWeightsLength => "InvalidWeightsLength",
+        ContractError::WeightBelowMinimum => "WeightBelowMinimum",
+        ContractError::InvalidWeight => "InvalidWeight",
+        ContractError::AlreadyMigrated => "AlreadyMigrated",
+        ContractError::SingleOwnerWeightCapExceeded => "SingleOwnerWeightCapExceeded",
+        ContractError::TargetOwnerNoLongerExists => "TargetOwnerNoLongerExists",
+        ContractError::WouldBreakQuorum => "WouldBreakQuorum",
+        ContractError::CannotRemoveLastOwner => "CannotRemoveLastOwner",
+        ContractError::ThresholdExceedsOwnerCount => "ThresholdExceedsOwnerCount",
+        ContractError::ScheduleNotActive => "ScheduleNotActive",
+        ContractError::MissingRole => "MissingRole",
+        ContractError::RoleAlreadyGranted => "RoleAlreadyGranted",
+        ContractError::RoleNotGranted => "RoleNotGranted",
+        ContractError::InvalidRole => "InvalidRole",
+        ContractError::DeprecatedEntrypoint => "DeprecatedEntrypoint",
+    }
+}
+
+/// Every variant, discovered by decoding each candidate contract error code.
+fn scan_contract_errors() -> std::vec::Vec<(u32, ContractError)> {
+    let mut found = std::vec::Vec::new();
+    for code in 0..=CONTRACT_ERROR_SCAN_LIMIT {
+        let error = soroban_sdk::Error::from_contract_error(code);
+        if let Ok(variant) = ContractError::try_from(error) {
+            found.push((code, variant));
+        }
+    }
+    found
+}
+
+/// Parses the `| code | Variant | ... |` rows of the "## Error Reference" table.
+fn documented_error_codes() -> std::collections::BTreeMap<std::string::String, u32> {
+    let start = CONTRACT_API_DOC
+        .find("## Error Reference")
+        .expect("docs/CONTRACT_API.md is missing its '## Error Reference' section");
+    let section = &CONTRACT_API_DOC[start..];
+    let end = section[1..].find("\n## ").map(|i| i + 1).unwrap_or(section.len());
+
+    let mut documented = std::collections::BTreeMap::new();
+    for line in section[..end].lines() {
+        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        if cells.len() < 3 {
+            continue;
+        }
+        if let Ok(code) = cells[1].parse::<u32>() {
+            let name = cells[2].trim_matches('`').to_string();
+            if let Some(previous) = documented.insert(name.clone(), code) {
+                panic!(
+                    "docs/CONTRACT_API.md documents {} twice (codes {} and {})",
+                    name, previous, code
+                );
+            }
+        }
+    }
+    documented
+}
+
+#[test]
+fn contract_error_codes_are_unique() {
+    let errors = scan_contract_errors();
+    assert!(!errors.is_empty(), "no ContractError variants were discovered");
+
+    let mut by_name: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for (code, variant) in errors.iter() {
+        let name = contract_error_name(*variant);
+        assert_eq!(
+            *variant as u32, *code,
+            "ContractError::{} decoded from code {} but its discriminant is {}",
+            name, code, *variant as u32
+        );
+        assert_eq!(
+            soroban_sdk::Error::from(*variant).get_code(),
+            *code,
+            "ContractError::{} does not round-trip through soroban_sdk::Error",
+            name
+        );
+        if let Some(other) = by_name.insert(name, *code) {
+            panic!("ContractError::{} is reachable from codes {} and {}", name, other, code);
+        }
+    }
+
+    let mut codes: std::vec::Vec<u32> = errors.iter().map(|(code, _)| *code).collect();
+    codes.sort();
+    for pair in codes.windows(2) {
+        assert_ne!(pair[0], pair[1], "two ContractError variants share code {}", pair[0]);
+    }
+}
+
+#[test]
+fn contract_error_codes_stay_in_contract_range_and_clear_of_host_errors() {
+    for (code, variant) in scan_contract_errors() {
+        let name = contract_error_name(variant);
+        assert!(
+            (1..=MAX_CONTRACT_ERROR_CODE).contains(&code),
+            "ContractError::{} has code {} outside the expected range 1..={}",
+            name, code, MAX_CONTRACT_ERROR_CODE
+        );
+        let encoded = soroban_sdk::Error::from(variant);
+        assert!(
+            encoded.is_type(xdr::ScErrorType::Contract),
+            "ContractError::{} (code {}) is not encoded as a contract error",
+            name, code
+        );
+    }
+
+    // No host error (any non-contract type, any host code) may decode as a
+    // ContractError, so host failures can never be mistaken for ours.
+    for error_type in xdr::ScErrorType::VARIANTS {
+        if error_type == xdr::ScErrorType::Contract {
+            continue;
+        }
+        for error_code in xdr::ScErrorCode::VARIANTS {
+            let host_error = soroban_sdk::Error::from_type_and_code(error_type, error_code);
+            assert!(
+                ContractError::try_from(host_error).is_err(),
+                "host error {:?}/{:?} decodes as ContractError::{}",
+                error_type,
+                error_code,
+                contract_error_name(ContractError::try_from(host_error).unwrap())
+            );
+        }
+    }
+}
+
+#[test]
+fn every_contract_error_is_documented_in_contract_api() {
+    let documented = documented_error_codes();
+    let errors = scan_contract_errors();
+
+    for (code, variant) in errors.iter() {
+        let name = contract_error_name(*variant);
+        match documented.get(name) {
+            None => panic!(
+                "ContractError::{} (code {}) is missing from the Error Reference table in docs/CONTRACT_API.md",
+                name, code
+            ),
+            Some(doc_code) => assert_eq!(
+                doc_code, code,
+                "docs/CONTRACT_API.md lists ContractError::{} as code {} but the contract uses {}",
+                name, doc_code, code
+            ),
+        }
+    }
+
+    // The reverse direction: no stale rows for variants that no longer exist.
+    for (name, doc_code) in documented.iter() {
+        assert!(
+            errors.iter().any(|(_, v)| contract_error_name(*v) == name.as_str()),
+            "docs/CONTRACT_API.md documents {} (code {}) but ContractError has no such variant",
+            name, doc_code
+        );
+    }
+
+    // The "Common Errors Quick Reference" rows (`| code Variant | ... |`)
+    // must agree with the contract too.
+    for line in CONTRACT_API_DOC.lines() {
+        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        let mut parts = cells[1].splitn(2, ' ');
+        let (Some(code), Some(name)) = (parts.next(), parts.next()) else { continue };
+        let (Ok(code), true) = (code.parse::<u32>(), name.starts_with('`')) else { continue };
+        let name = name.trim_matches('`');
+        let actual = errors
+            .iter()
+            .find(|(_, v)| contract_error_name(*v) == name)
+            .map(|(c, _)| *c)
+            .unwrap_or_else(|| panic!("quick reference lists unknown error {} (code {})", name, code));
+        assert_eq!(
+            code, actual,
+            "quick reference lists ContractError::{} as code {} but the contract uses {}",
+            name, code, actual
+        );
+    }
+}
