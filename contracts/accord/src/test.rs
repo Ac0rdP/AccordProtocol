@@ -10969,3 +10969,182 @@ fn total_weight_invariant_holds_for_removal_then_weight_change_of_same_owner() {
     assert_eq!(client.get_total_weight(), 8);
     assert!(!client.is_owner(&c));
 }
+
+// ─── Effective-weight delegation audit (#748) ────────────────────────────────
+//
+// `compute_effective_weight` = raw weight − active outgoing delegation +
+// active incoming delegations from current owners. A delegation is active
+// while `expiry > now`. Revoking a delegation deletes its entry, and removing
+// an owner deletes every delegation where they are delegator or delegate, so
+// neither side keeps a stale contribution. No public entrypoint writes
+// delegations yet, so these tests write them directly.
+
+fn write_test_delegation(
+    env: &Env,
+    client: &AccordContractClient,
+    delegator: &Address,
+    delegate: &Address,
+    weight: u32,
+    expiry: Option<u64>,
+) {
+    let delegation = Delegation {
+        delegator: delegator.clone(),
+        delegate: delegate.clone(),
+        weight,
+        expiry,
+    };
+    env.as_contract(&client.address, || write_delegation(env, &delegation));
+}
+
+fn revoke_test_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) {
+    env.as_contract(&client.address, || remove_delegation(env, delegator));
+}
+
+fn stored_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) -> Option<Delegation> {
+    env.as_contract(&client.address, || read_delegation(env, delegator))
+}
+
+fn remove_owner_via(env: &Env, client: &AccordContractClient, executor: &Address, target: &Address) {
+    let id = client.create_remove_owner_proposal(executor, target, &str(env, "remove"), &DEADLINE);
+    approve_and_execute(client, executor, id);
+}
+
+fn sum_effective_weights(client: &AccordContractClient) -> u32 {
+    let mut sum = 0;
+    for owner in client.get_owners().iter() {
+        sum += client.get_effective_weight(&owner);
+    }
+    sum
+}
+
+#[test]
+fn effective_weight_with_active_delegation() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&a), 1);
+    assert_eq!(client.get_effective_weight(&b), 7);
+    assert_eq!(client.get_effective_weight(&c), 4);
+
+    // A future expiry is still active.
+    write_test_delegation(&env, &client, &a, &b, 2, Some(NOW + 100));
+    assert_eq!(client.get_effective_weight(&a), 2);
+    assert_eq!(client.get_effective_weight(&b), 6);
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+}
+
+#[test]
+fn expired_delegation_contributes_nothing() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b) = (owners[0].clone(), owners[1].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, Some(NOW + 100));
+    set_timestamp(&env, NOW + 99);
+    assert_eq!(client.get_effective_weight(&a), 1);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    // `expiry <= now` is expired, so the boundary second already excludes it.
+    set_timestamp(&env, NOW + 100);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(client.get_active_delegations().is_empty());
+
+    set_timestamp(&env, NOW + 10_000);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+}
+
+#[test]
+fn revoked_delegation_contributes_nothing() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b) = (owners[0].clone(), owners[1].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    revoke_test_delegation(&env, &client, &a);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(client.get_active_delegations().is_empty());
+    assert!(client.get_delegations(&b).incoming.is_empty());
+}
+
+#[test]
+fn removing_delegate_restores_delegator_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&a), 1);
+
+    remove_owner_via(&env, &client, &c, &b);
+
+    assert_eq!(
+        client.try_get_effective_weight(&b),
+        Err(Ok(ContractError::OwnerNotFound))
+    );
+    // The delegation to the removed owner no longer drains A's weight.
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert!(stored_delegation(&env, &client, &a).is_none());
+    assert!(client.get_delegations(&a).outgoing.is_empty());
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+    assert_eq!(client.get_total_weight(), 12);
+}
+
+#[test]
+fn removing_delegator_clears_delegate_contribution() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    remove_owner_via(&env, &client, &c, &a);
+
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(stored_delegation(&env, &client, &a).is_none());
+    assert!(client.get_delegations(&b).incoming.is_empty());
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+
+    // Re-adding the former delegator must not revive the old delegation.
+    let id = client.create_add_owner_proposal(&c, &a, &4, &str(&env, "re-add"), &DEADLINE);
+    approve_and_execute(&client, &c, id);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+}
+
+#[test]
+fn total_weight_bound_holds_with_delegations_active() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c, d) = (owners[0].clone(), owners[1].clone(), owners[2].clone(), owners[3].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    write_test_delegation(&env, &client, &c, &b, 4, Some(NOW + 500));
+    write_test_delegation(&env, &client, &d, &a, 2, None);
+
+    let total = client.get_total_weight();
+    assert_eq!(client.get_effective_weight(&a), 3);
+    assert_eq!(client.get_effective_weight(&b), 11);
+    assert_eq!(client.get_effective_weight(&c), 0);
+    assert_eq!(client.get_effective_weight(&d), 2);
+
+    // Delegation moves weight between owners but never creates it.
+    assert_eq!(sum_effective_weights(&client), total);
+    assert!(total <= MAX_TOTAL_WEIGHT);
+    for owner in client.get_owners().iter() {
+        assert!(client.get_effective_weight(&owner) <= total);
+    }
+
+    // The bound also holds for an approval counted at effective weight.
+    let id = client.create_add_owner_proposal(&b, &Address::generate(&env), &1, &str(&env, "bound"), &DEADLINE);
+    client.approve(&b, &id);
+    assert_eq!(client.get_proposal(&id).approvals, 11);
+    assert!(client.get_proposal(&id).approvals <= total);
+
+    // Once the timed delegation lapses the sum is still exactly the total.
+    set_timestamp(&env, NOW + 500);
+    assert_eq!(client.get_effective_weight(&b), 7);
+    assert_eq!(client.get_effective_weight(&c), 4);
+    assert_eq!(sum_effective_weights(&client), total);
+}
