@@ -615,6 +615,10 @@ export async function disburseRecurringPayment(
   ]);
 }
 
+// Canonical recurring-schedule cancellation path (#738). Cancellation is
+// governance-gated: it must go through the create → approve → execute proposal
+// lifecycle. The legacy direct on-chain `cancel_recurring_schedule` entrypoint
+// is deprecated and always returns a `DeprecatedEntrypoint` error.
 export async function createCancelRecurringProposal(
   callerAddress: string,
   scheduleId: number,

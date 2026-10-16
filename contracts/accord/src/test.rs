@@ -6,9 +6,10 @@
 extern crate std;
 
 use super::*;
+use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
 use proptest::prelude::*;
-use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
+use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
 use std::format;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -2087,6 +2088,43 @@ fn expired_status_takes_priority_over_ready() {
 fn get_version_returns_current_version() {
     let (_, client, _, _, _, _, _) = setup(2);
     assert_eq!(client.get_version(), 1);
+}
+
+// ─── Storage-schema version (#737) ────────────────────────────────────────────
+
+#[test]
+fn storage_version_is_set_on_initialize_and_returned_by_view() {
+    let (_, client, _, _, _, _, _) = setup(2);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
+}
+
+/// A legacy deployment has no version key, so the view must report `0` rather
+/// than inventing the current version.
+#[test]
+fn storage_version_defaults_to_zero_when_absent() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&storage_version_key());
+    });
+    assert_eq!(client.get_storage_version(), 0);
+}
+
+/// Both one-time migrations bring a legacy layout up to the current schema and
+/// therefore stamp the current storage-schema version.
+#[test]
+fn storage_version_is_stamped_by_migrations() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+
+    // Simulate a pre-versioning deployment, then migrate it.
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&storage_version_key());
+    });
+    mark_governance_unmigrated(&env, &client.address);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_weighted_governance(&approvers);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
 }
 
 // ─── get_required_quorum_weight ───────────────────────────────────────────────
@@ -7725,8 +7763,125 @@ fn migrate_rejects_before_initialize() {
     );
 }
 
-// ─── Migration Regression: weighted vs. flat-count equivalence (#291) ───────
+// ─── Migration Idempotency Matrix (#736) ─────────────────────────────────────
+//
+// `migrate_to_weighted_governance` and `migrate_to_rbac` are one-time
+// operations. A regression in either guard would let a second call re-run
+// against an already-migrated multisig and corrupt owner weights or role
+// assignments. The cases below (together with the pre-existing
+// `migrate_rejects_second_call_and_leaves_weights_unchanged` and
+// `migrate_to_rbac_grants_default_roles_and_is_single_run`) cover the full
+// repeat-call / born-current / uninitialized matrix for both entrypoints.
 
+/// A contract initialized through the weighted `initialize` path already has
+/// real per-owner weights, so it can never be migrated.
+#[test]
+fn migration_matrix_weighted_born_weighted_rejects_migration() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert!(client.is_governance_migrated());
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+}
+
+/// The rejected second weighted migration must not modify any weight state:
+/// the guard runs before any weight is written.
+#[test]
+fn migration_matrix_weighted_rejected_second_call_leaves_weights_unchanged() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    mark_governance_unmigrated(&env, &client.address);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_weighted_governance(&approvers);
+
+    let wa = client.get_owner_weight(&owner_a);
+    let wb = client.get_owner_weight(&owner_b);
+    let wc = client.get_owner_weight(&owner_c);
+    let total = client.get_total_weight();
+
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+
+    assert_eq!(client.get_owner_weight(&owner_a), wa);
+    assert_eq!(client.get_owner_weight(&owner_b), wb);
+    assert_eq!(client.get_owner_weight(&owner_c), wc);
+    assert_eq!(client.get_total_weight(), total);
+}
+
+/// A successful RBAC migration is single-run: the second call fails with
+/// `AlreadyMigrated` and leaves every role assignment and member index intact.
+#[test]
+fn migration_matrix_rbac_second_call_rejected_and_roles_unchanged() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+
+    let roles_a = client.get_roles(&owner_a);
+    let members_approver = client.get_role_members(&Role::Approver);
+    let members_executor = client.get_role_members(&Role::Executor);
+
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+
+    assert_eq!(client.get_roles(&owner_a), roles_a);
+    assert_eq!(client.get_role_members(&Role::Approver), members_approver);
+    assert_eq!(client.get_role_members(&Role::Executor), members_executor);
+}
+
+/// A freshly initialized contract is already RBAC-enabled (`role_version` is
+/// stamped by `initialize`), so RBAC migration must be rejected outright.
+#[test]
+fn migration_matrix_rbac_born_rbac_enabled_rejects_migration() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+
+    let roles_before = client.get_roles(&owner_a);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_roles(&owner_a), roles_before);
+}
+
+/// Both migration entrypoints must refuse to run on an uninitialized contract.
+#[test]
+fn migration_matrix_uninitialized_rejects_both_entrypoints() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let approvers = Vec::new(&env);
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::NotInitialized))
+    );
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::NotInitialized))
+    );
+}
+
+// ─── Migration Regression: weighted vs. flat-count equivalence (#291) ───────
 /// Proves that a freshly-migrated contract with all-equal weights produces
 /// identical approval outcomes to a pre-migration flat-count contract for the
 /// same sequence of approve/revoke calls. Two independent, otherwise-identical
@@ -7907,19 +8062,74 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
 
 #[test]
 fn cancelled_recurring_schedule_cannot_disburse() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    // #738: cancellation is governance-gated. A schedule is cancelled through
+    // `create_cancel_recurring_proposal` and then a disburse attempt must fail.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
 
-    let id = client.create_recurring_schedule(
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
-        &60,
-        &5,
-        &str(&env, "Cancelled schedule"),
+        &recipient,
+        &token_client.address,
+        &1_000_000_i128,
+        &3_600_u64,
+        &NOW,
+        &(NOW + 86_400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Schedule for cancel test"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    let schedule_id = 1_u64;
+    let cancel_id = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &str(&env, "Cancel schedule 1"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
+    assert_eq!(
+        client.get_recurring_payment(&schedule_id).status,
+        RecurringStatus::Cancelled
     );
 
-    client.cancel_recurring_schedule(&owner_a, &id);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
+    );
+}
 
-    assert_eq!(client.try_disburse_recurring(&owner_a, &id), Err(Ok(ContractError::ProposalNotActive)));
+#[test]
+fn cancel_recurring_schedule_is_deprecated_and_redirects_to_proposal_path() {
+    // #738: the legacy direct owner cancel is deprecated. It must return a
+    // clear, dedicated error rather than silently mutating schedule state.
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+
+    assert_eq!(
+        client.try_cancel_recurring_schedule(&owner_a, &1_u64),
+        Err(Ok(ContractError::DeprecatedEntrypoint))
+    );
+
+    // The canonical path still exists and is the one removal path: cancelling a
+    // schedule that does not exist is rejected by the ordinary not-found guard
+    // (not by deprecation), proving the proposal entrypoint remains active.
+    assert_eq!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_a,
+            &999_u64,
+            &str(&env, "Cancel missing"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::RecurringPaymentNotFound))
+    );
 }
 
 #[test]
@@ -10382,4 +10592,206 @@ fn role_proposal_creation_enforces_active_proposal_cap() {
         next_proposal_id(&env, &client),
         MAX_ACTIVE_PROPOSALS as u64 + 1
     );
+}
+
+// ─── Storage TTL Audit (#735) ────────────────────────────────────────────────
+//
+// Proves that every storage entry the contract writes has its time-to-live
+// extended on the write (and, where the contract bumps on read, on the read),
+// so no proposal, owner weight, spending limit, spend tracker, recurring
+// schedule, delegation, or role entry can silently expire while a multisig
+// still depends on it.
+//
+// Key checklist, taken from the storage tables in docs/ARCHITECTURE.md §3:
+//   Instance (all keys share one LedgerEntry with one TTL):
+//     INIT, THRESH, NEXT, ACTCNT, TWGT, TLOCK
+//     (plus MAXOWNP, GVOVER, ROLEVER, STOVER, RNEXT, ACTREC)
+//   Persistent (each key is its own LedgerEntry with its own TTL):
+//     OWNERS               — initialize / every owner mutation
+//     ("PROP", id)         — create_proposal and the other create_* entrypoints
+//     ("APPR", id, owner)  — approve
+//     ("ACTIDS")           — register_active_proposal on proposal creation
+//     ("SLIM", owner, tok) — SetSpendingLimit execution
+//     ("OSLIM", owner)     — SetSpendingLimit execution
+//     ("SPENT", owner, t)  — executed Transfer / recurring disbursement
+//     ("RPAY", id)         — CreateRecurringPayment execution
+//     ("ROLES", address)   — initialize / RBAC
+//     ("RMEM", role)       — initialize / RBAC
+//     ("DELEG", delegator) — NOT APPLICABLE: no public entrypoint writes a
+//                            delegation today (`write_delegation` has no
+//                            caller), so there is no key to assert.
+
+fn advance_ledger(env: &Env, delta: u32) {
+    let seq = env.ledger().get().sequence_number;
+    env.ledger().set_sequence_number(seq.saturating_add(delta));
+}
+
+fn persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, contract_id: &Address, key: &K) -> u32 {
+    env.as_contract(contract_id, || env.storage().persistent().get_ttl(key))
+}
+
+fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
+    env.as_contract(contract_id, || env.storage().instance().get_ttl())
+}
+
+#[test]
+fn ttl_audit_every_persistent_key_is_bumped_on_write() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let cid = client.address.clone();
+    let recipient = Address::generate(&env);
+
+    // OWNERS, ROLES, RMEM: written by `initialize` during setup.
+    assert_eq!(persistent_ttl(&env, &cid, &owners_key()), PERSISTENT_BUMP);
+    assert_eq!(persistent_ttl(&env, &cid, &role_key(&owner_a)), PERSISTENT_BUMP);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &role_members_key(&Role::Approver)),
+        PERSISTENT_BUMP
+    );
+
+    // ("PROP", id) + ("ACTIDS"): any create_* proposal entrypoint.
+    let prop_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000_i128, &token_client.address),
+        &str(&env, "ttl audit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        persistent_ttl(&env, &cid, &proposal_key(prop_id)),
+        PERSISTENT_BUMP
+    );
+    assert_eq!(
+        persistent_ttl(&env, &cid, &active_ids_key()),
+        PERSISTENT_BUMP
+    );
+
+    // ("APPR", id, owner): approve records the per-approver weight.
+    client.approve(&owner_a, &prop_id);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &approval_key(prop_id, &owner_a)),
+        PERSISTENT_BUMP
+    );
+
+    // ("SPENT", owner, token): executing the transfer writes a spent tracker.
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &spent_tracking_key(&owner_a, &token_client.address)),
+        PERSISTENT_BUMP
+    );
+
+    // ("SLIM", owner, token) + ("OSLIM", owner): SetSpendingLimit execution.
+    let limit_id = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &5_000_i128,
+        &str(&env, "ttl limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_id);
+    client.approve(&owner_b, &limit_id);
+    client.execute(&owner_c, &limit_id);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &spending_limit_key(&owner_a, &token_client.address)),
+        PERSISTENT_BUMP
+    );
+    assert_eq!(
+        persistent_ttl(&env, &cid, &owner_spending_limits_key(&owner_a)),
+        PERSISTENT_BUMP
+    );
+
+    // ("RPAY", id): CreateRecurringPayment execution writes the schedule.
+    let rec_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &1_000_i128,
+        &3_600_u64,
+        &NOW,
+        &(NOW + 86_400),
+        &0_u64,
+        &10_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "ttl rec"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &rec_id);
+    client.approve(&owner_b, &rec_id);
+    client.execute(&owner_c, &rec_id);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &recur_key(1)),
+        PERSISTENT_BUMP
+    );
+}
+
+#[test]
+fn ttl_audit_instance_entry_is_shared_and_bumped_by_mutating_calls() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let cid = client.address.clone();
+
+    assert_eq!(instance_ttl(&env, &cid), INSTANCE_BUMP);
+
+    // Advance so the shared instance entry drops below its bump threshold...
+    advance_ledger(&env, INSTANCE_BUMP - INSTANCE_THRESHOLD + 1);
+    assert!(instance_ttl(&env, &cid) < INSTANCE_THRESHOLD);
+
+    // ...then a mutating call (proposal creation) must bump it back.
+    let recipient = Address::generate(&env);
+    client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000_i128, &token_client.address),
+        &str(&env, "ttl instance"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(instance_ttl(&env, &cid), INSTANCE_BUMP);
+
+    // All documented instance keys live in the single shared instance entry, so
+    // that one bump covers every one of them.
+    for key in [
+        init_key(),
+        threshold_key(),
+        next_id_key(),
+        active_count_key(),
+        total_weight_key(),
+        timelock_key(),
+    ] {
+        assert!(
+            env.as_contract(&cid, || env.storage().instance().has(&key)),
+            "documented instance key missing from the shared instance entry"
+        );
+    }
+}
+
+#[test]
+fn ttl_audit_persistent_entry_rebumps_and_survives_idle_window() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let cid = client.address.clone();
+    let recipient = Address::generate(&env);
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000_i128, &token_client.address),
+        &str(&env, "ttl idle"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // Advance so the entry is below the bump threshold but not yet expired.
+    advance_ledger(&env, PERSISTENT_BUMP - PERSISTENT_THRESHOLD + 1);
+    assert!(persistent_ttl(&env, &cid, &proposal_key(id)) < PERSISTENT_THRESHOLD);
+
+    // A read re-bumps it back to the full horizon and it stays live.
+    let _ = client.get_proposal(&id);
+    assert_eq!(
+        persistent_ttl(&env, &cid, &proposal_key(id)),
+        PERSISTENT_BUMP
+    );
+
+    // Advancing by less than the bump length (a realistic idle window) leaves
+    // the entry present and recoverable.
+    advance_ledger(&env, PERSISTENT_BUMP / 2);
+    assert!(persistent_ttl(&env, &cid, &proposal_key(id)) > 0);
 }
