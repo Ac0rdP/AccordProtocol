@@ -10795,3 +10795,177 @@ fn ttl_audit_persistent_entry_rebumps_and_survives_idle_window() {
     advance_ledger(&env, PERSISTENT_BUMP / 2);
     assert!(persistent_ttl(&env, &cid, &proposal_key(id)) > 0);
 }
+
+// ─── Total-weight invariant (#747) ───────────────────────────────────────────
+//
+// After any weight-affecting governance action, the sum of every current
+// owner's weight (read straight from the OWNERS map) must equal the stored
+// TWGT counter that every quorum check relies on.
+
+fn assert_total_weight_invariant(env: &Env, client: &AccordContractClient, context: &str) {
+    let owners = env.as_contract(&client.address, || read_owners_map(env).unwrap());
+    let mut sum: u64 = 0;
+    let mut breakdown = std::string::String::new();
+    for (owner, weight) in owners.iter() {
+        sum += weight as u64;
+        breakdown.push_str(&format!("{:?}={}; ", owner, weight));
+    }
+    let stored = client.get_total_weight();
+    assert_eq!(
+        sum,
+        stored as u64,
+        "total-weight invariant broken after {}: sum of {} owner weights is {} but stored total weight is {} (off by {}); owners: [{}]",
+        context,
+        owners.len(),
+        sum,
+        stored,
+        stored as i64 - sum as i64,
+        breakdown,
+    );
+}
+
+/// Initializes a contract with one owner per entry in `weights` and a
+/// threshold of 1, so a single owner can approve and execute every proposal.
+fn setup_invariant_owners(weights: &[u32]) -> (Env, AccordContractClient<'static>, std::vec::Vec<Address>) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut owners = Vec::new(&env);
+    let mut weight_vec = Vec::new(&env);
+    let mut addresses = std::vec::Vec::new();
+    for weight in weights {
+        let owner = Address::generate(&env);
+        owners.push_back(owner.clone());
+        weight_vec.push_back(*weight);
+        addresses.push(owner);
+    }
+    client.initialize(&owners, &weight_vec, &1, &0);
+    (env, client, addresses)
+}
+
+fn approve_and_execute(client: &AccordContractClient, owner: &Address, id: u64) {
+    client.approve(owner, &id);
+    client.execute(owner, &id);
+}
+
+#[test]
+fn total_weight_invariant_holds_after_each_weight_affecting_operation() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let a = owners[0].clone();
+    assert_total_weight_invariant(&env, &client, "initialize");
+
+    let new_owner = Address::generate(&env);
+    let id = client.create_add_owner_proposal(&a, &new_owner, &3, &str(&env, "add"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "add owner (weight 3)");
+    assert_eq!(client.get_total_weight(), 13);
+
+    let id = client.create_change_weight_proposal(&a, &owners[1], &4, &str(&env, "raise"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "weight change 2 -> 4");
+    assert_eq!(client.get_total_weight(), 15);
+
+    let id = client.create_change_weight_proposal(&a, &new_owner, &1, &str(&env, "lower"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "weight change 3 -> 1");
+    assert_eq!(client.get_total_weight(), 13);
+
+    let id = client.create_remove_owner_proposal(&a, &owners[2], &str(&env, "remove"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
+    assert_eq!(client.get_total_weight(), 11);
+}
+
+/// Creates the same five governance proposals up front, approves them all,
+/// then executes them in `order`, checking the invariant after each one.
+fn run_interleaved_governance(order: [usize; 5]) {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+    assert_total_weight_invariant(&env, &client, "initialize");
+
+    let ids = [
+        client.create_add_owner_proposal(&a, &Address::generate(&env), &3, &str(&env, "add x"), &DEADLINE),
+        client.create_change_weight_proposal(&a, &b, &4, &str(&env, "b -> 4"), &DEADLINE),
+        client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE),
+        client.create_change_weight_proposal(&a, &a, &1, &str(&env, "a -> 1"), &DEADLINE),
+        client.create_add_owner_proposal(&a, &Address::generate(&env), &2, &str(&env, "add y"), &DEADLINE),
+    ];
+    let labels = ["add x (3)", "change b 2 -> 4", "remove c (2)", "change a 2 -> 1", "add y (2)"];
+    for id in ids.iter() {
+        client.approve(&a, id);
+    }
+
+    for (step, &index) in order.iter().enumerate() {
+        client.execute(&a, &ids[index]);
+        assert_total_weight_invariant(
+            &env,
+            &client,
+            &format!("step {} of order {:?}: {}", step + 1, order, labels[index]),
+        );
+    }
+
+    // a=1, b=4, d=2, e=2, x=3, y=2 regardless of execution order.
+    assert_eq!(client.get_total_weight(), 14, "final total for order {:?}", order);
+}
+
+#[test]
+fn total_weight_invariant_holds_across_interleaved_governance_executions() {
+    for order in [
+        [0, 1, 2, 3, 4],
+        [4, 3, 2, 1, 0],
+        [2, 0, 4, 1, 3],
+        [3, 2, 1, 4, 0],
+        [1, 4, 0, 3, 2],
+    ] {
+        run_interleaved_governance(order);
+    }
+}
+
+#[test]
+fn total_weight_invariant_holds_for_weight_change_then_removal_of_same_owner() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, c) = (owners[0].clone(), owners[2].clone());
+
+    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
+    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&a, &change);
+    client.approve(&a, &remove);
+
+    client.execute(&a, &change);
+    assert_total_weight_invariant(&env, &client, "weight change c 2 -> 5");
+    assert_eq!(client.get_total_weight(), 13);
+
+    // Removal must subtract the owner's current weight (5), not the weight
+    // they had when the removal was proposed (2).
+    client.execute(&a, &remove);
+    assert_total_weight_invariant(&env, &client, "removal of c after weight change");
+    assert_eq!(client.get_total_weight(), 8);
+    assert!(!client.is_owner(&c));
+}
+
+#[test]
+fn total_weight_invariant_holds_for_removal_then_weight_change_of_same_owner() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, c) = (owners[0].clone(), owners[2].clone());
+
+    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
+    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&a, &change);
+    client.approve(&a, &remove);
+
+    client.execute(&a, &remove);
+    assert_total_weight_invariant(&env, &client, "removal of c");
+    assert_eq!(client.get_total_weight(), 8);
+
+    // The stale weight change must not resurrect c or touch the counter.
+    assert_eq!(
+        client.try_execute(&a, &change),
+        Err(Ok(ContractError::TargetOwnerNoLongerExists))
+    );
+    assert_total_weight_invariant(&env, &client, "rejected weight change of removed owner c");
+    assert_eq!(client.get_total_weight(), 8);
+    assert!(!client.is_owner(&c));
+}
