@@ -3,6 +3,40 @@
 All amounts are in the token's smallest unit (stroops for XLM-derived tokens).
 All deadlines are Unix timestamps (seconds since epoch).
 
+## Recovery mode
+
+`enter_recovery(guardian)` is guardian-only and emits `recov_on`. While recovery
+is active, transfer proposal execution and recurring disbursements return
+`RecoveryActive`; governance-only proposals remain executable. Exit with
+`exit_recovery(approvers)`, which requires the normal distinct-owner quorum and
+emits `recov_off`. Query the state with `is_in_recovery()`.
+
+## Classic asset references
+
+The generic `Transfer { token: Address, ... }` path remains available. For
+classic assets, first register the network's Stellar Asset Contract address
+with `set_classic_asset(approvers, identifier, sac)`, then use
+`create_asset_proposal` with `AssetReference::Classic(identifier)`. The
+supported identifiers are `XLM`, `USDC`, and `EURC`; each identifier must be
+registered to the SAC address for the deployment's network, and the contract
+validates that SAC before creating the proposal. Unknown identifiers return
+`InvalidToken` before any transfer can occur.
+
+## Spending windows
+
+`create_spending_window_proposal` configures a per-owner/per-token limit with a
+window from one day through one week. The allowance is checked when the
+proposal is created and again immediately before execution. It resets after
+the configured window elapses. `get_remaining_spending_limit` returns the
+remaining amount and `get_spending_window` returns the active window in
+seconds.
+
+## Attachment hashes
+
+`create_proposal_with_attachment` accepts an optional `BytesN<32>` SHA-256 (or
+equivalent) digest. The digest is stored in `Proposal.attachment_hash`, and is
+included in the `ProposalCreatedEvent`; `None` preserves the existing flow.
+
 ### JavaScript SDK call patterns
 
 The examples below use `@stellar/stellar-sdk`. Read-only functions are called by building and simulating a transaction, then decoding the returned `ScVal` with `scValToNative`. State-changing functions follow the same flow used by the frontend: build the transaction, simulate it, assemble the prepared transaction, sign it, and submit it with `sendTransaction`.

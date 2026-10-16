@@ -40,6 +40,21 @@ pub struct Transfer {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub enum AssetReference {
+    Address(Address),
+    Classic(Symbol),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetTransfer {
+    pub to: Address,
+    pub asset: AssetReference,
+    pub amount: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub enum RecurringStatus {
     Active,
     Paused,
@@ -110,6 +125,8 @@ pub enum ProposalKind {
     /// SetSpendingLimit(owner, token, limit) — per-owner cap on the amount that
     /// `owner` may propose for `token`. A limit of 0 blocks that token entirely.
     SetSpendingLimit(Address, Address, i128),
+    /// SetSpendingLimitWindow(owner, token, limit, window_secs)
+    SetSpendingLimitWindow(Address, Address, i128, u64),
     /// ChangeOwnerWeight(target_owner, new_weight) — updates an existing owner's
     /// voting weight. Zero is never valid: remove an owner instead of leaving a
     /// listed owner unable to participate in governance.
@@ -170,6 +187,7 @@ pub struct Proposal {
     pub ready_at: u64,
     pub quorum_weight: u32,
     pub category: ProposalCategory,
+    pub attachment_hash: Option<BytesN<32>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,6 +210,13 @@ pub struct OwnerWeight {
 pub struct SpendingLimitEntry {
     pub token: Address,
     pub limit: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendingWindowEntry {
+    pub token: Address,
+    pub window_secs: u64,
 }
 
 /// An owner's delegation of (part of) their voting weight to another owner.
@@ -234,6 +259,7 @@ pub struct ProposalCreatedEvent {
     /// log alone — it is not derivable from current contract state once ownership
     /// changes.
     pub total_weight_at_creation: u32,
+    pub attachment_hash: Option<BytesN<32>>,
 }
 
 
@@ -297,6 +323,17 @@ pub struct UnfrozenEvent {
     pub approvers: Vec<Address>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecoveryEnteredEvent {
+    pub guardian: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecoveryExitedEvent {
+    pub approvers: Vec<Address>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
@@ -486,6 +523,7 @@ pub enum ContractError {
     OwnerNotFound = 25,
     ContractFrozen = 26,
     NoGuardian = 27,
+    RecoveryActive = 57,
     InvalidInterval = 28,
     InvalidSchedule = 29,
     InvalidCap = 30,
@@ -579,6 +617,10 @@ fn frozen_key() -> Symbol {
     symbol_short!("FROZEN")
 }
 
+fn recovery_key() -> Symbol {
+    symbol_short!("RECOV")
+}
+
 fn recurring_next_id_key() -> Symbol {
     symbol_short!("RPNEXT")
 }
@@ -656,6 +698,14 @@ fn owner_spending_limits_key(owner: &Address) -> (Symbol, Address) {
 
 fn spent_tracking_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
     (symbol_short!("SPENT"), owner.clone(), token.clone())
+}
+
+fn spending_window_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
+    (symbol_short!("SWIND"), owner.clone(), token.clone())
+}
+
+fn classic_asset_key(asset: &Symbol) -> (Symbol, Symbol) {
+    (symbol_short!("CLASSIC"), asset.clone())
 }
 
 fn delegation_key(delegator: &Address) -> (Symbol, Address) {
@@ -757,6 +807,8 @@ const MAX_ROLE_MEMBERS_RESULT: u32 = MAX_OWNERS;
 /// "available limit" view depend on the exact time of each prior transaction, producing
 /// non-deterministic behavior across nodes executing the same transaction sequence.
 const SPENDING_WINDOW: u64 = 2_592_000;
+const MIN_SPENDING_WINDOW: u64 = 86_400;
+const MAX_SPENDING_WINDOW: u64 = 604_800;
 
 /// Minimum interval for recurring payments: 1 minute (60s).
 const MIN_INTERVAL_SECS: u64 = 60;
@@ -1233,6 +1285,25 @@ fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128
     bump_persistent(env, &key);
 }
 
+fn write_spending_window(env: &Env, owner: &Address, token: &Address, window_secs: u64) {
+    let key = spending_window_key(owner, token);
+    env.storage().persistent().set(&key, &window_secs);
+    bump_persistent(env, &key);
+}
+
+fn read_spending_window(env: &Env, owner: &Address, token: &Address) -> u64 {
+    let key = spending_window_key(owner, token);
+    let window = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SPENDING_WINDOW);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    window
+}
+
 fn read_owner_spending_limits(env: &Env, owner: &Address) -> Vec<SpendingLimitEntry> {
     let key = owner_spending_limits_key(owner);
     let limits: Vec<SpendingLimitEntry> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
@@ -1303,7 +1374,7 @@ fn effective_spent(env: &Env, owner: &Address, token: &Address) -> i128 {
         return 0;
     }
     let now = env.ledger().timestamp();
-    if now > tracker.epoch.saturating_add(SPENDING_WINDOW) {
+    if now > tracker.epoch.saturating_add(read_spending_window(env, owner, token)) {
         return 0;
     }
     tracker.spent
@@ -1431,6 +1502,25 @@ fn require_not_frozen(env: &Env) -> Result<(), ContractError> {
     Ok(())
 }
 
+fn is_recovery_state(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&recovery_key())
+        .unwrap_or(false)
+}
+
+fn write_recovery(env: &Env, recovery: bool) {
+    env.storage().instance().set(&recovery_key(), &recovery);
+    bump_instance(env);
+}
+
+fn require_not_recovery(env: &Env) -> Result<(), ContractError> {
+    if is_recovery_state(env) {
+        return Err(ContractError::RecoveryActive);
+    }
+    Ok(())
+}
+
 // ─── Business Logic Helpers ──────────────────────────────────────────────────
 
 fn require_owner_and_weight(env: &Env, address: &Address) -> Result<u32, ContractError> {
@@ -1511,6 +1601,19 @@ fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractErro
         return Err(ContractError::InvalidToken);
     }
     Ok(())
+}
+
+fn resolve_asset(env: &Env, asset: &AssetReference) -> Result<Address, ContractError> {
+    let token = match asset {
+        AssetReference::Address(address) => address.clone(),
+        AssetReference::Classic(identifier) => env
+            .storage()
+            .instance()
+            .get(&classic_asset_key(identifier))
+            .ok_or(ContractError::InvalidToken)?,
+    };
+    validate_token(env, &token)?;
+    Ok(token)
 }
 
 fn validate_recurring_payment(
@@ -2124,6 +2227,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: category.clone(),
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2142,9 +2246,50 @@ impl AccordContract {
                 transfers,
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
+        Ok(id)
+    }
+
+    /// Creates a transfer proposal and associates a 32-byte digest of an
+    /// off-chain invoice or document with its on-chain record.
+    pub fn create_proposal_with_attachment(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+        attachment_hash: Option<BytesN<32>>,
+    ) -> Result<u64, ContractError> {
+        let id = Self::create_proposal(
+            env.clone(),
+            proposer.clone(),
+            transfers.clone(),
+            description,
+            deadline,
+            category.clone(),
+        )?;
+        let mut proposal = read_proposal(&env, id)?;
+        proposal.attachment_hash = attachment_hash.clone();
+        write_proposal(&env, &proposal);
+        let total_weight = read_total_weight(&env);
+        let threshold = read_threshold(&env)?;
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                id,
+                proposer,
+                threshold,
+                category,
+                transfers,
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+                attachment_hash,
+            },
+        );
         Ok(id)
     }
 
@@ -2169,6 +2314,7 @@ impl AccordContract {
     ) -> Result<(), ContractError> {
         caller.require_auth();
         require_not_frozen(&env)?;
+        require_not_recovery(&env)?;
 
         let mut schedule = read_recurring_payment(&env, schedule_id)?;
 
@@ -2244,7 +2390,7 @@ impl AccordContract {
         } else {
             tracker.epoch
         };
-        let spent = if now > epoch.saturating_add(SPENDING_WINDOW) {
+        let spent = if now > epoch.saturating_add(read_spending_window(&env, &schedule.proposer, &schedule.token)) {
             disbursement_amount
         } else {
             tracker
@@ -2345,6 +2491,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2363,6 +2510,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -2418,6 +2566,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2436,9 +2585,33 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
+        Ok(id)
+    }
+
+    /// Creates a spending-limit proposal with a daily-to-weekly rolling window.
+    pub fn create_spending_window_proposal(
+        env: Env,
+        proposer: Address,
+        owner: Address,
+        token: Address,
+        limit: i128,
+        window_secs: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        if !(MIN_SPENDING_WINDOW..=MAX_SPENDING_WINDOW).contains(&window_secs) {
+            return Err(ContractError::InvalidDuration);
+        }
+        let id = Self::create_spending_limit_proposal(
+            env.clone(), proposer, owner.clone(), token.clone(), limit, description, deadline,
+        )?;
+        let mut proposal = read_proposal(&env, id)?;
+        proposal.kind = ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs);
+        write_proposal(&env, &proposal);
         Ok(id)
     }
 
@@ -2516,6 +2689,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2533,6 +2707,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: current_total,
+                attachment_hash: None,
             },
         );
 
@@ -2594,6 +2769,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2612,6 +2788,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -2673,6 +2850,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -2691,6 +2869,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -2844,18 +3023,7 @@ impl AccordContract {
         // Dispatch on proposal kind.
         match &proposal.kind {
             ProposalKind::Transfer(transfers) => {
-                for transfer in transfers.iter() {
-                    if token::Client::new(&env, &transfer.token)
-                        .try_transfer(
-                            &env.current_contract_address(),
-                            &transfer.to,
-                            &transfer.amount,
-                        )
-                        .is_err()
-                    {
-                        return Err(ContractError::TransferFailed);
-                    }
-                }
+                require_not_recovery(&env)?;
                 // Track cumulative spending per token for the proposer.
                 let proposer = proposal.proposer.clone();
                 let mut tracked_tokens: Vec<Address> = Vec::new(&env);
@@ -2879,6 +3047,30 @@ impl AccordContract {
                         tracked_amounts.push_back(transfer.amount);
                     }
                 }
+                for j in 0..tracked_tokens.len() {
+                    let token = tracked_tokens.get(j).unwrap();
+                    let amount = tracked_amounts.get(j).unwrap();
+                    if let Some(limit) = read_spending_limit(&env, &proposal.proposer, &token) {
+                        let cumulative = effective_spent(&env, &proposal.proposer, &token)
+                            .checked_add(amount)
+                            .ok_or(ContractError::ArithmeticError)?;
+                        if cumulative > limit {
+                            return Err(ContractError::SpendingLimitExceeded);
+                        }
+                    }
+                }
+                for transfer in transfers.iter() {
+                    if token::Client::new(&env, &transfer.token)
+                        .try_transfer(
+                            &env.current_contract_address(),
+                            &transfer.to,
+                            &transfer.amount,
+                        )
+                        .is_err()
+                    {
+                        return Err(ContractError::TransferFailed);
+                    }
+                }
                 let now = env.ledger().timestamp();
                 for j in 0..tracked_tokens.len() {
                     let token = tracked_tokens.get(j).unwrap();
@@ -2889,7 +3081,7 @@ impl AccordContract {
                     } else {
                         tracker.epoch
                     };
-                    let spent = if now > epoch.saturating_add(SPENDING_WINDOW) {
+                    let spent = if now > epoch.saturating_add(read_spending_window(&env, &proposer, &token)) {
                         amount
                     } else {
                         tracker
@@ -3041,6 +3233,23 @@ impl AccordContract {
                     ChangeThresholdExecutedEvent {
                         previous_threshold: old_threshold,
                         new_threshold: *new_threshold,
+                    },
+                );
+            }
+            ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs) => {
+                let prev_limit = read_spending_limit(&env, owner, token);
+                write_spending_limit(&env, owner, token, *limit);
+                write_spending_window(&env, owner, token, *window_secs);
+                upsert_owner_spending_limit(&env, owner, token, *limit);
+                let now = env.ledger().timestamp();
+                write_spent_tracker(&env, owner, token, &SpentTracker { spent: 0, epoch: now });
+                env.events().publish(
+                    (symbol_short!("s_lim"),),
+                    SetSpendingLimitExecutedEvent {
+                        owner: owner.clone(),
+                        token: token.clone(),
+                        previous_limit: prev_limit,
+                        new_limit: *limit,
                     },
                 );
             }
@@ -3471,6 +3680,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: category.clone(),
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3489,6 +3699,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3535,6 +3746,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Ops,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3553,6 +3765,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3599,6 +3812,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Ops,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3617,6 +3831,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3660,6 +3875,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Ops,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3678,6 +3894,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3745,6 +3962,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Ops,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3763,6 +3981,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3820,6 +4039,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3838,6 +4058,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -3910,6 +4131,7 @@ impl AccordContract {
             ready_at: 0,
             quorum_weight: threshold,
             category: ProposalCategory::Other,
+            attachment_hash: None,
         };
         write_proposal(&env, &proposal);
         register_active_proposal(&env, id)?;
@@ -3928,6 +4150,7 @@ impl AccordContract {
                 transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
+                attachment_hash: None,
             },
         );
 
@@ -4259,6 +4482,12 @@ impl AccordContract {
         Some(limit.saturating_sub(spent))
     }
 
+    /// Returns the configured spending window in seconds, or the legacy
+    /// 30-day default when no custom window is configured.
+    pub fn get_spending_window(env: Env, owner: Address, token: Address) -> u64 {
+        read_spending_window(&env, &owner, &token)
+    }
+
     /// Returns the current approval threshold.
     pub fn get_threshold(env: Env) -> Result<u32, ContractError> {
         read_threshold(&env)
@@ -4302,6 +4531,47 @@ impl AccordContract {
             quorum_weight: proposal.quorum_weight,
             total_weight: read_total_weight(&env),
         })
+    }
+
+    /// Registers the network-specific Stellar Asset Contract for a classic
+    /// identifier such as `XLM`, `USDC`, or `EURC`.
+    pub fn set_classic_asset(
+        env: Env,
+        approvers: Vec<Address>,
+        identifier: Symbol,
+        sac: Address,
+    ) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        validate_token(&env, &sac)?;
+        env.storage().instance().set(&classic_asset_key(&identifier), &sac);
+        bump_instance(&env);
+        Ok(())
+    }
+
+    pub fn get_classic_asset(env: Env, identifier: Symbol) -> Option<Address> {
+        env.storage().instance().get(&classic_asset_key(&identifier))
+    }
+
+    /// Creates a transfer proposal using raw token addresses or registered
+    /// classic identifiers. Every reference is resolved and validated first.
+    pub fn create_asset_proposal(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<AssetTransfer>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+    ) -> Result<u64, ContractError> {
+        let mut resolved = Vec::new(&env);
+        for transfer in transfers.iter() {
+            let token = resolve_asset(&env, &transfer.asset)?;
+            resolved.push_back(Transfer {
+                to: transfer.to,
+                token,
+                amount: transfer.amount,
+            });
+        }
+        Self::create_proposal(env, proposer, resolved, description, deadline, category)
     }
 
     // ─── Guardian ─────────────────────────────────────────────────────────────
@@ -4365,9 +4635,44 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Stops treasury outflows while leaving governance proposals executable.
+    /// Only the configured guardian may enter recovery.
+    pub fn enter_recovery(env: Env, guardian: Address) -> Result<(), ContractError> {
+        guardian.require_auth();
+        let stored = read_guardian(&env).ok_or(ContractError::NoGuardian)?;
+        if stored != guardian {
+            return Err(ContractError::Unauthorized);
+        }
+
+        write_recovery(&env, true);
+        env.events().publish(
+            (symbol_short!("recov_on"),),
+            RecoveryEnteredEvent { guardian },
+        );
+        Ok(())
+    }
+
+    /// Leaves recovery after a threshold of distinct owners co-signs.
+    pub fn exit_recovery(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        write_recovery(&env, false);
+        env.events().publish(
+            (symbol_short!("recov_off"),),
+            RecoveryExitedEvent {
+                approvers: approvers.clone(),
+            },
+        );
+        Ok(())
+    }
+
     /// Returns whether the contract is currently frozen.
     pub fn is_frozen(env: Env) -> bool {
         is_frozen_state(&env)
+    }
+
+    /// Returns whether treasury outflows are currently in recovery mode.
+    pub fn is_in_recovery(env: Env) -> bool {
+        is_recovery_state(&env)
     }
 
     /// Returns the current guardian address, or `None` if no guardian is set.

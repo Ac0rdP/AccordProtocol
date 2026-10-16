@@ -20,6 +20,116 @@ fn set_timestamp(env: &Env, ts: u64) {
     env.ledger().set(l);
 }
 
+#[test]
+fn recovery_blocks_value_but_allows_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
+    client.enter_recovery(&guardian);
+    assert!(client.is_in_recovery());
+
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "blocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &transfer_id);
+    client.approve(&owner_b, &transfer_id);
+    assert_eq!(
+        client.try_execute(&owner_c, &transfer_id),
+        Err(Ok(ContractError::RecoveryActive))
+    );
+
+    let governance_id = client.create_change_threshold_proposal(
+        &owner_a,
+        &1,
+        &str(&env, "remediate"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &governance_id);
+    client.approve(&owner_b, &governance_id);
+    client.execute(&owner_c, &governance_id);
+    assert_eq!(client.get_threshold(), 1);
+}
+
+#[test]
+fn attachment_and_classic_asset_references_are_stored_and_resolved() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let digest = BytesN::from_array(&env, &[7; 32]);
+    let id = client.create_proposal_with_attachment(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "invoice"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+        &Some(digest.clone()),
+    );
+    assert_eq!(client.get_proposal(&id).attachment_hash, Some(digest));
+
+    let identifier = Symbol::new(&env, "USDC");
+    client.set_classic_asset(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
+        &identifier,
+        &token_client.address,
+    );
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(AssetTransfer {
+        to: Address::generate(&env),
+        asset: AssetReference::Classic(identifier),
+        amount: 10,
+    });
+    let asset_id = client.create_asset_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "classic asset"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(client.get_proposal(&asset_id).kind, ProposalKind::Transfer(t(&env, &transfers.get(0).unwrap().to, 10, &token_client.address)));
+}
+
+#[test]
+fn configurable_spending_window_rejects_split_overspend() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit_id = client.create_spending_window_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &10,
+        &86_400,
+        &str(&env, "daily limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_id);
+    client.approve(&owner_b, &limit_id);
+    client.execute(&owner_c, &limit_id);
+    assert_eq!(client.get_spending_window(&owner_a, &token_client.address), 86_400);
+
+    let first = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 6, &token_client.address),
+        &str(&env, "first"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &first);
+    client.approve(&owner_b, &first);
+    client.execute(&owner_c, &first);
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 5, &token_client.address),
+            &str(&env, "split overspend"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+}
+
 fn str(env: &Env, s: &str) -> String {
     String::from_str(env, s)
 }
