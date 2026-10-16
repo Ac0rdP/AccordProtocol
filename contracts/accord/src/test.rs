@@ -11384,3 +11384,257 @@ fn every_contract_error_is_documented_in_contract_api() {
         );
     }
 }
+
+// ─── Resource regression at maximum configuration (#750) ─────────────────────
+//
+// Runs the hot entrypoints at MAX_OWNERS owners, each at MAX_OWNER_WEIGHT, with
+// every other owner delegating to owner 0 (the worst case for the per-owner
+// delegation scan), and asserts each top-level invocation's metered resources
+// (`env.cost_estimate().resources()`) stay under `HOT_PATH_CEILING`.
+//
+// Updating the ceiling: run
+//     cargo test -p accord resource_ceiling -- --nocapture --test-threads=1
+// and read the `[resource]` lines. If a legitimate change pushes a value over
+// the ceiling, first confirm the growth is intended, then raise only that
+// field, keeping it at or below the documented fraction of the network limit
+// in docs/ARCHITECTURE.md §12 and updating that table in the same change. A
+// value that cannot fit under its fraction means the entrypoint needs
+// optimizing, not a bigger ceiling.
+
+struct ResourceCeiling {
+    instructions: i64,
+    mem_bytes: i64,
+    ledger_entries: u32,
+    write_entries: u32,
+    write_bytes: u32,
+    contract_events_size_bytes: u32,
+}
+
+/// Fractions of the Stellar mainnet per-invocation limits
+/// (`InvocationResourceLimits::mainnet()`), which the test Env also enforces.
+/// CPU and memory are tight because native test execution under-reports the
+/// cost of real Wasm execution.
+const HOT_PATH_CEILING: ResourceCeiling = ResourceCeiling {
+    instructions: 60_000_000,         // 10% of 600,000,000
+    mem_bytes: 4_194_304,             // 10% of 41,943,040 (40 MiB)
+    ledger_entries: 75,               // 75% of 100
+    write_entries: 37,                // 75% of 50
+    write_bytes: 66_048,              // 50% of 132,096
+    contract_events_size_bytes: 8_192, // 50% of 16,384
+};
+
+fn assert_within_resource_ceiling(env: &Env, label: &str) {
+    let r = env.cost_estimate().resources();
+    let ledger_entries = r.disk_read_entries + r.memory_read_entries + r.write_entries;
+    std::println!(
+        "[resource] {}: instructions={} mem_bytes={} ledger_entries={} write_entries={} write_bytes={} events_bytes={}",
+        label, r.instructions, r.mem_bytes, ledger_entries, r.write_entries, r.write_bytes,
+        r.contract_events_size_bytes,
+    );
+    let c = &HOT_PATH_CEILING;
+    assert!(
+        r.instructions <= c.instructions,
+        "{}: {} CPU instructions exceeds the ceiling of {}",
+        label, r.instructions, c.instructions
+    );
+    assert!(
+        r.mem_bytes <= c.mem_bytes,
+        "{}: {} memory bytes exceeds the ceiling of {}",
+        label, r.mem_bytes, c.mem_bytes
+    );
+    assert!(
+        ledger_entries <= c.ledger_entries,
+        "{}: {} ledger entries exceeds the ceiling of {}",
+        label, ledger_entries, c.ledger_entries
+    );
+    assert!(
+        r.write_entries <= c.write_entries,
+        "{}: {} written entries exceeds the ceiling of {}",
+        label, r.write_entries, c.write_entries
+    );
+    assert!(
+        r.write_bytes <= c.write_bytes,
+        "{}: {} written bytes exceeds the ceiling of {}",
+        label, r.write_bytes, c.write_bytes
+    );
+    assert!(
+        r.contract_events_size_bytes <= c.contract_events_size_bytes,
+        "{}: {} event bytes exceeds the ceiling of {}",
+        label, r.contract_events_size_bytes, c.contract_events_size_bytes
+    );
+}
+
+/// Strict majority of the maximum total weight.
+const MAX_CONFIG_THRESHOLD: u32 = MAX_TOTAL_WEIGHT / 2 + 1;
+
+/// MAX_OWNERS owners at MAX_OWNER_WEIGHT, three funded tokens, and owners
+/// 1..MAX_OWNERS each delegating half their weight to owner 0.
+fn setup_max_config() -> (
+    Env,
+    AccordContractClient<'static>,
+    std::vec::Vec<Address>,
+    std::vec::Vec<Address>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut tokens = std::vec::Vec::new();
+    for _ in 0..3 {
+        let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        token::StellarAssetClient::new(&env, &token_id.address())
+            .mint(&contract_id, &1_000_000_000_000_i128);
+        tokens.push(token_id.address());
+    }
+
+    let mut owners = Vec::new(&env);
+    let mut weights = Vec::new(&env);
+    let mut addresses = std::vec::Vec::new();
+    for _ in 0..MAX_OWNERS {
+        let owner = Address::generate(&env);
+        owners.push_back(owner.clone());
+        weights.push_back(MAX_OWNER_WEIGHT);
+        addresses.push(owner);
+    }
+    client.initialize(&owners, &weights, &MAX_CONFIG_THRESHOLD, &0);
+    assert_within_resource_ceiling(&env, "initialize (max owners, max weights)");
+    assert_eq!(client.get_total_weight(), MAX_TOTAL_WEIGHT);
+
+    for delegator in addresses.iter().skip(1) {
+        write_test_delegation(&env, &client, delegator, &addresses[0], MAX_OWNER_WEIGHT / 2, None);
+    }
+
+    (env, client, addresses, tokens)
+}
+
+fn max_transfers(env: &Env, tokens: &[Address]) -> Vec<Transfer> {
+    let mut transfers = Vec::new(env);
+    for token in tokens {
+        transfers.push_back(Transfer {
+            to: Address::generate(env),
+            token: token.clone(),
+            amount: 1_000,
+        });
+    }
+    transfers
+}
+
+/// Every owner approves `id`, each approval measured individually.
+fn approve_all_measured(env: &Env, client: &AccordContractClient, owners: &[Address], id: u64, what: &str) {
+    for (i, owner) in owners.iter().enumerate() {
+        client.approve(owner, &id);
+        assert_within_resource_ceiling(env, &format!("approve {} by owner {}", what, i));
+    }
+}
+
+#[test]
+fn resource_ceiling_create_and_approve_at_max_config() {
+    let (env, client, owners, tokens) = setup_max_config();
+
+    let id = client.create_proposal(
+        &owners[1],
+        &max_transfers(&env, &tokens),
+        &str(&env, "resource transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_within_resource_ceiling(&env, "create_proposal (3 tokens)");
+
+    // Owner 0 has every incoming delegation; later approvers hit a Ready proposal.
+    approve_all_measured(&env, &client, &owners, id, "transfer");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
+
+#[test]
+fn resource_ceiling_execute_transfer_at_max_config() {
+    let (env, client, owners, tokens) = setup_max_config();
+
+    let id = client.create_proposal(
+        &owners[1],
+        &max_transfers(&env, &tokens),
+        &str(&env, "resource transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    for owner in owners.iter() {
+        client.approve(owner, &id);
+    }
+
+    client.execute(&owners[1], &id);
+    assert_within_resource_ceiling(&env, "execute transfer (3 tokens)");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn resource_ceiling_execute_governance_at_max_config() {
+    let (env, client, owners, _) = setup_max_config();
+
+    let change = client.create_change_weight_proposal(
+        &owners[1], &owners[5], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource weight"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_change_weight_proposal");
+    // Left pending so the removal below must reverse owner 0's approval on it.
+    let pending = client.create_change_weight_proposal(
+        &owners[1], &owners[6], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource pending"), &DEADLINE,
+    );
+    let remove = client.create_remove_owner_proposal(
+        &owners[1], &owners[0], &str(&env, "resource remove"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_remove_owner_proposal");
+
+    approve_all_measured(&env, &client, &owners, change, "weight change");
+    for owner in owners.iter() {
+        client.approve(owner, &pending);
+        client.approve(owner, &remove);
+    }
+
+    client.execute(&owners[1], &change);
+    assert_within_resource_ceiling(&env, "execute ChangeOwnerWeight");
+
+    // Removing the delegate of every delegation is the widest cleanup path.
+    client.execute(&owners[1], &remove);
+    assert_within_resource_ceiling(&env, "execute RemoveOwner (delegate of all delegations)");
+
+    // Back below MAX_OWNERS (adds are rejected at the cap), so an add can
+    // bring the contract back up to it.
+    let add = client.create_add_owner_proposal(
+        &owners[1], &Address::generate(&env), &MAX_OWNER_WEIGHT, &str(&env, "resource add"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_add_owner_proposal");
+    for owner in owners.iter().skip(1) {
+        client.approve(owner, &add);
+    }
+    client.execute(&owners[1], &add);
+    assert_within_resource_ceiling(&env, "execute AddOwner (to MAX_OWNERS)");
+    assert_eq!(client.get_owners().len(), MAX_OWNERS);
+}
+
+#[test]
+fn resource_ceiling_weight_lookups_at_max_config() {
+    let (env, client, owners, _) = setup_max_config();
+
+    for (i, owner) in owners.iter().enumerate() {
+        client.get_effective_weight(owner);
+        assert_within_resource_ceiling(&env, &format!("get_effective_weight owner {}", i));
+    }
+    assert_eq!(
+        client.get_effective_weight(&owners[0]),
+        MAX_OWNER_WEIGHT + (MAX_OWNERS - 1) * (MAX_OWNER_WEIGHT / 2)
+    );
+
+    client.get_owner_weights();
+    assert_within_resource_ceiling(&env, "get_owner_weights");
+    client.get_owner_weight(&owners[0]);
+    assert_within_resource_ceiling(&env, "get_owner_weight");
+    client.get_total_weight();
+    assert_within_resource_ceiling(&env, "get_total_weight");
+    client.get_required_quorum_weight();
+    assert_within_resource_ceiling(&env, "get_required_quorum_weight");
+    client.get_delegations(&owners[0]);
+    assert_within_resource_ceiling(&env, "get_delegations (all incoming)");
+    client.get_active_delegations();
+    assert_within_resource_ceiling(&env, "get_active_delegations");
+}
