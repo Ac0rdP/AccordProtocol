@@ -518,6 +518,10 @@ pub enum ContractError {
     RoleNotGranted = 54,
     /// Thrown when a specified role is not valid for the current context.
     InvalidRole = 55,
+    /// Thrown when a deprecated entrypoint is called. The caller must use the
+    /// documented canonical replacement instead (see the entrypoint gating
+    /// matrix and the function's own documentation).
+    DeprecatedEntrypoint = 56,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -599,6 +603,13 @@ fn role_version_key() -> Symbol {
     symbol_short!("ROLEVER")
 }
 
+/// Storage-schema version marker. Records which on-chain storage layout this
+/// deployment uses so operators and tooling can tell them apart. See
+/// `docs/ARCHITECTURE.md` §3 (Storage Schema Versioning).
+fn storage_version_key() -> Symbol {
+    symbol_short!("STOVER")
+}
+
 pub fn role_key(address: &Address) -> (Symbol, Address) {
     (symbol_short!("ROLES"), address.clone())
 }
@@ -614,6 +625,14 @@ fn role_members_key(role: &Role) -> (Symbol, Role) {
 const RBAC_VERSION: u32 = 1;
 
 pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role::Executor];
+
+/// Storage-schema version. Any release that adds or changes a storage key
+/// increments this and documents the change in `docs/ARCHITECTURE.md` §3
+/// (Storage Schema Versioning). Written at `initialize` and by the one-time
+/// migrations that bring a legacy layout up to the current schema, so a
+/// deployed contract can always report the layout it actually uses. A missing
+/// key reads as `0`, meaning a pre-versioning (legacy) deployment.
+const STORAGE_SCHEMA_VERSION: u32 = 1;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -853,6 +872,20 @@ fn read_role_version(env: &Env) -> u32 {
 
 fn write_role_version(env: &Env, version: u32) {
     env.storage().instance().set(&role_version_key(), &version);
+    bump_instance(env);
+}
+
+fn read_storage_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&storage_version_key())
+        .unwrap_or(0)
+}
+
+fn write_storage_version(env: &Env) {
+    env.storage()
+        .instance()
+        .set(&storage_version_key(), &STORAGE_SCHEMA_VERSION);
     bump_instance(env);
 }
 
@@ -1642,16 +1675,20 @@ pub struct AccordContract;
 //   create_revoke_role_proposal.
 // Approver + owner membership/weight: approve, revoke.
 // Executor role: execute, cancel_expired (owner membership is not required).
-// Owner membership: cancel_recurring_schedule.
+// Owner membership: (none — the legacy direct schedule cancellation
+//   `cancel_recurring_schedule` is deprecated; recurring schedules are cancelled
+//   only through the `create_cancel_recurring_proposal` governance path).
+// Deprecated (always returns `DeprecatedEntrypoint`): cancel_recurring_schedule —
+//   retained for bindings compatibility only; use create_cancel_recurring_proposal.
 // Permissionless/authenticated caller: disburse_recurring_schedule (permissionless
 //   crank); disburse_recurring (any authenticated caller).
 // Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
 //   set_guardian, unfreeze, upgrade. Guardian-only: freeze.
 // Read-only, no authorization: get_spent_tracker, get_recurring_payment,
 //   get_next_disbursement_time, get_recurring_payments_paged,
-//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
-//   is_governance_migrated, get_role_version, get_roles, has_role,
-//   get_role_members, get_owner_weight, get_owner_weights,
+//   get_active_recurring_count, get_approvers, get_version, get_storage_version,
+//   get_total_weight, is_governance_migrated, get_role_version, get_roles,
+//   has_role, get_role_members, get_owner_weight, get_owner_weights,
 //   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
 //   get_effective_weight, get_proposal, get_proposals_paged, get_owners,
 //   get_spending_limit, get_owner_spending_limits,
@@ -1768,6 +1805,7 @@ impl AccordContract {
             update_owner_roles(&env, &owner, &roles);
         }
         write_role_version(&env, RBAC_VERSION);
+        write_storage_version(&env);
         bump_instance(&env);
 
         Ok(())
@@ -1847,6 +1885,7 @@ impl AccordContract {
         // needed migration) must be caught by the guard at the top of this
         // function before any weight data is touched.
         write_governance_migrated(&env, true);
+        write_storage_version(&env);
 
         env.events().publish(
             (symbol_short!("migrated"),),
@@ -1877,6 +1916,7 @@ impl AccordContract {
             update_owner_roles(&env, &owner, &roles);
         }
         write_role_version(&env, RBAC_VERSION);
+        write_storage_version(&env);
 
         env.events().publish(
             (Symbol::new(&env, "rbac_migrated"),),
@@ -1938,18 +1978,26 @@ impl AccordContract {
         Ok(id)
     }
 
-    /// Cancel a recurring schedule (owner-only action).
+    /// DEPRECATED: direct owner cancellation of a recurring schedule.
+    ///
+    /// Cancellation is governance-gated. The canonical path is
+    /// [`create_cancel_recurring_proposal`](Self::create_cancel_recurring_proposal),
+    /// which routes the cancel through the create → approve → execute lifecycle
+    /// so the decision is recorded as a proposal and reflected in the event
+    /// stream the indexer and frontend consume. This direct entrypoint is kept
+    /// only so existing callers receive a clear, documented error instead of an
+    /// unknown-function fault; it performs no authorization or storage write and
+    /// always returns [`ContractError::DeprecatedEntrypoint`].
     pub fn cancel_recurring_schedule(
         env: Env,
         caller: Address,
         id: u64,
     ) -> Result<(), ContractError> {
-        caller.require_auth();
-        require_owner_and_weight(&env, &caller)?;
-        let mut s = read_recurring_schedule(&env, id)?;
-        s.status = RecurringStatus::Cancelled;
-        write_recurring_schedule(&env, &s);
-        Ok(())
+        // Parameters are intentionally unused: the entrypoint performs no
+        // authorization or state mutation. They are retained so existing
+        // bindings keep the original ABI shape.
+        let _ = (env, caller, id);
+        Err(ContractError::DeprecatedEntrypoint)
     }
 
     /// Disburse a recurring schedule (permissionless crank). Reject if schedule
@@ -3984,6 +4032,16 @@ impl AccordContract {
     /// that need to know which version of the contract is deployed.
     pub fn get_version(_env: Env) -> u32 {
         CONTRACT_VERSION
+    }
+
+    /// Returns the on-chain storage-schema version for this deployment: `0` for
+    /// a legacy contract deployed before schema versioning existed, otherwise
+    /// the current [`STORAGE_SCHEMA_VERSION`]. The value is written by
+    /// `initialize` and by the one-time migrations, and is bumped by any release
+    /// that adds or changes storage keys. See `docs/ARCHITECTURE.md` §3
+    /// (Storage Schema Versioning) for the per-version key list and upgrade path.
+    pub fn get_storage_version(env: Env) -> u32 {
+        read_storage_version(&env)
     }
 
     pub fn get_total_weight(env: Env) -> u32 {

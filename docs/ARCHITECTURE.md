@@ -65,8 +65,9 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `ACTCNT` | `u32`  | Active proposal count (budget guard)      | 518,400 / 17,280                 |
 | `TWGT`   | `u32`  | Cached total owner weight                  | 518,400 / 17,280                 |
 | `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
+| `STOVER` | `u32`  | Storage-schema version (see [Storage Schema Versioning](#storage-schema-versioning)) | 518,400 / 17,280                 |
 
-**Instance entry cost**: all five keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
+**Instance entry cost**: all instance keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
 
 ### Persistent Storage (long TTL, bumped on access)
 
@@ -111,6 +112,7 @@ Accord uses two patterns:
 | `ACTCNT` | Count of currently active proposals |
 | `TLOCK`  | Time-lock delay in seconds          |
 | `TWGT`   | Cached total owner weight           |
+| `STOVER` | Storage-schema version              |
 | `OWNERS` | Owner address → weight map          |
 
 **Tuple keys** — two- or three-part tuples for per-entity records, where the first element is a short symbol namespace:
@@ -121,6 +123,25 @@ Accord uses two patterns:
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
+
+### Storage Schema Versioning
+
+The contract records an explicit **storage-schema version** in instance storage under the `STOVER` key, written during `initialize` and by the one-time migrations, and read back through the `get_storage_version` view. It answers the operator question "which on-chain storage layout is this deployed contract using?", independently of the code version (`get_version`) and the RBAC version (`get_role_version`).
+
+**Rule:** any release that adds, removes, or changes the type of a storage key increments `STORAGE_SCHEMA_VERSION` in `contracts/accord/src/lib.rs` and adds a row for the new version below. Behavioral changes that leave the storage layout untouched do not bump it.
+
+| Version | Written by | Keys introduced in this version |
+| ------- | ---------- | ------------------------------- |
+| `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
+| `1` (current) | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+
+**Upgrade path between versions:**
+
+- **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
+- **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
+- **`1` → `2` (future):** the release that bumps the version must list the keys it adds in the table above and ship a migration that re-stamps `STOVER`. Until such a migration exists, do not assume a contract reporting an older version is compatible with a newer WASM.
+
+Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
 ### Lifecycle of Per-Owner Persistent Storage Entries
 
