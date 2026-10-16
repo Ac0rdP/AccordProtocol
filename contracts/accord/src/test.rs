@@ -10905,3 +10905,846 @@ fn ttl_audit_persistent_entry_rebumps_and_survives_idle_window() {
     advance_ledger(&env, PERSISTENT_BUMP / 2);
     assert!(persistent_ttl(&env, &cid, &proposal_key(id)) > 0);
 }
+
+// ─── Total-weight invariant (#747) ───────────────────────────────────────────
+//
+// After any weight-affecting governance action, the sum of every current
+// owner's weight (read straight from the OWNERS map) must equal the stored
+// TWGT counter that every quorum check relies on.
+
+fn assert_total_weight_invariant(env: &Env, client: &AccordContractClient, context: &str) {
+    let owners = env.as_contract(&client.address, || read_owners_map(env).unwrap());
+    let mut sum: u64 = 0;
+    let mut breakdown = std::string::String::new();
+    for (owner, weight) in owners.iter() {
+        sum += weight as u64;
+        breakdown.push_str(&format!("{:?}={}; ", owner, weight));
+    }
+    let stored = client.get_total_weight();
+    assert_eq!(
+        sum,
+        stored as u64,
+        "total-weight invariant broken after {}: sum of {} owner weights is {} but stored total weight is {} (off by {}); owners: [{}]",
+        context,
+        owners.len(),
+        sum,
+        stored,
+        stored as i64 - sum as i64,
+        breakdown,
+    );
+}
+
+/// Initializes a contract with one owner per entry in `weights` and a
+/// threshold of 1, so a single owner can approve and execute every proposal.
+fn setup_invariant_owners(weights: &[u32]) -> (Env, AccordContractClient<'static>, std::vec::Vec<Address>) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut owners = Vec::new(&env);
+    let mut weight_vec = Vec::new(&env);
+    let mut addresses = std::vec::Vec::new();
+    for weight in weights {
+        let owner = Address::generate(&env);
+        owners.push_back(owner.clone());
+        weight_vec.push_back(*weight);
+        addresses.push(owner);
+    }
+    client.initialize(&owners, &weight_vec, &1, &0);
+    (env, client, addresses)
+}
+
+fn approve_and_execute(client: &AccordContractClient, owner: &Address, id: u64) {
+    client.approve(owner, &id);
+    client.execute(owner, &id);
+}
+
+#[test]
+fn total_weight_invariant_holds_after_each_weight_affecting_operation() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let a = owners[0].clone();
+    assert_total_weight_invariant(&env, &client, "initialize");
+
+    let new_owner = Address::generate(&env);
+    let id = client.create_add_owner_proposal(&a, &new_owner, &3, &str(&env, "add"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "add owner (weight 3)");
+    assert_eq!(client.get_total_weight(), 13);
+
+    let id = client.create_change_weight_proposal(&a, &owners[1], &4, &str(&env, "raise"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "weight change 2 -> 4");
+    assert_eq!(client.get_total_weight(), 15);
+
+    let id = client.create_change_weight_proposal(&a, &new_owner, &1, &str(&env, "lower"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "weight change 3 -> 1");
+    assert_eq!(client.get_total_weight(), 13);
+
+    let id = client.create_remove_owner_proposal(&a, &owners[2], &str(&env, "remove"), &DEADLINE);
+    approve_and_execute(&client, &a, id);
+    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
+    assert_eq!(client.get_total_weight(), 11);
+}
+
+/// Creates the same five governance proposals up front, approves them all,
+/// then executes them in `order`, checking the invariant after each one.
+fn run_interleaved_governance(order: [usize; 5]) {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+    assert_total_weight_invariant(&env, &client, "initialize");
+
+    let ids = [
+        client.create_add_owner_proposal(&a, &Address::generate(&env), &3, &str(&env, "add x"), &DEADLINE),
+        client.create_change_weight_proposal(&a, &b, &4, &str(&env, "b -> 4"), &DEADLINE),
+        client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE),
+        client.create_change_weight_proposal(&a, &a, &1, &str(&env, "a -> 1"), &DEADLINE),
+        client.create_add_owner_proposal(&a, &Address::generate(&env), &2, &str(&env, "add y"), &DEADLINE),
+    ];
+    let labels = ["add x (3)", "change b 2 -> 4", "remove c (2)", "change a 2 -> 1", "add y (2)"];
+    for id in ids.iter() {
+        client.approve(&a, id);
+    }
+
+    for (step, &index) in order.iter().enumerate() {
+        client.execute(&a, &ids[index]);
+        assert_total_weight_invariant(
+            &env,
+            &client,
+            &format!("step {} of order {:?}: {}", step + 1, order, labels[index]),
+        );
+    }
+
+    // a=1, b=4, d=2, e=2, x=3, y=2 regardless of execution order.
+    assert_eq!(client.get_total_weight(), 14, "final total for order {:?}", order);
+}
+
+#[test]
+fn total_weight_invariant_holds_across_interleaved_governance_executions() {
+    for order in [
+        [0, 1, 2, 3, 4],
+        [4, 3, 2, 1, 0],
+        [2, 0, 4, 1, 3],
+        [3, 2, 1, 4, 0],
+        [1, 4, 0, 3, 2],
+    ] {
+        run_interleaved_governance(order);
+    }
+}
+
+#[test]
+fn total_weight_invariant_holds_for_weight_change_then_removal_of_same_owner() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, c) = (owners[0].clone(), owners[2].clone());
+
+    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
+    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&a, &change);
+    client.approve(&a, &remove);
+
+    client.execute(&a, &change);
+    assert_total_weight_invariant(&env, &client, "weight change c 2 -> 5");
+    assert_eq!(client.get_total_weight(), 13);
+
+    // Removal must subtract the owner's current weight (5), not the weight
+    // they had when the removal was proposed (2).
+    client.execute(&a, &remove);
+    assert_total_weight_invariant(&env, &client, "removal of c after weight change");
+    assert_eq!(client.get_total_weight(), 8);
+    assert!(!client.is_owner(&c));
+}
+
+#[test]
+fn total_weight_invariant_holds_for_removal_then_weight_change_of_same_owner() {
+    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
+    let (a, c) = (owners[0].clone(), owners[2].clone());
+
+    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
+    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    client.approve(&a, &change);
+    client.approve(&a, &remove);
+
+    client.execute(&a, &remove);
+    assert_total_weight_invariant(&env, &client, "removal of c");
+    assert_eq!(client.get_total_weight(), 8);
+
+    // The stale weight change must not resurrect c or touch the counter.
+    assert_eq!(
+        client.try_execute(&a, &change),
+        Err(Ok(ContractError::TargetOwnerNoLongerExists))
+    );
+    assert_total_weight_invariant(&env, &client, "rejected weight change of removed owner c");
+    assert_eq!(client.get_total_weight(), 8);
+    assert!(!client.is_owner(&c));
+}
+
+// ─── Effective-weight delegation audit (#748) ────────────────────────────────
+//
+// `compute_effective_weight` = raw weight − active outgoing delegation +
+// active incoming delegations from current owners. A delegation is active
+// while `expiry > now`. Revoking a delegation deletes its entry, and removing
+// an owner deletes every delegation where they are delegator or delegate, so
+// neither side keeps a stale contribution. No public entrypoint writes
+// delegations yet, so these tests write them directly.
+
+fn write_test_delegation(
+    env: &Env,
+    client: &AccordContractClient,
+    delegator: &Address,
+    delegate: &Address,
+    weight: u32,
+    expiry: Option<u64>,
+) {
+    let delegation = Delegation {
+        delegator: delegator.clone(),
+        delegate: delegate.clone(),
+        weight,
+        expiry,
+    };
+    env.as_contract(&client.address, || write_delegation(env, &delegation));
+}
+
+fn revoke_test_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) {
+    env.as_contract(&client.address, || remove_delegation(env, delegator));
+}
+
+fn stored_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) -> Option<Delegation> {
+    env.as_contract(&client.address, || read_delegation(env, delegator))
+}
+
+fn remove_owner_via(env: &Env, client: &AccordContractClient, executor: &Address, target: &Address) {
+    let id = client.create_remove_owner_proposal(executor, target, &str(env, "remove"), &DEADLINE);
+    approve_and_execute(client, executor, id);
+}
+
+fn sum_effective_weights(client: &AccordContractClient) -> u32 {
+    let mut sum = 0;
+    for owner in client.get_owners().iter() {
+        sum += client.get_effective_weight(&owner);
+    }
+    sum
+}
+
+#[test]
+fn effective_weight_with_active_delegation() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&a), 1);
+    assert_eq!(client.get_effective_weight(&b), 7);
+    assert_eq!(client.get_effective_weight(&c), 4);
+
+    // A future expiry is still active.
+    write_test_delegation(&env, &client, &a, &b, 2, Some(NOW + 100));
+    assert_eq!(client.get_effective_weight(&a), 2);
+    assert_eq!(client.get_effective_weight(&b), 6);
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+}
+
+#[test]
+fn expired_delegation_contributes_nothing() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b) = (owners[0].clone(), owners[1].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, Some(NOW + 100));
+    set_timestamp(&env, NOW + 99);
+    assert_eq!(client.get_effective_weight(&a), 1);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    // `expiry <= now` is expired, so the boundary second already excludes it.
+    set_timestamp(&env, NOW + 100);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(client.get_active_delegations().is_empty());
+
+    set_timestamp(&env, NOW + 10_000);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+}
+
+#[test]
+fn revoked_delegation_contributes_nothing() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b) = (owners[0].clone(), owners[1].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    revoke_test_delegation(&env, &client, &a);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(client.get_active_delegations().is_empty());
+    assert!(client.get_delegations(&b).incoming.is_empty());
+}
+
+#[test]
+fn removing_delegate_restores_delegator_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&a), 1);
+
+    remove_owner_via(&env, &client, &c, &b);
+
+    assert_eq!(
+        client.try_get_effective_weight(&b),
+        Err(Ok(ContractError::OwnerNotFound))
+    );
+    // The delegation to the removed owner no longer drains A's weight.
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert!(stored_delegation(&env, &client, &a).is_none());
+    assert!(client.get_delegations(&a).outgoing.is_empty());
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+    assert_eq!(client.get_total_weight(), 12);
+}
+
+#[test]
+fn removing_delegator_clears_delegate_contribution() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    assert_eq!(client.get_effective_weight(&b), 7);
+
+    remove_owner_via(&env, &client, &c, &a);
+
+    assert_eq!(client.get_effective_weight(&b), 4);
+    assert!(stored_delegation(&env, &client, &a).is_none());
+    assert!(client.get_delegations(&b).incoming.is_empty());
+    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
+
+    // Re-adding the former delegator must not revive the old delegation.
+    let id = client.create_add_owner_proposal(&c, &a, &4, &str(&env, "re-add"), &DEADLINE);
+    approve_and_execute(&client, &c, id);
+    assert_eq!(client.get_effective_weight(&a), 4);
+    assert_eq!(client.get_effective_weight(&b), 4);
+}
+
+#[test]
+fn total_weight_bound_holds_with_delegations_active() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
+    let (a, b, c, d) = (owners[0].clone(), owners[1].clone(), owners[2].clone(), owners[3].clone());
+
+    write_test_delegation(&env, &client, &a, &b, 3, None);
+    write_test_delegation(&env, &client, &c, &b, 4, Some(NOW + 500));
+    write_test_delegation(&env, &client, &d, &a, 2, None);
+
+    let total = client.get_total_weight();
+    assert_eq!(client.get_effective_weight(&a), 3);
+    assert_eq!(client.get_effective_weight(&b), 11);
+    assert_eq!(client.get_effective_weight(&c), 0);
+    assert_eq!(client.get_effective_weight(&d), 2);
+
+    // Delegation moves weight between owners but never creates it.
+    assert_eq!(sum_effective_weights(&client), total);
+    assert!(total <= MAX_TOTAL_WEIGHT);
+    for owner in client.get_owners().iter() {
+        assert!(client.get_effective_weight(&owner) <= total);
+    }
+
+    // The bound also holds for an approval counted at effective weight.
+    let id = client.create_add_owner_proposal(&b, &Address::generate(&env), &1, &str(&env, "bound"), &DEADLINE);
+    client.approve(&b, &id);
+    assert_eq!(client.get_proposal(&id).approvals, 11);
+    assert!(client.get_proposal(&id).approvals <= total);
+
+    // Once the timed delegation lapses the sum is still exactly the total.
+    set_timestamp(&env, NOW + 500);
+    assert_eq!(client.get_effective_weight(&b), 7);
+    assert_eq!(client.get_effective_weight(&c), 4);
+    assert_eq!(sum_effective_weights(&client), total);
+}
+
+// ─── ContractError completeness (#749) ───────────────────────────────────────
+//
+// Every `ContractError` variant must have a unique code inside the contract
+// error range and a matching row in docs/CONTRACT_API.md. Adding a variant
+// fails to compile until it is named in `contract_error_name`, after which
+// the scan below finds it and the docs check fails until it is documented.
+
+/// Codes are expected in `1..=MAX_CONTRACT_ERROR_CODE`; 0 is never used.
+const MAX_CONTRACT_ERROR_CODE: u32 = 999;
+/// Codes scanned when discovering variants; far above the expected range so
+/// an out-of-range variant is still found and reported.
+const CONTRACT_ERROR_SCAN_LIMIT: u32 = 100_000;
+
+const CONTRACT_API_DOC: &str = include_str!("../../../docs/CONTRACT_API.md");
+
+/// Exhaustive on purpose: no wildcard arm, so a new variant is a compile error here.
+fn contract_error_name(error: ContractError) -> &'static str {
+    match error {
+        ContractError::AlreadyInitialized => "AlreadyInitialized",
+        ContractError::NotInitialized => "NotInitialized",
+        ContractError::Unauthorized => "Unauthorized",
+        ContractError::InvalidThreshold => "InvalidThreshold",
+        ContractError::InvalidOwners => "InvalidOwners",
+        ContractError::ProposalNotFound => "ProposalNotFound",
+        ContractError::ProposalNotActive => "ProposalNotActive",
+        ContractError::AlreadyApproved => "AlreadyApproved",
+        ContractError::NotApproved => "NotApproved",
+        ContractError::ThresholdNotMet => "ThresholdNotMet",
+        ContractError::ProposalExpired => "ProposalExpired",
+        ContractError::InvalidAmount => "InvalidAmount",
+        ContractError::InvalidDeadline => "InvalidDeadline",
+        ContractError::InvalidToken => "InvalidToken",
+        ContractError::TransferFailed => "TransferFailed",
+        ContractError::EmptyDescription => "EmptyDescription",
+        ContractError::DescriptionTooLong => "DescriptionTooLong",
+        ContractError::TooManyActiveProposals => "TooManyActiveProposals",
+        ContractError::DuplicateOwner => "DuplicateOwner",
+        ContractError::ArithmeticError => "ArithmeticError",
+        ContractError::InvalidDuration => "InvalidDuration",
+        ContractError::InvalidRecipient => "InvalidRecipient",
+        ContractError::TimeLockActive => "TimeLockActive",
+        ContractError::WouldBreakThreshold => "WouldBreakThreshold",
+        ContractError::OwnerNotFound => "OwnerNotFound",
+        ContractError::ContractFrozen => "ContractFrozen",
+        ContractError::NoGuardian => "NoGuardian",
+        ContractError::InvalidInterval => "InvalidInterval",
+        ContractError::InvalidSchedule => "InvalidSchedule",
+        ContractError::InvalidCap => "InvalidCap",
+        ContractError::SpendingLimitExceeded => "SpendingLimitExceeded",
+        ContractError::RecurringPaymentNotFound => "RecurringPaymentNotFound",
+        ContractError::RecurringPaymentNotDue => "RecurringPaymentNotDue",
+        ContractError::RecurringPaymentComplete => "RecurringPaymentComplete",
+        ContractError::RecurringPaymentInactive => "RecurringPaymentInactive",
+        ContractError::RecurringIntervalNotElapsed => "RecurringIntervalNotElapsed",
+        ContractError::TooManyActiveRecurring => "TooManyActiveRecurring",
+        ContractError::ScheduleAlreadyCancelled => "ScheduleAlreadyCancelled",
+        ContractError::ScheduleAlreadyPaused => "ScheduleAlreadyPaused",
+        ContractError::ScheduleNotPaused => "ScheduleNotPaused",
+        ContractError::ScheduleTerminal => "ScheduleTerminal",
+        ContractError::InvalidWeightsLength => "InvalidWeightsLength",
+        ContractError::WeightBelowMinimum => "WeightBelowMinimum",
+        ContractError::InvalidWeight => "InvalidWeight",
+        ContractError::AlreadyMigrated => "AlreadyMigrated",
+        ContractError::SingleOwnerWeightCapExceeded => "SingleOwnerWeightCapExceeded",
+        ContractError::TargetOwnerNoLongerExists => "TargetOwnerNoLongerExists",
+        ContractError::WouldBreakQuorum => "WouldBreakQuorum",
+        ContractError::CannotRemoveLastOwner => "CannotRemoveLastOwner",
+        ContractError::ThresholdExceedsOwnerCount => "ThresholdExceedsOwnerCount",
+        ContractError::ScheduleNotActive => "ScheduleNotActive",
+        ContractError::MissingRole => "MissingRole",
+        ContractError::RoleAlreadyGranted => "RoleAlreadyGranted",
+        ContractError::RoleNotGranted => "RoleNotGranted",
+        ContractError::InvalidRole => "InvalidRole",
+        ContractError::DeprecatedEntrypoint => "DeprecatedEntrypoint",
+    }
+}
+
+/// Every variant, discovered by decoding each candidate contract error code.
+fn scan_contract_errors() -> std::vec::Vec<(u32, ContractError)> {
+    let mut found = std::vec::Vec::new();
+    for code in 0..=CONTRACT_ERROR_SCAN_LIMIT {
+        let error = soroban_sdk::Error::from_contract_error(code);
+        if let Ok(variant) = ContractError::try_from(error) {
+            found.push((code, variant));
+        }
+    }
+    found
+}
+
+/// Parses the `| code | Variant | ... |` rows of the "## Error Reference" table.
+fn documented_error_codes() -> std::collections::BTreeMap<std::string::String, u32> {
+    let start = CONTRACT_API_DOC
+        .find("## Error Reference")
+        .expect("docs/CONTRACT_API.md is missing its '## Error Reference' section");
+    let section = &CONTRACT_API_DOC[start..];
+    let end = section[1..].find("\n## ").map(|i| i + 1).unwrap_or(section.len());
+
+    let mut documented = std::collections::BTreeMap::new();
+    for line in section[..end].lines() {
+        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        if cells.len() < 3 {
+            continue;
+        }
+        if let Ok(code) = cells[1].parse::<u32>() {
+            let name = cells[2].trim_matches('`').to_string();
+            if let Some(previous) = documented.insert(name.clone(), code) {
+                panic!(
+                    "docs/CONTRACT_API.md documents {} twice (codes {} and {})",
+                    name, previous, code
+                );
+            }
+        }
+    }
+    documented
+}
+
+#[test]
+fn contract_error_codes_are_unique() {
+    let errors = scan_contract_errors();
+    assert!(!errors.is_empty(), "no ContractError variants were discovered");
+
+    let mut by_name: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for (code, variant) in errors.iter() {
+        let name = contract_error_name(*variant);
+        assert_eq!(
+            *variant as u32, *code,
+            "ContractError::{} decoded from code {} but its discriminant is {}",
+            name, code, *variant as u32
+        );
+        assert_eq!(
+            soroban_sdk::Error::from(*variant).get_code(),
+            *code,
+            "ContractError::{} does not round-trip through soroban_sdk::Error",
+            name
+        );
+        if let Some(other) = by_name.insert(name, *code) {
+            panic!("ContractError::{} is reachable from codes {} and {}", name, other, code);
+        }
+    }
+
+    let mut codes: std::vec::Vec<u32> = errors.iter().map(|(code, _)| *code).collect();
+    codes.sort();
+    for pair in codes.windows(2) {
+        assert_ne!(pair[0], pair[1], "two ContractError variants share code {}", pair[0]);
+    }
+}
+
+#[test]
+fn contract_error_codes_stay_in_contract_range_and_clear_of_host_errors() {
+    for (code, variant) in scan_contract_errors() {
+        let name = contract_error_name(variant);
+        assert!(
+            (1..=MAX_CONTRACT_ERROR_CODE).contains(&code),
+            "ContractError::{} has code {} outside the expected range 1..={}",
+            name, code, MAX_CONTRACT_ERROR_CODE
+        );
+        let encoded = soroban_sdk::Error::from(variant);
+        assert!(
+            encoded.is_type(xdr::ScErrorType::Contract),
+            "ContractError::{} (code {}) is not encoded as a contract error",
+            name, code
+        );
+    }
+
+    // No host error (any non-contract type, any host code) may decode as a
+    // ContractError, so host failures can never be mistaken for ours.
+    for error_type in xdr::ScErrorType::VARIANTS {
+        if error_type == xdr::ScErrorType::Contract {
+            continue;
+        }
+        for error_code in xdr::ScErrorCode::VARIANTS {
+            let host_error = soroban_sdk::Error::from_type_and_code(error_type, error_code);
+            assert!(
+                ContractError::try_from(host_error).is_err(),
+                "host error {:?}/{:?} decodes as ContractError::{}",
+                error_type,
+                error_code,
+                contract_error_name(ContractError::try_from(host_error).unwrap())
+            );
+        }
+    }
+}
+
+#[test]
+fn every_contract_error_is_documented_in_contract_api() {
+    let documented = documented_error_codes();
+    let errors = scan_contract_errors();
+
+    for (code, variant) in errors.iter() {
+        let name = contract_error_name(*variant);
+        match documented.get(name) {
+            None => panic!(
+                "ContractError::{} (code {}) is missing from the Error Reference table in docs/CONTRACT_API.md",
+                name, code
+            ),
+            Some(doc_code) => assert_eq!(
+                doc_code, code,
+                "docs/CONTRACT_API.md lists ContractError::{} as code {} but the contract uses {}",
+                name, doc_code, code
+            ),
+        }
+    }
+
+    // The reverse direction: no stale rows for variants that no longer exist.
+    for (name, doc_code) in documented.iter() {
+        assert!(
+            errors.iter().any(|(_, v)| contract_error_name(*v) == name.as_str()),
+            "docs/CONTRACT_API.md documents {} (code {}) but ContractError has no such variant",
+            name, doc_code
+        );
+    }
+
+    // The "Common Errors Quick Reference" rows (`| code Variant | ... |`)
+    // must agree with the contract too.
+    for line in CONTRACT_API_DOC.lines() {
+        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        let mut parts = cells[1].splitn(2, ' ');
+        let (Some(code), Some(name)) = (parts.next(), parts.next()) else { continue };
+        let (Ok(code), true) = (code.parse::<u32>(), name.starts_with('`')) else { continue };
+        let name = name.trim_matches('`');
+        let actual = errors
+            .iter()
+            .find(|(_, v)| contract_error_name(*v) == name)
+            .map(|(c, _)| *c)
+            .unwrap_or_else(|| panic!("quick reference lists unknown error {} (code {})", name, code));
+        assert_eq!(
+            code, actual,
+            "quick reference lists ContractError::{} as code {} but the contract uses {}",
+            name, code, actual
+        );
+    }
+}
+
+// ─── Resource regression at maximum configuration (#750) ─────────────────────
+//
+// Runs the hot entrypoints at MAX_OWNERS owners, each at MAX_OWNER_WEIGHT, with
+// every other owner delegating to owner 0 (the worst case for the per-owner
+// delegation scan), and asserts each top-level invocation's metered resources
+// (`env.cost_estimate().resources()`) stay under `HOT_PATH_CEILING`.
+//
+// Updating the ceiling: run
+//     cargo test -p accord resource_ceiling -- --nocapture --test-threads=1
+// and read the `[resource]` lines. If a legitimate change pushes a value over
+// the ceiling, first confirm the growth is intended, then raise only that
+// field, keeping it at or below the documented fraction of the network limit
+// in docs/ARCHITECTURE.md §12 and updating that table in the same change. A
+// value that cannot fit under its fraction means the entrypoint needs
+// optimizing, not a bigger ceiling.
+
+struct ResourceCeiling {
+    instructions: i64,
+    mem_bytes: i64,
+    ledger_entries: u32,
+    write_entries: u32,
+    write_bytes: u32,
+    contract_events_size_bytes: u32,
+}
+
+/// Fractions of the Stellar mainnet per-invocation limits
+/// (`InvocationResourceLimits::mainnet()`), which the test Env also enforces.
+/// CPU and memory are tight because native test execution under-reports the
+/// cost of real Wasm execution.
+const HOT_PATH_CEILING: ResourceCeiling = ResourceCeiling {
+    instructions: 60_000_000,         // 10% of 600,000,000
+    mem_bytes: 4_194_304,             // 10% of 41,943,040 (40 MiB)
+    ledger_entries: 75,               // 75% of 100
+    write_entries: 37,                // 75% of 50
+    write_bytes: 66_048,              // 50% of 132,096
+    contract_events_size_bytes: 8_192, // 50% of 16,384
+};
+
+fn assert_within_resource_ceiling(env: &Env, label: &str) {
+    let r = env.cost_estimate().resources();
+    let ledger_entries = r.disk_read_entries + r.memory_read_entries + r.write_entries;
+    std::println!(
+        "[resource] {}: instructions={} mem_bytes={} ledger_entries={} write_entries={} write_bytes={} events_bytes={}",
+        label, r.instructions, r.mem_bytes, ledger_entries, r.write_entries, r.write_bytes,
+        r.contract_events_size_bytes,
+    );
+    let c = &HOT_PATH_CEILING;
+    assert!(
+        r.instructions <= c.instructions,
+        "{}: {} CPU instructions exceeds the ceiling of {}",
+        label, r.instructions, c.instructions
+    );
+    assert!(
+        r.mem_bytes <= c.mem_bytes,
+        "{}: {} memory bytes exceeds the ceiling of {}",
+        label, r.mem_bytes, c.mem_bytes
+    );
+    assert!(
+        ledger_entries <= c.ledger_entries,
+        "{}: {} ledger entries exceeds the ceiling of {}",
+        label, ledger_entries, c.ledger_entries
+    );
+    assert!(
+        r.write_entries <= c.write_entries,
+        "{}: {} written entries exceeds the ceiling of {}",
+        label, r.write_entries, c.write_entries
+    );
+    assert!(
+        r.write_bytes <= c.write_bytes,
+        "{}: {} written bytes exceeds the ceiling of {}",
+        label, r.write_bytes, c.write_bytes
+    );
+    assert!(
+        r.contract_events_size_bytes <= c.contract_events_size_bytes,
+        "{}: {} event bytes exceeds the ceiling of {}",
+        label, r.contract_events_size_bytes, c.contract_events_size_bytes
+    );
+}
+
+/// Strict majority of the maximum total weight.
+const MAX_CONFIG_THRESHOLD: u32 = MAX_TOTAL_WEIGHT / 2 + 1;
+
+/// MAX_OWNERS owners at MAX_OWNER_WEIGHT, three funded tokens, and owners
+/// 1..MAX_OWNERS each delegating half their weight to owner 0.
+fn setup_max_config() -> (
+    Env,
+    AccordContractClient<'static>,
+    std::vec::Vec<Address>,
+    std::vec::Vec<Address>,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+
+    let mut tokens = std::vec::Vec::new();
+    for _ in 0..3 {
+        let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        token::StellarAssetClient::new(&env, &token_id.address())
+            .mint(&contract_id, &1_000_000_000_000_i128);
+        tokens.push(token_id.address());
+    }
+
+    let mut owners = Vec::new(&env);
+    let mut weights = Vec::new(&env);
+    let mut addresses = std::vec::Vec::new();
+    for _ in 0..MAX_OWNERS {
+        let owner = Address::generate(&env);
+        owners.push_back(owner.clone());
+        weights.push_back(MAX_OWNER_WEIGHT);
+        addresses.push(owner);
+    }
+    client.initialize(&owners, &weights, &MAX_CONFIG_THRESHOLD, &0);
+    assert_within_resource_ceiling(&env, "initialize (max owners, max weights)");
+    assert_eq!(client.get_total_weight(), MAX_TOTAL_WEIGHT);
+
+    for delegator in addresses.iter().skip(1) {
+        write_test_delegation(&env, &client, delegator, &addresses[0], MAX_OWNER_WEIGHT / 2, None);
+    }
+
+    (env, client, addresses, tokens)
+}
+
+fn max_transfers(env: &Env, tokens: &[Address]) -> Vec<Transfer> {
+    let mut transfers = Vec::new(env);
+    for token in tokens {
+        transfers.push_back(Transfer {
+            to: Address::generate(env),
+            token: token.clone(),
+            amount: 1_000,
+        });
+    }
+    transfers
+}
+
+/// Every owner approves `id`, each approval measured individually.
+fn approve_all_measured(env: &Env, client: &AccordContractClient, owners: &[Address], id: u64, what: &str) {
+    for (i, owner) in owners.iter().enumerate() {
+        client.approve(owner, &id);
+        assert_within_resource_ceiling(env, &format!("approve {} by owner {}", what, i));
+    }
+}
+
+#[test]
+fn resource_ceiling_create_and_approve_at_max_config() {
+    let (env, client, owners, tokens) = setup_max_config();
+
+    let id = client.create_proposal(
+        &owners[1],
+        &max_transfers(&env, &tokens),
+        &str(&env, "resource transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_within_resource_ceiling(&env, "create_proposal (3 tokens)");
+
+    // Owner 0 has every incoming delegation; later approvers hit a Ready proposal.
+    approve_all_measured(&env, &client, &owners, id, "transfer");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
+
+#[test]
+fn resource_ceiling_execute_transfer_at_max_config() {
+    let (env, client, owners, tokens) = setup_max_config();
+
+    let id = client.create_proposal(
+        &owners[1],
+        &max_transfers(&env, &tokens),
+        &str(&env, "resource transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    for owner in owners.iter() {
+        client.approve(owner, &id);
+    }
+
+    client.execute(&owners[1], &id);
+    assert_within_resource_ceiling(&env, "execute transfer (3 tokens)");
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn resource_ceiling_execute_governance_at_max_config() {
+    let (env, client, owners, _) = setup_max_config();
+
+    let change = client.create_change_weight_proposal(
+        &owners[1], &owners[5], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource weight"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_change_weight_proposal");
+    // Left pending so the removal below must reverse owner 0's approval on it.
+    let pending = client.create_change_weight_proposal(
+        &owners[1], &owners[6], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource pending"), &DEADLINE,
+    );
+    let remove = client.create_remove_owner_proposal(
+        &owners[1], &owners[0], &str(&env, "resource remove"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_remove_owner_proposal");
+
+    approve_all_measured(&env, &client, &owners, change, "weight change");
+    for owner in owners.iter() {
+        client.approve(owner, &pending);
+        client.approve(owner, &remove);
+    }
+
+    client.execute(&owners[1], &change);
+    assert_within_resource_ceiling(&env, "execute ChangeOwnerWeight");
+
+    // Removing the delegate of every delegation is the widest cleanup path.
+    client.execute(&owners[1], &remove);
+    assert_within_resource_ceiling(&env, "execute RemoveOwner (delegate of all delegations)");
+
+    // Back below MAX_OWNERS (adds are rejected at the cap), so an add can
+    // bring the contract back up to it.
+    let add = client.create_add_owner_proposal(
+        &owners[1], &Address::generate(&env), &MAX_OWNER_WEIGHT, &str(&env, "resource add"), &DEADLINE,
+    );
+    assert_within_resource_ceiling(&env, "create_add_owner_proposal");
+    for owner in owners.iter().skip(1) {
+        client.approve(owner, &add);
+    }
+    client.execute(&owners[1], &add);
+    assert_within_resource_ceiling(&env, "execute AddOwner (to MAX_OWNERS)");
+    assert_eq!(client.get_owners().len(), MAX_OWNERS);
+}
+
+#[test]
+fn resource_ceiling_weight_lookups_at_max_config() {
+    let (env, client, owners, _) = setup_max_config();
+
+    for (i, owner) in owners.iter().enumerate() {
+        client.get_effective_weight(owner);
+        assert_within_resource_ceiling(&env, &format!("get_effective_weight owner {}", i));
+    }
+    assert_eq!(
+        client.get_effective_weight(&owners[0]),
+        MAX_OWNER_WEIGHT + (MAX_OWNERS - 1) * (MAX_OWNER_WEIGHT / 2)
+    );
+
+    client.get_owner_weights();
+    assert_within_resource_ceiling(&env, "get_owner_weights");
+    client.get_owner_weight(&owners[0]);
+    assert_within_resource_ceiling(&env, "get_owner_weight");
+    client.get_total_weight();
+    assert_within_resource_ceiling(&env, "get_total_weight");
+    client.get_required_quorum_weight();
+    assert_within_resource_ceiling(&env, "get_required_quorum_weight");
+    client.get_delegations(&owners[0]);
+    assert_within_resource_ceiling(&env, "get_delegations (all incoming)");
+    client.get_active_delegations();
+    assert_within_resource_ceiling(&env, "get_active_delegations");
+}

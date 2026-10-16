@@ -3169,6 +3169,19 @@ impl AccordContract {
                 bump_persistent(&env, &key);
                 update_owner_roles(&env, owner_to_remove, &Vec::new(&env));
 
+                // Drop every delegation touching the removed owner. A remaining
+                // owner's outgoing delegation to them would otherwise keep
+                // subtracting weight that no one receives, and their own
+                // outgoing delegation would revive if they were re-added.
+                remove_delegation(&env, owner_to_remove);
+                for other in owners.keys().iter() {
+                    if let Some(delegation) = read_delegation(&env, &other) {
+                        if delegation.delegate == *owner_to_remove {
+                            remove_delegation(&env, &other);
+                        }
+                    }
+                }
+
                 write_total_weight(
                     &env,
                     resulting_total_weight,

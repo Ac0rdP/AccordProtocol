@@ -973,6 +973,52 @@ No follow-up action is required. The owner-map lookup does not pose a resource-l
 
 > **Note**: These measurements were obtained running Rust natively in test mode (not compiled to WASM). Soroban SDK's own documentation notes that CPU and memory costs are *likely to be underestimated* when running natively compared to actual WASM execution. The true WASM costs may be higher, but given the large headroom (less than 1% of limits), this margin of error does not change the conclusion.
 
+### Worst-Case Resource Profile and Regression Ceiling
+
+The `resource_ceiling_*` tests in `contracts/accord/src/test.rs` pin the cost of the hottest entrypoints at the maximum supported configuration, so a change that drifts toward the network budget fails CI instead of failing on-chain.
+
+**Configuration under test (`setup_max_config`):**
+
+- `MAX_OWNERS` (20) owners, each at `MAX_OWNER_WEIGHT` (100,000), so total weight is `MAX_TOTAL_WEIGHT` (2,000,000); threshold is a strict weight majority (1,000,001).
+- Owners 1–19 each delegate half their weight to owner 0. This is the worst case for `compute_effective_weight`, which reads one delegation entry per owner on every `approve` and weight lookup.
+- Transfer proposals carry the maximum of 3 transfers, each in a different token, so every token is validated.
+
+**Entrypoints measured** (each top-level invocation separately, via `env.cost_estimate().resources()`):
+
+| Path | Worst case exercised |
+|---|---|
+| `initialize` | 20 owners, writes owner map, 20 role sets, 3 role-member indexes |
+| `create_proposal` | 3 transfers across 3 tokens |
+| `approve` | Every one of the 20 owners, including owner 0 with 19 incoming delegations and approvals after the proposal is `Ready` |
+| `execute` (Transfer) | 3 token transfers |
+| `create_change_weight_proposal`, `execute` (ChangeOwnerWeight) | Active-proposal quorum scan at 20 owners |
+| `create_remove_owner_proposal`, `execute` (RemoveOwner) | Removing the delegate of all 19 delegations (widest cleanup), reversing approvals on another `Ready` proposal |
+| `create_add_owner_proposal`, `execute` (AddOwner) | Add back up to `MAX_OWNERS` |
+| `get_effective_weight`, `get_owner_weight(s)`, `get_total_weight`, `get_required_quorum_weight`, `get_delegations`, `get_active_delegations` | Full delegation fan-in |
+
+**Ceiling (`HOT_PATH_CEILING`)**, applied to every measured invocation, as a fraction of the Stellar mainnet per-invocation limits (`InvocationResourceLimits::mainnet()`, which the test `Env` also enforces outright):
+
+| Resource | Mainnet limit | Ceiling | Fraction |
+|---|---|---|---|
+| CPU instructions | 600,000,000 | 60,000,000 | 10% |
+| Memory bytes | 41,943,040 | 4,194,304 | 10% |
+| Ledger entries (read + written) | 100 | 75 | 75% |
+| Written entries | 50 | 37 | 75% |
+| Written bytes | 132,096 | 66,048 | 50% |
+| Contract event bytes | 16,384 | 8,192 | 50% |
+
+CPU and memory are held to 10% because the tests run natively, which under-reports real Wasm execution cost; the remaining 90% is headroom for that gap. Ledger-entry counts are not affected by native execution, so they can sit closer to the limit. The highest entry counts come from `execute` (RemoveOwner), which touches every delegation entry, and from `initialize`, which writes one role entry per owner.
+
+**Known unbounded-by-owners path:** `execute` for `RemoveOwner` also scans every proposal ID ever created (`1..next_id`) to re-check quorum and reverse approvals. Its cost grows with total proposal history, not just owner count, and the max-config tests deliberately keep proposal history small. Treat that loop as the first candidate for optimization if proposal volume grows.
+
+**Measured values and updating the ceiling:** run
+
+```
+cargo test -p accord resource_ceiling -- --nocapture --test-threads=1
+```
+
+Each measured invocation prints a `[resource] <label>: instructions=… mem_bytes=… ledger_entries=… write_entries=… write_bytes=… events_bytes=…` line. If a legitimate change pushes a value over the ceiling, confirm the growth is intended, then raise only that field in `HOT_PATH_CEILING` and update the table above in the same change, staying within the fractions listed. A value that cannot fit under its fraction means the entrypoint needs optimizing, not a bigger ceiling.
+
 ## 13. Indexer & Analytics Architecture
 
 Section 7 explains why standard RPC nodes only retain events for a limited window and recommends a dedicated indexer for anything that needs longer history — auditing, dashboards, and the treasury analytics page. This section documents the reference design for that indexer and the analytics layer built on top of it: the end-to-end data flow, the datastore schema, checkpointing and replay safety, and how each indexed record maps back to a contract-emitted event.
