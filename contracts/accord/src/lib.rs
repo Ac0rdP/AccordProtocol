@@ -1077,6 +1077,15 @@ fn update_owner_roles(env: &Env, owner: &Address, roles: &Vec<Role>) {
     }
 }
 
+/// True only when a `try_transfer` call both completed and returned the SEP-41
+/// unit value. A token that traps, errors, or returns any other value (for
+/// example `false`) is treated as a failed transfer: the generated client
+/// reports a mistyped return as `Ok(Err(_))`, which a bare `.is_err()` on the
+/// outer `Result` would let through.
+fn transfer_succeeded<C, E>(result: Result<Result<(), C>, E>) -> bool {
+    matches!(result, Ok(Ok(())))
+}
+
 fn has_role(env: &Env, owner: &Address, role: &Role) -> bool {
     for assigned in read_owner_roles(env, owner).iter() {
         if assigned == *role {
@@ -2455,13 +2464,11 @@ impl AccordContract {
 
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
-        let balance = token_client.balance(&treasury);
-        if balance < actual_amount {
-            return Err(ContractError::TransferFailed);
+        match token_client.try_balance(&treasury) {
+            Ok(Ok(balance)) if balance >= actual_amount => {}
+            _ => return Err(ContractError::TransferFailed),
         }
-        if token_client
-            .try_transfer(&treasury, &schedule.recipient, &actual_amount)
-            .is_err()
+        if !transfer_succeeded(token_client.try_transfer(&treasury, &schedule.recipient, &actual_amount))
         {
             return Err(ContractError::TransferFailed);
         }
@@ -3148,15 +3155,30 @@ impl AccordContract {
                         }
                     }
                 }
+                // Check the treasury can cover the full per-token total before
+                // any funds move, so a shortfall is rejected up front rather
+                // than part-way through the transfer list.
+                let treasury = env.current_contract_address();
+                for j in 0..tracked_tokens.len() {
+                    let token_client = token::Client::new(&env, &tracked_tokens.get(j).unwrap());
+                    let needed = tracked_amounts.get(j).unwrap();
+                    match token_client.try_balance(&treasury) {
+                        Ok(Ok(balance)) if balance >= needed => {}
+                        _ => return Err(ContractError::TransferFailed),
+                    }
+                }
+                // Interaction. No contract storage has been written yet in this
+                // call (proposal status, active count and spent trackers are
+                // all written after this loop), and any `Err` return reverts
+                // the whole invocation, so a failed or partial transfer leaves
+                // no state behind. See docs/SECURITY.md, "Token interaction
+                // safety".
                 for transfer in transfers.iter() {
-                    if token::Client::new(&env, &transfer.token)
-                        .try_transfer(
-                            &env.current_contract_address(),
-                            &transfer.to,
-                            &transfer.amount,
-                        )
-                        .is_err()
-                    {
+                    if !transfer_succeeded(token::Client::new(&env, &transfer.token).try_transfer(
+                        &treasury,
+                        &transfer.to,
+                        &transfer.amount,
+                    )) {
                         return Err(ContractError::TransferFailed);
                     }
                 }

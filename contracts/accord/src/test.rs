@@ -12183,3 +12183,371 @@ fn recurring_disbursement_event_carries_current_schema_version() {
     client.disburse_recurring(&owner_a, &schedule_id);
     assert_last_call_emitted_versioned(&env, &client, symbol_short!("rpay"));
 }
+
+// ─── Adversarial token / reentrancy tests ────────────────────────────────────
+//
+// `execute` and `disburse_recurring` are the only two places the contract moves
+// funds. These tests register hostile token contracts and assert that every
+// failure mode surfaces as `TransferFailed` and leaves proposal, schedule and
+// active-count state untouched. See docs/SECURITY.md, "Token interaction safety".
+
+const TOKEN_MODE_OK: u32 = 0;
+const TOKEN_MODE_PANIC: u32 = 1;
+const TOKEN_MODE_REENTER_EXECUTE: u32 = 2;
+const TOKEN_MODE_REENTER_DISBURSE: u32 = 3;
+
+/// A token whose `transfer` can trap, selectively fail for one recipient, or
+/// call back into the Accord contract while the transfer is in flight.
+#[contract]
+pub struct AdversarialToken;
+
+#[contractimpl]
+impl AdversarialToken {
+    pub fn init(
+        env: Env,
+        accord: Address,
+        mode: u32,
+        balance: i128,
+        bad_to: Address,
+        reenter_caller: Address,
+        reenter_id: u64,
+    ) {
+        let s = env.storage().instance();
+        s.set(&Symbol::new(&env, "accord"), &accord);
+        s.set(&Symbol::new(&env, "mode"), &mode);
+        s.set(&Symbol::new(&env, "balance"), &balance);
+        s.set(&Symbol::new(&env, "bad_to"), &bad_to);
+        s.set(&Symbol::new(&env, "caller"), &reenter_caller);
+        s.set(&Symbol::new(&env, "id"), &reenter_id);
+        s.set(&Symbol::new(&env, "sent"), &0_u32);
+    }
+
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "EVIL")
+    }
+
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "Adversarial")
+    }
+
+    pub fn balance(env: Env, _id: Address) -> i128 {
+        env.storage().instance().get(&Symbol::new(&env, "balance")).unwrap()
+    }
+
+    /// Number of transfers that completed (and were not reverted).
+    pub fn sent(env: Env) -> u32 {
+        env.storage().instance().get(&Symbol::new(&env, "sent")).unwrap()
+    }
+
+    pub fn transfer(env: Env, _from: Address, to: Address, _amount: i128) {
+        let s = env.storage().instance();
+        let mode: u32 = s.get(&Symbol::new(&env, "mode")).unwrap();
+        let bad_to: Address = s.get(&Symbol::new(&env, "bad_to")).unwrap();
+        if mode == TOKEN_MODE_PANIC || to == bad_to {
+            panic!("token transfer failed");
+        }
+        if mode == TOKEN_MODE_REENTER_EXECUTE || mode == TOKEN_MODE_REENTER_DISBURSE {
+            let accord: Address = s.get(&Symbol::new(&env, "accord")).unwrap();
+            let caller: Address = s.get(&Symbol::new(&env, "caller")).unwrap();
+            let id: u64 = s.get(&Symbol::new(&env, "id")).unwrap();
+            let client = AccordContractClient::new(&env, &accord);
+            if mode == TOKEN_MODE_REENTER_EXECUTE {
+                client.execute(&caller, &id);
+            } else {
+                client.disburse_recurring(&caller, &id);
+            }
+        }
+        let sent: u32 = s.get(&Symbol::new(&env, "sent")).unwrap();
+        s.set(&Symbol::new(&env, "sent"), &(sent + 1));
+    }
+}
+
+/// A token whose `transfer` reports failure by returning `false` instead of
+/// trapping. The SEP-41 `transfer` returns nothing, so a boolean is a
+/// mistyped result that the contract must not read as success.
+#[contract]
+pub struct FalseReturnToken;
+
+#[contractimpl]
+impl FalseReturnToken {
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "FALSE")
+    }
+
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "FalseReturn")
+    }
+
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        i128::MAX
+    }
+
+    pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) -> bool {
+        false
+    }
+}
+
+/// Initializes a 3-owner contract (threshold 2, weight 1 each) and returns it
+/// with its owners. Tokens are registered by the individual tests.
+fn adversarial_contract() -> (
+    Env,
+    AccordContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let owner_c = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+    let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+    client.initialize(&owners, &weights, &2, &0);
+    (env, client, owner_a, owner_b, owner_c)
+}
+
+fn register_adversarial_token(
+    env: &Env,
+    accord: &Address,
+    mode: u32,
+    balance: i128,
+    bad_to: &Address,
+    reenter_caller: &Address,
+    reenter_id: u64,
+) -> AdversarialTokenClient<'static> {
+    let token_id = env.register(AdversarialToken, ());
+    let token = AdversarialTokenClient::new(env, &token_id);
+    token.init(accord, &mode, &balance, bad_to, reenter_caller, &reenter_id);
+    token
+}
+
+/// Creates a Ready (fully approved) single-transfer proposal.
+fn ready_transfer_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    transfers: &Vec<Transfer>,
+) -> u64 {
+    let id = client.create_proposal(
+        owner_a,
+        transfers,
+        &str(env, "adversarial"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(owner_a, &id);
+    client.approve(owner_b, &id);
+    id
+}
+
+/// Asserts a rejected `execute` left the proposal un-executed and the active
+/// count exactly where it was.
+fn assert_execute_rejected_cleanly(
+    env: &Env,
+    client: &AccordContractClient,
+    executor: &Address,
+    id: u64,
+) {
+    let active_before = env.as_contract(&client.address, || read_active_count(env));
+    assert!(active_before > 0, "proposal must be counted as active");
+
+    assert_eq!(
+        client.try_execute(executor, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    assert_ne!(client.get_proposal(&id).status, ProposalStatus::Executed);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(env)),
+        active_before,
+        "a failed execute must not change the active count"
+    );
+}
+
+#[test]
+fn execute_with_trapping_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_c, 0,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn execute_with_false_returning_token_is_rejected_and_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token_id = env.register(FalseReturnToken, ());
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token_id));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+}
+
+#[test]
+fn execute_with_reentrant_token_is_rejected_and_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_REENTER_EXECUTE, i128::MAX, &Address::generate(&env), &owner_c, 1,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+    assert_eq!(id, 1);
+
+    // The token calls back into `execute` for the same proposal mid-transfer.
+    // The host forbids the re-entry, the token's transfer traps, and the whole
+    // call is rejected without marking the proposal executed.
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn execute_with_insufficient_treasury_balance_is_rejected_before_transfer() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, 99, &Address::generate(&env), &owner_c, 0,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0, "no transfer may be attempted when the balance is short");
+}
+
+#[test]
+fn execute_with_failing_second_transfer_reverts_the_first() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let good = Address::generate(&env);
+    let bad = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, i128::MAX, &bad, &owner_c, 0,
+    );
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer { to: good, token: token.address.clone(), amount: 100 });
+    transfers.push_back(Transfer { to: bad, token: token.address.clone(), amount: 100 });
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &transfers);
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0, "the first transfer must be rolled back with the failed call");
+}
+
+/// Creates and executes a recurring-payment proposal for `token`, returning the
+/// schedule id. Creating the schedule never moves funds.
+fn adversarial_recurring_schedule(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    token: &Address,
+    interval: u64,
+) -> u64 {
+    let create_id = client.create_recurring_proposal(
+        owner_a,
+        &Address::generate(env),
+        token,
+        &1_000_i128,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 365),
+        &0_u64,
+        &100_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(env, "adversarial schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(owner_a, &create_id);
+    client.approve(owner_b, &create_id);
+    client.execute(owner_c, &create_id);
+    1_u64
+}
+
+fn assert_disburse_rejected_cleanly(
+    env: &Env,
+    client: &AccordContractClient,
+    caller: &Address,
+    schedule_id: u64,
+    interval: u64,
+) {
+    let before = client.get_recurring_payment(&schedule_id);
+    let active_before = client.get_active_recurring_count();
+
+    set_timestamp(env, NOW + interval + 1);
+    assert_eq!(
+        client.try_disburse_recurring(caller, &schedule_id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    let after = client.get_recurring_payment(&schedule_id);
+    assert_eq!(after.total_disbursed, before.total_disbursed);
+    assert_eq!(after.periods_disbursed, before.periods_disbursed);
+    assert_eq!(after.last_disbursed_at, before.last_disbursed_at);
+    assert_eq!(client.get_active_recurring_count(), active_before);
+}
+
+#[test]
+fn disburse_recurring_with_trapping_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn disburse_recurring_with_false_returning_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token_id = env.register(FalseReturnToken, ());
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token_id, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+}
+
+#[test]
+fn disburse_recurring_with_reentrant_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_REENTER_DISBURSE, i128::MAX, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn disburse_recurring_with_insufficient_balance_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, 999, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
