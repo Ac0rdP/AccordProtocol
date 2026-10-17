@@ -11748,3 +11748,315 @@ fn resource_ceiling_weight_lookups_at_max_config() {
     client.get_active_delegations();
     assert_within_resource_ceiling(&env, "get_active_delegations");
 }
+
+// ─── Issue #1: Checked arithmetic on recurring counters ──────────────────────
+
+/// Helper: create and fully approve+execute a recurring proposal, returning
+/// the numeric schedule id (always 1 for a fresh contract).
+fn create_recurring_schedule_via_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    token: &Address,
+    recipient: &Address,
+    amount: i128,
+    interval: u64,
+    total_cap: i128,
+) -> u64 {
+    let create_id = client.create_recurring_proposal(
+        owner_a,
+        recipient,
+        token,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 365),
+        &0_u64,
+        &total_cap,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(env, "checked arithmetic schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(owner_a, &create_id);
+    client.approve(owner_b, &create_id);
+    client.execute(owner_c, &create_id);
+    // The first schedule always gets id 1 on a fresh env.
+    1_u64
+}
+
+/// The final disbursement is clamped to the remaining cap so total_disbursed
+/// never overshoots total_cap.
+#[test]
+fn disburse_recurring_final_period_is_clamped_to_total_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // cap = 2_500, amount = 1_000 → after 2 periods total_disbursed = 2_000,
+    // the third disbursement must be clamped to 500 (not 1_000).
+    let total_cap = 2_500_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    // Period 1.
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 1_000);
+
+    // Period 2.
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 2_000);
+
+    // Period 3: would be 3_000 but cap is 2_500 → clamped to 500.
+    set_timestamp(&env, NOW + interval * 3 + 3);
+    let before = token_client.balance(&recipient);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    let paid = token_client.balance(&recipient) - before;
+    assert_eq!(paid, 500, "final disbursement must be clamped, not the full period amount");
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(
+        schedule.total_disbursed, total_cap,
+        "total_disbursed must equal total_cap exactly after clamped final payout"
+    );
+}
+
+/// Once the cap is fully consumed the schedule must refuse further disbursements.
+#[test]
+fn disburse_recurring_cannot_disburse_beyond_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Exact cap: 2 × 1_000 = 2_000.
+    let total_cap = 2_000_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, total_cap);
+
+    // A third attempt is rejected — the cap is exhausted.
+    set_timestamp(&env, NOW + interval * 3 + 3);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentComplete))
+    );
+}
+
+/// After the cap is drained, periods_disbursed equals the number of times
+/// we actually transferred — it must not be incremented on a rejected call.
+#[test]
+fn disburse_recurring_periods_disbursed_does_not_increment_on_cap_reject() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let total_cap = 1_000_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    let after_one = client.get_recurring_payment(&schedule_id);
+    assert_eq!(after_one.periods_disbursed, 1);
+
+    // Cap reached; next call must fail without incrementing periods_disbursed.
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    let _ = client.try_disburse_recurring(&owner_a, &schedule_id);
+    let after_fail = client.get_recurring_payment(&schedule_id);
+    assert_eq!(
+        after_fail.periods_disbursed, 1,
+        "periods_disbursed must not increment when disbursement is rejected by cap"
+    );
+}
+
+/// An amount that would overflow i128 when added to total_disbursed is
+/// rejected with ArithmeticError rather than wrapping.
+#[test]
+fn disburse_recurring_near_i128_max_amount_is_rejected_not_wrapped() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+
+    // Use i128::MAX as the per-period amount with no cap so the first addition
+    // to total_disbursed (0 + i128::MAX = ok) works, but the second
+    // (i128::MAX + i128::MAX) overflows.
+    //
+    // However, total_cap must be >= amount per contract validation, and we must
+    // be able to fund the treasury — so instead we set amount to i128::MAX / 2
+    // and total_cap to i128::MAX, then manually move total_disbursed close to
+    // the edge via direct storage mutation, and attempt a final disburse that
+    // would overflow.
+    //
+    // Because we cannot easily set total_disbursed to near i128::MAX in a live
+    // funded schedule without actually transferring that much, we instead test
+    // the checked_add path by constructing a schedule where a single-period
+    // amount would wrap when added: amount = 1, total_disbursed = i128::MAX
+    // (injected via direct env storage).  We verify ArithmeticError is returned.
+    let amount = 1_i128;
+    let total_cap = i128::MAX; // validation: cap >= amount
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    // Inject total_disbursed = i128::MAX so the next checked_add overflows.
+    env.as_contract(&client.address, || {
+        let key = recur_key(schedule_id);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.total_disbursed = i128::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + interval + 1);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+}
+
+/// periods_disbursed at u32::MAX cannot be incremented: the call fails with
+/// ArithmeticError before any funds move and leaves the schedule untouched.
+#[test]
+fn disburse_recurring_period_count_overflow_is_rejected_before_transfer() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        1_000, interval, 1_000_000,
+    );
+
+    env.as_contract(&client.address, || {
+        let key = recur_key(schedule_id);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.periods_disbursed = u32::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + interval + 1);
+    let before = token_client.balance(&recipient);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(token_client.balance(&recipient), before);
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(schedule.periods_disbursed, u32::MAX);
+    assert_eq!(schedule.total_disbursed, 0);
+}
+
+/// A fixed-amount schedule cannot pay out more periods than fit before its
+/// end_time, even when the cap would still allow them.
+#[test]
+fn disburse_recurring_cannot_exceed_period_window() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+    let amount = 1_000_i128;
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + interval * 2),
+        &0_u64,
+        &(amount * 100),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "two periods only"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+    let schedule_id = 1_u64;
+
+    set_timestamp(&env, NOW + interval);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    set_timestamp(&env, NOW + interval * 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+
+    set_timestamp(&env, NOW + interval * 3);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentComplete))
+    );
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(schedule.periods_disbursed, 2);
+    assert_eq!(schedule.total_disbursed, amount * 2);
+}
+
+/// Linear-vesting payout math near the numeric limit returns ArithmeticError
+/// instead of wrapping.
+#[test]
+fn linear_vesting_near_i128_max_amount_is_rejected_not_wrapped() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &10_000_000_i128,
+        &3600_u64,
+        &NOW,
+        &(NOW + 10_000),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::LinearVesting,
+        &str(&env, "vesting overflow"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    env.as_contract(&client.address, || {
+        let key = recur_key(1);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.amount = i128::MAX;
+        s.total_cap = i128::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + 5_000);
+    let before = token_client.balance(&recipient);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &1),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(token_client.balance(&recipient), before);
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0);
+}

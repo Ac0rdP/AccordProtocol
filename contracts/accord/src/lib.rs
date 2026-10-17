@@ -260,6 +260,8 @@ pub struct ProposalCreatedEvent {
     /// changes.
     pub total_weight_at_creation: u32,
     pub attachment_hash: Option<BytesN<32>>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 
@@ -285,6 +287,8 @@ pub struct ProposalApprovedEvent {
     pub threshold: u32,
     pub weight: u32,
     pub cumulative_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -295,6 +299,8 @@ pub struct ProposalRevokedEvent {
     pub approvals: u32,
     pub weight: u32,
     pub cumulative_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,36 +309,48 @@ pub struct ProposalExecutedEvent {
     pub id: u64,
     pub executor: Address,
     pub transfers: Vec<Transfer>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct GuardianSetEvent {
     pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct FrozenEvent {
     pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct UnfrozenEvent {
     pub approvers: Vec<Address>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct RecoveryEnteredEvent {
     pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct RecoveryExitedEvent {
     pub approvers: Vec<Address>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -344,6 +362,8 @@ pub struct RecurringPaymentDisbursedEvent {
     pub amount: i128,
     pub total_disbursed: i128,
     pub periods_disbursed: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -351,6 +371,8 @@ pub struct RecurringPaymentDisbursedEvent {
 pub struct RecurringPaymentPausedEvent {
     pub id: u64,
     pub caller: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -358,6 +380,8 @@ pub struct RecurringPaymentPausedEvent {
 pub struct RecurringPaymentResumedEvent {
     pub id: u64,
     pub caller: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -370,6 +394,8 @@ pub struct RecurringPaymentModifiedEvent {
     pub new_interval: u64,
     pub previous_end_time: u64,
     pub new_end_time: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 /// Emitted when a recurring payment schedule is created through the execution
@@ -403,6 +429,8 @@ pub struct RecurringPaymentCreatedEvent {
     pub total_cap: i128,
     /// The schedule's disbursement kind (fixed-amount or linear-vesting).
     pub kind: RecurringKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -410,6 +438,8 @@ pub struct RecurringPaymentCreatedEvent {
 pub struct RecurringPaymentCancelledEvent {
     pub id: u64,
     pub caller: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -417,6 +447,8 @@ pub struct RecurringPaymentCancelledEvent {
 pub struct UpgradeExecutedEvent {
     pub caller: Address,
     pub new_wasm_hash: BytesN<32>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,6 +456,8 @@ pub struct UpgradeExecutedEvent {
 pub struct AddOwnerExecutedEvent {
     pub new_owner: Address,
     pub owner_count: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -431,6 +465,8 @@ pub struct AddOwnerExecutedEvent {
 pub struct RemoveOwnerExecutedEvent {
     pub removed_owner: Address,
     pub owner_count: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -438,6 +474,8 @@ pub struct RemoveOwnerExecutedEvent {
 pub struct ChangeThresholdExecutedEvent {
     pub previous_threshold: u32,
     pub new_threshold: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -447,6 +485,8 @@ pub struct SetSpendingLimitExecutedEvent {
     pub token: Address,
     pub previous_limit: Option<i128>,
     pub new_limit: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -456,6 +496,8 @@ pub struct OwnerWeightChangedEvent {
     pub old_weight: u32,
     pub new_weight: u32,
     pub new_total_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,6 +505,8 @@ pub struct OwnerWeightChangedEvent {
 pub struct GovernanceMigratedEvent {
     pub owner_count: u32,
     pub total_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -470,6 +514,8 @@ pub struct GovernanceMigratedEvent {
 pub struct RbacMigratedEvent {
     pub owner_count: u32,
     pub role_version: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -479,6 +525,8 @@ pub struct RoleGrantedEvent {
     pub role: Role,
     pub before: Vec<Role>,
     pub after: Vec<Role>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -488,6 +536,8 @@ pub struct RoleRevokedEvent {
     pub role: Role,
     pub before: Vec<Role>,
     pub after: Vec<Role>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -675,6 +725,15 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// deployed contract can always report the layout it actually uses. A missing
 /// key reads as `0`, meaning a pre-versioning (legacy) deployment.
 const STORAGE_SCHEMA_VERSION: u32 = 1;
+
+/// Event-schema version. Bump this constant whenever any event struct gains,
+/// loses, or renames a field. Off-chain consumers (indexer, analytics API)
+/// read this field on every event to detect schema changes. The versioning
+/// policy is documented in `docs/EVENTS.md` §Event Versioning Policy.
+///
+/// History:
+///   1 — initial versioned event schema (all structs gain the `version` field).
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -2356,11 +2415,20 @@ impl AccordContract {
             return Err(ContractError::RecurringPaymentComplete);
         }
 
+        // Clamp disbursement_amount to the remaining cap so total_disbursed
+        // never overshoots total_cap. All arithmetic uses checked operations so
+        // an overflow returns ArithmeticError rather than wrapping.
         let projected_total = schedule
             .total_disbursed
             .checked_add(disbursement_amount)
             .ok_or(ContractError::ArithmeticError)?;
-        if schedule.total_cap > 0 && projected_total > schedule.total_cap {
+
+        // When the schedule has a cap and the projected total would exceed it,
+        // clamp the actual payout to whatever headroom remains. A remaining
+        // headroom of zero means the cap is already met — treat as complete.
+        let (actual_amount, new_total_disbursed) = if schedule.total_cap > 0
+            && projected_total > schedule.total_cap
+        {
             let clamped = schedule
                 .total_cap
                 .checked_sub(schedule.total_disbursed)
@@ -2368,16 +2436,27 @@ impl AccordContract {
             if clamped <= 0 {
                 return Err(ContractError::RecurringPaymentComplete);
             }
-        }
+            // new total is exactly the cap — no overshoot.
+            (clamped, schedule.total_cap)
+        } else {
+            (disbursement_amount, projected_total)
+        };
+
+        // Compute the next period count up front so every checked counter
+        // update has succeeded before funds move.
+        let new_periods_disbursed = schedule
+            .periods_disbursed
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticError)?;
 
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
         let balance = token_client.balance(&treasury);
-        if balance < disbursement_amount {
+        if balance < actual_amount {
             return Err(ContractError::TransferFailed);
         }
         if token_client
-            .try_transfer(&treasury, &schedule.recipient, &disbursement_amount)
+            .try_transfer(&treasury, &schedule.recipient, &actual_amount)
             .is_err()
         {
             return Err(ContractError::TransferFailed);
@@ -2391,21 +2470,19 @@ impl AccordContract {
             tracker.epoch
         };
         let spent = if now > epoch.saturating_add(read_spending_window(&env, &schedule.proposer, &schedule.token)) {
-            disbursement_amount
+            actual_amount
         } else {
             tracker
                 .spent
-                .checked_add(disbursement_amount)
+                .checked_add(actual_amount)
                 .ok_or(ContractError::ArithmeticError)?
         };
         write_spent_tracker(&env, &schedule.proposer, &schedule.token, &SpentTracker { spent, epoch });
 
         schedule.last_disbursed_at = now;
-        schedule.total_disbursed = projected_total;
-        schedule.periods_disbursed = schedule
-            .periods_disbursed
-            .checked_add(1)
-            .ok_or(ContractError::ArithmeticError)?;
+        // Store the checked new total — never exceeds total_cap.
+        schedule.total_disbursed = new_total_disbursed;
+        schedule.periods_disbursed = new_periods_disbursed;
         write_recurring_payment(&env, &schedule);
 
         env.events().publish(
@@ -2414,7 +2491,7 @@ impl AccordContract {
                 schedule_id,
                 recipient: schedule.recipient.clone(),
                 token: schedule.token.clone(),
-                amount: disbursement_amount,
+                amount: actual_amount,
                 total_disbursed: schedule.total_disbursed,
                 periods_disbursed: schedule.periods_disbursed,
             },
