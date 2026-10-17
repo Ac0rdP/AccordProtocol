@@ -34,12 +34,12 @@ export async function indexEventBatch({
 }) {
   const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
   const filters = buildContractFilters({ tokens, treasuryAddress });
-  let cursor = store.getState("event_cursor");
-  let nextLedger = Number(store.getState("next_ledger") ?? startLedger);
+  let cursor = await store.getState("event_cursor");
+  let nextLedger = Number(await store.getState("next_ledger") ?? startLedger);
   // Checkpoint the batch started from, so the live checkpoint never walks
   // backwards on its own (only a reorg is allowed to do that).
   let startingLedger = nextLedger;
-  let previousLatest = Number(store.getState("last_seen_ledger") ?? 0);
+  let previousLatest = Number(await store.getState("last_seen_ledger") ?? 0);
   let latestSeen = previousLatest;
   let pages = 0;
   let indexed = 0;
@@ -75,11 +75,11 @@ export async function indexEventBatch({
         previousLatest = detected.toLedger;
         // The chain view changed, so the head we had recorded is meaningless.
         latestSeen = detected.toLedger;
-        const removed = store.rewindToLedger(detected.rewindTo);
+        const removed = await store.rewindToLedger(detected.rewindTo);
         nextLedger = detected.rewindTo + 1;
         startingLedger = nextLedger;
         cursor = null;
-        store.setState("event_cursor", "");
+        await store.setState("event_cursor", "");
         firstHeldBackLedger = Number.POSITIVE_INFINITY;
         reorg.removedEntries = removed.removedEntries;
         reorg.removedEvents = removed.removedEvents;
@@ -99,10 +99,10 @@ export async function indexEventBatch({
       }
 
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-      if (transferEntry && store.recordTransfer(transferEntry)) indexed += 1;
+      if (transferEntry && (await store.recordTransfer(transferEntry))) indexed += 1;
 
       const accordEntry = parseAccordEvent(event, treasuryAddress);
-      if (accordEntry && store.recordAccordEvent(accordEntry)) indexed += 1;
+      if (accordEntry && (await store.recordAccordEvent(accordEntry))) indexed += 1;
     }
 
     if (response.events.length === pageLimit) {
@@ -110,7 +110,7 @@ export async function indexEventBatch({
         throw new Error("RPC event pagination did not advance its cursor");
       }
       cursor = response.cursor;
-      store.setState("event_cursor", cursor);
+      await store.setState("event_cursor", cursor);
       pages += 1;
       continue;
     }
@@ -121,12 +121,12 @@ export async function indexEventBatch({
     const checkpoint = Number.isFinite(firstHeldBackLedger)
       ? Math.max(startingLedger, firstHeldBackLedger)
       : Math.max(startingLedger, finalLedger + 1);
-    store.setState("next_ledger", checkpoint);
-    store.setState("event_cursor", "");
+    await store.setState("next_ledger", checkpoint);
+    await store.setState("event_cursor", "");
     break;
   }
 
-  if (latestSeen > 0) store.setState("last_seen_ledger", latestSeen);
+  if (latestSeen > 0) await store.setState("last_seen_ledger", latestSeen);
 
   return {
     pages,

@@ -5,6 +5,7 @@ import { finalLedgerFor } from "../src/finality.js";
 import {
   cleanupTempStores,
   createStore,
+  describeEachBackend,
   createMockRpc,
   makeEvent,
   tokenAddresses,
@@ -65,9 +66,9 @@ describe("range resolution", () => {
   });
 });
 
-describe("backfill", () => {
+describeEachBackend("backfill", () => {
   it("indexes history from the first relevant ledger to the present", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({ events, oldestLedger: 10, latestLedger: 21 });
 
@@ -76,19 +77,19 @@ describe("backfill", () => {
     assert.equal(result.start, 10);
     assert.equal(result.end, finalLedgerFor(21, 2));
     assert.equal(result.complete, true);
-    const indexed = store.getEntries({ limit: 100, offset: 0 });
+    const indexed = await store.getEntries({ limit: 100, offset: 0 });
     assert.equal(indexed.length, 10, "every ledger in the chain is indexed");
     assert.deepEqual(indexed.map(({ eventId }) => eventId), events.map(({ id }) => id));
     // Running balances fold in chain order, not insertion order.
-    assert.equal(store.getBalance("USDC"), "100");
+    assert.equal(await store.getBalance("USDC"), "100");
     // The live indexer picks up where the backfill stopped.
-    assert.equal(store.getState("next_ledger"), String(result.end + 1));
-    assert.equal(store.getState("backfill_done"), "true");
-    store.close();
+    assert.equal(await store.getState("next_ledger"), String(result.end + 1));
+    assert.equal(await store.getState("backfill_done"), "true");
+    await store.close();
   });
 
   it("reports progress while it walks the range", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({ events, oldestLedger: 10, latestLedger: 21 });
     const progress = [];
@@ -108,11 +109,11 @@ describe("backfill", () => {
       assert.equal(typeof snapshot.ledger, "number");
       assert.equal(snapshot.start, 10);
     }
-    store.close();
+    await store.close();
   });
 
   it("resumes from its checkpoint instead of restarting after an interruption", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({
       events,
@@ -125,9 +126,9 @@ describe("backfill", () => {
       () => backfill({ ...base(), store, stellar, finalityLag: 2, pageLimit: 3 }),
       /RPC unavailable/
     );
-    const afterCrash = store.getEntries({ limit: 100, offset: 0 }).length;
+    const afterCrash = (await store.getEntries({ limit: 100, offset: 0 })).length;
     assert.ok(afterCrash > 0 && afterCrash < 10, "the interrupted run made partial progress");
-    assert.equal(store.getState("backfill_done"), "false");
+    assert.equal(await store.getState("backfill_done"), "false");
 
     // The RPC is healthy again; the second run must continue, not restart.
     stellar.state.failOnRequest = null;
@@ -139,59 +140,59 @@ describe("backfill", () => {
     // Resumption continues from the saved cursor rather than the range start.
     assert.equal(stellar.state.requests[0].cursor, "e12");
     assert.equal(stellar.state.requests[0].startLedger, undefined);
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 10, "no event is duplicated by the resume");
-    assert.equal(store.getBalance("USDC"), "100");
-    store.close();
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 10, "no event is duplicated by the resume");
+    assert.equal(await store.getBalance("USDC"), "100");
+    await store.close();
   });
 
   it("is idempotent when re-run over an already indexed range", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({ events, oldestLedger: 10, latestLedger: 21 });
 
     await backfill({ ...base(), store, stellar, finalityLag: 2 });
     await backfill({ ...base(), store, stellar, finalityLag: 2 });
 
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 10);
-    assert.equal(store.getBalance("USDC"), "100");
-    store.close();
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 10);
+    assert.equal(await store.getBalance("USDC"), "100");
+    await store.close();
   });
 
   it("fills older history into an existing store and re-folds its balances", async () => {
-    const store = createStore();
+    const store = await createStore();
     // The store already holds the recent tail, as a live indexer would.
     const recent = chainFromGenesis({ latestLedger: 19 }).slice(8);
     const stellarTail = createMockRpc({ events: recent, oldestLedger: 18, latestLedger: 21 });
     await backfill({ ...base(), store, stellar: stellarTail, finalityLag: 2 });
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 2);
-    assert.equal(store.getBalance("USDC"), "20");
-    store.setState("next_ledger", "20");
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 2);
+    assert.equal(await store.getBalance("USDC"), "20");
+    await store.setState("next_ledger", "20");
 
     // Now the operator backfills the missing earlier history.
     const events = chainFromGenesis({ latestLedger: 19 });
     const stellar = createMockRpc({ events, oldestLedger: 10, latestLedger: 21 });
     await backfill({ ...base(), store, stellar, from: 10, to: 17, finalityLag: 2 });
 
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 10);
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 10);
     // Balances re-fold in chain order rather than insertion order.
-    assert.equal(store.getBalance("USDC"), "100");
-    assert.equal(store.getState("next_ledger"), "20", "the live checkpoint is never walked backwards");
-    store.close();
+    assert.equal(await store.getBalance("USDC"), "100");
+    assert.equal(await store.getState("next_ledger"), "20", "the live checkpoint is never walked backwards");
+    await store.close();
   });
 
   it("does nothing when the requested range is already behind the chain", async () => {
-    const store = createStore();
+    const store = await createStore();
     const stellar = createMockRpc({ events: [], oldestLedger: 10, latestLedger: 12 });
     const result = await backfill({ ...base(), store, stellar, from: 10, to: 9, finalityLag: 2 });
     assert.equal(result.nothingToDo, true);
     assert.equal(stellar.state.requests.length, 0, "no RPC walk is attempted");
-    store.close();
+    await store.close();
   });
 });
 
-describe("reindex", () => {
+describeEachBackend("reindex", () => {
   it("rebuilds the store from chain events", async () => {
-    const store = createStore();
+    const store = await createStore();
     // Seed the store with data that no longer matches the chain.
     const stale = createMockRpc({
       events: [makeEvent({ id: "stale-1", ledger: 4, amount: 999n }), makeEvent({ id: "stale-2", ledger: 5, amount: 1n })],
@@ -199,8 +200,8 @@ describe("reindex", () => {
       latestLedger: 5,
     });
     await backfill({ ...base(), store, stellar: stale, from: 4, to: 5, finalityLag: 0 });
-    assert.equal(store.getBalance("USDC"), "1000");
-    store.recordAccordEvent({
+    assert.equal(await store.getBalance("USDC"), "1000");
+    await store.recordAccordEvent({
       eventId: "stale-accord", topic: "created", payload: {}, ledger: 5, transactionHash: "hash", occurredAt: "2026-09-27T12:00:00Z",
     });
 
@@ -210,17 +211,17 @@ describe("reindex", () => {
 
     assert.equal(result.complete, true);
     assert.equal(result.resumedRebuild, false);
-    const indexed = store.getEntries({ limit: 100, offset: 0 });
+    const indexed = await store.getEntries({ limit: 100, offset: 0 });
     assert.deepEqual(indexed.map(({ eventId }) => eventId), events.map(({ id }) => id), "stale rows are gone");
-    assert.equal(store.getBalance("USDC"), "100");
-    assert.equal(store.getAccordEvents({ limit: 100, offset: 0 }).length, 0, "stale protocol events are cleared");
-    assert.equal(store.getState("store_rebuilding"), "false");
-    assert.equal(store.getState("next_ledger"), String(result.end + 1));
-    store.close();
+    assert.equal(await store.getBalance("USDC"), "100");
+    assert.equal((await store.getAccordEvents({ limit: 100, offset: 0 })).length, 0, "stale protocol events are cleared");
+    assert.equal(await store.getState("store_rebuilding"), "false");
+    assert.equal(await store.getState("next_ledger"), String(result.end + 1));
+    await store.close();
   });
 
   it("resumes an interrupted rebuild without wiping its partial progress", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({
       events,
@@ -233,9 +234,9 @@ describe("reindex", () => {
       () => reindex({ ...base(), store, stellar, finalityLag: 2, pageLimit: 3 }),
       /RPC unavailable/
     );
-    const afterCrash = store.getEntries({ limit: 100, offset: 0 }).length;
+    const afterCrash = (await store.getEntries({ limit: 100, offset: 0 })).length;
     assert.ok(afterCrash > 0, "the interrupted rebuild left partial progress on disk");
-    assert.equal(store.getState("store_rebuilding"), "true", "an unfinished rebuild stays flagged");
+    assert.equal(await store.getState("store_rebuilding"), "true", "an unfinished rebuild stays flagged");
 
     stellar.state.failOnRequest = null;
     stellar.state.requests.length = 0;
@@ -245,14 +246,14 @@ describe("reindex", () => {
     assert.equal(resumed.resumed, true, "the walk resumes from the saved cursor");
     assert.equal(stellar.state.requests[0].cursor, "e12");
     assert.equal(stellar.state.requests[0].startLedger, undefined);
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 10, "no duplicates from the resume");
-    assert.equal(store.getBalance("USDC"), "100");
-    assert.equal(store.getState("store_rebuilding"), "false");
-    store.close();
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 10, "no duplicates from the resume");
+    assert.equal(await store.getBalance("USDC"), "100");
+    assert.equal(await store.getState("store_rebuilding"), "false");
+    await store.close();
   });
 
   it("starts over when a new range is requested mid-rebuild", async () => {
-    const store = createStore();
+    const store = await createStore();
     const events = chainFromGenesis();
     const stellar = createMockRpc({
       events,
@@ -265,7 +266,7 @@ describe("reindex", () => {
       () => reindex({ ...base(), store, stellar, from: 10, to: 19, finalityLag: 2, pageLimit: 3 }),
       /RPC unavailable/
     );
-    assert.equal(store.getEntries({ limit: 100, offset: 0 }).length, 3, "one full page landed before the failure");
+    assert.equal((await store.getEntries({ limit: 100, offset: 0 })).length, 3, "one full page landed before the failure");
 
     // A different range cannot resume the old checkpoint, so it rebuilds clean.
     stellar.state.failOnRequest = null;
@@ -273,10 +274,10 @@ describe("reindex", () => {
 
     assert.equal(result.resumedRebuild, false);
     assert.deepEqual(
-      store.getEntries({ limit: 100, offset: 0 }).map(({ eventId }) => eventId),
+      (await store.getEntries({ limit: 100, offset: 0 })).map(({ eventId }) => eventId),
       ["e14", "e15", "e16", "e17", "e18", "e19"],
       "the old partial range is dropped, not merged in"
     );
-    store.close();
+    await store.close();
   });
 });

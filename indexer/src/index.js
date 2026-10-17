@@ -1,4 +1,3 @@
-import { createServer } from "node:http";
 import {
   Contract,
   nativeToScVal,
@@ -6,10 +5,14 @@ import {
   scValToNative,
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
+import { createApi } from "./api.js";
 import { backfill, reindex, resolveFirstLedger } from "./commands.js";
 import { DEFAULT_FINALITY_LAG, resolveFinalityLag } from "./finality.js";
+import { createReadiness, DEFAULT_READY_MAX_STALENESS_MS } from "./health.js";
 import { indexEventBatch } from "./indexing.js";
-import { openLedgerStore } from "./ledger.js";
+import { createIndexerMetrics, recordBatchSuccess } from "./metrics.js";
+import { openStore, resolveStoreConfig } from "./store/index.js";
+import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 
 const HELP = `Accord treasury indexer
 
@@ -19,6 +22,7 @@ Commands:
   serve (default)  Start the indexer API and poll for new events
   backfill         Index history from the first relevant ledger to the present
   reindex          Clear the store and rebuild it from chain events
+  webhooks-requeue Move dead-lettered webhook deliveries back to pending
 
 Options:
   --from <ledger>  First ledger to cover. Defaults to the oldest ledger the
@@ -26,6 +30,7 @@ Options:
   --to <ledger>    Last ledger to cover. Defaults to the final ledger, and is
                    always clamped to it - non-final ledgers are never indexed.
   --json           Emit machine-readable progress lines (backfill/reindex)
+  --subscription <id>  Limit webhooks-requeue to one subscription
   -h, --help       Show this message
 
 Environment:
@@ -38,7 +43,15 @@ Environment:
   SIM_SOURCE           Funded account used to build simulations (serve only)
   LEDGER_FINALITY_LAG  Ledgers to hold back before treating one as final
                        (default ${DEFAULT_FINALITY_LAG})
+  STORE_BACKEND        sqlite (default) or postgres
   DATABASE_PATH        SQLite file (default ./data/treasury.sqlite)
+  DATABASE_URL         Postgres connection URL (STORE_BACKEND=postgres)
+  DATABASE_POOL_MAX    Postgres pool size (default 10)
+  DATABASE_AUTO_MIGRATE  Apply Postgres migrations on start (default true);
+                       run them separately with "npm run migrate"
+  WEBHOOK_SUBSCRIPTIONS_FILE  JSON file of webhook subscriptions
+  READY_MAX_STALENESS_MS  Max age of the last good batch for /readyz
+                       (default ${DEFAULT_READY_MAX_STALENESS_MS})
 `;
 
 function required(name) {
@@ -48,7 +61,7 @@ function required(name) {
 }
 
 function parseArgs(argv) {
-  const args = { command: "serve", from: undefined, to: undefined, json: false, help: false };
+  const args = { command: "serve", from: undefined, to: undefined, json: false, help: false, subscription: undefined };
   const positionals = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -56,6 +69,8 @@ function parseArgs(argv) {
       args.help = true;
     } else if (arg === "--json") {
       args.json = true;
+    } else if (arg === "--subscription") {
+      args.subscription = argv[(index += 1)];
     } else if (arg === "--from" || arg === "--to") {
       args[arg.slice(2)] = Number(argv[(index += 1)]);
     } else if (arg.startsWith("--from=") || arg.startsWith("--to=")) {
@@ -73,7 +88,7 @@ function parseArgs(argv) {
       throw new Error(`--${key} must be a positive integer`);
     }
   }
-  if (!["serve", "backfill", "reindex"].includes(args.command)) {
+  if (!["serve", "backfill", "reindex", "webhooks-requeue"].includes(args.command)) {
     throw new Error(`unknown command ${args.command}`);
   }
   return args;
@@ -155,14 +170,35 @@ async function serve({ store, stellar }) {
   const simulationSource = required("SIM_SOURCE");
   const startLedger = startLedgerFromEnv();
   const pageLimit = 1000;
+  const indexIntervalMs = Number(process.env.INDEX_INTERVAL_MS ?? 5000);
   let indexing = false;
   let reconciling = false;
+
+  const metrics = createIndexerMetrics();
+  const readiness = createReadiness({
+    store,
+    // A healthy loop reports every INDEX_INTERVAL_MS; allow several missed beats.
+    maxStalenessMs: Number(
+      process.env.READY_MAX_STALENESS_MS ?? Math.max(DEFAULT_READY_MAX_STALENESS_MS, indexIntervalMs * 6)
+    ),
+  });
+  const subscriptions = loadSubscriptions();
+  const webhooks = createWebhookDispatcher({
+    store,
+    subscriptions,
+    metrics,
+    maxAttempts: Number(process.env.WEBHOOK_MAX_ATTEMPTS ?? 8),
+    backoffBaseMs: Number(process.env.WEBHOOK_BACKOFF_BASE_MS ?? 5000),
+    backoffMaxMs: Number(process.env.WEBHOOK_BACKOFF_MAX_MS ?? 3_600_000),
+    timeoutMs: Number(process.env.WEBHOOK_TIMEOUT_MS ?? 10_000),
+  });
 
   async function indexAvailableEvents() {
     if (indexing) return;
     indexing = true;
+    const startedAt = performance.now();
     try {
-      await indexEventBatch({
+      const result = await indexEventBatch({
         stellar,
         store,
         tokens,
@@ -171,7 +207,16 @@ async function serve({ store, stellar }) {
         pageLimit,
         finalityLag,
       });
+      const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
+      recordBatchSuccess(metrics, result, indexedLedger);
+      readiness.markSuccess();
+    } catch (error) {
+      metrics.errors.inc({ stage: "index" });
+      metrics.batches.inc({ outcome: "error" });
+      readiness.markFailure(error);
+      throw error;
     } finally {
+      metrics.batchDuration.observe((performance.now() - startedAt) / 1000);
       indexing = false;
     }
   }
@@ -201,7 +246,7 @@ async function serve({ store, stellar }) {
     try {
       const account = await stellar.getAccount(simulationSource);
       for (const { name, address } of tokens) {
-        const impliedBalance = BigInt(store.getBalance(name));
+        const impliedBalance = BigInt(await store.getBalance(name));
         const actualBalance = await readTokenBalance(account, address);
         const drift = actualBalance - impliedBalance;
         const result = {
@@ -212,103 +257,43 @@ async function serve({ store, stellar }) {
           actualBalance: actualBalance.toString(),
           drift: drift.toString(),
         };
-        store.recordReconciliation(result);
+        await store.recordReconciliation(result);
         if (drift !== 0n) {
           console.error(`[reconciliation] ${name} drift: ${drift} stroops (actual - implied)`);
         }
       }
     } catch (error) {
+      metrics.errors.inc({ stage: "reconcile" });
       console.error("Treasury reconciliation failed:", error);
     } finally {
       reconciling = false;
     }
   }
 
-  function sendJson(response, statusCode, body) {
-    response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(body));
-  }
-
-  function parseDateParam(value, name) {
-    if (!value) return undefined;
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) throw new Error(`${name} must be a valid date`);
-    return parsed.toISOString();
-  }
-
-  const api = createServer((request, response) => {
-    try {
-      const url = new URL(request.url, "http://localhost");
-      if (request.method === "GET" && url.pathname === "/health") {
-        return sendJson(response, 200, {
-          status: "ok",
-          nextLedger: store.getState("next_ledger") ?? String(startLedger),
-          latestLedger: Number(store.getState("last_seen_ledger") ?? 0) || null,
-          finalityLag,
-        });
-      }
-      if (request.method === "GET" && url.pathname === "/ledger") {
-        const token = url.searchParams.get("token")?.toUpperCase();
-        if (token && !tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
-        const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
-        const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
-        if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
-          throw new Error("limit and offset must be non-negative integers");
-        }
-        const entries = store.getEntries({
-          token,
-          from: parseDateParam(url.searchParams.get("from"), "from"),
-          to: parseDateParam(url.searchParams.get("to"), "to"),
-          limit,
-          offset,
-        });
-        return sendJson(response, 200, { entries });
-      }
-      if (request.method === "GET" && url.pathname === "/events") {
-        const topic = url.searchParams.get("topic");
-        const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
-        const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
-        if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
-          throw new Error("limit and offset must be non-negative integers");
-        }
-        const events = store.getAccordEvents({
-          topic,
-          from: parseDateParam(url.searchParams.get("from"), "from"),
-          to: parseDateParam(url.searchParams.get("to"), "to"),
-          limit,
-          offset,
-        });
-        return sendJson(response, 200, { events });
-      }
-      if (request.method === "GET" && url.pathname === "/reconciliation") {
-        return sendJson(response, 200, { results: store.getLatestReconciliations() });
-      }
-      return sendJson(response, 404, { error: "not found" });
-    } catch (error) {
-      return sendJson(response, 400, { error: error.message });
-    }
-  });
+  const api = createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses });
 
   const host = process.env.HOST ?? "127.0.0.1";
   const port = Number(process.env.PORT ?? 8787);
   api.listen(port, host, () => {
-    console.log(`Treasury indexer API listening on http://${host}:${port}`);
+    console.log(`Treasury indexer API listening on http://${host}:${port} (${store.backend} store)`);
+    if (subscriptions.length > 0) console.log(`Webhook delivery enabled for ${subscriptions.length} subscription(s)`);
     void indexAvailableEvents()
       .catch((error) => console.error("Treasury event indexing failed:", error))
       .finally(() => void reconcileBalances());
   });
+  webhooks.start(Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000));
 
   const indexTimer = setInterval(() => {
     void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
-  }, Number(process.env.INDEX_INTERVAL_MS ?? 5000));
+  }, indexIntervalMs);
   const reconcileTimer = setInterval(() => void reconcileBalances(), Number(process.env.RECONCILE_INTERVAL_MS ?? 60000));
 
   function shutdown() {
     clearInterval(indexTimer);
     clearInterval(reconcileTimer);
+    webhooks.stop();
     api.close(() => {
-      store.close();
-      process.exit(0);
+      store.close().finally(() => process.exit(0));
     });
   }
 
@@ -323,7 +308,18 @@ async function main() {
     return;
   }
 
-  const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite");
+  const store = await openStore(resolveStoreConfig());
+
+  if (args.command === "webhooks-requeue") {
+    const requeued = await store.requeueDeadWebhookDeliveries({
+      subscriptionId: args.subscription,
+      now: new Date().toISOString(),
+    });
+    console.log(`Requeued ${requeued} dead-lettered deliveries`);
+    await store.close();
+    return;
+  }
+
   const stellar = new rpc.Server(rpcUrl);
 
   if (args.command === "serve") {
@@ -334,7 +330,7 @@ async function main() {
   // History commands only need a starting point when one was not given: the
   // first ledger the RPC retains is the practical genesis for a backfill.
   await runHistoryCommand({ command: args.command, args, store, stellar });
-  store.close();
+  await store.close();
 }
 
 main().catch((error) => {

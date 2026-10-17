@@ -1,27 +1,75 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { before, describe } from "node:test";
 import { Keypair, nativeToScVal, scValToNative, StrKey, xdr } from "@stellar/stellar-sdk";
-import { openLedgerStore } from "../src/ledger.js";
+import pg from "pg";
+import { openPostgresStore } from "../src/store/postgres.js";
+import { openLedgerStore } from "../src/store/sqlite.js";
 
 export const treasury = StrKey.encodeContract(Buffer.alloc(32, 1));
 export const sender = Keypair.random().publicKey();
 export const tokenAddress = StrKey.encodeContract(Buffer.alloc(32, 2));
 export const tokenAddresses = { USDC: tokenAddress, XLM: StrKey.encodeContract(Buffer.alloc(32, 3)) };
 
-const tempDirectories = [];
+const cleanups = [];
+let activeBackend = "sqlite";
 
-/** Removes every store created with `createStore` during a test. */
-export function cleanupTempStores() {
-  for (const directory of tempDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+/** Postgres runs whenever `TEST_POSTGRES_URL` points at a disposable database. */
+export const postgresUrl = process.env.TEST_POSTGRES_URL?.trim() || null;
+export const BACKENDS = ["sqlite", "postgres"];
+
+/**
+ * Registers the same suite once per storage backend. The Postgres run is
+ * reported as skipped (not silently dropped) when no test database is configured.
+ */
+export function describeEachBackend(title, suite) {
+  for (const backend of BACKENDS) {
+    const options = backend === "postgres" && !postgresUrl ? { skip: "TEST_POSTGRES_URL is not set" } : {};
+    describe(`${title} [${backend}]`, options, () => {
+      before(() => {
+        activeBackend = backend;
+      });
+      suite(backend);
+    });
   }
 }
 
-export function createStore() {
+/** Closes and removes every store created with `createStore` during a test. */
+export async function cleanupTempStores() {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+}
+
+/**
+ * Opens a fresh, empty store on the backend the surrounding
+ * `describeEachBackend` selected. Postgres stores get their own schema so tests
+ * never see each other's rows.
+ */
+export async function createStore(backend = activeBackend) {
+  if (backend === "postgres") {
+    const schema = `test_${randomUUID().replaceAll("-", "")}`;
+    const store = await openPostgresStore({ connectionString: postgresUrl, schema, poolMax: 4 });
+    cleanups.push(async () => {
+      await store.close().catch(() => {});
+      const client = new pg.Client({ connectionString: postgresUrl });
+      await client.connect();
+      try {
+        await client.query(`DROP SCHEMA "${schema}" CASCADE`);
+      } finally {
+        await client.end();
+      }
+    });
+    return store;
+  }
+
   const directory = mkdtempSync(join(tmpdir(), "accord-indexer-"));
-  tempDirectories.push(directory);
-  return openLedgerStore(join(directory, "ledger.sqlite"));
+  const store = openLedgerStore(join(directory, "ledger.sqlite"));
+  cleanups.push(async () => {
+    await store.close().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  });
+  return store;
 }
 
 export function encoded(value, type) {
