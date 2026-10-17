@@ -17,7 +17,4 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"]
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-csv = "1.4"
-cron = "0.17"
-printpdf = { version = "0.12", default-features = false }
-lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "rustls-native-certs", "smtp-transport", "tokio1", "tokio1-rustls-tls", "tracing"] }
+async-graphql = { version = "7", default-features = false, features = ["chrono", "dataloader"] }

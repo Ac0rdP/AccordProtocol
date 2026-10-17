@@ -39,60 +39,44 @@ curl "http://127.0.0.1:8080/proposals?contractId=CA...TREASURY_A&network=testnet
 the datastore cannot be reached. The server exits at startup if it cannot
 connect or apply its migrations.
 
-## Configuration
+## GraphQL
 
-The API also reads these values from a repository-root `.env` file.
+`POST /graphql` exposes proposals, owners, spends, and treasury flows with
+pagination and filtering; see [the API reference](../docs/ANALYTICS_API.md#graphql).
+Queries are bounded by these optional environment variables:
 
-| Variable | Default | Description |
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `DATABASE_URL` | — | Required. Connection string for the indexer database. |
-| `CONTRACT_ID` | — | A single indexed contract. Still supported. |
-| `CONTRACT_IDS` | — | Comma-separated contract IDs. Takes precedence over `CONTRACT_ID`. One of the two is required. |
-| `NETWORK` | `testnet` | A single network name. |
-| `NETWORKS` | value of `NETWORK` | Comma-separated network names. |
-| `LISTEN_HOST`, `LISTEN_PORT` | `127.0.0.1`, `8080` | Bind address. |
+| `GRAPHQL_MAX_DEPTH` | `6` | Maximum selection nesting depth. |
+| `GRAPHQL_MAX_COMPLEXITY` | `500` | Maximum query cost (lists multiply by `first`). |
+| `GRAPHQL_TIMEOUT_MS` | `10000` | Execution time limit per request. |
+| `GRAPHQL_INTROSPECTION` | `true` | Set `false` to disable schema introspection. |
 
-Reads are scoped to the configured contracts and networks. The `contractId` and
-`network` query parameters narrow one request to a single value; anything outside
-the configured set is a `400`, not an empty result. See
-[docs/ANALYTICS_API.md](../docs/ANALYTICS_API.md#multi-contract-and-multi-network-scope).
+```sh
+curl -s http://127.0.0.1:8080/graphql \
+  -H 'content-type: application/json' \
+  -d '{"query":"{ proposals(first: 3) { nodes { id status } totalCount } }"}'
+```
 
-## Scheduled reports
+## Metrics and health
 
-`GET /reports` returns the schedule and the history of generated reports;
-`POST /reports/run` generates and delivers one immediately. Reports cover the
-executed transfers in a period, with per-token and per-category totals, as CSV
-(detail rows plus a totals section) or PDF (a paginated A4 landscape statement).
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /livez` | Liveness: `200` whenever the process is serving; never touches the database. |
+| `GET /readyz` | Readiness: `200` when the database answers within 2 seconds, otherwise `503`. |
+| `GET /metrics` | Prometheus text format: request counts and latency per route, error and GraphQL rejection counters, database pool gauges, and the indexer checkpoint (`accord_api_indexed_ledger`, `accord_api_checkpoint_age_seconds`). |
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `REPORT_SCHEDULE` | — | Cron expression: `seconds minutes hours day-of-month month day-of-week`. Unset disables scheduled reports. `0 0 6 1 * *` is 06:00 UTC on the first of each month. |
-| `REPORT_FORMATS` | `csv,pdf` | Comma-separated formats to produce each run. |
-| `REPORT_RECIPIENTS` | — | Comma-separated email addresses. Delivery is skipped when empty. |
-| `REPORT_PERIOD_DAYS` | `30` | Length of the period each run reports on, ending at the run time. |
-| `REPORT_OUTPUT_DIR` | — | Write each generated report here as well. |
-| `REPORT_FROM` | `accord-analytics@localhost` | `From` mailbox. |
-| `SMTP_URL` | — | lettre SMTP URL, for example `smtps://user:password@smtp.example.com:465`. |
-| `REPORT_MAX_ATTEMPTS` | `3` | Delivery attempts before a run is recorded as failed. |
-| `REPORT_RETRY_BACKOFF_MS` | `2000` | Base backoff between attempts; grows linearly. |
-
-Delivery goes over SMTP when `SMTP_URL` is set. With no `SMTP_URL` but a
-`REPORT_OUTPUT_DIR`, each report and a delivery manifest are written to
-`<REPORT_OUTPUT_DIR>/delivered` instead, so the pipeline can be exercised end to
-end without mail credentials. With neither, reports are generated and recorded
-but not delivered, and `GET /reports` says so.
-
-A delivery that exhausts its attempts is recorded as `failed` with the last
-error and the attempt count, and logged at error level so log-based alerting
-picks it up. A scheduled run skips a period and format it has already delivered,
-so a restart never re-sends a statement; a manual run always generates.
+`/health` is unchanged. Point Kubernetes liveness probes at `/livez` and
+readiness probes at `/readyz`.
 
 ## Tests
 
-```sh
-cargo test -p accord-analytics-api
-```
+`cargo test -p accord-analytics-api` runs the unit and HTTP-level tests. The
+database-backed GraphQL tests run when `TEST_DATABASE_URL` points at a
+PostgreSQL database (each test creates and drops its own schema) and are
+skipped otherwise:
 
-The suite covers query validation and scoping, CSV and PDF report content,
-schedule arithmetic, and delivery retry behaviour. It does not need a running
-database.
+```sh
+TEST_DATABASE_URL=postgres://accord:accord@localhost:5432/accord_analytics \
+  cargo test -p accord-analytics-api
+```

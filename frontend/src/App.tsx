@@ -19,10 +19,14 @@ import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
+import { PWAInstallBanner } from "./components/PWAInstallBanner";
+import { ThemeControl } from "./components/ThemeControl";
+import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { OnboardingPage } from "./pages/OnboardingPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
@@ -53,9 +57,7 @@ export default function App() {
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
   const [contractFrozen, setContractFrozen] = useState(false);
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem("theme") as "dark" | "light" | null) ?? "dark",
-  );
+  const [theme, setTheme] = useState<ThemeChoice>(() => getStoredTheme());
   // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
   const newProposalButtonRef = useRef<HTMLButtonElement>(null);
   const recurringButtonRef = useRef<HTMLButtonElement>(null);
@@ -79,19 +81,37 @@ export default function App() {
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
 
-  // If the wallet is disconnected (e.g. externally, from the Freighter popup)
-  // while a transaction is in flight, the pending request can never resolve.
-  // Clear the pending state and surface an error instead of a stuck banner.
-  // Sync dark/light class on <html> and persist to localStorage
+  // Apply theme with system mode subscription
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
+    applyTheme(theme);
+    if (theme === "system") {
+      const unsubscribe = subscribeToSystemTheme(() => {
+        applyTheme("system");
+      });
+      return unsubscribe;
     }
-    localStorage.setItem("theme", theme);
   }, [theme]);
+
+  // Deep-link handling: ensure direct proposal URLs or query params open the correct page
+  useEffect(() => {
+    const directMatch = location.pathname.match(/^\/proposals\/(\d+)/);
+    if (directMatch) {
+      const id = directMatch[1];
+      navigate(`/app/proposals/${id}`, { replace: true });
+      return;
+    }
+
+    if (location.pathname === "/onboarding" || location.pathname === "/onboarding/") {
+      navigate("/app/onboarding", { replace: true });
+      return;
+    }
+
+    const params = new URLSearchParams(location.search);
+    const proposalParam = params.get("proposal");
+    if (proposalParam) {
+      navigate(`/app/proposals/${proposalParam}`, { replace: true });
+    }
+  }, [location.pathname, location.search, navigate]);
 
   // Return focus to the New Proposal trigger when modal transitions from open → closed
   const wasShowCreateRef = useRef(false);
@@ -268,12 +288,9 @@ export default function App() {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
   }
 
-  function toggleTheme() {
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
-  }
-
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      <PWAInstallBanner />
       <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
           <Link
@@ -307,48 +324,12 @@ export default function App() {
               </Link>
             ))}
 
-            {/* Dark / Light mode toggle */}
-            <button
-              type="button"
-              id="theme-toggle"
-              onClick={toggleTheme}
-              aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              className="ml-1 rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400 dark:hover:bg-zinc-800"
-            >
-              {theme === "dark" ? (
-                /* Sun icon — shown in dark mode to switch to light */
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.75}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-4 w-4"
-                  aria-hidden="true"
-                >
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-                </svg>
-              ) : (
-                /* Moon icon — shown in light mode to switch to dark */
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.75}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-4 w-4"
-                  aria-hidden="true"
-                >
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-              )}
-            </button>
+            {/* Explicit Light, System, Dark theme control */}
+            <ThemeControl
+              currentTheme={theme}
+              onThemeChange={setTheme}
+              className="ml-1"
+            />
           </nav>
 
           {!wallet.installed ? (
@@ -461,9 +442,33 @@ export default function App() {
         ) : loading ? (
           <LoadingState message="Loading contract data…" />
         ) : (
-          <Routes>
-            <Route
-              index
+          <>
+            {owners.length === 0 && location.pathname !== "/app/onboarding" && (
+              <div
+                data-testid="no-multisig-banner"
+                className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs text-emerald-200"
+              >
+                <div>
+                  <p className="font-semibold text-emerald-300 text-sm">No multisig configured yet</p>
+                  <p className="text-zinc-400 mt-0.5">
+                    Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.
+                  </p>
+                </div>
+                <Link
+                  to="/app/onboarding"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-black hover:bg-emerald-400 transition-colors shrink-0"
+                >
+                  Start Setup Wizard →
+                </Link>
+              </div>
+            )}
+            <Routes>
+              <Route
+                path="onboarding"
+                element={<OnboardingPage wallet={wallet} onComplete={refresh} />}
+              />
+              <Route
+                index
               element={
                 <DashboardPage
                   activeProposals={activeProposals}
@@ -548,7 +553,8 @@ export default function App() {
               element={<NotFoundPage onGoHome={() => navigate("/app")} />}
             />
           </Routes>
-        )}
+        </>
+      )}
       </main>
       
       {showCreate && (

@@ -6,12 +6,17 @@ import App from "./App.tsx";
 import { DocsPage } from "./pages/DocsPage.tsx";
 import { LandingPage } from "./pages/LandingPage.tsx";
 
+import { registerServiceWorker } from "./lib/pwa";
+
+registerServiceWorker();
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/docs" element={<DocsPage />} />
+        <Route path="/onboarding" element={<App />} />
         <Route path="/proposals/:id" element={<App />} />
         <Route path="/app/*" element={<App />} />
       </Routes>

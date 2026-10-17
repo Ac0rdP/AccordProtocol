@@ -833,7 +833,7 @@ The local HTTP API listens on `127.0.0.1:8787` by default:
 - `GET /reconciliation` returns the latest stored actual/implied balances and drift for each token, as strings in smallest units.
 - `GET /health` returns the current indexing checkpoint.
 
-`DATABASE_PATH`, `HOST`, and `PORT` can override the SQLite path and API bind settings. Keep the API bound to localhost unless it is placed behind an authenticated service.
+`DATABASE_PATH`, `HOST`, and `PORT` can override the SQLite path and API bind settings. Set `STORE_BACKEND=postgres` and `DATABASE_URL` to use Postgres instead (versioned migrations in `indexer/migrations/postgres/`; see [the indexer README](../indexer/README.md#storage)). Keep the API bound to localhost unless it is placed behind an authenticated service.
 
 ## 7. Frontend Polling Strategy
 

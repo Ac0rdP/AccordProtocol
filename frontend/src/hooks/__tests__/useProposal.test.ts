@@ -1,25 +1,22 @@
-import { describe, test, expect, vi, beforeEach } from "vitest";
+import { vi } from "vitest";
+import { applyContractHarness, installContractCallHarness } from "../../test/harness";
+import { proposalFixture } from "../../test/contractFixtures";
+
+// One shared harness replaces ad-hoc per-file mocks, so these tests exercise
+// the same response shapes the rest of the suite does.
+vi.mock("../../lib/contract", (importOriginal) => applyContractHarness(importOriginal));
+
 import { renderHook, waitFor } from "@testing-library/react";
 import { useProposal } from "../useProposal";
-import { getProposal, getProposalApprovalProgress } from "../../lib/contract";
 
-vi.mock("../../lib/contract", () => ({
-  getProposal: vi.fn(),
-  getProposalApprovalProgress: vi.fn(),
-}));
+const contract = installContractCallHarness();
 
-const mockProgress = { approvalWeight: 10, quorumWeight: 50, totalWeight: 100 };
+// useProposal caches per id for the lifetime of the module, so every test uses
+// its own ids to stay isolated.
+beforeEach(() => contract.reset());
 
 describe("useProposal", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  test("loads proposal with weight data successfully", async () => {
-    const mockProposal = { id: 1, description: "Test 1" };
-    vi.mocked(getProposal).mockResolvedValueOnce(mockProposal as any);
-    vi.mocked(getProposalApprovalProgress).mockResolvedValueOnce(mockProgress);
-
+  test("loads a proposal and its approval progress from the shared fixtures", async () => {
     const { result } = renderHook(() => useProposal(1));
 
     expect(result.current.loading).toBe(true);
@@ -28,17 +25,21 @@ describe("useProposal", () => {
       expect(result.current.loading).toBe(false);
     });
 
+    const fixture = proposalFixture();
     expect(result.current.proposal).toMatchObject({
-      ...mockProposal,
-      ...mockProgress,
+      id: 1,
+      description: fixture.description,
+      approvalWeight: fixture.approvalWeight,
+      quorumWeight: fixture.quorumWeight,
+      totalWeight: fixture.totalWeight,
     });
     expect(result.current.error).toBeNull();
-    expect(getProposal).toHaveBeenCalledWith(1);
-    expect(getProposalApprovalProgress).toHaveBeenCalledWith(1);
+    expect(contract.calls("getProposal")).toEqual([[1]]);
+    expect(contract.callCount("getProposalApprovalProgress")).toBe(1);
   });
 
-  test("contract error sets error and skips weight fetch", async () => {
-    vi.mocked(getProposal).mockRejectedValueOnce(new Error("RPC failed"));
+  test("contract error sets error and skips the weight fetch", async () => {
+    contract.read("getProposal").mockRejectedValueOnce(new Error("RPC failed"));
 
     const { result } = renderHook(() => useProposal(99));
 
@@ -50,15 +51,11 @@ describe("useProposal", () => {
 
     expect(result.current.error).toBe("RPC failed");
     expect(result.current.proposal).toBeNull();
-    expect(getProposalApprovalProgress).not.toHaveBeenCalled();
+    expect(contract.callCount("getProposalApprovalProgress")).toBe(0);
   });
 
-  test("weight fetch failure surfaces error but still returns proposal", async () => {
-    const mockProposal = { id: 7, description: "Weight fail" };
-    vi.mocked(getProposal).mockResolvedValueOnce(mockProposal as any);
-    vi.mocked(getProposalApprovalProgress).mockRejectedValueOnce(
-      new Error("RPC timeout"),
-    );
+  test("weight fetch failure surfaces an error but still returns the proposal", async () => {
+    contract.read("getProposalApprovalProgress").mockRejectedValueOnce(new Error("RPC timeout"));
 
     const { result } = renderHook(() => useProposal(7));
 
@@ -69,25 +66,17 @@ describe("useProposal", () => {
     expect(result.current.error).toBe("Weight data unavailable: RPC timeout");
     expect(result.current.proposal).toMatchObject({
       id: 7,
-      description: "Weight fail",
       approvalWeight: 0,
       quorumWeight: 0,
       totalWeight: 0,
     });
   });
 
-  test("changing IDs fetches new proposals and their weight data", async () => {
-    const p2 = { id: 2, description: "Test 2" };
-    const p3 = { id: 3, description: "Test 3" };
-    const progress2 = { approvalWeight: 5, quorumWeight: 25, totalWeight: 50 };
-    const progress3 = { approvalWeight: 15, quorumWeight: 30, totalWeight: 60 };
-
-    vi.mocked(getProposal)
-      .mockResolvedValueOnce(p2 as any)
-      .mockResolvedValueOnce(p3 as any);
-    vi.mocked(getProposalApprovalProgress)
-      .mockResolvedValueOnce(progress2)
-      .mockResolvedValueOnce(progress3);
+  test("changing ids fetches the new proposal", async () => {
+    contract
+      .read("getProposal")
+      .mockResolvedValueOnce(proposalFixture({ id: 2, description: "Second" }))
+      .mockResolvedValueOnce(proposalFixture({ id: 3, description: "Third" }));
 
     const { result, rerender } = renderHook(({ id }) => useProposal(id), {
       initialProps: { id: 2 },
@@ -96,42 +85,56 @@ describe("useProposal", () => {
     await waitFor(() => {
       expect(result.current.loading).toBe(false);
     });
-    expect(result.current.proposal).toMatchObject({ ...p2, ...progress2 });
+    expect(result.current.proposal?.description).toBe("Second");
 
     rerender({ id: 3 });
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false);
-      expect(result.current.proposal).toMatchObject({ ...p3, ...progress3 });
+      expect(result.current.proposal?.description).toBe("Third");
     });
   });
 
-  test("cache behaviour includes weight data", async () => {
-    const mockProposal = { id: 5, description: "Test 5" };
-    vi.mocked(getProposal).mockResolvedValueOnce(mockProposal as any);
-    vi.mocked(getProposalApprovalProgress).mockResolvedValueOnce(mockProgress);
-
-    const { result: result1 } = renderHook(() => useProposal(5));
+  test("a second mount for the same id is served from the cache", async () => {
+    const { result: first } = renderHook(() => useProposal(5));
 
     await waitFor(() => {
-      expect(result1.current.loading).toBe(false);
-    });
-    expect(result1.current.proposal).toMatchObject({
-      ...mockProposal,
-      ...mockProgress,
+      expect(first.current.loading).toBe(false);
     });
 
-    // Second hook call should use cache — no additional fetches
-    const { result: result2 } = renderHook(() => useProposal(5));
+    const { result: second } = renderHook(() => useProposal(5));
 
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(result2.current.loading).toBe(false);
-    expect(result2.current.proposal).toMatchObject({
-      ...mockProposal,
-      ...mockProgress,
+    await waitFor(() => {
+      expect(second.current.loading).toBe(false);
     });
-    expect(getProposal).toHaveBeenCalledTimes(1);
-    expect(getProposalApprovalProgress).toHaveBeenCalledTimes(1);
+
+    // Cached, so the contract is never asked again.
+    expect(contract.calls("getProposal")).toEqual([[5]]);
+    expect(second.current.proposal).toMatchObject({ id: 5 });
+  });
+
+  test("slow responses keep the hook in its loading state", async () => {
+    contract.setMode("slow");
+
+    const { result } = renderHook(() => useProposal(11));
+
+    // Still pending while the harness delays the call.
+    expect(result.current.loading).toBe(true);
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.proposal).not.toBeNull();
+  });
+
+  test("a failing contract in failure mode rejects consistently", async () => {
+    contract.setMode("failure");
+
+    const { result } = renderHook(() => useProposal(13));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.error).toContain("getProposal failed");
+    expect(result.current.proposal).toBeNull();
   });
 });

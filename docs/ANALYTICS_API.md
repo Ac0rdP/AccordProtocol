@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, `GET /spend/by-category`, `GET /reports`, and `POST /reports/run` against its PostgreSQL datastore. Every record is tagged by contract **and** network, so one deployment can serve several multisigs and several networks — see [Multi-Contract and Multi-Network Scope](#multi-contract-and-multi-network-scope). The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `/health` is a database-backed readiness check; the service root returns its name and status.
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators.
 
 ---
 
@@ -244,124 +244,112 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
 
-### `GET /reports`
+## GraphQL
 
-The scheduled-report configuration and the history of generated reports, newest first.
+`POST /graphql` serves the same indexed data as the REST endpoints through a single, flexible query surface, so a dashboard can request exactly the fields it needs without a new endpoint per view. Resolvers read the PostgreSQL datastore directly and are scoped to the configured `CONTRACT_ID`.
 
-**Query parameters:** `limit`, `offset`, `contractId`, `network`, plus `status` (`generated`, `delivered`, `failed`) and `format` (`csv`, `pdf`).
-
-**Response:**
+Send a standard GraphQL-over-HTTP request body:
 
 ```json
-{
-  "config": {
-    "schedule": "0 0 6 1 * *",
-    "formats": ["csv", "pdf"],
-    "recipients": ["treasury@example.com"],
-    "periodDays": 30,
-    "maxAttempts": 3,
-    "retryBackoffMs": 2000,
-    "outputDir": "./reports",
-    "delivery": "smtp(mail.example.com:587)"
-  },
-  "nextRun": "2026-11-01T06:00:00Z",
-  "runs": [
-    {
-      "id": 41,
-      "network": "testnet",
-      "contractId": "CA...TREASURY",
-      "periodStart": "2026-09-01T06:00:00Z",
-      "periodEnd": "2026-10-01T06:00:00Z",
-      "format": "pdf",
-      "triggerSource": "scheduled",
-      "status": "delivered",
-      "attempts": 1,
-      "recipients": ["treasury@example.com"],
-      "byteSize": 18422,
-      "filePath": "./reports/accord-testnet-catreasury-20260901-20261001.pdf",
-      "error": null,
-      "createdAt": "2026-10-01T06:00:04Z",
-      "deliveredAt": "2026-10-01T06:00:06Z"
+{ "query": "{ proposals(first: 5) { nodes { id status amount } } }", "variables": {} }
+```
+
+### Schema overview
+
+| Query field | Returns | Source |
+| --- | --- | --- |
+| `proposals(first, after, filter, sort, order)` | `ProposalConnection` | `proposals` |
+| `proposal(id)` | `Proposal` or `null` | `proposals` |
+| `owners(first, after, filter)` | `OwnerConnection` (heaviest first) | latest row per owner in `owner_weight_changes` |
+| `owner(address)` | `Owner` or `null` | `owner_weight_changes` |
+| `spends(first, after, filter)` | `SpendConnection` (most recently executed first) | executed `transfer` proposals |
+| `spendTotals(filter)` | `[SpendTotal]` grouped by token and category | executed `transfer` proposals |
+| `treasuryFlows(first, after, filter)` | `TreasuryFlowConnection` (newest first) | `transfers` |
+
+Nested fields: `Proposal.timeline` (the proposal's events, oldest first), `Proposal.proposerOwner` (the proposer's current `Owner` record), and `Owner.proposals` (a paginated, filterable `ProposalConnection`). Both `timeline` and `proposerOwner` are batched, so listing many proposals does not issue a query per proposal. `status` and `category` are enums (`PENDING`, `READY`, `EXECUTED`, `EXPIRED`, `REVOKED`; `TRANSFER`, `PAYROLL`, `GRANT`, `OPS`, `OTHER`). Amounts are decimal strings and timestamps are ISO 8601 `DateTime` values, as in the REST API.
+
+```graphql
+query Dashboard($since: DateTime) {
+  proposals(first: 10, filter: { status: EXECUTED, startDate: $since }, sort: AMOUNT, order: DESC) {
+    nodes {
+      id
+      amount
+      token
+      category
+      proposerOwner { address weight }
+      timeline { type actor ledger }
     }
-  ],
-  "total": 12,
-  "limit": 20,
-  "offset": 0
+    pageInfo { hasNextPage endCursor }
+    totalCount
+  }
+  spendTotals { token category total count }
+  owners(first: 5) { nodes { address weight } }
+  treasuryFlows(first: 5, filter: { token: "USDC" }) { nodes { amount ledger occurredAt } }
 }
 ```
 
-`status` is `delivered` when the report reached its recipients, `generated` when it was produced but no delivery is configured, and `failed` when every delivery attempt was exhausted — `error` then carries the last failure and `attempts` how many were made. `delivery` states which transport is in use, or why delivery is off.
+### Pagination
 
-### `POST /reports/run`
+Every list field is a connection: `{ nodes, pageInfo { hasNextPage endCursor }, totalCount }`. `first` defaults to `20` and must be `1`–`100`. Pass the previous page's `pageInfo.endCursor` as `after` to fetch the next page. Cursors are opaque and only valid for the same filters and ordering. `totalCount` runs a separate count query, so it is only computed when selected.
 
-Generates and delivers a report immediately, without waiting for the schedule. Useful for verifying delivery after a configuration change and for re-sending a statement.
+### Filtering and ordering
 
-**Query parameters:** `contractId`, `network`, `format` (defaults to every configured format), `periodDays` (`1`–`3650`, defaults to `REPORT_PERIOD_DAYS`).
+| Field | Filter input | Keys |
+| --- | --- | --- |
+| `proposals`, `Owner.proposals` | `ProposalFilter` | `status`, `category`, `token`, `proposer` (substring), `startDate`/`endDate` (creation time) |
+| `owners` | `OwnerFilter` | `address` (substring), `minWeight`, `includeRemoved` (default `false`) |
+| `spends`, `spendTotals` | `SpendFilter` | `token`, `category`, `recipient` (substring), `startDate`/`endDate` (execution time) |
+| `treasuryFlows` | `TreasuryFlowFilter` | `token`, `recipient` (substring), `proposalId`, `scheduleId`, `startDate`/`endDate` |
 
-**Response:**
+`proposals` also accepts `sort` (`CREATED_AT` default, `DEADLINE`, `AMOUNT`) and `order` (`DESC` default, `ASC`). Substring filters are case-insensitive and match `%`, `_`, and `\` literally.
+
+### Query limits
+
+Expensive queries are bounded before any resolver runs.
+
+| Limit | Default | Environment variable | Behavior when exceeded |
+| --- | --- | --- | --- |
+| Query depth | `6` | `GRAPHQL_MAX_DEPTH` | `400`, error `Query is nested too deep.` |
+| Query complexity | `500` | `GRAPHQL_MAX_COMPLEXITY` | `400`, error `Query is too complex.` |
+| Page size (`first`) | `100` | — | `200`, error code `PAGE_SIZE_EXCEEDED` |
+| Execution time | `10000` ms | `GRAPHQL_TIMEOUT_MS` | `504`, error code `TIMEOUT` |
+| Request body | 64 KiB | — | `413` |
+| Batched requests | unsupported | — | `400`, a JSON array body is refused |
+| Introspection | enabled | `GRAPHQL_INTROSPECTION` (`false` disables) | introspection fields resolve to `null` |
+
+Each field costs `1`; a connection or list field multiplies the cost of its selection by `first` (default `20`), and `timeline` and `spendTotals` assume `20` and `25` items. Nested connections therefore multiply, which is what stops a request such as "100 proposals, each with 100 owner proposals". Select fewer fields, lower `first`, or raise `GRAPHQL_MAX_COMPLEXITY` for trusted deployments.
+
+### GraphQL errors
+
+Resolver errors use the standard GraphQL `errors` array with a machine-readable `extensions.code`:
 
 ```json
-{
-  "period": { "start": "2026-09-17T09:00:00Z", "end": "2026-10-17T09:00:00Z" },
-  "runs": [{ "id": 42, "format": "csv", "status": "delivered", "attempts": 1 }]
-}
+{ "data": null, "errors": [{ "message": "`first` must be between 1 and 100", "path": ["proposals"], "extensions": { "code": "PAGE_SIZE_EXCEEDED" } }] }
 ```
 
-A manual run always generates, even if the same period was already delivered; a scheduled run skips a period and format it has already delivered, so a restart does not re-send a statement.
+| `extensions.code` | Meaning |
+| --- | --- |
+| `PAGE_SIZE_EXCEEDED` | `first` is outside `1`–`100`. |
+| `INVALID_CURSOR` | `after` was not produced by this API. |
+| `INTERNAL_ERROR` | A datastore query failed; details are logged server-side only. |
+| `BAD_REQUEST` / `TIMEOUT` | Malformed or batched request body / execution time limit (HTTP-level error body with the same `errors` shape). |
+
+Rejected requests are counted in `accord_api_graphql_rejections_total`.
 
 ---
 
-## Multi-Contract and Multi-Network Scope
+## Webhooks
 
-One deployment serves a set of contracts across a set of networks instead of a single contract.
+Consumers that would rather be pushed new events than poll can subscribe to signed webhooks. The webhook service runs in the **indexer** (`indexer/src/webhooks.js`), because that is where events enter the store; the analytics API itself serves pull queries. Subscription configuration, the delivery payload, retry/backoff settings and the dead-letter workflow are documented in the [indexer README](../indexer/README.md#webhooks).
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `CONTRACT_ID` | — | A single contract. Still supported; equivalent to a one-entry `CONTRACT_IDS`. |
-| `CONTRACT_IDS` | — | Comma-separated contract IDs. Takes precedence over `CONTRACT_ID`. |
-| `NETWORK` | `testnet` | A single network name. |
-| `NETWORKS` | value of `NETWORK` | Comma-separated network names. |
+Receivers verify each delivery with the `X-Accord-Signature` header, `t=<unix seconds>,v1=<hex>`, where `v1 = HMAC_SHA256(secret, "<t>." + rawBody)`:
 
-At least one contract is required. Every endpoint is scoped to the configured set, and `contractId`/`network` narrow a single request to one of them. A value outside the configured set is a `400` with `INVALID_CONTRACT_ID` or `INVALID_NETWORK`, rather than an empty result that looks like missing data.
+1. Use the raw request body, not a re-serialized one.
+2. Reject if `|now - t|` is over your tolerance (300 seconds recommended); retries are re-signed with a fresh `t`.
+3. Compare in constant time against every `v1` in the header (more than one is sent only during secret rotation).
+4. De-duplicate on `X-Accord-Event-Id`: delivery is at least once.
 
-Every row carries its `network` and `contract_id`, and both are part of each table's primary key, so the same proposal id on two contracts — or the same contract on testnet and mainnet — never collide. `GET /proposals` and `GET /proposals/:id` return `network` and `contractId` on each proposal. With several contracts in scope, a proposal id that exists on more than one resolves to the first pair in `(network, contract_id)` order; pass `contractId` and `network` to pick one deliberately.
-
-**Checkpoints** are per contract and per network: the `checkpoints` table is keyed on `(network, contract_id)`, and the indexer keeps its `next_ledger` and `event_cursor` under the same pair, so each target resumes from its own position.
-
----
-
-## Data Retention and Archival
-
-Indexed history grows without bound, so the indexer applies three retention windows, each a number of days where `0` keeps data forever. All three default to `0`, so retention is off until it is configured.
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `RETENTION_RAW_EVENT_DAYS` | `0` | How long raw ledger entries and decoded events are kept. |
-| `RETENTION_AGGREGATE_DAYS` | `0` | How long the daily aggregates are kept. Must be ≥ `RETENTION_RAW_EVENT_DAYS`. |
-| `RETENTION_RECONCILIATION_DAYS` | `0` | How long reconciliation results are kept. |
-| `RETENTION_ARCHIVE_DIR` | unset | Archive rows as JSON Lines under this directory before removing them. Unset prunes without archiving. |
-| `RETENTION_INTERVAL_MS` | `86400000` | How often retention runs. |
-
-**What a run does, in order.** For each (network, contract) target it rolls every raw row older than the raw window into `ledger_daily_aggregates` (per token per day: inflow, outflow, entry count, closing balance, last ledger) and `event_daily_aggregates` (per topic per day: event count); archives those rows as JSON Lines when an archive directory is set; removes them; then drops aggregates past the aggregate window and reconciliation rows past the reconciliation window — always keeping the latest result for each check and subject.
-
-**Why reports keep working after a prune.** Running balances live in `token_balances`, which retention never touches, so balances and reconciliation stay exact. Event counts are read as live rows plus archived aggregates, so a count over pruned history is still correct. Historical per-day totals come from the aggregate tables rather than the raw rows. The guard that `RETENTION_AGGREGATE_DAYS` must be at least `RETENTION_RAW_EVENT_DAYS` is what stops a configuration from dropping a summary while the rows behind it are still being kept.
-
-`GET /retention` on the indexer returns the active policy and the recent runs; `POST /retention/run` applies it immediately.
-
----
-
-## Reconciliation and Drift Detection
-
-The indexer compares the chain to its own view on a schedule and records every check, matching or not. See [RECONCILIATION_RUNBOOK.md](RECONCILIATION_RUNBOOK.md) for how to respond to drift.
-
-| Check | On-chain value | Indexed value |
-| --- | --- | --- |
-| `token_balance` | `balance(treasury)` on each configured token | the running balance in `token_balances` |
-| `total_proposals` | `get_total_proposals()` on the Accord contract | the number of `created` events, live plus archived |
-
-`drift` is `actual - implied`. A check is `ok` when it is zero, `drift` when it is not, and `error` when the chain could not be read — an unreadable value is never recorded as agreement. Drift and errors are logged, posted to `ALERT_WEBHOOK_URL` when one is set (retried with linear backoff), and exposed as Prometheus gauges on `GET /metrics`: `accord_reconciliation_drift`, `accord_reconciliation_status`, `accord_reconciliation_last_run_seconds` and `accord_indexer_next_ledger`, each labelled by `network`, `contract_id`, `check` and `subject`.
-
----
+Failures retry with exponential backoff and jitter, then move to a dead-letter queue visible at the indexer's `GET /webhooks/deliveries?status=dead`.
 
 ## Event Payload Schemas
 
