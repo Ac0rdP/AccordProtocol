@@ -30,7 +30,11 @@ const alerter = createAlerter({ webhookUrl: process.env.ALERT_WEBHOOK_URL?.trim(
 // different networks with different endpoints.
 const runtimes = new Map(
   targets.map((target) => {
-    const stellar = new rpc.Server(target.rpcUrl);
+    // A standalone or local network is reached over plain HTTP, which the SDK
+    // only allows when asked explicitly.
+    const stellar = new rpc.Server(target.rpcUrl, {
+      allowHttp: target.rpcUrl.startsWith("http://"),
+    });
     return [
       target.key,
       {
