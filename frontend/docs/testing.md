@@ -14,6 +14,21 @@ coverage is measured and enforced.
 | `npm run test:visual` | Storybook-driven visual regression snapshots. |
 | `npm run test:e2e` | Playwright end-to-end tests. |
 
+Responsive screenshots run with `npx playwright test --project=responsive-375
+--project=responsive-768 --project=responsive-1440`. They cover the landing,
+dashboard, and analytics routes at 375, 768, and 1440 pixels. To approve an
+intentional layout change, run the same command with `--update-snapshots`,
+review the generated files under `frontend/e2e/responsive-screenshots.spec.ts`
+snapshot directories, and commit the updated baselines with the code change.
+
+## Accessibility checks
+
+Component tests use `axe-core` through `vitest-axe`. New components should test
+each meaningful state, including error, loading, empty, and interactive states,
+and assert `toHaveNoViolations()` against the rendered container. A violation
+fails the Vitest suite and must be fixed or intentionally excluded with a
+documented reason.
+
 Coverage is configured in [`vitest.config.ts`](../vitest.config.ts) and is
 collected with `@vitest/coverage-v8`.
 
