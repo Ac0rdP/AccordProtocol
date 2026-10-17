@@ -129,6 +129,9 @@ describe("treasury ledger", () => {
       treasuryAddress: treasury,
       startLedger: 40,
       pageLimit: 2,
+      // Pagination mechanics are what this test covers; finality is exercised
+      // separately in finality.test.js. A lag of 0 makes every closed ledger final.
+      finalityLag: 0,
     });
 
     assert.equal(requests[0].startLedger, 40);
@@ -139,6 +142,71 @@ describe("treasury ledger", () => {
     );
     assert.equal(store.getState("next_ledger"), "44");
     assert.equal(store.getState("event_cursor"), "");
+    store.close();
+  });
+
+  it("rewinds indexed data when the store is rolled back to a safe point", () => {
+    const store = createStore();
+    const tokenNames = new Map([[tokenAddress.toLowerCase(), "USDC"]]);
+    for (const [id, amount, ledger] of [["event-1", 10n, 40], ["event-2", 20n, 41], ["event-3", 5n, 42]]) {
+      const entry = parseTokenTransferEvent(event({ id, amount, ledger }), tokenNames, treasury);
+      assert.equal(store.recordTransfer(entry), true);
+    }
+    store.recordAccordEvent({
+      eventId: "accord-1", topic: "created", payload: {}, ledger: 42, transactionHash: "hash", occurredAt: "2026-09-27T12:00:00Z",
+    });
+    assert.equal(store.getBalance("USDC"), "35");
+
+    const removed = store.rewindToLedger(41);
+
+    assert.deepEqual(removed, { removedEntries: 1, removedEvents: 1 });
+    // Running balance re-folds over what survived the rewind.
+    assert.equal(store.getBalance("USDC"), "30");
+    assert.deepEqual(
+      store.getEntries({ token: "USDC", limit: 10, offset: 0 }).map(({ eventId, balance }) => [eventId, balance]),
+      [["event-1", "10"], ["event-2", "30"]]
+    );
+    assert.equal(store.getAccordEvents({ limit: 10, offset: 0 }).length, 0);
+    // Rewinding to the same point again is a no-op, not an error.
+    assert.deepEqual(store.rewindToLedger(41), { removedEntries: 0, removedEvents: 0 });
+    store.close();
+  });
+
+  it("rejects a rewind target that is not a non-negative integer", () => {
+    const store = createStore();
+    assert.throws(() => store.rewindToLedger(-1), /non-negative integer/);
+    assert.throws(() => store.rewindToLedger(1.5), /non-negative integer/);
+    store.close();
+  });
+
+  it("clears all indexed history so the store can be rebuilt", () => {
+    const store = createStore();
+    const entry = parseTokenTransferEvent(
+      event({ amount: 40n }),
+      new Map([[tokenAddress.toLowerCase(), "USDC"]]),
+      treasury
+    );
+    store.recordTransfer(entry);
+    store.recordAccordEvent({
+      eventId: "accord-1", topic: "created", payload: {}, ledger: 42, transactionHash: "hash", occurredAt: "2026-09-27T12:00:00Z",
+    });
+    store.recordReconciliation({
+      token: "USDC", tokenAddress, checkedAt: "2026-09-27T12:00:00.000Z",
+      impliedBalance: "40", actualBalance: "40", drift: "0",
+    });
+    store.setState("next_ledger", "43");
+
+    const cleared = store.clearHistory();
+
+    assert.deepEqual(
+      { removedEntries: cleared.removedEntries, removedEvents: cleared.removedEvents, removedReconciliations: cleared.removedReconciliations },
+      { removedEntries: 1, removedEvents: 1, removedReconciliations: 1 }
+    );
+    assert.equal(store.getBalance("USDC"), "0");
+    assert.equal(store.getEntries({ limit: 10, offset: 0 }).length, 0);
+    assert.equal(store.getLatestReconciliations().length, 0);
+    // Checkpoints belong to the caller, not to the wipe.
+    assert.equal(store.getState("next_ledger"), "43");
     store.close();
   });
 });

@@ -1,0 +1,89 @@
+name: Frontend CI & Coverage
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+
+jobs:
+  frontend-test-coverage:
+    name: Frontend tests & coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      # Lint is advisory here: the repository currently carries pre-existing
+      # lint errors outside this workflow's scope, so failing the build on them
+      # would make every frontend PR red for unrelated reasons. Coverage
+      # thresholds below are the gate this workflow owns.
+      - name: Lint
+        continue-on-error: true
+        run: npm run lint
+
+      # Runs the suite AND enforces the coverage thresholds in vitest.config.ts.
+      # A regression in any governed area fails this step, which is what makes
+      # the thresholds binding rather than advisory.
+      - name: Run tests with coverage thresholds
+        run: npm run test:coverage:ci
+
+      - name: Publish coverage summary to the job log
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e '
+            const s = require("./coverage/coverage-summary.json");
+            const rows = Object.entries(s)
+              .filter(([k]) => k !== "total")
+              .map(([k, v]) => ({ file: k.replace(/^.*\/src\//, "src/"), lines: v.lines.pct, branches: v.branches.pct }));
+            rows.sort((a, b) => a.lines - b.lines);
+            console.log("Lowest-covered files:");
+            for (const row of rows.slice(0, 20)) {
+              console.log(`${String(row.lines).padStart(6)}% lines  ${String(row.branches).padStart(6)}% branches  ${row.file}`);
+            }
+            ' || true
+          fi
+
+      - name: Upload coverage report (lcov + html)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: |
+            frontend/coverage/lcov.info
+            frontend/coverage/coverage-summary.json
+            frontend/coverage/**/*.html
+          retention-days: 14
+
+      - name: Upload coverage to Coveralls
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: frontend/coverage/lcov.info
+          base-path: frontend
