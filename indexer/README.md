@@ -1,6 +1,6 @@
 # Accord Protocol Indexer
 
-The indexer is a standalone Node.js service that polls the Soroban RPC for events emitted by the Accord Protocol contract and its configured tokens.
+The indexer is a standalone Node.js service that polls the Soroban RPC for events emitted by Accord Protocol contracts and their configured tokens. One process can track several contracts across several networks.
 
 ## Features
 

@@ -19,12 +19,22 @@ use sqlx::{
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod mail;
+mod reports;
+mod schedule;
+mod scope;
+
+use mail::ReportTransport;
+use reports::{ReportFormat, ReportPeriod};
+use schedule::{ReportConfig, ReportConfigSummary, ReportRunRecord, run_reports};
+use scope::{RequestScope, ScopeConfig, push_scope};
+
 #[derive(Clone)]
 struct Config {
     listen_host: String,
     listen_port: u16,
     database_url: String,
-    contract_id: String,
+    scope: ScopeConfig,
 }
 
 mod graphql;
@@ -64,18 +74,17 @@ impl Config {
             .context("LISTEN_PORT must be a valid port number")?;
         let database_url = env::var("DATABASE_URL")
             .context("DATABASE_URL must point to the indexer PostgreSQL database")?;
-        let contract_id = env::var("CONTRACT_ID")
-            .context("CONTRACT_ID must identify the Accord contract indexed by this API")?;
+        let scope = ScopeConfig::from_env()?;
 
-        if listen_host.is_empty() || contract_id.is_empty() {
-            bail!("LISTEN_HOST and CONTRACT_ID must not be empty");
+        if listen_host.is_empty() {
+            bail!("LISTEN_HOST must not be empty");
         }
 
         Ok(Self {
             listen_host,
             listen_port,
             database_url,
-            contract_id,
+            scope,
         })
     }
 }
@@ -136,13 +145,14 @@ mod spend {
         token: Option<String>,
         start_date: Option<DateTime<Utc>>,
         end_date: Option<DateTime<Utc>>,
+        scope: RequestScope,
     }
 
     pub(super) async fn by_category(
         State(state): State<AppState>,
         axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     ) -> Result<Json<Vec<CategorySpendBucket>>, (StatusCode, Json<proposals::ApiError>)> {
-        let query = parse_query(raw).map_err(|details| {
+        let query = parse_query(raw, &state.scope).map_err(|details| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(proposals::ApiError::invalid(details)),
@@ -150,11 +160,9 @@ mod spend {
         })?;
 
         let mut token_query = QueryBuilder::<Postgres>::new(
-            "SELECT DISTINCT token FROM proposals WHERE contract_id = ",
+            "SELECT DISTINCT token FROM proposals WHERE status = 'executed' AND kind = 'transfer'",
         );
-        token_query
-            .push_bind(&state.contract_id)
-            .push(" AND status = 'executed' AND kind = 'transfer'");
+        push_scope(&mut token_query, "", &query.scope);
         if let Some(token) = query.token.as_deref() {
             token_query.push(" AND token = ").push_bind(token);
         }
@@ -172,12 +180,11 @@ mod spend {
         for token in tokens {
             let mut totals_query = QueryBuilder::<Postgres>::new(
                 "SELECT category, COALESCE(SUM(amount::numeric), 0)::text AS total, \
-                 COUNT(*)::bigint AS count FROM proposals WHERE contract_id = ",
+                 COUNT(*)::bigint AS count FROM proposals \
+                 WHERE status = 'executed' AND kind = 'transfer' AND token = ",
             );
-            totals_query
-                .push_bind(&state.contract_id)
-                .push(" AND status = 'executed' AND kind = 'transfer' AND token = ")
-                .push_bind(&token);
+            totals_query.push_bind(&token);
+            push_scope(&mut totals_query, "", &query.scope);
             if let Some(start) = query.start_date {
                 totals_query.push(" AND executed_at >= ").push_bind(start);
             }
@@ -231,10 +238,11 @@ mod spend {
 
     fn parse_query(
         raw: HashMap<String, String>,
+        config: &ScopeConfig,
     ) -> Result<SpendQuery, Vec<proposals::ErrorDetail>> {
         let mut details = Vec::new();
         for key in raw.keys() {
-            if !["token", "startDate", "endDate"].contains(&key.as_str()) {
+            if !["token", "startDate", "endDate", "contractId", "network"].contains(&key.as_str()) {
                 details.push(proposals::detail(
                     key,
                     "is not a supported query parameter",
@@ -251,6 +259,7 @@ mod spend {
                 "INVALID_DATE_RANGE",
             ));
         }
+        let scope = config.resolve(&raw, &mut details);
         if !details.is_empty() {
             return Err(details);
         }
@@ -258,13 +267,18 @@ mod spend {
             token: proposals::nonempty(&raw, "token"),
             start_date,
             end_date,
+            scope,
         })
     }
 
     #[cfg(test)]
     mod tests {
-        use super::{CategoryTotal, build_buckets, parse_query};
+        use super::{CategoryTotal, ScopeConfig, build_buckets, parse_query};
         use std::collections::HashMap;
+
+        fn scope() -> ScopeConfig {
+            ScopeConfig::new(vec!["test-contract".into()], vec!["testnet".into()])
+        }
 
         #[test]
         fn includes_every_category_with_zeroes() {
@@ -314,15 +328,229 @@ mod spend {
 
         #[test]
         fn rejects_inverted_date_ranges_and_unsupported_parameters() {
-            let error = parse_query(HashMap::from([
-                ("startDate".to_owned(), "2026-09-27".to_owned()),
-                ("endDate".to_owned(), "2026-09-26".to_owned()),
-                ("limit".to_owned(), "5".to_owned()),
-            ]))
+            let error = parse_query(
+                HashMap::from([
+                    ("startDate".to_owned(), "2026-09-27".to_owned()),
+                    ("endDate".to_owned(), "2026-09-26".to_owned()),
+                    ("limit".to_owned(), "5".to_owned()),
+                ]),
+                &scope(),
+            )
             .unwrap_err();
 
             assert_eq!(error.len(), 2);
         }
+    }
+}
+
+mod report_api {
+    use super::*;
+
+    const STATUSES: &[&str] = &["generated", "delivered", "failed"];
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct ReportPage {
+        config: ReportConfigSummary,
+        next_run: Option<DateTime<Utc>>,
+        runs: Vec<ReportRunRecord>,
+        total: i64,
+        limit: i64,
+        offset: i64,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct ManualRunResponse {
+        period: ReportPeriod,
+        runs: Vec<ReportRunRecord>,
+    }
+
+    /// `GET /reports` — the configured schedule plus the recorded report runs,
+    /// newest first. Scoped and filterable the same way the other endpoints are.
+    pub(super) async fn list(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<ReportPage>, (StatusCode, Json<proposals::ApiError>)> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !["limit", "offset", "status", "format", "contractId", "network"]
+                .contains(&key.as_str())
+            {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+
+        let limit = proposals::parse_integer(&raw, "limit", 20, 1, 100, &mut details);
+        let offset = proposals::parse_integer(&raw, "offset", 0, 0, i64::MAX, &mut details);
+
+        let status = proposals::nonempty(&raw, "status");
+        if let Some(value) = status.as_deref()
+            && !STATUSES.contains(&value)
+        {
+            details.push(proposals::detail(
+                "status",
+                "must be one of: generated, delivered, failed",
+                "INVALID_STATUS",
+            ));
+        }
+
+        let format = match proposals::nonempty(&raw, "format") {
+            None => None,
+            Some(value) => match value.parse::<ReportFormat>() {
+                Ok(format) => Some(format),
+                Err(_) => {
+                    details.push(proposals::detail(
+                        "format",
+                        "must be csv or pdf",
+                        "INVALID_FORMAT",
+                    ));
+                    None
+                }
+            },
+        };
+
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            ));
+        }
+
+        let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM report_runs WHERE TRUE");
+        push_scope(&mut count, "", &scope);
+        add_filters(&mut count, status.as_deref(), format);
+        let total: i64 = count
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+        let mut rows = QueryBuilder::<Postgres>::new(
+            "SELECT id, network, contract_id, period_start, period_end, format, trigger_source, \
+             status, attempts, recipients, byte_size, file_path, error, created_at, delivered_at \
+             FROM report_runs WHERE TRUE",
+        );
+        push_scope(&mut rows, "", &scope);
+        add_filters(&mut rows, status.as_deref(), format);
+        rows.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        rows.push_bind(limit);
+        rows.push(" OFFSET ");
+        rows.push_bind(offset);
+
+        let runs = rows
+            .build_query_as::<ReportRunRecord>()
+            .fetch_all(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(Json(ReportPage {
+            config: state.reports.summary(state.transport.as_ref()),
+            next_run: state.reports.next_run_after(Utc::now()),
+            runs,
+            total,
+            limit,
+            offset,
+        }))
+    }
+
+    /// `POST /reports/run` — generates and delivers a report immediately for the
+    /// scoped contracts, without waiting for the schedule.
+    pub(super) async fn run_now(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<ManualRunResponse>, (StatusCode, Json<proposals::ApiError>)> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !["format", "periodDays", "contractId", "network"].contains(&key.as_str()) {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+
+        let period_days = proposals::parse_integer(
+            &raw,
+            "periodDays",
+            state.reports.period_days,
+            1,
+            3650,
+            &mut details,
+        );
+
+        let mut config = (*state.reports).clone();
+        if let Some(value) = proposals::nonempty(&raw, "format") {
+            match value.parse::<ReportFormat>() {
+                Ok(format) => config.formats = vec![format],
+                Err(_) => details.push(proposals::detail(
+                    "format",
+                    "must be csv or pdf",
+                    "INVALID_FORMAT",
+                )),
+            }
+        }
+        config.period_days = period_days;
+
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            ));
+        }
+
+        let pairs: Vec<(String, String)> = scope
+            .networks
+            .iter()
+            .flat_map(|network| {
+                scope
+                    .contract_ids
+                    .iter()
+                    .map(move |contract_id| (network.clone(), contract_id.clone()))
+            })
+            .collect();
+
+        let now = Utc::now();
+        let period = ReportPeriod::ending_at(now, period_days);
+        let runs = run_reports(
+            &state.pool,
+            &pairs,
+            &config,
+            state.transport.as_ref(),
+            "manual",
+            period,
+            now,
+        )
+        .await;
+
+        Ok(Json(ManualRunResponse { period, runs }))
+    }
+
+    fn add_filters(
+        builder: &mut QueryBuilder<'_, Postgres>,
+        status: Option<&str>,
+        format: Option<ReportFormat>,
+    ) {
+        if let Some(status) = status {
+            builder.push(" AND status = ").push_bind(status.to_owned());
+        }
+        if let Some(format) = format {
+            builder
+                .push(" AND format = ")
+                .push_bind(format.as_str().to_owned());
+        }
+    }
+
+    fn internal_error(error: sqlx::Error) -> (StatusCode, Json<proposals::ApiError>) {
+        tracing::error!(%error, "failed to query treasury report runs");
+        proposals::internal_error(error)
     }
 }
 
@@ -445,6 +673,8 @@ mod proposals {
     #[serde(rename_all = "camelCase")]
     pub(super) struct ProposalRow {
         id: i64,
+        network: String,
+        contract_id: String,
         kind: String,
         to: String,
         amount: String,
@@ -468,6 +698,8 @@ mod proposals {
     #[serde(rename_all = "camelCase")]
     pub(super) struct ProposalResponse {
         id: i64,
+        network: String,
+        contract_id: String,
         kind: String,
         to: String,
         amount: String,
@@ -493,6 +725,8 @@ mod proposals {
         fn from(row: ProposalRow) -> Self {
             Self {
                 id: row.id,
+                network: row.network,
+                contract_id: row.contract_id,
                 kind: row.kind,
                 to: row.to,
                 amount: row.amount,
@@ -588,6 +822,7 @@ mod proposals {
         token: Option<String>,
         start_date: Option<DateTime<Utc>>,
         end_date: Option<DateTime<Utc>>,
+        scope: RequestScope,
     }
 
     #[derive(Serialize)]
@@ -646,13 +881,11 @@ mod proposals {
         State(state): State<AppState>,
         axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     ) -> Result<Json<ProposalPage>, (StatusCode, Json<ApiError>)> {
-        let query = parse_query(raw)
+        let query = parse_query(raw, &state.scope)
             .map_err(|details| (StatusCode::BAD_REQUEST, Json(ApiError::invalid(details))))?;
 
-        let mut count = QueryBuilder::<Postgres>::new(
-            "SELECT COUNT(*) FROM proposals p WHERE p.contract_id = ",
-        );
-        count.push_bind(&state.contract_id);
+        let mut count =
+            QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM proposals p WHERE TRUE");
         add_filters(&mut count, &query);
         let total: i64 = count
             .build_query_scalar()
@@ -667,18 +900,17 @@ mod proposals {
         };
         let direction = if query.order == "asc" { "ASC" } else { "DESC" };
         let mut rows = QueryBuilder::<Postgres>::new(
-            "SELECT p.proposal_id AS id, p.kind, p.recipient AS to, p.amount, p.token, \
-             p.description, p.approvals, p.threshold, p.quorum_weight, p.approval_weight, \
-             p.total_weight, p.approver_addresses, p.status, p.deadline, p.created_at, \
-             p.proposer, p.category, p.executed_at FROM proposals p WHERE p.contract_id = ",
+            "SELECT p.proposal_id AS id, p.network, p.contract_id, p.kind, p.recipient AS to, \
+             p.amount, p.token, p.description, p.approvals, p.threshold, p.quorum_weight, \
+             p.approval_weight, p.total_weight, p.approver_addresses, p.status, p.deadline, \
+             p.created_at, p.proposer, p.category, p.executed_at FROM proposals p WHERE TRUE",
         );
-        rows.push_bind(&state.contract_id);
         add_filters(&mut rows, &query);
         rows.push(" ORDER BY ");
         rows.push(sort_column);
         rows.push(" ");
         rows.push(direction);
-        rows.push(", p.proposal_id DESC LIMIT ");
+        rows.push(", p.network ASC, p.contract_id ASC, p.proposal_id DESC LIMIT ");
         rows.push_bind(query.limit);
         rows.push(" OFFSET ");
         rows.push_bind(query.offset);
@@ -703,6 +935,7 @@ mod proposals {
     pub(super) async fn get_detail(
         State(state): State<AppState>,
         axum::extract::Path(raw_id): axum::extract::Path<String>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     ) -> Result<Json<ProposalDetail>, (StatusCode, Json<ApiError>)> {
         let id = raw_id
             .parse::<i64>()
@@ -717,26 +950,49 @@ mod proposals {
                 )
             })?;
 
-        let proposal = sqlx::query_as::<_, ProposalRow>(
-            "SELECT p.proposal_id AS id, p.kind, p.recipient AS to, p.amount, p.token, \
-             p.description, p.approvals, p.threshold, p.quorum_weight, p.approval_weight, \
-             p.total_weight, p.approver_addresses, p.status, p.deadline, p.created_at, \
-             p.proposer, p.category, p.executed_at FROM proposals p \
-             WHERE p.contract_id = $1 AND p.proposal_id = $2",
-        )
-        .bind(&state.contract_id)
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(internal_error)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError::not_found())))?;
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !["contractId", "network"].contains(&key.as_str()) {
+                details.push(detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, Json(ApiError::invalid(details))));
+        }
+
+        // A proposal id is only unique within one contract on one network. With
+        // several in scope the first pair in a stable order wins, and the
+        // response names it so the caller can narrow with contractId/network.
+        let mut proposal_query = QueryBuilder::<Postgres>::new(
+            "SELECT p.proposal_id AS id, p.network, p.contract_id, p.kind, p.recipient AS to, \
+             p.amount, p.token, p.description, p.approvals, p.threshold, p.quorum_weight, \
+             p.approval_weight, p.total_weight, p.approver_addresses, p.status, p.deadline, \
+             p.created_at, p.proposer, p.category, p.executed_at FROM proposals p \
+             WHERE p.proposal_id = ",
+        );
+        proposal_query.push_bind(id);
+        push_scope(&mut proposal_query, "p.", &scope);
+        proposal_query.push(" ORDER BY p.network ASC, p.contract_id ASC LIMIT 1");
+
+        let proposal = proposal_query
+            .build_query_as::<ProposalRow>()
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ApiError::not_found())))?;
 
         let events = sqlx::query_as::<_, EventRow>(
             "SELECT topic, actor, occurred_at, ledger, data FROM events \
-             WHERE contract_id = $1 AND proposal_id = $2 \
+             WHERE network = $1 AND contract_id = $2 AND proposal_id = $3 \
              ORDER BY ledger ASC, event_index ASC",
         )
-        .bind(&state.contract_id)
+        .bind(&proposal.network)
+        .bind(&proposal.contract_id)
         .bind(id)
         .fetch_all(&state.pool)
         .await
@@ -768,6 +1024,7 @@ mod proposals {
     }
 
     fn add_filters<'a>(builder: &mut QueryBuilder<'a, Postgres>, query: &'a ProposalQuery) {
+        push_scope(builder, "p.", &query.scope);
         if let Some(status) = query.status.as_deref() {
             builder.push(" AND p.status = ").push_bind(status);
         }
@@ -790,7 +1047,10 @@ mod proposals {
         }
     }
 
-    fn parse_query(raw: HashMap<String, String>) -> Result<ProposalQuery, Vec<ErrorDetail>> {
+    fn parse_query(
+        raw: HashMap<String, String>,
+        config: &ScopeConfig,
+    ) -> Result<ProposalQuery, Vec<ErrorDetail>> {
         let mut details = Vec::new();
         let allowed = [
             "limit",
@@ -803,6 +1063,8 @@ mod proposals {
             "token",
             "startDate",
             "endDate",
+            "contractId",
+            "network",
         ];
         for key in raw.keys() {
             if !allowed.contains(&key.as_str()) {
@@ -863,6 +1125,8 @@ mod proposals {
             ));
         }
 
+        let scope = config.resolve(&raw, &mut details);
+
         if !details.is_empty() {
             return Err(details);
         }
@@ -877,10 +1141,11 @@ mod proposals {
             token: nonempty(&raw, "token"),
             start_date,
             end_date,
+            scope,
         })
     }
 
-    fn parse_integer(
+    pub(super) fn parse_integer(
         raw: &HashMap<String, String>,
         field: &'static str,
         default: i64,
@@ -894,10 +1159,13 @@ mod proposals {
         match value.parse::<i64>() {
             Ok(parsed) if (min..=max).contains(&parsed) => parsed,
             _ => {
-                let (message, code) = if field == "limit" {
-                    ("must be an integer between 1 and 100", "INVALID_LIMIT")
-                } else {
-                    ("must be a non-negative integer", "INVALID_OFFSET")
+                let (message, code) = match field {
+                    "limit" => ("must be an integer between 1 and 100", "INVALID_LIMIT"),
+                    "periodDays" => (
+                        "must be an integer between 1 and 3650",
+                        "INVALID_PERIOD_DAYS",
+                    ),
+                    _ => ("must be a non-negative integer", "INVALID_OFFSET"),
                 };
                 details.push(detail(field, message, code));
                 default
@@ -967,17 +1235,27 @@ mod proposals {
 
     #[cfg(test)]
     mod tests {
-        use super::parse_query;
+        use super::{ScopeConfig, parse_query};
         use std::collections::HashMap;
+
+        fn scope() -> ScopeConfig {
+            ScopeConfig::new(
+                vec!["CONTRACT_A".into(), "CONTRACT_B".into()],
+                vec!["testnet".into(), "pubnet".into()],
+            )
+        }
 
         #[test]
         fn applies_defaults_and_accepts_filters() {
-            let query = parse_query(HashMap::from([
-                ("status".to_owned(), "executed".to_owned()),
-                ("category".to_owned(), "Payroll".to_owned()),
-                ("owner".to_owned(), "GABC".to_owned()),
-                ("sort".to_owned(), "amount".to_owned()),
-            ]))
+            let query = parse_query(
+                HashMap::from([
+                    ("status".to_owned(), "executed".to_owned()),
+                    ("category".to_owned(), "Payroll".to_owned()),
+                    ("owner".to_owned(), "GABC".to_owned()),
+                    ("sort".to_owned(), "amount".to_owned()),
+                ]),
+                &scope(),
+            )
             .unwrap();
 
             assert_eq!(query.limit, 20);
@@ -985,15 +1263,20 @@ mod proposals {
             assert_eq!(query.status.as_deref(), Some("executed"));
             assert_eq!(query.category.as_deref(), Some("Payroll"));
             assert_eq!(query.sort, "amount");
+            assert_eq!(query.scope.contract_ids.len(), 2, "defaults to every contract");
+            assert_eq!(query.scope.networks.len(), 2, "defaults to every network");
         }
 
         #[test]
         fn rejects_invalid_filters_and_sort_values() {
-            let error = parse_query(HashMap::from([
-                ("limit".to_owned(), "101".to_owned()),
-                ("status".to_owned(), "active".to_owned()),
-                ("sort".to_owned(), "arbitrary_sql".to_owned()),
-            ]))
+            let error = parse_query(
+                HashMap::from([
+                    ("limit".to_owned(), "101".to_owned()),
+                    ("status".to_owned(), "active".to_owned()),
+                    ("sort".to_owned(), "arbitrary_sql".to_owned()),
+                ]),
+                &scope(),
+            )
             .unwrap_err();
 
             assert_eq!(error.len(), 3);
@@ -1001,16 +1284,42 @@ mod proposals {
 
         #[test]
         fn date_only_end_date_includes_the_entire_day() {
-            let query = parse_query(HashMap::from([(
-                "endDate".to_owned(),
-                "2026-09-26".to_owned(),
-            )]))
+            let query = parse_query(
+                HashMap::from([("endDate".to_owned(), "2026-09-26".to_owned())]),
+                &scope(),
+            )
             .unwrap();
 
             assert_eq!(
                 query.end_date.unwrap().format("%H:%M:%S").to_string(),
                 "23:59:59"
             );
+        }
+
+        #[test]
+        fn narrows_to_one_contract_and_network_when_asked() {
+            let query = parse_query(
+                HashMap::from([
+                    ("contractId".to_owned(), "CONTRACT_B".to_owned()),
+                    ("network".to_owned(), "pubnet".to_owned()),
+                ]),
+                &scope(),
+            )
+            .unwrap();
+
+            assert_eq!(query.scope.contract_ids, vec!["CONTRACT_B".to_owned()]);
+            assert_eq!(query.scope.networks, vec!["pubnet".to_owned()]);
+        }
+
+        #[test]
+        fn rejects_a_contract_this_deployment_does_not_serve() {
+            let error = parse_query(
+                HashMap::from([("contractId".to_owned(), "CONTRACT_Z".to_owned())]),
+                &scope(),
+            )
+            .unwrap_err();
+
+            assert_eq!(error.len(), 1);
         }
     }
 }
@@ -1035,6 +1344,18 @@ async fn main() -> Result<()> {
         .await
         .context("failed to apply analytics datastore migrations")?;
 
+    let reports = Arc::new(ReportConfig::from_env()?);
+    let transport = reports.transport_from_env()?;
+    let scheduler = schedule::spawn(
+        pool.clone(),
+        config.scope.pairs(),
+        Arc::clone(&reports),
+        transport.clone(),
+    );
+    if scheduler.is_none() {
+        tracing::info!("no REPORT_SCHEDULE configured; scheduled treasury reports are off");
+    }
+
     let address: SocketAddr = format!("{}:{}", config.listen_host, config.listen_port)
         .parse()
         .context("LISTEN_HOST and LISTEN_PORT did not form a valid socket address")?;
@@ -1042,12 +1363,21 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("failed to listen on {address}"))?;
 
-    tracing::info!(%address, "analytics API listening");
+    tracing::info!(
+        %address,
+        contracts = config.scope.contract_ids.len(),
+        networks = config.scope.networks.len(),
+        "analytics API listening"
+    );
     axum::serve(
         listener,
         app(AppState::new(pool, config.contract_id).with_graphql(graphql_config)),
     )
     .await?;
+
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
     Ok(())
 }
 
@@ -1058,14 +1388,47 @@ mod tests {
         http::Request,
     };
     use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
-    use super::{AppState, app};
+    use super::{AppState, ReportConfig, ScopeConfig, app};
+
+    /// The handlers under test reject their input before touching the database,
+    /// so a lazy pool that never connects is enough.
+    fn state() -> AppState {
+        AppState {
+            pool: PgPoolOptions::new()
+                .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+                .unwrap(),
+            scope: ScopeConfig::new(
+                vec!["test-contract".to_owned(), "other-contract".to_owned()],
+                vec!["testnet".to_owned()],
+            ),
+            reports: Arc::new(ReportConfig {
+                schedule: None,
+                expression: None,
+                formats: vec![super::ReportFormat::Csv],
+                recipients: Vec::new(),
+                period_days: 30,
+                output_dir: None,
+                max_attempts: 3,
+                retry_backoff: std::time::Duration::from_millis(10),
+                from: "reports@example.com".to_owned(),
+            }),
+            transport: None,
+        }
+    }
+
+    async fn error_body(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
 
     #[tokio::test]
     async fn root_returns_service_status() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+        let response = app(state())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
             .unwrap();
         let response = app(AppState::new(pool, "test-contract".to_owned()))
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -1077,8 +1440,14 @@ mod tests {
 
     #[tokio::test]
     async fn proposals_reject_invalid_pagination_with_json_error() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+        let response = app(state())
+            .oneshot(
+                Request::builder()
+                    .uri("/proposals?limit=101")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
             .unwrap();
         let response = app(AppState::new(pool, "test-contract".to_owned()))
             .oneshot(
@@ -1091,16 +1460,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let error = error_body(response).await;
         assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
         assert_eq!(error["error"]["details"][0]["field"], "limit");
     }
 
     #[tokio::test]
     async fn proposal_detail_rejects_malformed_ids() {
-        let pool = PgPoolOptions::new()
-            .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
+        let response = app(state())
+            .oneshot(
+                Request::builder()
+                    .uri("/proposals/not-a-number")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
             .unwrap();
         let response = app(AppState::new(pool, "test-contract".to_owned()))
             .oneshot(
@@ -1113,8 +1487,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let error = error_body(response).await;
         assert_eq!(error["error"]["code"], "INVALID_PARAMETER");
     }
 

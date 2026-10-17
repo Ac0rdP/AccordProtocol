@@ -37,6 +37,8 @@ All analytics endpoints share one parsing and validation pass (`parseAndValidate
 | `endDate` | string | none | ISO 8601 date/date-time, `≥ startDate` | Inclusive upper bound. |
 | `granularity` | string | none | `day`, `week`, `month` | Bucket size for time-series endpoints. |
 | `timeSeries` | boolean | none | `true`, `false` | Include historical time-series datapoints where supported. |
+| `contractId` | string | every configured contract | a value from `CONTRACT_IDS` | Narrow the response to one indexed contract. |
+| `network` | string | every configured network | a value from `NETWORKS` | Narrow the response to one network. |
 
 ## Error Response Format
 
@@ -69,6 +71,8 @@ Every endpoint uses one error shape for invalid input and request errors:
 | 404 | `NOT_FOUND` | The endpoint or the requested resource (for example, a proposal ID) doesn't exist. |
 | 405 | `METHOD_NOT_ALLOWED` | A non-`GET` method was used. |
 | 500 | `INTERNAL_ERROR` | The server failed while fetching or processing data. |
+
+**Validation detail codes:** `INVALID_LIMIT`, `INVALID_OFFSET`, `INVALID_SORT`, `INVALID_ORDER`, `INVALID_STATUS`, `INVALID_CATEGORY`, `INVALID_DATE`, `INVALID_DATE_RANGE`, `UNKNOWN_PARAMETER`, `INVALID_CONTRACT_ID` (a contract this deployment does not serve), `INVALID_NETWORK` (a network this deployment does not serve), `INVALID_FORMAT` (a report format other than `csv` or `pdf`), and `INVALID_PERIOD_DAYS`.
 
 The frontend's `AnalyticsApiError` (`frontend/src/lib/analyticsClient.ts`) carries the HTTP status, the parsed body, and the server's `error.message` where available; network and abort errors propagate instead of being wrapped.
 
@@ -410,5 +414,6 @@ Every topic is preceded by the contract address, which Soroban attaches implicit
 | [ARCHITECTURE.md §13](ARCHITECTURE.md#13-indexer--analytics-architecture) | Indexer data flow, datastore schema, checkpointing |
 | [CONTRACT_API.md](CONTRACT_API.md) | Contract function and event reference |
 | [guides/treasury-analytics.md](guides/treasury-analytics.md) | End-user guide to the analytics page |
+| [RECONCILIATION_RUNBOOK.md](RECONCILIATION_RUNBOOK.md) | Responding to drift between the chain and the indexed view |
 | [GLOSSARY.md](GLOSSARY.md) | Definitions for indexer and analytics terms |
 | [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) | Frontend client integration notes and current implementation status |

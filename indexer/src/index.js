@@ -70,11 +70,18 @@ Environment:
                        (default ${DEFAULT_READY_MAX_STALENESS_MS})
 `;
 
-function required(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} must be set`);
-  return value;
-}
+const targets = loadTargets();
+const policy = loadRetentionPolicy();
+const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite", {
+  legacyTarget: process.env.ACCORD_CONTRACT_ID?.trim()
+    ? {
+        network: networkFromPassphrase(
+          process.env.NETWORK_PASSPHRASE?.trim() ?? "Test SDF Network ; September 2015"
+        ),
+        contractId: process.env.ACCORD_CONTRACT_ID.trim(),
+      }
+    : undefined,
+});
 
 function parseArgs(argv) {
   const args = {
