@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `/health` is a database-backed readiness check; the service root returns its name and status.
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, `GET /spend/by-category`, `GET /reports`, and `POST /reports/run` against its PostgreSQL datastore. Every record is tagged by contract **and** network, so one deployment can serve several multisigs and several networks — see [Multi-Contract and Multi-Network Scope](#multi-contract-and-multi-network-scope). The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `/health` is a database-backed readiness check; the service root returns its name and status.
 
 ---
 
@@ -37,6 +37,8 @@ All analytics endpoints share one parsing and validation pass (`parseAndValidate
 | `endDate` | string | none | ISO 8601 date/date-time, `≥ startDate` | Inclusive upper bound. |
 | `granularity` | string | none | `day`, `week`, `month` | Bucket size for time-series endpoints. |
 | `timeSeries` | boolean | none | `true`, `false` | Include historical time-series datapoints where supported. |
+| `contractId` | string | every configured contract | a value from `CONTRACT_IDS` | Narrow the response to one indexed contract. |
+| `network` | string | every configured network | a value from `NETWORKS` | Narrow the response to one network. |
 
 ## Error Response Format
 
@@ -69,6 +71,8 @@ Every endpoint uses one error shape for invalid input and request errors:
 | 404 | `NOT_FOUND` | The endpoint or the requested resource (for example, a proposal ID) doesn't exist. |
 | 405 | `METHOD_NOT_ALLOWED` | A non-`GET` method was used. |
 | 500 | `INTERNAL_ERROR` | The server failed while fetching or processing data. |
+
+**Validation detail codes:** `INVALID_LIMIT`, `INVALID_OFFSET`, `INVALID_SORT`, `INVALID_ORDER`, `INVALID_STATUS`, `INVALID_CATEGORY`, `INVALID_DATE`, `INVALID_DATE_RANGE`, `UNKNOWN_PARAMETER`, `INVALID_CONTRACT_ID` (a contract this deployment does not serve), `INVALID_NETWORK` (a network this deployment does not serve), `INVALID_FORMAT` (a report format other than `csv` or `pdf`), and `INVALID_PERIOD_DAYS`.
 
 The frontend's `AnalyticsApiError` (`frontend/src/lib/analyticsClient.ts`) carries the HTTP status, the parsed body, and the server's `error.message` where available; network and abort errors propagate instead of being wrapped.
 
@@ -240,6 +244,123 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
 
+### `GET /reports`
+
+The scheduled-report configuration and the history of generated reports, newest first.
+
+**Query parameters:** `limit`, `offset`, `contractId`, `network`, plus `status` (`generated`, `delivered`, `failed`) and `format` (`csv`, `pdf`).
+
+**Response:**
+
+```json
+{
+  "config": {
+    "schedule": "0 0 6 1 * *",
+    "formats": ["csv", "pdf"],
+    "recipients": ["treasury@example.com"],
+    "periodDays": 30,
+    "maxAttempts": 3,
+    "retryBackoffMs": 2000,
+    "outputDir": "./reports",
+    "delivery": "smtp(mail.example.com:587)"
+  },
+  "nextRun": "2026-11-01T06:00:00Z",
+  "runs": [
+    {
+      "id": 41,
+      "network": "testnet",
+      "contractId": "CA...TREASURY",
+      "periodStart": "2026-09-01T06:00:00Z",
+      "periodEnd": "2026-10-01T06:00:00Z",
+      "format": "pdf",
+      "triggerSource": "scheduled",
+      "status": "delivered",
+      "attempts": 1,
+      "recipients": ["treasury@example.com"],
+      "byteSize": 18422,
+      "filePath": "./reports/accord-testnet-catreasury-20260901-20261001.pdf",
+      "error": null,
+      "createdAt": "2026-10-01T06:00:04Z",
+      "deliveredAt": "2026-10-01T06:00:06Z"
+    }
+  ],
+  "total": 12,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+`status` is `delivered` when the report reached its recipients, `generated` when it was produced but no delivery is configured, and `failed` when every delivery attempt was exhausted — `error` then carries the last failure and `attempts` how many were made. `delivery` states which transport is in use, or why delivery is off.
+
+### `POST /reports/run`
+
+Generates and delivers a report immediately, without waiting for the schedule. Useful for verifying delivery after a configuration change and for re-sending a statement.
+
+**Query parameters:** `contractId`, `network`, `format` (defaults to every configured format), `periodDays` (`1`–`3650`, defaults to `REPORT_PERIOD_DAYS`).
+
+**Response:**
+
+```json
+{
+  "period": { "start": "2026-09-17T09:00:00Z", "end": "2026-10-17T09:00:00Z" },
+  "runs": [{ "id": 42, "format": "csv", "status": "delivered", "attempts": 1 }]
+}
+```
+
+A manual run always generates, even if the same period was already delivered; a scheduled run skips a period and format it has already delivered, so a restart does not re-send a statement.
+
+---
+
+## Multi-Contract and Multi-Network Scope
+
+One deployment serves a set of contracts across a set of networks instead of a single contract.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CONTRACT_ID` | — | A single contract. Still supported; equivalent to a one-entry `CONTRACT_IDS`. |
+| `CONTRACT_IDS` | — | Comma-separated contract IDs. Takes precedence over `CONTRACT_ID`. |
+| `NETWORK` | `testnet` | A single network name. |
+| `NETWORKS` | value of `NETWORK` | Comma-separated network names. |
+
+At least one contract is required. Every endpoint is scoped to the configured set, and `contractId`/`network` narrow a single request to one of them. A value outside the configured set is a `400` with `INVALID_CONTRACT_ID` or `INVALID_NETWORK`, rather than an empty result that looks like missing data.
+
+Every row carries its `network` and `contract_id`, and both are part of each table's primary key, so the same proposal id on two contracts — or the same contract on testnet and mainnet — never collide. `GET /proposals` and `GET /proposals/:id` return `network` and `contractId` on each proposal. With several contracts in scope, a proposal id that exists on more than one resolves to the first pair in `(network, contract_id)` order; pass `contractId` and `network` to pick one deliberately.
+
+**Checkpoints** are per contract and per network: the `checkpoints` table is keyed on `(network, contract_id)`, and the indexer keeps its `next_ledger` and `event_cursor` under the same pair, so each target resumes from its own position.
+
+---
+
+## Data Retention and Archival
+
+Indexed history grows without bound, so the indexer applies three retention windows, each a number of days where `0` keeps data forever. All three default to `0`, so retention is off until it is configured.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `RETENTION_RAW_EVENT_DAYS` | `0` | How long raw ledger entries and decoded events are kept. |
+| `RETENTION_AGGREGATE_DAYS` | `0` | How long the daily aggregates are kept. Must be ≥ `RETENTION_RAW_EVENT_DAYS`. |
+| `RETENTION_RECONCILIATION_DAYS` | `0` | How long reconciliation results are kept. |
+| `RETENTION_ARCHIVE_DIR` | unset | Archive rows as JSON Lines under this directory before removing them. Unset prunes without archiving. |
+| `RETENTION_INTERVAL_MS` | `86400000` | How often retention runs. |
+
+**What a run does, in order.** For each (network, contract) target it rolls every raw row older than the raw window into `ledger_daily_aggregates` (per token per day: inflow, outflow, entry count, closing balance, last ledger) and `event_daily_aggregates` (per topic per day: event count); archives those rows as JSON Lines when an archive directory is set; removes them; then drops aggregates past the aggregate window and reconciliation rows past the reconciliation window — always keeping the latest result for each check and subject.
+
+**Why reports keep working after a prune.** Running balances live in `token_balances`, which retention never touches, so balances and reconciliation stay exact. Event counts are read as live rows plus archived aggregates, so a count over pruned history is still correct. Historical per-day totals come from the aggregate tables rather than the raw rows. The guard that `RETENTION_AGGREGATE_DAYS` must be at least `RETENTION_RAW_EVENT_DAYS` is what stops a configuration from dropping a summary while the rows behind it are still being kept.
+
+`GET /retention` on the indexer returns the active policy and the recent runs; `POST /retention/run` applies it immediately.
+
+---
+
+## Reconciliation and Drift Detection
+
+The indexer compares the chain to its own view on a schedule and records every check, matching or not. See [RECONCILIATION_RUNBOOK.md](RECONCILIATION_RUNBOOK.md) for how to respond to drift.
+
+| Check | On-chain value | Indexed value |
+| --- | --- | --- |
+| `token_balance` | `balance(treasury)` on each configured token | the running balance in `token_balances` |
+| `total_proposals` | `get_total_proposals()` on the Accord contract | the number of `created` events, live plus archived |
+
+`drift` is `actual - implied`. A check is `ok` when it is zero, `drift` when it is not, and `error` when the chain could not be read — an unreadable value is never recorded as agreement. Drift and errors are logged, posted to `ALERT_WEBHOOK_URL` when one is set (retried with linear backoff), and exposed as Prometheus gauges on `GET /metrics`: `accord_reconciliation_drift`, `accord_reconciliation_status`, `accord_reconciliation_last_run_seconds` and `accord_indexer_next_ledger`, each labelled by `network`, `contract_id`, `check` and `subject`.
+
 ---
 
 ## Event Payload Schemas
@@ -305,5 +426,6 @@ Every topic is preceded by the contract address, which Soroban attaches implicit
 | [ARCHITECTURE.md §13](ARCHITECTURE.md#13-indexer--analytics-architecture) | Indexer data flow, datastore schema, checkpointing |
 | [CONTRACT_API.md](CONTRACT_API.md) | Contract function and event reference |
 | [guides/treasury-analytics.md](guides/treasury-analytics.md) | End-user guide to the analytics page |
+| [RECONCILIATION_RUNBOOK.md](RECONCILIATION_RUNBOOK.md) | Responding to drift between the chain and the indexed view |
 | [GLOSSARY.md](GLOSSARY.md) | Definitions for indexer and analytics terms |
 | [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) | Frontend client integration notes and current implementation status |

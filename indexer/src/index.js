@@ -1,129 +1,105 @@
 import { createServer } from "node:http";
-import { resolve } from "node:path";
-import {
-  Contract,
-  nativeToScVal,
-  rpc,
-  scValToNative,
-  TransactionBuilder,
-} from "@stellar/stellar-sdk";
-import { parseTokenTransferEvent, parseAccordEvent } from "./events.js";
+import { rpc } from "@stellar/stellar-sdk";
+import { loadTargets, networkFromPassphrase } from "./config.js";
 import { openLedgerStore } from "./ledger.js";
 import { indexEventBatch } from "./indexing.js";
+import {
+  createAlerter,
+  createChainReader,
+  renderMetrics,
+  runReconciliation,
+} from "./reconciliation.js";
+import { applyRetention, loadRetentionPolicy } from "./retention.js";
 
-function required(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} must be set`);
-  return value;
-}
+const targets = loadTargets();
+const policy = loadRetentionPolicy();
+const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite", {
+  legacyTarget: process.env.ACCORD_CONTRACT_ID?.trim()
+    ? {
+        network: networkFromPassphrase(
+          process.env.NETWORK_PASSPHRASE?.trim() ?? "Test SDF Network ; September 2015"
+        ),
+        contractId: process.env.ACCORD_CONTRACT_ID.trim(),
+      }
+    : undefined,
+});
 
-const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
-const treasuryAddress = required("ACCORD_CONTRACT_ID");
-const simulationSource = required("SIM_SOURCE");
-const startLedger = Number(required("INDEXER_START_LEDGER"));
-if (!Number.isSafeInteger(startLedger) || startLedger < 1) {
-  throw new Error("INDEXER_START_LEDGER must be a positive integer");
-}
+const alerter = createAlerter({ webhookUrl: process.env.ALERT_WEBHOOK_URL?.trim() || undefined });
 
-const tokens = [
-  { name: "XLM", address: required("XLM_TOKEN_ADDRESS") },
-  { name: "USDC", address: required("USDC_TOKEN_ADDRESS") },
-];
-const tokenAddresses = new Map(tokens.map(({ name, address }) => [name, address]));
-const store = openLedgerStore(process.env.DATABASE_PATH ?? "./data/treasury.sqlite");
-const stellar = new rpc.Server(rpcUrl);
-const pageLimit = 1000;
+// One RPC client and chain reader per target, because targets may sit on
+// different networks with different endpoints.
+const runtimes = new Map(
+  targets.map((target) => {
+    const stellar = new rpc.Server(target.rpcUrl);
+    return [
+      target.key,
+      {
+        target,
+        stellar,
+        chainReader: createChainReader({
+          stellar,
+          networkPassphrase: target.networkPassphrase,
+          simulationSource: target.simulationSource,
+        }),
+      },
+    ];
+  })
+);
+
+const knownTokens = new Set(targets.flatMap(({ tokens }) => tokens.map(({ name }) => name)));
 let indexing = false;
 let reconciling = false;
+let retaining = false;
 
 async function indexAvailableEvents() {
   if (indexing) return;
   indexing = true;
   try {
-    let cursor = store.getState("event_cursor");
-    let nextLedger = Number(store.getState("next_ledger") ?? startLedger);
-    let pages = 0;
-
-    while (pages < 100) {
-      const response = await stellar.getEvents({
-        ...(cursor ? { cursor } : { startLedger: nextLedger }),
-        filters: [{ type: "contract", contractIds: [treasuryAddress, ...tokens.map(({ address }) => address)] }],
-        limit: pageLimit,
-      });
-
-      for (const event of response.events) {
-        const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-        if (transferEntry) store.recordTransfer(transferEntry);
-
-        const accordEntry = parseAccordEvent(event, treasuryAddress);
-        if (accordEntry) store.recordAccordEvent(accordEntry);
+    for (const { target, stellar } of runtimes.values()) {
+      try {
+        await indexEventBatch({ stellar, store, target });
+      } catch (error) {
+        console.error(`Treasury event indexing failed for ${target.key}:`, error);
       }
-
-      if (response.events.length === pageLimit) {
-        if (!response.cursor || response.cursor === cursor) {
-          throw new Error("RPC event pagination did not advance its cursor");
-        }
-        cursor = response.cursor;
-        store.setState("event_cursor", cursor);
-        pages += 1;
-        continue;
-      }
-
-      store.setState("next_ledger", Number(response.latestLedger) + 1);
-      store.setState("event_cursor", "");
-      break;
     }
   } finally {
     indexing = false;
   }
 }
 
-async function readTokenBalance(account, tokenAddress) {
-  const transaction = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase,
-  })
-    .addOperation(new Contract(tokenAddress).call(
-      "balance",
-      nativeToScVal(treasuryAddress, { type: "address" })
-    ))
-    .setTimeout(30)
-    .build();
-
-  const simulation = await stellar.simulateTransaction(transaction);
-  if (!rpc.Api.isSimulationSuccess(simulation)) {
-    throw new Error(simulation.error ?? `Failed to read ${tokenAddress} balance`);
-  }
-  return BigInt(scValToNative(simulation.result.retval));
-}
-
-async function reconcileBalances() {
-  if (reconciling) return;
+async function reconcileTargets(selected = targets) {
+  if (reconciling) return { skipped: true, reason: "a reconciliation run is already in progress" };
   reconciling = true;
   try {
-    const account = await stellar.getAccount(simulationSource);
-    for (const { name, address } of tokens) {
-      const impliedBalance = BigInt(store.getBalance(name));
-      const actualBalance = await readTokenBalance(account, address);
-      const drift = actualBalance - impliedBalance;
-      const result = {
-        token: name,
-        tokenAddress: address,
-        checkedAt: new Date().toISOString(),
-        impliedBalance: impliedBalance.toString(),
-        actualBalance: actualBalance.toString(),
-        drift: drift.toString(),
-      };
-      store.recordReconciliation(result);
-      if (drift !== 0n) {
-        console.error(`[reconciliation] ${name} drift: ${drift} stroops (actual - implied)`);
-      }
+    const chainReaders = selected.map((target) => runtimes.get(target.key));
+    const results = [];
+    for (const runtime of chainReaders) {
+      results.push(
+        ...(await runReconciliation({
+          store,
+          targets: [runtime.target],
+          chainReader: runtime.chainReader,
+          alerter,
+        }))
+      );
     }
+    return { skipped: false, results };
   } catch (error) {
     console.error("Treasury reconciliation failed:", error);
+    return { skipped: false, error: String(error.message ?? error) };
   } finally {
     reconciling = false;
+  }
+}
+
+function runRetention(selected = targets) {
+  if (!policy.enabled) return { skipped: true, reason: "no retention window is configured" };
+  if (retaining) return { skipped: true, reason: "a retention run is already in progress" };
+  retaining = true;
+  try {
+    return { skipped: false, runs: applyRetention({ store, targets: selected, policy }) };
+  } finally {
+    retaining = false;
   }
 }
 
@@ -139,21 +115,74 @@ function parseDateParam(value, name) {
   return parsed.toISOString();
 }
 
+/** Resolves the `network` and `contract` query parameters against configured targets. */
+function parseScope(url) {
+  const network = url.searchParams.get("network")?.trim() || undefined;
+  const contractId = url.searchParams.get("contract")?.trim() || undefined;
+  const matches = targets.filter(
+    (target) =>
+      (!network || target.network === network) && (!contractId || target.contractId === contractId)
+  );
+  if ((network || contractId) && matches.length === 0) {
+    throw new Error("no configured target matches the requested network and contract");
+  }
+  return { network, contractId, matches };
+}
+
+function parsePaging(url) {
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
+  const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
+  if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
+    throw new Error("limit and offset must be non-negative integers");
+  }
+  return { limit, offset };
+}
+
 const api = createServer((request, response) => {
   try {
     const url = new URL(request.url, "http://localhost");
+
     if (request.method === "GET" && url.pathname === "/health") {
-      return sendJson(response, 200, { status: "ok", nextLedger: store.getState("next_ledger") ?? String(startLedger) });
+      return sendJson(response, 200, {
+        status: "ok",
+        targets: targets.map((target) => ({
+          id: target.id,
+          network: target.network,
+          contractId: target.contractId,
+          nextLedger:
+            store.getState({ network: target.network, contractId: target.contractId }, "next_ledger") ??
+            String(target.startLedger),
+          lastIndexedAt: store.getState(
+            { network: target.network, contractId: target.contractId },
+            "last_indexed_at"
+          ),
+        })),
+      });
     }
+
+    if (request.method === "GET" && url.pathname === "/targets") {
+      return sendJson(response, 200, {
+        targets: targets.map(({ id, network, contractId, rpcUrl, startLedger, tokens }) => ({
+          id,
+          network,
+          contractId,
+          rpcUrl,
+          startLedger,
+          tokens,
+        })),
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/ledger") {
+      const { network, contractId } = parseScope(url);
       const token = url.searchParams.get("token")?.toUpperCase();
-      if (token && !tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
-      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
-      const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
-      if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
-        throw new Error("limit and offset must be non-negative integers");
+      if (token && !knownTokens.has(token)) {
+        throw new Error(`token must be one of: ${[...knownTokens].sort().join(", ")}`);
       }
+      const { limit, offset } = parsePaging(url);
       const entries = store.getEntries({
+        network,
+        contractId,
         token,
         from: parseDateParam(url.searchParams.get("from"), "from"),
         to: parseDateParam(url.searchParams.get("to"), "to"),
@@ -162,15 +191,14 @@ const api = createServer((request, response) => {
       });
       return sendJson(response, 200, { entries });
     }
+
     if (request.method === "GET" && url.pathname === "/events") {
-      const topic = url.searchParams.get("topic");
-      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 1000);
-      const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
-      if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(offset)) {
-        throw new Error("limit and offset must be non-negative integers");
-      }
+      const { network, contractId } = parseScope(url);
+      const { limit, offset } = parsePaging(url);
       const events = store.getAccordEvents({
-        topic,
+        network,
+        contractId,
+        topic: url.searchParams.get("topic"),
         from: parseDateParam(url.searchParams.get("from"), "from"),
         to: parseDateParam(url.searchParams.get("to"), "to"),
         limit,
@@ -178,9 +206,69 @@ const api = createServer((request, response) => {
       });
       return sendJson(response, 200, { events });
     }
-    if (request.method === "GET" && url.pathname === "/reconciliation") {
-      return sendJson(response, 200, { results: store.getLatestReconciliations() });
+
+    if (request.method === "GET" && url.pathname === "/balances") {
+      const { network, contractId } = parseScope(url);
+      return sendJson(response, 200, { balances: store.getBalances({ network, contractId }) });
     }
+
+    if (request.method === "GET" && url.pathname === "/aggregates") {
+      const { network, contractId } = parseScope(url);
+      return sendJson(response, 200, {
+        aggregates: store.getDailyAggregates({
+          network,
+          contractId,
+          token: url.searchParams.get("token")?.toUpperCase(),
+          fromDay: url.searchParams.get("fromDay") ?? undefined,
+          toDay: url.searchParams.get("toDay") ?? undefined,
+        }),
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/reconciliation") {
+      const { network, contractId } = parseScope(url);
+      return sendJson(response, 200, {
+        results: store.getLatestReconciliations({
+          network,
+          contractId,
+          check: url.searchParams.get("check") ?? undefined,
+        }),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/reconciliation/run") {
+      const { matches } = parseScope(url);
+      return void reconcileTargets(matches).then((outcome) =>
+        sendJson(response, outcome.skipped ? 409 : 200, outcome)
+      );
+    }
+
+    if (request.method === "GET" && url.pathname === "/retention") {
+      const { network, contractId } = parseScope(url);
+      return sendJson(response, 200, {
+        policy: {
+          rawEventDays: policy.rawEventDays,
+          aggregateDays: policy.aggregateDays,
+          reconciliationDays: policy.reconciliationDays,
+          archiveDir: policy.archiveDir,
+          intervalMs: policy.intervalMs,
+          enabled: policy.enabled,
+        },
+        runs: store.getRetentionRuns({ network, contractId }),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/retention/run") {
+      const { matches } = parseScope(url);
+      const outcome = runRetention(matches);
+      return sendJson(response, outcome.skipped ? 409 : 200, outcome);
+    }
+
+    if (request.method === "GET" && url.pathname === "/metrics") {
+      response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+      return response.end(renderMetrics(store, targets));
+    }
+
     return sendJson(response, 404, { error: "not found" });
   } catch (error) {
     return sendJson(response, 400, { error: error.message });
@@ -190,20 +278,36 @@ const api = createServer((request, response) => {
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 8787);
 api.listen(port, host, () => {
-  console.log(`Treasury indexer API listening on http://${host}:${port}`);
+  console.log(
+    `Treasury indexer API listening on http://${host}:${port} for ${targets.length} target(s): ` +
+      targets.map((target) => target.key).join(", ")
+  );
   void indexAvailableEvents()
     .catch((error) => console.error("Treasury event indexing failed:", error))
-    .finally(() => void reconcileBalances());
+    .finally(() => void reconcileTargets());
 });
 
 const indexTimer = setInterval(() => {
   void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
 }, Number(process.env.INDEX_INTERVAL_MS ?? 5000));
-const reconcileTimer = setInterval(() => void reconcileBalances(), Number(process.env.RECONCILE_INTERVAL_MS ?? 60000));
+const reconcileTimer = setInterval(
+  () => void reconcileTargets(),
+  Number(process.env.RECONCILE_INTERVAL_MS ?? 60000)
+);
+const retentionTimer = policy.enabled
+  ? setInterval(() => {
+      try {
+        runRetention();
+      } catch (error) {
+        console.error("Retention run failed:", error);
+      }
+    }, policy.intervalMs)
+  : null;
 
 function shutdown() {
   clearInterval(indexTimer);
   clearInterval(reconcileTimer);
+  if (retentionTimer) clearInterval(retentionTimer);
   api.close(() => {
     store.close();
     process.exit(0);
