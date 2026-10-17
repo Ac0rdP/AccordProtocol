@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Proposal, ProposalCategory, ProposalStatus, RecurringSchedule } from "../types/accord";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { ProposalCard } from "../components/ProposalCard";
 import {
   getProposalsPaged,
@@ -236,11 +238,14 @@ export function HistoryPage({
 
       <div className="space-y-3">
         {filteredProposals.length === 0 ? (
-          <p className="text-zinc-600 text-sm py-8 text-center">
-            {searchTerm || proposerFilter || categoryFilter !== "all"
-              ? "No proposals match your search"
-              : `No ${activeTab === "all" ? "" : `${activeTab} `}proposals found`}
-          </p>
+          <EmptyState
+            variant="section"
+            title={
+              searchTerm || proposerFilter || categoryFilter !== "all"
+                ? "No proposals match your search"
+                : `No ${activeTab === "all" ? "" : `${activeTab} `}proposals found`
+            }
+          />
         ) : (
           filteredProposals.map((proposal) => (
             <ProposalCard
@@ -265,13 +270,7 @@ export function HistoryPage({
             className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-medium text-zinc-300 hover:text-white transition-all flex items-center justify-center gap-2 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             {loadingMore ? (
-              <>
-                <svg className="animate-spin h-4 w-4 text-zinc-400" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                <span>Loading proposals...</span>
-              </>
+              <LoadingState message="Loading proposals…" variant="inline" />
             ) : (
               "Load More"
             )}

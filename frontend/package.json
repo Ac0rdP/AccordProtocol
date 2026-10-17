@@ -9,6 +9,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:visual": "vitest run --config vitest.visual.config.ts",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build -o storybook-static",
     "test:analytics": "vitest run src/lib/analytics.test.ts src/lib/__tests__/analytics* src/components/SpendByCategoryChart.test.tsx src/components/SpendByOwnerChart.test.tsx src/components/TreasuryBalanceChart.test.tsx src/components/StatCard.test.tsx src/components/AnalyticsSectionState.test.tsx",
     "e2e": "playwright test",
     "test:e2e": "vite preview --port 5173 & playwright test"
@@ -28,6 +31,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",
+    "@storybook/addon-docs": "^10.6.2",
+    "@storybook/react-vite": "^10.6.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -42,6 +47,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
     "jsdom": "^26.1.0",
+    "storybook": "^10.6.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LoadingState } from "../components/LoadingState";
 import {
   getContractXlmBalance,
   getContractUsdcBalance,
@@ -86,14 +87,14 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
         getGuardian().catch(() => "—"),
         isFrozen().catch(() => false),
         getRoleVersion().catch(() => "v1"),
-        getRoles(walletAddress).catch(() => []),
+        getRoles(walletAddress ?? undefined).catch(() => []),
       ]);
       if (!cancelled) {
         setXlmBalance(xlm);
         setUsdcBalance(usdc);
         setGuardian(g);
         setFrozen(f);
-        setRoleVersion(rv);
+        setRoleVersion(String(rv));
         setUserRoles(roles);
         setBalanceLoading(false);
         setGuardianLoading(false);
@@ -286,10 +287,7 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
         <h2 className="text-lg font-semibold mb-4">Guardian & Emergency Controls</h2>
 
         {guardianLoading ? (
-          <div className="space-y-3">
-            <div className="h-5 w-48 bg-zinc-800 animate-pulse rounded" />
-            <div className="h-5 w-32 bg-zinc-800 animate-pulse rounded" />
-          </div>
+          <LoadingState message="Loading guardian status…" variant="section" />
         ) : (
           <div className="space-y-4">
             <div className="flex items-center justify-between">

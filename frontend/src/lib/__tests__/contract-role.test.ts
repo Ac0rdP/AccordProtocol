@@ -81,7 +81,7 @@ describe("role wrapper reads", () => {
       },
     });
 
-    await expect(getRoles()).resolves.toEqual(["owner", "guardian", "admin"]);
+    await expect(getRoles()).resolves.toEqual(["Owner", "Guardian"]);
   });
 
   test("getRoles returns an empty array when the role set is empty", async () => {

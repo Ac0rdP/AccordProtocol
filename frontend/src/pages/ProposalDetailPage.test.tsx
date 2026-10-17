@@ -6,15 +6,21 @@ import type { Proposal, ProposalEvent } from "../types/accord";
 import { ProposalDetailPage } from "./ProposalDetailPage";
 import * as contract from "../lib/contract";
 
-vi.mock("../lib/contract", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../lib/contract")>();
-  return {
-    ...actual,
-    getProposalEvents: vi.fn().mockResolvedValue([]),
-    getOwners: vi.fn().mockResolvedValue(["GAPPROVER1"]),
-    getRequiredQuorumWeight: vi.fn().mockResolvedValue(2),
-  };
-});
+vi.mock("../lib/contract", () => ({
+  getProposalEvents: vi.fn().mockResolvedValue([]),
+  getHistoricalWeightChangeEvents: vi.fn().mockResolvedValue([]),
+  getOwners: vi.fn().mockResolvedValue(["GAPPROVER1"]),
+  getRequiredQuorumWeight: vi.fn().mockResolvedValue(2),
+}));
+
+vi.mock("../hooks/useOwnerWeights", () => ({
+  useOwnerWeights: () => ({
+    weights: { GAPPROVER1: 5 },
+    totalWeight: 20,
+    loading: false,
+    error: null,
+  }),
+}));
 
 const baseProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   id: 1,
