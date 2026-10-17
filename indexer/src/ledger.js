@@ -67,6 +67,40 @@ export function openLedgerStore(databasePath) {
       transaction_hash, occurred_at, from_address, to_address
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const deleteEntriesAbove = database.prepare("DELETE FROM ledger_entries WHERE ledger > ?");
+  const deleteEventsAbove = database.prepare("DELETE FROM accord_events WHERE ledger > ?");
+  const selectEntriesForReplay = database.prepare(
+    "SELECT id, token, direction, amount FROM ledger_entries ORDER BY ledger ASC, id ASC"
+  );
+  const updateEntryBalance = database.prepare(
+    "UPDATE ledger_entries SET balance = ? WHERE id = ?"
+  );
+  const clearTokenBalances = database.prepare("DELETE FROM token_balances");
+  const upsertTokenBalance = database.prepare(`
+    INSERT INTO token_balances (token, balance) VALUES (?, ?)
+    ON CONFLICT(token) DO UPDATE SET balance = excluded.balance
+  `);
+
+  // Running balances are a fold over the chain, so inserting an event that
+  // belongs to an *older* ledger than what is already stored (a backfill) would
+  // fold against the wrong predecessor. Replaying in canonical chain order
+  // (ledger ASC, id ASC) rebuilds both the per-row running balance and the
+  // cached `token_balances` snapshot. Callers run it inside their own
+  // transaction via the store methods below.
+  function replayBalances() {
+    clearTokenBalances.run();
+    const running = new Map();
+    for (const row of selectEntriesForReplay.all()) {
+      const delta = BigInt(row.amount) * (row.direction === "inflow" ? 1n : -1n);
+      const balanceAfter = (running.get(row.token) ?? 0n) + delta;
+      running.set(row.token, balanceAfter);
+      updateEntryBalance.run(balanceAfter.toString(), row.id);
+    }
+    for (const [token, balance] of running) {
+      upsertTokenBalance.run(token, balance.toString());
+    }
+    return running.size;
+  }
   const insertAccordEvent = database.prepare(`
     INSERT INTO accord_events (
       event_id, topic, payload, ledger, transaction_hash, occurred_at
@@ -226,6 +260,70 @@ export function openLedgerStore(databasePath) {
         )
         ORDER BY token
       `).all();
+    },
+
+    /**
+     * Rebuilds the running balances by folding every stored entry in canonical
+     * chain order. Returns the number of tokens whose snapshot was rewritten.
+     */
+    recomputeBalances() {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const tokens = replayBalances();
+        database.exec("COMMIT");
+        return tokens;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    /**
+     * Rewinds indexed data to a consistent point after a rollback: drops every
+     * entry and event emitted above `ledger`, then re-folds balances over what
+     * remains. Callers reset their checkpoints to `ledger + 1` afterwards so
+     * the range is re-ingested from the chain.
+     *
+     * @returns {{removedEntries: number, removedEvents: number}}
+     */
+    rewindToLedger(ledger) {
+      const target = Number(ledger);
+      if (!Number.isSafeInteger(target) || target < 0) {
+        throw new Error("rewind target must be a non-negative integer");
+      }
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const removedEntries = deleteEntriesAbove.run(target).changes;
+        const removedEvents = deleteEventsAbove.run(target).changes;
+        replayBalances();
+        database.exec("COMMIT");
+        return { removedEntries, removedEvents };
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    /**
+     * Wipes all indexed history (entries, protocol events, balances and
+     * reconciliation results) so the store can be rebuilt from chain events.
+     * `indexer_state` checkpoints are left to the caller to reset.
+     *
+     * @returns {{removedEntries: number, removedEvents: number, removedReconciliations: number}}
+     */
+    clearHistory() {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const removedEntries = database.prepare("DELETE FROM ledger_entries").run().changes;
+        const removedEvents = database.prepare("DELETE FROM accord_events").run().changes;
+        const removedReconciliations = database.prepare("DELETE FROM reconciliation_results").run().changes;
+        clearTokenBalances.run();
+        database.exec("COMMIT");
+        return { removedEntries, removedEvents, removedReconciliations };
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     close() {
