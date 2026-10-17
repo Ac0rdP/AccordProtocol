@@ -1,0 +1,12 @@
+# Recorded resource baseline for the hot entrypoints (see src/bench.rs and CONTRIBUTING.md).
+# Regenerate deliberately: ACCORD_BENCH_UPDATE=1 cargo test -p accord --lib bench_hot_entrypoints
+initialize instructions=668794 mem_bytes=98092 ledger_entries=26 write_entries=11 write_bytes=2124
+create_proposal instructions=343031 mem_bytes=64357 ledger_entries=14 write_entries=4 write_bytes=1208
+approve instructions=245208 mem_bytes=43825 ledger_entries=13 write_entries=3 write_bytes=904
+revoke instructions=196720 mem_bytes=33236 ledger_entries=10 write_entries=3 write_bytes=764
+approve_reaching_threshold instructions=239827 mem_bytes=40581 ledger_entries=13 write_entries=3 write_bytes=904
+execute_transfer instructions=476012 mem_bytes=87145 ledger_entries=21 write_entries=7 write_bytes=1884
+create_change_threshold_proposal instructions=215090 mem_bytes=46157 ledger_entries=11 write_entries=4 write_bytes=1056
+execute_change_threshold instructions=240600 mem_bytes=46066 ledger_entries=11 write_entries=4 write_bytes=1044
+get_proposal instructions=66947 mem_bytes=11172 ledger_entries=2 write_entries=0 write_bytes=0
+get_owner_weights instructions=48536 mem_bytes=8987 ledger_entries=2 write_entries=0 write_bytes=0

@@ -117,6 +117,37 @@ Both commands persist a checkpoint (`<command>_cursor`, `<command>_from`,
 and re-run without repeating work. Progress is reported per page and throttled
 to at most one line every two seconds; `--json` emits the same data as JSON.
 
+### Replay
+
+Re-runs a ledger range **in isolation** to debug a bad ingest. Events are
+decoded and applied to a private SQLite store (in memory by default) and every
+one is printed; the live store is never written.
+
+```bash
+# An explicit range.
+node src/index.js replay --from 1000 --to 1100
+
+# The 50 ledgers already indexed (before the live checkpoint)…
+node src/index.js replay --before-checkpoint 50
+# …or the 50 ledgers the indexer has yet to cover (from the checkpoint on).
+node src/index.js replay --after-checkpoint 50
+
+# Keep the isolated store to inspect it afterwards; machine-readable output.
+node src/index.js replay --from 1000 --to 1100 --replay-store ./data/replay.sqlite --json
+```
+
+- `--before-checkpoint` / `--after-checkpoint` are relative to the live
+  `next_ledger` checkpoint, which is read without writing (SQLite is opened
+  read-only; Postgres runs no migrations). `--checkpoint <ledger>` supplies one
+  explicitly. They cannot be combined with `--from`/`--to`.
+- The end is clamped to the final ledger, exactly like `backfill`.
+- `--replay-store` may never be the live `DATABASE_PATH`; replay always uses
+  SQLite, even when the live store is Postgres.
+- Output is one line per event (`ledger`, event id, transaction, decoded transfer
+  or Accord event, `(duplicate)` / `ignored` markers) followed by a summary with
+  the balances the range produces. See the runbook in
+  [docs/RUNBOOK.md](../docs/RUNBOOK.md).
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two
@@ -307,4 +338,4 @@ npm test                                   # SQLite
 TEST_POSTGRES_URL=postgres://… npm test    # SQLite and Postgres
 ```
 
-The suite covers the store contract on every backend, Postgres migrations, the finality and rollback policy, backfill/reindex on a small ledger range, webhook signing/retries/dead-lettering, and the metrics and health endpoints.
+The suite covers the store contract on every backend, Postgres migrations, the finality and rollback policy, backfill/reindex/replay on a small ledger range, webhook signing/retries/dead-lettering, and the metrics and health endpoints.

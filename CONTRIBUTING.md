@@ -384,6 +384,40 @@ UPDATE_EXPECT=1 stellar contract test
 
 After regeneration, review each updated snapshot file to confirm the new output is correct, then **commit the updated snapshot files alongside your code change**. A PR that changes contract behaviour but omits the refreshed snapshots will fail CI.
 
+#### Coverage threshold
+
+CI (`Contract Coverage` in `.github/workflows/contract.yml`) measures line coverage of the contract source with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov), excluding `test.rs` and `bench.rs`, and **fails when it drops below the minimum** in `contracts/accord/Cargo.toml`:
+
+```toml
+[package.metadata.coverage]
+min-line-coverage = 85
+```
+
+The HTML report, `lcov.info` and a text summary are uploaded as the `contract-coverage` artifact on every run, and the summary is shown on the run page.
+
+```bash
+cargo install cargo-llvm-cov --locked   # once; also needs `rustup component add llvm-tools-preview`
+cargo llvm-cov -p accord --lib --ignore-filename-regex '(test|bench)\.rs$' --html --open
+```
+
+**Raising the threshold deliberately.** The threshold is a ratchet, not a target to hover at. When a PR adds tests that lift coverage durably, raise `min-line-coverage` in the same PR to a whole number about 2–3 points below the new measured figure (headroom for harmless refactors). Never lower it to make a PR pass: add the missing tests, or explain in the PR why the code is untestable and get maintainer sign-off for the change.
+
+#### Benchmark regression gate
+
+CI (`Contract Benchmarks`) runs `bench_hot_entrypoints` (`contracts/accord/src/bench.rs`), which meters the hot entrypoints (`initialize`, `create_proposal`, `approve`, `revoke`, `execute` for transfers and governance, and the main reads) and compares CPU instructions, memory, ledger entries and write entries/bytes with the baseline in `contracts/accord/bench-baseline.txt`. **A figure that grows more than 5% fails the build.** The per-metric deltas appear in the job summary, in the `contract-benchmarks` artifact and as a comment on the pull request.
+
+```bash
+cargo test -p accord --lib bench_hot_entrypoints -- --nocapture   # compare with the baseline
+```
+
+**Updating baselines intentionally.** Metering is deterministic, so the baseline only changes when the contract's cost does. If growth is intended (new feature, extra safety check), or a change made things cheaper:
+
+1. Confirm the delta in the report is explained by your change, and that the entrypoint still fits the budget documented in `docs/ARCHITECTURE.md` §12.
+2. Re-record: `ACCORD_BENCH_UPDATE=1 cargo test -p accord --lib bench_hot_entrypoints`.
+3. Commit the updated `bench-baseline.txt` **in the same PR** and state the old and new figures and why in the PR description. A baseline change with no explanation will not be merged.
+
+Set `ACCORD_BENCH_THRESHOLD_PCT` to try a different threshold locally. A new entrypoint to track needs a call in `measure()` plus a re-recorded baseline.
+
 If your change touches both areas, run **both** frontend and contract commands and state that in the PR.
 
 ### Adding tests

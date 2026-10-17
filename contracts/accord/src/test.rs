@@ -11,6 +11,7 @@ use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
 use proptest::prelude::*;
 use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
 use std::format;
+use std::string::ToString;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -11333,6 +11334,7 @@ fn contract_error_name(error: ContractError) -> &'static str {
         ContractError::RoleNotGranted => "RoleNotGranted",
         ContractError::InvalidRole => "InvalidRole",
         ContractError::DeprecatedEntrypoint => "DeprecatedEntrypoint",
+        ContractError::RecoveryActive => "RecoveryActive",
     }
 }
 

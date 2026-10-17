@@ -57,6 +57,8 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 
 ## Suggested alerts
 
+Every alert carries a `runbook_url` annotation pointing at its response steps in [RUNBOOK.md](RUNBOOK.md); a test fails if an alert has none or the section does not exist. The dashboard is `ops/grafana/accord-indexer-api.json` (scrape config: `ops/prometheus/prometheus.yml`).
+
 ```yaml
 groups:
   - name: accord
@@ -64,36 +66,44 @@ groups:
       - alert: AccordIndexerNotReady
         expr: up{job="accord-indexer"} == 0
         for: 5m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#indexer-not-ready" }
       - alert: AccordIndexingStalled
         expr: time() - accord_indexer_last_successful_batch_timestamp_seconds > 300
         for: 2m
-        annotations: { summary: "No successful indexing batch for 5 minutes (RPC or database down?)" }
+        annotations: { summary: "No successful indexing batch for 5 minutes (RPC or database down?)", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#indexing-stalled" }
       - alert: AccordIngestionLagHigh
         expr: accord_indexer_ingestion_lag_ledgers > 100   # ~8 minutes at 5s per ledger
         for: 10m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#ingestion-lag-high" }
       - alert: AccordIndexerErrors
         expr: sum by (stage) (increase(accord_indexer_errors_total[10m])) > 5
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#indexer-errors" }
       - alert: AccordReorgDetected
         expr: increase(accord_indexer_reorgs_total[1h]) > 0
-        annotations: { summary: "Chain view rolled back; check the RPC node" }
+        annotations: { summary: "Chain view rolled back; check the RPC node", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#reorg-detected" }
       - alert: AccordWebhookDeadLetters
         expr: accord_indexer_webhook_deliveries{status="dead"} > 0
-        annotations: { summary: "Webhook deliveries exhausted retries; see GET /webhooks/deliveries?status=dead" }
+        annotations: { summary: "Webhook deliveries exhausted retries; see GET /webhooks/deliveries?status=dead", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#webhook-dead-letters" }
       - alert: AccordWebhookBacklog
         expr: accord_indexer_webhook_deliveries{status="pending"} > 500
         for: 15m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#webhook-backlog" }
       - alert: AccordApiCheckpointStale
         expr: accord_api_checkpoint_age_seconds > 600
         for: 5m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#api-checkpoint-stale" }
       - alert: AccordApiLatencyHigh
         expr: histogram_quantile(0.95, sum by (le, route) (rate(accord_api_http_request_duration_seconds_bucket[5m]))) > 1
         for: 10m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#api-latency-high" }
       - alert: AccordApiErrors
         expr: sum(rate(accord_api_http_requests_total{status=~"5.."}[5m])) / sum(rate(accord_api_http_requests_total[5m])) > 0.05
         for: 10m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#api-errors" }
       - alert: AccordApiDbPoolSaturated
         expr: accord_api_db_pool_connections{state="idle"} == 0 and accord_api_db_pool_connections{state="active"} > 0
         for: 5m
+        annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#api-db-pool-saturated" }
 ```
 
 Tune thresholds to your poll interval and finality lag: the indexer's lag floor is `LEDGER_FINALITY_LAG` ledgers by design, so alert on a value comfortably above it.

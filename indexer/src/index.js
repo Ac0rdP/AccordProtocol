@@ -10,6 +10,14 @@ import { backfill, reindex, resolveFirstLedger } from "./commands.js";
 import { DEFAULT_FINALITY_LAG, resolveFinalityLag } from "./finality.js";
 import { createReadiness, DEFAULT_READY_MAX_STALENESS_MS } from "./health.js";
 import { indexEventBatch } from "./indexing.js";
+import {
+  formatReplayEvent,
+  openReplayStore,
+  readLiveCheckpoint,
+  replay,
+  replayEventRecord,
+  resolveReplayWindow,
+} from "./replay.js";
 import { createIndexerMetrics, recordBatchSuccess } from "./metrics.js";
 import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
@@ -22,6 +30,8 @@ Commands:
   serve (default)  Start the indexer API and poll for new events
   backfill         Index history from the first relevant ledger to the present
   reindex          Clear the store and rebuild it from chain events
+  replay           Replay a ledger range into an isolated store and print every
+                   event; the live store is never written
   webhooks-requeue Move dead-lettered webhook deliveries back to pending
 
 Options:
@@ -29,7 +39,13 @@ Options:
                    RPC still retains.
   --to <ledger>    Last ledger to cover. Defaults to the final ledger, and is
                    always clamped to it - non-final ledgers are never indexed.
-  --json           Emit machine-readable progress lines (backfill/reindex)
+  --json           Emit machine-readable progress lines (backfill/reindex/replay)
+  --before-checkpoint <n>  replay: the n ledgers before the live checkpoint
+  --after-checkpoint <n>   replay: the n ledgers from the live checkpoint on
+  --checkpoint <ledger>    replay: use this checkpoint instead of reading the
+                   live store's next_ledger
+  --replay-store <path>    replay: keep the isolated SQLite store at this path
+                   (default: in memory, discarded on exit). Never the live DB.
   --subscription <id>  Limit webhooks-requeue to one subscription
   -h, --help       Show this message
 
@@ -61,7 +77,25 @@ function required(name) {
 }
 
 function parseArgs(argv) {
-  const args = { command: "serve", from: undefined, to: undefined, json: false, help: false, subscription: undefined };
+  const args = {
+    command: "serve",
+    from: undefined,
+    to: undefined,
+    json: false,
+    help: false,
+    subscription: undefined,
+    beforeCheckpoint: undefined,
+    afterCheckpoint: undefined,
+    checkpoint: undefined,
+    replayStore: undefined,
+  };
+  const numericOptions = {
+    "--from": "from",
+    "--to": "to",
+    "--before-checkpoint": "beforeCheckpoint",
+    "--after-checkpoint": "afterCheckpoint",
+    "--checkpoint": "checkpoint",
+  };
   const positionals = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -71,10 +105,12 @@ function parseArgs(argv) {
       args.json = true;
     } else if (arg === "--subscription") {
       args.subscription = argv[(index += 1)];
-    } else if (arg === "--from" || arg === "--to") {
-      args[arg.slice(2)] = Number(argv[(index += 1)]);
-    } else if (arg.startsWith("--from=") || arg.startsWith("--to=")) {
-      args[arg.slice(2, arg.indexOf("="))] = Number(arg.slice(arg.indexOf("=") + 1));
+    } else if (arg === "--replay-store") {
+      args.replayStore = argv[(index += 1)];
+    } else if (arg in numericOptions) {
+      args[numericOptions[arg]] = Number(argv[(index += 1)]);
+    } else if (arg.includes("=") && arg.slice(0, arg.indexOf("=")) in numericOptions) {
+      args[numericOptions[arg.slice(0, arg.indexOf("="))]] = Number(arg.slice(arg.indexOf("=") + 1));
     } else if (arg.startsWith("-")) {
       throw new Error(`unknown option ${arg}`);
     } else {
@@ -83,12 +119,12 @@ function parseArgs(argv) {
   }
   if (positionals.length > 1) throw new Error("expected at most one command");
   if (positionals[0]) args.command = positionals[0];
-  for (const key of ["from", "to"]) {
+  for (const [flag, key] of Object.entries(numericOptions)) {
     if (args[key] !== undefined && (!Number.isSafeInteger(args[key]) || args[key] < 1)) {
-      throw new Error(`--${key} must be a positive integer`);
+      throw new Error(`${flag} must be a positive integer`);
     }
   }
-  if (!["serve", "backfill", "reindex", "webhooks-requeue"].includes(args.command)) {
+  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue"].includes(args.command)) {
     throw new Error(`unknown command ${args.command}`);
   }
   return args;
@@ -164,6 +200,50 @@ async function runHistoryCommand({ command, args, store, stellar }) {
     console.error(`[${command}] stopped early after ${result.pages} pages; re-run to resume`);
   }
   return result;
+}
+
+/**
+ * Replays a ledger range into a store of its own and prints each event.
+ * The live store is at most read (for its checkpoint) and never written.
+ */
+async function runReplay({ args, stellar, storeConfig }) {
+  const needsCheckpoint = args.beforeCheckpoint !== undefined || args.afterCheckpoint !== undefined;
+  const checkpoint = args.checkpoint ?? (needsCheckpoint ? await readLiveCheckpoint(storeConfig) : undefined);
+  const window = resolveReplayWindow({ ...args, checkpoint });
+  const replayStore = openReplayStore({
+    path: args.replayStore,
+    liveDatabasePath: storeConfig.backend === "sqlite" ? storeConfig.databasePath : undefined,
+  });
+  const print = (line) => console.log(args.json ? JSON.stringify(line) : line);
+
+  try {
+    const result = await replay({
+      stellar,
+      replayStore,
+      tokens,
+      treasuryAddress,
+      from: window.from,
+      to: window.to,
+      finalityLag,
+      onEvent: (detail) => print(args.json ? replayEventRecord(detail) : formatReplayEvent(detail)),
+    });
+    const summary = {
+      kind: "summary",
+      start: result.start,
+      end: result.end,
+      clamped: result.clamped,
+      checkpoint: window.checkpoint,
+      eventsSeen: result.eventsSeen ?? 0,
+      eventsIndexed: result.eventsIndexed,
+      pages: result.pages,
+      balances: result.balances,
+      isolatedStore: args.replayStore ?? "in-memory",
+    };
+    print(args.json ? summary : `[replay] ledgers ${summary.start}-${summary.end}${summary.clamped ? " (end clamped to the final ledger)" : ""}: ${summary.eventsSeen} event(s) seen, ${summary.eventsIndexed} applied to the isolated store (${summary.isolatedStore}); live store untouched`);
+    return result;
+  } finally {
+    await replayStore.close();
+  }
 }
 
 async function serve({ store, stellar }) {
@@ -308,7 +388,16 @@ async function main() {
     return;
   }
 
-  const store = await openStore(resolveStoreConfig());
+  const storeConfig = resolveStoreConfig();
+
+  // Replay never opens the live store for writing: it reads the checkpoint and
+  // otherwise works only against its own isolated store.
+  if (args.command === "replay") {
+    await runReplay({ args, stellar: new rpc.Server(rpcUrl), storeConfig });
+    return;
+  }
+
+  const store = await openStore(storeConfig);
 
   if (args.command === "webhooks-requeue") {
     const requeued = await store.requeueDeadWebhookDeliveries({
