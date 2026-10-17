@@ -3,14 +3,16 @@
     "struct": "GovernanceMigratedEvent",
     "fields": {
       "owner_count": "u32",
-      "total_weight": "u32"
+      "total_weight": "u32",
+      "version": "u32"
     }
   },
   "rbac_migrated": {
     "struct": "RbacMigratedEvent",
     "fields": {
       "owner_count": "u32",
-      "role_version": "u32"
+      "role_version": "u32",
+      "version": "u32"
     }
   },
   "created": {
@@ -22,7 +24,8 @@
       "category": "ProposalCategory",
       "transfers": "Vec<Transfer>",
       "quorum_weight": "u32",
-      "total_weight_at_creation": "u32"
+      "total_weight_at_creation": "u32",
+      "version": "u32"
     }
   },
   "rpay": {
@@ -33,7 +36,8 @@
       "token": "Address",
       "amount": "i128",
       "total_disbursed": "i128",
-      "periods_disbursed": "u32"
+      "periods_disbursed": "u32",
+      "version": "u32"
     }
   },
   "approved": {
@@ -44,7 +48,8 @@
       "approvals": "u32",
       "threshold": "u32",
       "weight": "u32",
-      "cumulative_weight": "u32"
+      "cumulative_weight": "u32",
+      "version": "u32"
     }
   },
   "revoked": {
@@ -54,7 +59,8 @@
       "approver": "Address",
       "approvals": "u32",
       "weight": "u32",
-      "cumulative_weight": "u32"
+      "cumulative_weight": "u32",
+      "version": "u32"
     }
   },
   "executed": {
@@ -62,39 +68,45 @@
     "fields": {
       "id": "u64",
       "executor": "Address",
-      "transfers": "Vec<Transfer>"
+      "transfers": "Vec<Transfer>",
+      "version": "u32"
     }
   },
   "guard_set": {
     "struct": "GuardianSetEvent",
     "fields": {
-      "guardian": "Address"
+      "guardian": "Address",
+      "version": "u32"
     }
   },
   "frozen": {
     "struct": "FrozenEvent",
     "fields": {
-      "guardian": "Address"
+      "guardian": "Address",
+      "version": "u32"
     }
   },
   "unfrozen": {
     "struct": "UnfrozenEvent",
     "fields": {
-      "approvers": "Vec<Address>"
+      "approvers": "Vec<Address>",
+      "version": "u32"
     }
   },
   "r_pause": {
     "struct": "RecurringPaymentPausedEvent",
     "fields": {
       "id": "u64",
-      "caller": "Address"
+      "caller": "Address",
+      "version": "u32"
     }
   },
   "r_resum": {
     "struct": "RecurringPaymentResumedEvent",
     "fields": {
       "id": "u64",
-      "caller": "Address"
+      "caller": "Address",
+      "version": "u32"
     }
   },
   "r_mod": {
@@ -106,7 +118,8 @@
       "previous_interval": "u64",
       "new_interval": "u64",
       "previous_end_time": "u64",
-      "new_end_time": "u64"
+      "new_end_time": "u64",
+      "version": "u32"
     }
   },
   "r_crt": {
@@ -122,42 +135,48 @@
       "end_time": "u64",
       "cliff_time": "u64",
       "total_cap": "i128",
-      "kind": "RecurringKind"
+      "kind": "RecurringKind",
+      "version": "u32"
     }
   },
   "r_cncl": {
     "struct": "RecurringPaymentCancelledEvent",
     "fields": {
       "id": "u64",
-      "caller": "Address"
+      "caller": "Address",
+      "version": "u32"
     }
   },
   "upgraded": {
     "struct": "UpgradeExecutedEvent",
     "fields": {
       "caller": "Address",
-      "new_wasm_hash": "BytesN<32>"
+      "new_wasm_hash": "BytesN<32>",
+      "version": "u32"
     }
   },
   "a_own": {
     "struct": "AddOwnerExecutedEvent",
     "fields": {
       "new_owner": "Address",
-      "owner_count": "u32"
+      "owner_count": "u32",
+      "version": "u32"
     }
   },
   "r_own": {
     "struct": "RemoveOwnerExecutedEvent",
     "fields": {
       "removed_owner": "Address",
-      "owner_count": "u32"
+      "owner_count": "u32",
+      "version": "u32"
     }
   },
   "c_thr": {
     "struct": "ChangeThresholdExecutedEvent",
     "fields": {
       "previous_threshold": "u32",
-      "new_threshold": "u32"
+      "new_threshold": "u32",
+      "version": "u32"
     }
   },
   "s_lim": {
@@ -166,7 +185,8 @@
       "owner": "Address",
       "token": "Address",
       "previous_limit": "Option<i128>",
-      "new_limit": "i128"
+      "new_limit": "i128",
+      "version": "u32"
     }
   },
   "c_wgt": {
@@ -175,7 +195,8 @@
       "owner": "Address",
       "old_weight": "u32",
       "new_weight": "u32",
-      "new_total_weight": "u32"
+      "new_total_weight": "u32",
+      "version": "u32"
     }
   },
   "role_granted": {
@@ -184,7 +205,8 @@
       "target": "Address",
       "role": "Role",
       "before": "Vec<Role>",
-      "after": "Vec<Role>"
+      "after": "Vec<Role>",
+      "version": "u32"
     }
   },
   "role_revoked": {
@@ -193,7 +215,8 @@
       "target": "Address",
       "role": "Role",
       "before": "Vec<Role>",
-      "after": "Vec<Role>"
+      "after": "Vec<Role>",
+      "version": "u32"
     }
   }
 }

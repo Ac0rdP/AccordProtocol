@@ -12,7 +12,7 @@
 Accord Protocol is **unaudited**. Do not deploy to mainnet with significant funds until a formal third-party audit is completed. The contract has been reviewed for common Soroban anti-patterns but has not undergone a professional security review.
 
 Known areas that require attention before mainnet:
-- Reentrancy via external token calls (currently mitigated by Soroban's single-contract-call model, but warrants formal review)
+- Reentrancy via external token calls (mitigated by Soroban's re-entry ban and the call-ordering described in [Token interaction safety](#token-interaction-safety); the argument is below and still warrants formal review)
 - TTL expiry edge cases under high ledger load
 
 ## Security Best Practices for Multisig Administrators
@@ -46,6 +46,45 @@ Known areas that require attention before mainnet:
 - Use a quorum of the remaining uncompromised owners to submit and approve a `remove_owner` proposal for the exposed key as soon as possible.
 - Pause or cancel any pending proposals that the compromised owner already approved, then re-evaluate them after the owner set is cleaned up.
 - If the threshold no longer makes quorum possible after the compromise, raise the issue operationally first and restore a safe threshold before resuming normal use.
+
+## Token interaction safety
+
+`execute` (for `Transfer` proposals) and `disburse_recurring` are the only entrypoints that move funds. Both call an external token contract through `token::Client`, so a hostile or buggy token is the main interaction risk. This section records the review of those two paths and the argument for why they are safe. It is covered by the adversarial tests listed at the end.
+
+### Interaction order
+
+`execute`, `Transfer` kind:
+
+1. Checks: auth, `Executor` role, not frozen, proposal is `Ready`, time-lock elapsed, not in recovery mode, per-token spending limits.
+2. Treasury balance check: for each token, the summed amount across all transfers is compared to the treasury balance via `try_balance` before anything moves.
+3. Interaction: each transfer via `try_transfer`.
+4. Effects: spent trackers, then `proposal.status = Executed`, then `remove_active_proposal` (active count), then the `executed` event.
+
+`disburse_recurring`:
+
+1. Checks: auth, not frozen, not in recovery, schedule status, due time, cap clamp, and every checked counter update (`total_disbursed`, `periods_disbursed`), computed up front.
+2. Treasury balance check via `try_balance`.
+3. Interaction: one `try_transfer`.
+4. Effects: spent tracker, `last_disbursed_at`, `total_disbursed`, `periods_disbursed`, then the `rpay` event.
+
+Both paths put the interaction before the effects, so they are not strict checks-effects-interactions. They are safe for the reasons below, not because of ordering alone.
+
+### Why the order is safe
+
+- **No re-entry.** The Soroban host rejects a call into a contract that is already on the call stack. A token that calls back into `execute`, `disburse_recurring`, `approve` or any other Accord entrypoint during `transfer` makes that inner call fail, which traps the token, which makes the outer `try_transfer` return an error. The contract therefore never runs while its own state is half-updated, and no token can observe an executed-looking proposal before the transfer completes. The tests `execute_with_reentrant_token_is_rejected_and_preserves_state` and `disburse_recurring_with_reentrant_token_preserves_state` exercise this.
+- **Failure is atomic.** Every failure path returns `Err(TransferFailed)` (or another error) from the entrypoint. A contract-call error reverts all storage writes made during that invocation, including writes made by the token. Because no Accord state is written before the transfer loop in either path, there is nothing to unwind, and in a multi-transfer proposal an earlier successful transfer is rolled back when a later one fails. `execute_with_failing_second_transfer_reverts_the_first` checks this.
+- **No partial effects.** The proposal is marked `Executed` and removed from the active set only after every transfer has succeeded. A failed `execute` therefore leaves the proposal `Ready` and the active count unchanged, so it can be retried. A failed `disburse_recurring` leaves `total_disbursed`, `periods_disbursed` and `last_disbursed_at` unchanged.
+
+### Findings
+
+- **Fixed: a token returning a non-unit value counted as success.** The generated `try_transfer` reports a mistyped return value as `Ok(Err(_))`, and the earlier code treated any outer `Ok` as success. A token whose `transfer` returned `false` without moving funds would have let `execute` mark a proposal `Executed` and `disburse_recurring` advance a schedule with nothing paid. Both paths now go through `transfer_succeeded`, which accepts only `Ok(Ok(()))`.
+- **Fixed: `execute` had no balance check.** `disburse_recurring` checked the treasury balance first, but `execute` went straight to `try_transfer`. `execute` now checks the per-token total with `try_balance` before any transfer, so a shortfall fails up front. A token whose `balance` call traps is also reported as `TransferFailed` instead of aborting the call.
+- **Confirmed: a failed `execute` does not mark the proposal executed or change the active count.** See `assert_execute_rejected_cleanly` in the tests.
+- **Residual risk: a malicious token can lie.** A token can report a large `balance` and return normally from `transfer` without moving funds. The contract cannot detect this, and it trusts the token for what it moves. Proposers and approvers must only use tokens they trust. Recurring schedules validate that the token answers `decimals`, `symbol` and `name`, which is a sanity check, not a trust check.
+
+### Adversarial tests
+
+The tests in `contracts/accord/src/test.rs` use two mock tokens: `AdversarialToken` (traps, fails for a chosen recipient, re-enters `execute` or `disburse_recurring`, reports a configurable balance) and `FalseReturnToken` (returns `false` from `transfer`). They assert, for both `execute` and `disburse_recurring`, that each failure mode returns `TransferFailed` and leaves the proposal or schedule, and the active count, unchanged.
 
 ## Known Limitations
 

@@ -213,6 +213,22 @@ describeEachBackend("treasury ledger", () => {
     await store.close();
   });
 
+  it("records the event-schema version and keeps unversioned events as null", async () => {
+    const store = await createStore();
+    await store.recordAccordEvent({
+      eventId: "v1", topic: "created", schemaVersion: 1, payload: { version: 1 },
+      ledger: 50, transactionHash: "hash", occurredAt: "2026-09-27T12:00:00Z",
+    });
+    await store.recordAccordEvent({
+      eventId: "legacy", topic: "created", payload: {},
+      ledger: 51, transactionHash: "hash", occurredAt: "2026-09-27T12:00:01Z",
+    });
+
+    const events = await store.getAccordEvents({ limit: 10, offset: 0 });
+    assert.deepEqual(events.map(({ eventId, schemaVersion }) => [eventId, schemaVersion]), [["v1", 1], ["legacy", null]]);
+    await store.close();
+  });
+
   it("rewinds indexed data when the store is rolled back to a safe point", async () => {
     const store = await createStore();
     const tokenNames = new Map([[tokenAddress.toLowerCase(), "USDC"]]);

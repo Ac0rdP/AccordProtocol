@@ -47,7 +47,8 @@ export function openLedgerStore(databasePath) {
       payload TEXT NOT NULL,
       ledger INTEGER NOT NULL,
       transaction_hash TEXT,
-      occurred_at TEXT NOT NULL
+      occurred_at TEXT NOT NULL,
+      schema_version INTEGER
     );
     CREATE INDEX IF NOT EXISTS accord_events_time_idx
       ON accord_events (occurred_at, id);
@@ -86,6 +87,12 @@ export function openLedgerStore(databasePath) {
     CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx
       ON webhook_deliveries (status, next_attempt_at, id);
   `);
+
+  // Databases created before the event-schema version existed lack the column.
+  const eventColumns = database.prepare("PRAGMA table_info(accord_events)").all();
+  if (!eventColumns.some((column) => column.name === "schema_version")) {
+    database.exec("ALTER TABLE accord_events ADD COLUMN schema_version INTEGER");
+  }
 
   const insertEntry = database.prepare(`
     INSERT INTO ledger_entries (
@@ -129,8 +136,8 @@ export function openLedgerStore(databasePath) {
   }
   const insertAccordEvent = database.prepare(`
     INSERT INTO accord_events (
-      event_id, topic, payload, ledger, transaction_hash, occurred_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const selectBalance = database.prepare(
     "SELECT balance FROM token_balances WHERE token = ?"
@@ -261,7 +268,8 @@ export function openLedgerStore(databasePath) {
           JSON.stringify(entry.payload),
           entry.ledger,
           entry.transactionHash ?? null,
-          entry.occurredAt
+          entry.occurredAt,
+          entry.schemaVersion ?? null
         );
         return true;
       } catch (error) {
@@ -290,7 +298,8 @@ export function openLedgerStore(databasePath) {
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
       return database.prepare(`
         SELECT event_id AS eventId, topic, payload, ledger,
-          transaction_hash AS transactionHash, occurred_at AS occurredAt
+          transaction_hash AS transactionHash, occurred_at AS occurredAt,
+          schema_version AS schemaVersion
         FROM accord_events ${where}
         ORDER BY ledger ASC, id ASC LIMIT ? OFFSET ?
       `).all(...values, limit, offset).map((row) => ({
@@ -392,7 +401,8 @@ export function openLedgerStore(databasePath) {
     async getAccordEventsAfter(afterId, limit) {
       return database.prepare(`
         SELECT id, event_id AS eventId, topic, payload, ledger,
-          transaction_hash AS transactionHash, occurred_at AS occurredAt
+          transaction_hash AS transactionHash, occurred_at AS occurredAt,
+          schema_version AS schemaVersion
         FROM accord_events WHERE id > ? ORDER BY id ASC LIMIT ?
       `).all(afterId, limit).map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
     },
