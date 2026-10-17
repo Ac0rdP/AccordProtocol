@@ -12,6 +12,11 @@ on:
       - "frontend/**"
       - ".github/workflows/frontend-ci.yml"
 
+# Cancel superseded pull-request runs on the same branch; never cancel main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   frontend-test-coverage:
     name: Frontend tests & coverage
@@ -105,6 +110,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
       - name: Run responsive screenshot comparisons

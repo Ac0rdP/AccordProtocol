@@ -12,6 +12,11 @@ on:
       - "frontend/**"
       - ".github/workflows/frontend-storybook.yml"
 
+# Cancel superseded pull-request runs on the same branch; never cancel main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   storybook-visual:
     name: Storybook build & visual snapshots

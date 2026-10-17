@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [ main ]
 
+# Cancel superseded pull-request runs on the same branch; never cancel a push to
+# main or a tag run (those feed releases and the testnet gates below).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci:
     name: Contract CI
@@ -21,6 +27,8 @@ jobs:
         with:
           # Soroban builds require wasm32v1-none (setup-rust-toolchain uses singular `target`).
           target: wasm32v1-none
+          # Cache the cargo registry/git and target dir between runs.
+          cache: true
 
       - name: Install cargo-audit and cargo-deny
         run: |
@@ -154,6 +162,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: llvm-tools-preview
+          cache: true
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -218,6 +227,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
 
       - name: Run resource benchmarks
         run: cargo test -p accord --lib bench_hot_entrypoints -- --nocapture

@@ -358,6 +358,10 @@ Use **GitHub Draft PRs** when you want early feedback on direction before the ch
 
 Run the relevant checks before requesting review.
 
+> **How CI is wired:** every suite below is exercised by GitHub Actions. See
+> [`docs/CI.md`](./docs/CI.md) for the workflow map, the caching/concurrency
+> policy, and the settings the release and preview workflows expect.
+
 ### Frontend
 
 ```bash
