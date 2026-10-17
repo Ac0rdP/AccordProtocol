@@ -781,6 +781,12 @@ The contract address plus one topic string together uniquely identify a stream o
 
 These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 
+### Event Schema Versioning
+
+Every event payload carries a `version: u32` field set to `EVENT_SCHEMA_VERSION`, defined once in `contracts/accord/src/lib.rs`. The constant is bumped whenever any event struct gains, loses, renames, or retypes a field, so off-chain consumers can detect a schema change instead of silently mis-decoding. It is independent of the storage-schema version (`STOVER`) and the RBAC version (`get_role_version`): bumping one does not bump the others.
+
+Within one version, topic names, field names, and field types are stable; across versions they may change. The full policy, the version history, and the guarantees consumers can rely on are in [EVENTS.md](EVENTS.md#event-versioning-policy).
+
 ### Indexing Accord Events
 
 External services — dashboards, notification systems, auditing tools — can consume Accord events through three approaches, each suited to different latency and persistence requirements:

@@ -12060,3 +12060,126 @@ fn linear_vesting_near_i128_max_amount_is_rejected_not_wrapped() {
     assert_eq!(token_client.balance(&recipient), before);
     assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0);
 }
+
+// ─── Event schema version ────────────────────────────────────────────────────
+
+/// Returns `(topic, version)` for every event the contract emitted during the
+/// most recent call. Event payloads are contract-type structs, which encode as
+/// maps keyed by field name, so the `version` field is read without naming the
+/// concrete event type.
+fn last_call_event_versions(
+    env: &Env,
+    client: &AccordContractClient,
+) -> std::vec::Vec<(Symbol, u32)> {
+    let mut seen = std::vec::Vec::new();
+    for event in env
+        .events()
+        .all()
+        .filter_by_contract(&client.address)
+        .events()
+        .iter()
+    {
+        let xdr::ContractEventBody::V0(body) = &event.body;
+        let topic: Symbol = body.topics.first().expect("event topic").clone().into_val(env);
+        let payload: Map<Symbol, Val> = body.data.clone().into_val(env);
+        let version: u32 = payload
+            .get(Symbol::new(env, "version"))
+            .unwrap_or_else(|| panic!("event payload has no version field"))
+            .into_val(env);
+        seen.push((topic, version));
+    }
+    seen
+}
+
+/// Asserts the last call emitted `topic` and that every event it emitted
+/// carries the current schema version.
+fn assert_last_call_emitted_versioned(
+    env: &Env,
+    client: &AccordContractClient,
+    topic: Symbol,
+) {
+    let seen = last_call_event_versions(env, client);
+    assert!(
+        seen.iter().any(|(t, _)| *t == topic),
+        "expected the call to emit the requested event"
+    );
+    for (_, version) in seen {
+        assert_eq!(version, EVENT_SCHEMA_VERSION);
+    }
+}
+
+#[test]
+fn proposal_lifecycle_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000, &token_client.address),
+        &str(&env, "Versioned events"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("created"));
+
+    client.approve(&owner_a, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("approved"));
+
+    client.revoke(&owner_a, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("revoked"));
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("executed"));
+}
+
+#[test]
+fn governance_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, new_owner, _) = setup(2);
+    let id = client.create_add_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &1,
+        &str(&env, "Add owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("a_own"));
+}
+
+#[test]
+fn guardian_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian = Address::generate(&env);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    approvers.push_back(owner_c.clone());
+
+    client.set_guardian(&approvers, &guardian);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("guard_set"));
+
+    client.freeze(&guardian);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("frozen"));
+
+    client.unfreeze(&approvers);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("unfrozen"));
+}
+
+#[test]
+fn recurring_disbursement_event_carries_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        1_000, interval, 10_000,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("rpay"));
+}

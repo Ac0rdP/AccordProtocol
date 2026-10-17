@@ -198,8 +198,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
 
     async recordAccordEvent(entry) {
       const { rowCount } = await pool.query(
-        `INSERT INTO accord_events (event_id, topic, payload, ledger, transaction_hash, occurred_at)
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (event_id) DO NOTHING`,
+        `INSERT INTO accord_events (event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (event_id) DO NOTHING`,
         [
           entry.eventId,
           entry.topic,
@@ -207,6 +207,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
           entry.ledger,
           entry.transactionHash ?? null,
           entry.occurredAt,
+          entry.schemaVersion ?? null,
         ]
       );
       return rowCount > 0;
@@ -219,7 +220,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         values
       );
       const { rows } = await pool.query(
-        `SELECT event_id, topic, payload, ledger, transaction_hash, occurred_at
+        `SELECT event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version
          FROM accord_events ${where}
          ORDER BY ledger ASC, id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
         [...values, limit, offset]
@@ -231,6 +232,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         ledger: row.ledger,
         transactionHash: row.transaction_hash,
         occurredAt: iso(row.occurred_at),
+        schemaVersion: row.schema_version,
       }));
     },
 
@@ -310,7 +312,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
 
     async getAccordEventsAfter(afterId, limit) {
       const { rows } = await pool.query(
-        `SELECT id, event_id, topic, payload, ledger, transaction_hash, occurred_at
+        `SELECT id, event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version
          FROM accord_events WHERE id > $1 ORDER BY id ASC LIMIT $2`,
         [afterId, limit]
       );
@@ -322,6 +324,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         ledger: row.ledger,
         transactionHash: row.transaction_hash,
         occurredAt: iso(row.occurred_at),
+        schemaVersion: row.schema_version,
       }));
     },
 

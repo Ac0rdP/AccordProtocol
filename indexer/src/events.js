@@ -74,9 +74,16 @@ export function parseAccordEvent(event, treasuryAddress) {
     return val;
   };
 
+  // Every contract event carries a `version` field (the event-schema version,
+  // `EVENT_SCHEMA_VERSION` in the contract). Events from pre-versioning
+  // deployments have none and are recorded with a null schema version.
+  const rawVersion = payload !== null && typeof payload === "object" ? payload.version : undefined;
+  const schemaVersion = rawVersion === undefined || rawVersion === null ? null : Number(rawVersion);
+
   return {
     eventId: String(event.id ?? event.pagingToken ?? `${ledger}:${transactionHash ?? "unknown"}`),
     topic: topicName,
+    schemaVersion,
     payload: sanitize(payload),
     ledger,
     transactionHash,

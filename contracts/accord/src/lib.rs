@@ -2052,6 +2052,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("migrated"),),
             GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 owner_count,
                 total_weight,
             },
@@ -2083,6 +2084,7 @@ impl AccordContract {
         env.events().publish(
             (Symbol::new(&env, "rbac_migrated"),),
             RbacMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 owner_count: owners.len(),
                 role_version: RBAC_VERSION,
             },
@@ -2298,6 +2300,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2339,6 +2342,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2488,6 +2492,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("rpay"),),
             RecurringPaymentDisbursedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 schedule_id,
                 recipient: schedule.recipient.clone(),
                 token: schedule.token.clone(),
@@ -2580,6 +2585,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2655,6 +2661,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2777,6 +2784,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2858,6 +2866,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -2939,6 +2948,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -3001,6 +3011,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("approved"),),
             ProposalApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id: proposal_id,
                 approver,
                 approvals: proposal.approvals,
@@ -3050,6 +3061,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("revoked"),),
             ProposalRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id: proposal_id,
                 approver,
                 approvals: proposal.approvals,
@@ -3204,6 +3216,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("a_own"),),
                     AddOwnerExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         new_owner: new_owner.clone(),
                         owner_count: prev_count + 1,
                     },
@@ -3298,6 +3311,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_own"),),
                     RemoveOwnerExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         removed_owner: owner_to_remove.clone(),
                         owner_count: prev_count - 1,
                     },
@@ -3321,6 +3335,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("c_thr"),),
                     ChangeThresholdExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         previous_threshold: old_threshold,
                         new_threshold: *new_threshold,
                     },
@@ -3336,6 +3351,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("s_lim"),),
                     SetSpendingLimitExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         owner: owner.clone(),
                         token: token.clone(),
                         previous_limit: prev_limit,
@@ -3361,6 +3377,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("s_lim"),),
                     SetSpendingLimitExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         owner: owner.clone(),
                         token: token.clone(),
                         previous_limit: prev_limit,
@@ -3410,6 +3427,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("c_wgt"),),
                     OwnerWeightChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         owner: target_owner.clone(),
                         old_weight,
                         new_weight: *new_weight,
@@ -3452,6 +3470,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_crt"),),
                     RecurringPaymentCreatedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         id,
                         proposer: proposal.proposer.clone(),
                         recipient: params.recipient.clone(),
@@ -3489,6 +3508,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_cncl"),),
                     RecurringPaymentCancelledEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         id: *schedule_id,
                         caller: executor.clone(),
                     },
@@ -3510,6 +3530,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_pause"),),
                     RecurringPaymentPausedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         id: *schedule_id,
                         caller: executor.clone(),
                     },
@@ -3528,6 +3549,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_resum"),),
                     RecurringPaymentResumedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         id: *schedule_id,
                         caller: executor.clone(),
                     },
@@ -3568,6 +3590,7 @@ impl AccordContract {
                 env.events().publish(
                     (symbol_short!("r_mod"),),
                     RecurringPaymentModifiedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         schedule_id: params.schedule_id,
                         previous_amount,
                         new_amount: schedule.amount,
@@ -3591,6 +3614,7 @@ impl AccordContract {
                 env.events().publish(
                     (Symbol::new(&env, "role_granted"),),
                     RoleGrantedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         target: target.clone(),
                         role: role.clone(),
                         before,
@@ -3625,6 +3649,7 @@ impl AccordContract {
                 env.events().publish(
                     (Symbol::new(&env, "role_revoked"),),
                     RoleRevokedEvent {
+                        version: EVENT_SCHEMA_VERSION,
                         target: target.clone(),
                         role: role.clone(),
                         before,
@@ -3647,6 +3672,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("executed"),),
             ProposalExecutedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id: proposal_id,
                 executor,
                 transfers,
@@ -3782,6 +3808,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -3848,6 +3875,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -3914,6 +3942,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -3977,6 +4006,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -4064,6 +4094,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -4141,6 +4172,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -4233,6 +4265,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("created"),),
             ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 id,
                 proposer,
                 threshold,
@@ -4683,6 +4716,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("guard_set"),),
             GuardianSetEvent {
+                version: EVENT_SCHEMA_VERSION,
                 guardian: new_guardian,
             },
         );
@@ -4703,7 +4737,7 @@ impl AccordContract {
         write_frozen(&env, true);
 
         env.events()
-            .publish((symbol_short!("frozen"),), FrozenEvent { guardian });
+            .publish((symbol_short!("frozen"),), FrozenEvent { guardian, version: EVENT_SCHEMA_VERSION });
 
         Ok(())
     }
@@ -4718,6 +4752,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("unfrozen"),),
             UnfrozenEvent {
+                version: EVENT_SCHEMA_VERSION,
                 approvers: approvers.clone(),
             },
         );
@@ -4737,7 +4772,7 @@ impl AccordContract {
         write_recovery(&env, true);
         env.events().publish(
             (symbol_short!("recov_on"),),
-            RecoveryEnteredEvent { guardian },
+            RecoveryEnteredEvent { guardian, version: EVENT_SCHEMA_VERSION },
         );
         Ok(())
     }
@@ -4749,6 +4784,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("recov_off"),),
             RecoveryExitedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 approvers: approvers.clone(),
             },
         );
@@ -4794,6 +4830,7 @@ impl AccordContract {
         env.events().publish(
             (symbol_short!("upgraded"),),
             UpgradeExecutedEvent {
+                version: EVENT_SCHEMA_VERSION,
                 caller,
                 new_wasm_hash,
             },
