@@ -24,6 +24,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
+import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -503,6 +504,20 @@ export default function App() {
                   threshold={threshold}
                   totalOwners={owners.length}
                   onManageRoles={setRoleModalTarget}
+                />
+              }
+            />
+            <Route
+              path="owners/:address"
+              element={
+                <OwnerProfilePage
+                  proposals={proposals}
+                  owners={owners}
+                  walletAddress={wallet.address}
+                  walletRoles={walletRoles.roles}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                  onRevoke={handleRevoke}
                 />
               }
             />

@@ -1,6 +1,23 @@
 import { UserCog } from "lucide-react";
+import { Link, useInRouterContext } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import type { Owner, Role } from "../types/accord";
+
+function OwnerLink({
+  to,
+  className,
+  children,
+}: {
+  to: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const inRouter = useInRouterContext();
+  if (inRouter) {
+    return <Link to={to} className={className}>{children}</Link>;
+  }
+  return <a href={to} className={className}>{children}</a>;
+}
 
 type OwnersPageProps = {
   owners: Owner[];
@@ -73,16 +90,24 @@ export function OwnersPage({
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm text-zinc-300">{owner.label}</p>
+                    <OwnerLink
+                      to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
+                      className="text-sm text-zinc-300 hover:text-emerald-400 font-medium transition-colors"
+                    >
+                      {owner.label}
+                    </OwnerLink>
                     {typeof owner.weight === "number" && (
                       <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
                         Weight {owner.weight}
                       </span>
                     )}
                   </div>
-                  <p className="font-mono text-xs text-zinc-500">
+                  <OwnerLink
+                    to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
+                    className="font-mono text-xs text-zinc-500 hover:text-zinc-300 transition-colors block"
+                  >
                     {owner.address}
-                  </p>
+                  </OwnerLink>
                   <div
                     className="mt-2 flex flex-wrap gap-1.5"
                     aria-label={`${owner.label} roles`}
@@ -100,14 +125,22 @@ export function OwnersPage({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => onManageRoles(owner.fullAddress)}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 sm:self-center"
-              >
-                <UserCog size={14} />
-                Manage Roles
-              </button>
+              <div className="flex items-center gap-2 sm:self-center">
+                <OwnerLink
+                  to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
+                  className="inline-flex items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                >
+                  Activity Profile
+                </OwnerLink>
+                <button
+                  type="button"
+                  onClick={() => onManageRoles(owner.fullAddress)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                >
+                  <UserCog size={14} />
+                  Manage Roles
+                </button>
+              </div>
             </div>
           ))}
         </div>
