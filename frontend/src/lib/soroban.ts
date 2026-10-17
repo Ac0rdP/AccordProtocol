@@ -32,16 +32,20 @@ const ACTION_LABELS: Record<PermissionAction, string> = {
   execute: "Executing proposals",
 };
 
+// The multisig owners are the wallets that fund, approve, and execute
+// proposals, so the Owner role grants every action. Fine-grained Proposer /
+// Approver / Executor roles let the contract delegate individual actions to
+// non-owner wallets without loosening owner access.
 export function canCreate(roles: readonly string[]): boolean {
-  return roles.includes("Proposer");
+  return roles.includes("Proposer") || roles.includes("Owner");
 }
 
 export function canApprove(roles: readonly string[]): boolean {
-  return roles.includes("Approver");
+  return roles.includes("Approver") || roles.includes("Owner");
 }
 
 export function canExecute(roles: readonly string[]): boolean {
-  return roles.includes("Executor");
+  return roles.includes("Executor") || roles.includes("Owner");
 }
 
 export function missingRoleTooltip(action: PermissionAction): string {

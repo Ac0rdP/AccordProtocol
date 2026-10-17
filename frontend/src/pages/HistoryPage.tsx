@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Proposal, ProposalCategory, ProposalStatus, RecurringSchedule } from "../types/accord";
 import { ProposalCard } from "../components/ProposalCard";
+import { PageState } from "../components/PageState";
 import {
   getProposalsPaged,
   getTotalProposals,
@@ -34,10 +35,16 @@ export function HistoryPage({
   proposals,
   onApprove,
   recurringSchedules = [],
+  loading = false,
+  error = null,
+  onRetry,
 }: {
   proposals: Proposal[];
   onApprove: (id: number) => void;
   recurringSchedules?: RecurringSchedule[];
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<Filter>("all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -149,6 +156,21 @@ export function HistoryPage({
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+  if (loading) {
+    return <PageState status="loading" title="Loading proposal history…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load proposal history"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
 
   return (
     <>

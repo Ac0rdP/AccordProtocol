@@ -11,7 +11,10 @@
     "test": "vitest run",
     "test:analytics": "vitest run src/lib/analytics.test.ts src/lib/__tests__/analytics* src/components/SpendByCategoryChart.test.tsx src/components/SpendByOwnerChart.test.tsx src/components/TreasuryBalanceChart.test.tsx src/components/StatCard.test.tsx src/components/AnalyticsSectionState.test.tsx",
     "e2e": "playwright test",
-    "test:e2e": "vite preview --port 5173 & playwright test"
+    "test:e2e": "vite preview --port 5173 & playwright test",
+    "check:bundle": "node scripts/check-bundle-budget.mjs",
+    "perf": "node scripts/check-performance-budget.mjs",
+    "types:generate": "python3 ../scripts/generate-contract-types.py"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",

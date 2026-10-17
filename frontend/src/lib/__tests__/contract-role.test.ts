@@ -76,12 +76,14 @@ describe("role wrapper reads", () => {
         retval: xdr.ScVal.scvVec([
           xdr.ScVal.scvSymbol("Owner"),
           xdr.ScVal.scvSymbol("Guardian"),
-          xdr.ScVal.scvSymbol("Admin"),
+          xdr.ScVal.scvSymbol("Viewer"),
         ]),
       },
     });
 
-    await expect(getRoles()).resolves.toEqual(["owner", "guardian", "admin"]);
+    // The no-arg `get_roles` view returns the contract's capitalized role
+    // variants, which map straight onto the frontend `Role` union.
+    await expect(getRoles()).resolves.toEqual(["Owner", "Guardian", "Viewer"]);
   });
 
   test("getRoles returns an empty array when the role set is empty", async () => {
