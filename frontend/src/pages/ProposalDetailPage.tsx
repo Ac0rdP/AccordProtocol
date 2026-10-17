@@ -5,6 +5,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
+import { PageState } from "../components/PageState";
 import type { Proposal, ProposalEvent } from "../types/accord";
 import {
   getHistoricalWeightChangeEvents,
@@ -19,6 +20,11 @@ type ProposalDetailPageProps = {
   walletAddress: string | null;
   onApprove: (id: number) => void;
   onExecute: (id: number) => void;
+  /** Forces the loading state (used by the page-state matrix tests). */
+  loading?: boolean;
+  /** Forces the error state (used by the page-state matrix tests). */
+  error?: string | null;
+  onRetry?: () => void;
 };
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
@@ -35,6 +41,9 @@ export function ProposalDetailPage({
   walletAddress,
   onApprove,
   onExecute,
+  loading = false,
+  error = null,
+  onRetry,
 }: ProposalDetailPageProps) {
   const { id } = useParams();
   const proposalId = Number(id);
@@ -139,6 +148,21 @@ export function ProposalDetailPage({
       active = false;
     };
   }, [proposal?.id, proposal?.status]);
+
+  if (loading) {
+    return <PageState status="loading" title="Loading proposal…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load proposal"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
 
   if (!proposal) {
     return (

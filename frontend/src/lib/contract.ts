@@ -292,9 +292,9 @@ function mapAccessRole(raw: unknown): Role | null {
     return null;
   }
 
-  const normalized = key.trim().toLowerCase();
-  if (!normalized) return null;
-  return ROLE_ALIASES[normalized] ?? null;
+  // Single source of truth for role-name aliases so the "list all roles" and
+  // "roles for this address" paths can never drift apart.
+  return normalizeRole(key);
 }
 
 function mapRoleList(raw: unknown): Role[] {
@@ -470,6 +470,12 @@ function mapRole(raw: unknown): Role | null {
     case "spending_limit":
     case "spending-limit":
       return "SpendingLimit";
+    case "proposer":
+      return "Proposer";
+    case "approver":
+      return "Approver";
+    case "executor":
+      return "Executor";
     default:
       return null;
   }

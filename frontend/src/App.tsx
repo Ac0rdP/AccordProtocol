@@ -5,6 +5,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useParams,
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
@@ -28,7 +29,6 @@ import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { OwnersPage } from "./pages/OwnersPage";
-import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -65,6 +65,7 @@ export default function App() {
   const wallet = useWallet();
   const navigate = useNavigate();
   const location = useLocation();
+  const routeParams = useParams();
 
   const {
     proposals,
@@ -470,21 +471,31 @@ export default function App() {
               <Route
                 index
               element={
-                <DashboardPage
-                  activeProposals={activeProposals}
-                  owners={owners}
-                  dashboardStats={stats}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
-                  onRevoke={handleRevoke}
-                  onCreateProposal={() => setShowCreate(true)}
-                  onCreateRecurringPayment={() => setShowCreateRecurring(true)}
-                  walletRoles={walletRoles.roles}
-                  roleBanner={walletRoles.banner}
-                  loading={loading}
-                  error={error}
-                />
+                routeParams.id ? (
+                  <ProposalDetailPage
+                    proposals={proposals}
+                    walletAddress={wallet.address}
+                    onApprove={handleApprove}
+                    onExecute={handleExecute}
+                  />
+                ) : (
+                  <DashboardPage
+                    activeProposals={activeProposals}
+                    owners={owners}
+                    dashboardStats={stats}
+                    walletAddress={wallet.address}
+                    onApprove={handleApprove}
+                    onExecute={handleExecute}
+                    onRevoke={handleRevoke}
+                    onCreateProposal={() => setShowCreate(true)}
+                    onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                    walletRoles={walletRoles.roles}
+                    roleBanner={walletRoles.banner}
+                    loading={loading}
+                    error={error}
+                    onRetry={refresh}
+                  />
+                )
               }
             />
             <Route
@@ -509,6 +520,19 @@ export default function App() {
                   threshold={threshold}
                   totalOwners={owners.length}
                   onManageRoles={setRoleModalTarget}
+                  walletAddress={wallet.address}
+                  onProposalSubmitted={refresh}
+                />
+              }
+            />
+            <Route
+              path="settings"
+              element={
+                <SettingsPage
+                  stats={stats}
+                  walletAddress={wallet.address}
+                  ownerAddresses={ownerAddresses}
+                  onProposalSubmitted={refresh}
                 />
               }
             />
