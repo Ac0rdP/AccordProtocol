@@ -23,6 +23,17 @@ vi.mock("../hooks/useRecurringPayments", () => ({
   }),
 }));
 
+vi.mock("../lib/submit", () => ({
+  disburseRecurring: vi.fn(),
+  pauseRecurring: vi.fn(),
+  resumeRecurring: vi.fn(),
+  cancelRecurring: vi.fn(),
+}));
+
+vi.mock("../lib/contract", () => ({
+  getRecurringPayment: vi.fn(),
+}));
+
 const baseSchedule = (
   overrides: Partial<RecurringSchedule> = {}
 ): RecurringSchedule => ({
@@ -133,6 +144,7 @@ describe("RecurringPaymentCard", () => {
     test("calls pause and resume handlers when clicked", () => {
       const { unmount } = renderCard({
         schedule: baseSchedule({ status: "active" }),
+        onPause: mockPause,
       });
       fireEvent.click(screen.getByRole("button", { name: /pause/i }));
       expect(mockPause).toHaveBeenCalledWith(1);
@@ -140,6 +152,7 @@ describe("RecurringPaymentCard", () => {
 
       renderCard({
         schedule: baseSchedule({ status: "paused" }),
+        onResume: mockResume,
       });
       fireEvent.click(screen.getByRole("button", { name: /resume/i }));
       expect(mockResume).toHaveBeenCalledWith(1);

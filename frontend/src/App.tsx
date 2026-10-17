@@ -8,7 +8,10 @@ import {
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
+import { ErrorState } from "./components/ErrorState";
+import { GlobalSearch } from "./components/GlobalSearch";
 import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
+import { LoadingState } from "./components/LoadingState";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
@@ -21,7 +24,9 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OwnersPage } from "./pages/OwnersPage";
+import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
@@ -272,7 +277,7 @@ export default function App() {
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
           <Link
             to="/"
-            className="flex items-center gap-3 transition-opacity hover:opacity-80"
+            className="flex shrink-0 items-center gap-3 transition-opacity hover:opacity-80"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-xs font-bold text-black">
               A
@@ -282,6 +287,8 @@ export default function App() {
               testnet
             </span>
           </Link>
+
+          <GlobalSearch proposals={proposals} owners={owners} />
 
           <nav className="flex items-center gap-1">
             {NAV_ITEMS.map(({ label, to }) => (
@@ -390,19 +397,15 @@ export default function App() {
         )}
 
         {txError && (
-          <div className="mb-6 flex items-center justify-between rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            <span>{txError}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setTxError(null);
-                refresh();
-              }}
-              className="ml-4 shrink-0 underline hover:text-red-300"
-            >
-              Dismiss
-            </button>
-          </div>
+          <ErrorState
+            message={txError}
+            variant="banner"
+            onRetry={() => {
+              setTxError(null);
+              refresh();
+            }}
+            onDismiss={() => setTxError(null)}
+          />
         )}
 
         {wallet.networkMismatch && (
@@ -455,9 +458,7 @@ export default function App() {
             </a>
           </div>
         ) : loading ? (
-          <div className="py-16 text-center text-sm text-zinc-500">
-            Loading contract data…
-          </div>
+          <LoadingState message="Loading contract data…" />
         ) : (
           <Routes>
             <Route
@@ -473,6 +474,7 @@ export default function App() {
                   onRevoke={handleRevoke}
                   onCreateProposal={() => setShowCreate(true)}
                   onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                  walletRoles={walletRoles.roles}
                   roleBanner={walletRoles.banner}
                   loading={loading}
                   error={error}
@@ -501,6 +503,28 @@ export default function App() {
                   threshold={threshold}
                   totalOwners={owners.length}
                   onManageRoles={setRoleModalTarget}
+                />
+              }
+            />
+            <Route
+              path="settings"
+              element={
+                <SettingsPage
+                  stats={stats}
+                  walletAddress={wallet.address}
+                  ownerAddresses={ownerAddresses}
+                  onProposalSubmitted={refresh}
+                />
+              }
+            />
+            <Route
+              path="proposals/:id"
+              element={
+                <ProposalDetailPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
                 />
               }
             />

@@ -278,17 +278,9 @@ const ROLE_ALIASES: Record<string, Role> = {
   proposer: "Proposer",
   approver: "Approver",
   executor: "Executor",
+  spendinglimit: "SpendingLimit",
+  spending_limit: "SpendingLimit",
 };
-
-function normalizeRole(value: unknown): Role | null {
-  if (typeof value === "string") {
-    const key = value.trim();
-    if (!key) return null;
-    const normalized = key.toLowerCase();
-    return ROLE_ALIASES[normalized] ?? null;
-  }
-  return null;
-}
 
 function mapAccessRole(raw: unknown): Role | null {
   let key: string;
@@ -299,19 +291,10 @@ function mapAccessRole(raw: unknown): Role | null {
   } else {
     return null;
   }
-  
-  switch (key.toLowerCase()) {
-    case "proposer":
-      return "Proposer";
-    case "approver":
-      return "Approver";
-    case "executor":
-      return "Executor";
-    case "viewer":
-      return "Viewer";
-    default:
-      return null;
-  }
+
+  const normalized = key.trim().toLowerCase();
+  if (!normalized) return null;
+  return ROLE_ALIASES[normalized] ?? null;
 }
 
 function mapRoleList(raw: unknown): Role[] {

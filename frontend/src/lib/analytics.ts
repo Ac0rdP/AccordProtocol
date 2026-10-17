@@ -239,11 +239,6 @@ function flowBucketLabel(startMs: number, granularity: FlowGranularity): string 
   return `${y}-${mo}-${day}`;
 }
 
-function periodKey(deadlineTs: number): string {
-  const d = new Date(deadlineTs * 1000);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
 /**
  * Treasury inflow vs outflow bucketed by day/week/month with zero-filled
  * empty windows and a configurable date range.
@@ -670,12 +665,6 @@ export async function fetchTreasurySummary(
     return null;
   }
 }
-
-export type TreasuryBalancePoint = {
-  timestamp: string;
-  xlm: number;
-  usdc: number;
-};
 
 export async function fetchTreasuryBalanceHistory(): Promise<
   TreasuryBalancePoint[]
