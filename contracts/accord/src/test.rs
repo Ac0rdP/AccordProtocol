@@ -12551,3 +12551,176 @@ fn disburse_recurring_with_insufficient_balance_preserves_state() {
     assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
     assert_eq!(token.sent(), 0);
 }
+
+// ─── Removed owner's weight is subtracted from total weight exactly once ─────
+
+#[test]
+fn remove_owner_subtracts_exactly_their_weight_from_total() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    assert_eq!(client.get_total_weight(), 12);
+
+    remove_owner_via(&env, &client, &owners[0], &owners[3]);
+
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
+    assert_eq!(client.get_owners().len(), 3);
+}
+
+#[test]
+fn remove_owner_with_approvals_and_spending_limit_subtracts_only_their_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[3].clone();
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+
+    // Give the target a spending limit entry.
+    let limit_id = client.create_spending_limit_proposal(
+        &owners[0],
+        &target,
+        &token,
+        &1_000_i128,
+        &str(&env, "limit target"),
+        &DEADLINE,
+    );
+    approve_and_execute(&client, &owners[0], limit_id);
+    assert_eq!(client.get_spending_limit(&target, &token), Some(1_000));
+
+    // Give the target an active approval on a pending proposal.
+    let pending_id = client.create_add_owner_proposal(
+        &owners[0],
+        &Address::generate(&env),
+        &1,
+        &str(&env, "pending add"),
+        &DEADLINE,
+    );
+    client.approve(&target, &pending_id);
+    assert_eq!(client.get_proposal(&pending_id).approval_weight, 2);
+
+    remove_owner_via(&env, &client, &owners[0], &target);
+
+    // Only the target's weight (2) leaves the total, once; the approval and
+    // spending-limit entries play no part in the subtraction.
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "remove owner with approvals and limit");
+    assert_eq!(client.get_proposal(&pending_id).approval_weight, 0);
+}
+
+#[test]
+fn remove_heaviest_owner_leaves_total_equal_to_remaining_sum() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+
+    remove_owner_via(&env, &client, &owners[1], &owners[0]);
+
+    assert_eq!(client.get_total_weight(), 3 + 3 + 2);
+    let remaining: u32 = client
+        .get_owner_weights()
+        .iter()
+        .map(|entry| entry.weight)
+        .sum();
+    assert_eq!(client.get_total_weight(), remaining);
+    assert_total_weight_invariant(&env, &client, "remove heaviest owner");
+}
+
+#[test]
+fn duplicate_remove_owner_proposals_subtract_weight_only_once() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[3].clone();
+
+    // Both proposals pass creation while the target is still an owner.
+    let first = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "first"), &DEADLINE);
+    let second = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "second"), &DEADLINE);
+    client.approve(&owners[0], &first);
+    client.approve(&owners[0], &second);
+
+    client.execute(&owners[0], &first);
+    assert_eq!(client.get_total_weight(), 10);
+
+    // Whether or not the second execution is accepted, the weight of an owner
+    // who is already gone cannot be subtracted again.
+    let _ = client.try_execute(&owners[0], &second);
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "duplicate removal");
+}
+
+#[test]
+fn rejected_remove_owner_at_creation_leaves_total_weight_unchanged() {
+    // A=3, B=1, C=1 → total 5, threshold 4: removing A would leave 2 < 4.
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone()]);
+    let weights = Vec::from_array(&env, [3_u32, 1, 1]);
+    client.initialize(&owners, &weights, &4, &0);
+
+    assert_eq!(
+        client.try_create_remove_owner_proposal(&b, &a, &str(&env, "too heavy"), &DEADLINE),
+        Err(Ok(ContractError::WouldBreakThreshold))
+    );
+    assert_eq!(client.get_total_weight(), 5);
+
+    // A non-owner target is rejected too, with no effect on the total.
+    let stranger = Address::generate(&env);
+    assert!(client
+        .try_create_remove_owner_proposal(&b, &stranger, &str(&env, "not an owner"), &DEADLINE)
+        .is_err());
+    assert_eq!(client.get_total_weight(), 5);
+}
+
+#[test]
+fn rejected_remove_owner_at_execution_leaves_total_weight_unchanged() {
+    // Weights 3,3,2,2 → total 10, threshold 7. Removing either weight-2 owner
+    // passes creation (8 >= 7), but once one is gone the other would leave 6.
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let d = Address::generate(&env);
+    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone(), d.clone()]);
+    let weights = Vec::from_array(&env, [3_u32, 3, 2, 2]);
+    client.initialize(&owners, &weights, &7, &0);
+
+    let remove_c = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    let remove_d = client.create_remove_owner_proposal(&a, &d, &str(&env, "remove d"), &DEADLINE);
+    for id in [remove_c, remove_d] {
+        client.approve(&a, &id);
+        client.approve(&b, &id);
+        client.approve(&c, &id);
+    }
+
+    client.execute(&a, &remove_d);
+    assert_eq!(client.get_total_weight(), 8);
+
+    assert_eq!(
+        client.try_execute(&a, &remove_c),
+        Err(Ok(ContractError::WouldBreakThreshold))
+    );
+    assert_eq!(client.get_total_weight(), 8);
+    assert_eq!(client.get_owners().len(), 3);
+}
+
+#[test]
+fn remove_owner_cannot_underflow_total_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[0].clone();
+    let id = client.create_remove_owner_proposal(&owners[1], &target, &str(&env, "remove"), &DEADLINE);
+    client.approve(&owners[1], &id);
+
+    // Corrupt the stored total so it is smaller than the owner's weight (4).
+    env.as_contract(&client.address, || write_total_weight(&env, 1));
+
+    assert_eq!(
+        client.try_execute(&owners[1], &id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(client.get_total_weight(), 1);
+    assert_eq!(client.get_owners().len(), 4);
+}
