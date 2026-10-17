@@ -3,6 +3,7 @@ import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
+import { RecurringForecastChart } from "../components/RecurringForecastChart";
 import {
   getRecurringPaymentsPaged,
   getTotalRecurringPayments,
@@ -187,6 +188,8 @@ export function RecurringPage({
           ))}
         </div>
       </div>
+
+      <RecurringForecastChart schedules={schedules} loading={loading} />
 
       {!loading && activeSchedules.length > 0 && (
         <DisbursementTimeline schedules={activeSchedules} />

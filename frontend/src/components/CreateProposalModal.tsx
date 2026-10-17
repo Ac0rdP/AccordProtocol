@@ -594,7 +594,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             type="button"
             onClick={() => setStep("form")}
             disabled={submitting}
-            className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Back
           </button>
@@ -605,7 +605,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             {submitting ? "Submitting…" : "Confirm & Submit"}
           </button>
@@ -620,15 +620,16 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     return (
       <div className="space-y-4">
         <p className="text-sm text-zinc-400">Select the type of proposal to create:</p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
           {FORM_OPTIONS.map(({ kind, label }) => (
             <button
               key={kind}
               type="button"
               onClick={() => handleGoToForm(kind)}
-              className="rounded-xl border border-zinc-700 bg-zinc-800/50 p-4 text-sm font-medium text-zinc-200 transition-colors hover:border-emerald-500/50 hover:bg-zinc-800 disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="rounded-xl border border-zinc-700 bg-zinc-800/50 p-3.5 sm:p-4 min-h-[48px] text-sm font-medium text-zinc-200 transition-colors hover:border-emerald-500/50 hover:bg-zinc-800 disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-between sm:justify-center"
             >
-              {label}
+              <span>{label}</span>
+              <span className="text-zinc-500 sm:hidden">→</span>
             </button>
           ))}
         </div>
@@ -668,29 +669,30 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 }}
                 onBlur={() => setRecipientTouched(true)}
                 placeholder="G..."
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
               />
               {recipientTouched && !StrKey.isValidEd25519PublicKey(to.trim()) && (
                 <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>
               )}
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex flex-col sm:flex-row gap-3">
               <div className="flex-1">
-                <label className="text-xs text-zinc-400 block mb-1.5">Amount</label>
+                <label className="text-xs text-zinc-400 block mb-1.5 font-sans">Amount</label>
                 <input
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
                   type="number"
+                  inputMode="decimal"
                   min="0"
                   step="any"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
                 />
               </div>
-              <div className="w-28">
-                <label className="text-xs text-zinc-400 block mb-1.5">Token</label>
-                <div className="grid grid-cols-3 gap-1">
+              <div className="w-full sm:w-36">
+                <label className="text-xs text-zinc-400 block mb-1.5 font-sans">Token</label>
+                <div className="grid grid-cols-3 gap-1.5">
                   {(["XLM", "USDC", "EURC"] as const).map((symbol) => {
                     const active = token === symbol;
                     return (
@@ -699,7 +701,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                         type="button"
                         onClick={() => setToken(symbol)}
                         aria-pressed={active}
-                        className={`rounded-lg border px-1.5 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
+                        className={`min-h-[44px] rounded-lg border px-2 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
                           active
                             ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
                             : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
@@ -756,7 +758,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               }}
               onBlur={() => setOwnerTouched(true)}
               placeholder="G..."
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
             />
             {ownerTouched && !StrKey.isValidEd25519PublicKey(ownerAddress.trim()) && (
               <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>
@@ -785,7 +787,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               ref={firstInputRef as unknown as React.Ref<HTMLSelectElement>}
               value={selectedOwner}
               onChange={(e) => setSelectedOwner(e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
             >
               <option value="">Select an owner…</option>
               {availableOwners.map((addr) => (
@@ -833,9 +835,10 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               onChange={(e) => setNewThreshold(e.target.value)}
               placeholder={`1 – ${totalOwners}`}
               type="number"
+              inputMode="numeric"
               min={1}
               max={totalOwners}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
             />
             <p className="text-xs text-zinc-500 mt-1 font-sans">
               Threshold must be between 1 and {totalOwners}
@@ -854,7 +857,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 ref={firstInputRef as unknown as React.Ref<HTMLSelectElement>}
                 value={selectedOwner}
                 onChange={(e) => setSelectedOwner(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
               >
                 <option value="">Select target owner…</option>
                 {availableOwners.map((addr) => (
@@ -874,9 +877,10 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 onChange={(e) => setNewWeightInput(e.target.value)}
                 placeholder="Enter new weight..."
                 type="number"
+                inputMode="numeric"
                 min={1}
                 max={100000}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
               />
             </div>
 
@@ -919,7 +923,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             onChange={(e) => setDescription(e.target.value)}
             maxLength={MAX_DESCRIPTION_LEN}
             placeholder={formType === "transfer" ? "What is this payment for?" : "Reason for this change"}
-            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
           />
           <p
             className={`mt-1 text-right text-xs ${
@@ -940,7 +944,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             type="date"
             value={deadline}
             onChange={(e) => setDeadline(e.target.value)}
-            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
           />
         </div>
 
@@ -954,7 +958,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           <button
             type="button"
             onClick={() => setStep("type")}
-            className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Back
           </button>
@@ -965,7 +969,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Review Proposal
           </button>
@@ -987,7 +991,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               <>
                 <div>
                   <dt className="text-xs text-zinc-500">Action</dt>
-                  <dd className="mt-1 text-sm text-zinc-200">Transfer {amount} {token} to {to}</dd>
+                  <dd className="mt-1 break-all text-sm text-zinc-200">Transfer {amount} {token} to {to}</dd>
                 </div>
               </>
             )}
@@ -1075,7 +1079,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             type="button"
             onClick={() => setStep("form")}
             disabled={submitting}
-            className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Back
           </button>
@@ -1086,7 +1090,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             {submitting ? "Submitting…" : "Confirm & Submit"}
           </button>
@@ -1096,23 +1100,21 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
   }
 
   return (
-    <div
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
-      aria-hidden="true"
-    >
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-3 sm:p-4 overflow-y-auto">
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-title"
-        className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md"
+        className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 w-full max-w-md max-h-[calc(100dvh-1.5rem)] sm:max-h-[90vh] overflow-y-auto my-auto shadow-2xl"
       >
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-5 sm:mb-6">
           <h2 id="modal-title" className="text-white font-semibold text-lg">New Proposal</h2>
           <button
             type="button"
             onClick={onClose}
-            className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-md"
+            aria-label="Close modal"
+            className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-lg min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2"
           >
             ✕
           </button>

@@ -129,3 +129,140 @@ describe("event polling recovery", () => {
     expect(contract.getContractEvents).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("push channel with polling fallback", () => {
+  let originalWebSocket: any;
+
+  class MockWebSocket {
+    url: string;
+    onopen: (() => void) | null = null;
+    onmessage: ((ev: { data: string }) => void) | null = null;
+    onerror: ((err: any) => void) | null = null;
+    onclose: (() => void) | null = null;
+
+    static instances: MockWebSocket[] = [];
+
+    constructor(url: string) {
+      this.url = url;
+      MockWebSocket.instances.push(this);
+    }
+
+    open() {
+      this.onopen?.();
+    }
+
+    simulateMessage(data: any) {
+      this.onmessage?.({ data: JSON.stringify(data) });
+    }
+
+    simulateError(err = new Error("network error")) {
+      this.onerror?.(err);
+      this.onclose?.();
+    }
+
+    close() {
+      this.onclose?.();
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    MockWebSocket.instances = [];
+    originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = MockWebSocket as any;
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWebSocket;
+    vi.useRealTimers();
+  });
+
+  test("receives live events via push and triggers refresh without waiting for polling", async () => {
+    const refresh = vi.fn();
+    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
+
+    renderHook(() =>
+      useEventPolling(refresh, 10000, {
+        pushUrl: "ws://localhost:8080/events",
+      }),
+    );
+
+    expect(MockWebSocket.instances.length).toBe(1);
+    const ws = MockWebSocket.instances[0];
+
+    // Establish WebSocket connection
+    ws.open();
+
+    // Push event arrives immediately
+    ws.simulateMessage({ type: "proposal_created", ledger: 101 });
+
+    await vi.waitFor(() => {
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
+    // Verify polling was not the source (contract.getContractEvents was not invoked yet)
+    expect(contract.getContractEvents).not.toHaveBeenCalled();
+  });
+
+  test("falls back to polling when push channel connection fails", async () => {
+    const refresh = vi.fn();
+    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
+    vi.mocked(contract.getContractEvents).mockResolvedValue(105);
+
+    renderHook(() =>
+      useEventPolling(refresh, 2000, {
+        pushUrl: "ws://localhost:8080/events",
+      }),
+    );
+
+    const ws = MockWebSocket.instances[0];
+    // Push connection fails
+    ws.simulateError();
+
+    // Polling kicks in as fallback
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await vi.waitFor(() => {
+      expect(contract.getLatestLedger).toHaveBeenCalled();
+    });
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await vi.waitFor(() => {
+      expect(contract.getContractEvents).toHaveBeenCalled();
+      expect(refresh).toHaveBeenCalled();
+    });
+  });
+
+  test("reconnects push channel after disconnection and resumes push updates", async () => {
+    const refresh = vi.fn();
+    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
+
+    renderHook(() =>
+      useEventPolling(refresh, 10000, {
+        pushUrl: "ws://localhost:8080/events",
+        reconnectIntervalMs: 1000,
+      }),
+    );
+
+    const ws1 = MockWebSocket.instances[0];
+    ws1.open();
+    ws1.simulateError();
+
+    // Advance time to allow reconnect timer to fire
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(MockWebSocket.instances.length).toBe(2);
+    const ws2 = MockWebSocket.instances[1];
+    ws2.open();
+
+    // Push updates on reconnected socket
+    ws2.simulateMessage({ type: "proposal_executed" });
+
+    await vi.waitFor(() => {
+      expect(refresh).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+

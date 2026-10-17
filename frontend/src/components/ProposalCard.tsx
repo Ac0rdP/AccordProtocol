@@ -218,7 +218,15 @@ export function ProposalCard({
 
           <div className="mt-0.5 flex items-center gap-2">
             <div className="flex items-center gap-2">
-              <p className="font-mono text-sm text-zinc-500">Proposed by → {shortenAddr(proposal.proposer)}</p>
+              <p className="font-mono text-sm text-zinc-500">
+                Proposed by →{" "}
+                <Link
+                  to={`/app/owners/${encodeURIComponent(proposal.proposer)}`}
+                  className="text-zinc-400 hover:text-emerald-400 hover:underline transition-colors"
+                >
+                  {shortenAddr(proposal.proposer)}
+                </Link>
+              </p>
               {(() => {
                 const ownerAddr = Object.keys(ownerWeights).find((a) => shortenAddr(a) === proposal.proposer);
                 if (ownerAddr) {
