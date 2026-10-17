@@ -99,6 +99,7 @@ export async function walkHistory({
   pageLimit = DEFAULT_PAGE_LIMIT,
   maxPages = Number.MAX_SAFE_INTEGER,
   onProgress = () => {},
+  onEvent = () => {},
 }) {
   const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
   const filters = buildContractFilters({ tokens, treasuryAddress });
@@ -148,9 +149,13 @@ export async function walkHistory({
       if (eventLedger < start) continue;
 
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-      if (transferEntry && (await store.recordTransfer(transferEntry))) eventsIndexed += 1;
+      const transferRecorded = transferEntry ? await store.recordTransfer(transferEntry) : false;
+      if (transferRecorded) eventsIndexed += 1;
       const accordEntry = parseAccordEvent(event, treasuryAddress);
-      if (accordEntry && (await store.recordAccordEvent(accordEntry))) eventsIndexed += 1;
+      const accordRecorded = accordEntry ? await store.recordAccordEvent(accordEntry) : false;
+      if (accordRecorded) eventsIndexed += 1;
+      // Per-event detail for callers that want it (the replay command).
+      onEvent({ event, ledger: eventLedger, transfer: transferEntry, transferRecorded, accord: accordEntry, accordRecorded });
       if (eventLedger > furthestLedger) furthestLedger = eventLedger;
     }
 

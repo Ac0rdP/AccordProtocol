@@ -9,8 +9,11 @@ import { DatabaseSync } from "node:sqlite";
  * it exactly like the Postgres store; see `./index.js` for the shared contract.
  */
 export function openLedgerStore(databasePath) {
-  const resolvedPath = resolve(databasePath);
-  mkdirSync(dirname(resolvedPath), { recursive: true });
+  // ":memory:" is SQLite's private in-memory database (used by replay); it
+  // must not be resolved into a file path.
+  const inMemory = databasePath === ":memory:";
+  const resolvedPath = inMemory ? databasePath : resolve(databasePath);
+  if (!inMemory) mkdirSync(dirname(resolvedPath), { recursive: true });
   const database = new DatabaseSync(resolvedPath);
 
   database.exec(`

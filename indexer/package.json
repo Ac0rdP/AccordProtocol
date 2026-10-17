@@ -10,6 +10,7 @@
     "serve": "node --env-file-if-exists=../.env src/index.js",
     "backfill": "node --env-file-if-exists=../.env src/index.js backfill",
     "reindex": "node --env-file-if-exists=../.env src/index.js reindex",
+    "replay": "node --env-file-if-exists=../.env src/index.js replay",
     "test": "node --test",
     "migrate": "node --env-file-if-exists=../.env src/migrate.js"
   },

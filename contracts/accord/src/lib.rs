@@ -4728,4 +4728,6 @@ impl AccordContract {
 }
 
 mod test;
+#[cfg(test)]
+mod bench;
 // TODO: Ensure tests verify event parsing and decoding into typed records

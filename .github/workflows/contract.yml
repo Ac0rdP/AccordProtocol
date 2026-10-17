@@ -139,6 +139,127 @@ jobs:
                   print(f"Contract: {os.path.basename(f)} | Size: {size_kb:.2f} KB ({size_bytes} bytes)")
           '
 
+  # Coverage gate (#813). Separate from `ci` so a failing test there is reported
+  # once, there; --ignore-run-fail lets this job still measure coverage and
+  # enforce the threshold. The threshold lives in contracts/accord/Cargo.toml.
+  coverage:
+    name: Contract Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Read coverage threshold
+        id: threshold
+        run: |
+          threshold=$(sed -n 's/^min-line-coverage *= *\([0-9][0-9.]*\).*/\1/p' contracts/accord/Cargo.toml)
+          if [ -z "$threshold" ]; then
+            echo "min-line-coverage is missing from contracts/accord/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "value=$threshold" >> "$GITHUB_OUTPUT"
+
+      - name: Measure contract coverage
+        run: |
+          cargo llvm-cov -p accord --lib --no-report --ignore-run-fail \
+            --ignore-filename-regex '(test|bench)\.rs$'
+
+      - name: Write coverage reports
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --html --output-dir target/coverage
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --lcov --output-path target/coverage/lcov.info
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --summary-only | tee target/coverage/summary.txt
+          {
+            echo "### Contract coverage"
+            echo
+            echo "Minimum line coverage: ${{ steps.threshold.outputs.value }}%"
+            echo
+            echo '```'
+            cat target/coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-coverage
+          path: target/coverage
+          retention-days: 30
+
+      - name: Enforce coverage threshold
+        run: |
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' \
+            --fail-under-lines "${{ steps.threshold.outputs.value }}"
+
+  # Resource/CPU regression gate (#814). Compares the metered cost of the hot
+  # entrypoints with contracts/accord/bench-baseline.txt and fails when any
+  # figure grows past the threshold (default 5%). See CONTRIBUTING.md.
+  benchmarks:
+    name: Contract Benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Run resource benchmarks
+        run: cargo test -p accord --lib bench_hot_entrypoints -- --nocapture
+
+      - name: Report benchmark deltas
+        if: always()
+        run: |
+          if [ -f target/bench/report.md ]; then
+            cat target/bench/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-benchmarks
+          path: target/bench
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # Fork pull requests get a read-only token, so commenting is best effort;
+      # the deltas are always in the job summary and the artifact above.
+      - name: Comment deltas on the pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('target/bench/report.md')) return;
+            const marker = '<!-- accord-contract-benchmarks -->';
+            const body = `${marker}\n${fs.readFileSync('target/bench/report.md', 'utf8')}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
   # Runs only on push to main — never on pull requests.
   # Requires TESTNET_CONTRACT_ID to be set as a repository variable under
   # Settings → Secrets and variables → Actions → Variables.
