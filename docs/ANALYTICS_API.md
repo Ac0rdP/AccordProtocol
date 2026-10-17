@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `/health` is a database-backed readiness check; the service root returns its name and status.
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators.
 
 ---
 
@@ -240,7 +240,112 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
 
+## GraphQL
+
+`POST /graphql` serves the same indexed data as the REST endpoints through a single, flexible query surface, so a dashboard can request exactly the fields it needs without a new endpoint per view. Resolvers read the PostgreSQL datastore directly and are scoped to the configured `CONTRACT_ID`.
+
+Send a standard GraphQL-over-HTTP request body:
+
+```json
+{ "query": "{ proposals(first: 5) { nodes { id status amount } } }", "variables": {} }
+```
+
+### Schema overview
+
+| Query field | Returns | Source |
+| --- | --- | --- |
+| `proposals(first, after, filter, sort, order)` | `ProposalConnection` | `proposals` |
+| `proposal(id)` | `Proposal` or `null` | `proposals` |
+| `owners(first, after, filter)` | `OwnerConnection` (heaviest first) | latest row per owner in `owner_weight_changes` |
+| `owner(address)` | `Owner` or `null` | `owner_weight_changes` |
+| `spends(first, after, filter)` | `SpendConnection` (most recently executed first) | executed `transfer` proposals |
+| `spendTotals(filter)` | `[SpendTotal]` grouped by token and category | executed `transfer` proposals |
+| `treasuryFlows(first, after, filter)` | `TreasuryFlowConnection` (newest first) | `transfers` |
+
+Nested fields: `Proposal.timeline` (the proposal's events, oldest first), `Proposal.proposerOwner` (the proposer's current `Owner` record), and `Owner.proposals` (a paginated, filterable `ProposalConnection`). Both `timeline` and `proposerOwner` are batched, so listing many proposals does not issue a query per proposal. `status` and `category` are enums (`PENDING`, `READY`, `EXECUTED`, `EXPIRED`, `REVOKED`; `TRANSFER`, `PAYROLL`, `GRANT`, `OPS`, `OTHER`). Amounts are decimal strings and timestamps are ISO 8601 `DateTime` values, as in the REST API.
+
+```graphql
+query Dashboard($since: DateTime) {
+  proposals(first: 10, filter: { status: EXECUTED, startDate: $since }, sort: AMOUNT, order: DESC) {
+    nodes {
+      id
+      amount
+      token
+      category
+      proposerOwner { address weight }
+      timeline { type actor ledger }
+    }
+    pageInfo { hasNextPage endCursor }
+    totalCount
+  }
+  spendTotals { token category total count }
+  owners(first: 5) { nodes { address weight } }
+  treasuryFlows(first: 5, filter: { token: "USDC" }) { nodes { amount ledger occurredAt } }
+}
+```
+
+### Pagination
+
+Every list field is a connection: `{ nodes, pageInfo { hasNextPage endCursor }, totalCount }`. `first` defaults to `20` and must be `1`–`100`. Pass the previous page's `pageInfo.endCursor` as `after` to fetch the next page. Cursors are opaque and only valid for the same filters and ordering. `totalCount` runs a separate count query, so it is only computed when selected.
+
+### Filtering and ordering
+
+| Field | Filter input | Keys |
+| --- | --- | --- |
+| `proposals`, `Owner.proposals` | `ProposalFilter` | `status`, `category`, `token`, `proposer` (substring), `startDate`/`endDate` (creation time) |
+| `owners` | `OwnerFilter` | `address` (substring), `minWeight`, `includeRemoved` (default `false`) |
+| `spends`, `spendTotals` | `SpendFilter` | `token`, `category`, `recipient` (substring), `startDate`/`endDate` (execution time) |
+| `treasuryFlows` | `TreasuryFlowFilter` | `token`, `recipient` (substring), `proposalId`, `scheduleId`, `startDate`/`endDate` |
+
+`proposals` also accepts `sort` (`CREATED_AT` default, `DEADLINE`, `AMOUNT`) and `order` (`DESC` default, `ASC`). Substring filters are case-insensitive and match `%`, `_`, and `\` literally.
+
+### Query limits
+
+Expensive queries are bounded before any resolver runs.
+
+| Limit | Default | Environment variable | Behavior when exceeded |
+| --- | --- | --- | --- |
+| Query depth | `6` | `GRAPHQL_MAX_DEPTH` | `400`, error `Query is nested too deep.` |
+| Query complexity | `500` | `GRAPHQL_MAX_COMPLEXITY` | `400`, error `Query is too complex.` |
+| Page size (`first`) | `100` | — | `200`, error code `PAGE_SIZE_EXCEEDED` |
+| Execution time | `10000` ms | `GRAPHQL_TIMEOUT_MS` | `504`, error code `TIMEOUT` |
+| Request body | 64 KiB | — | `413` |
+| Batched requests | unsupported | — | `400`, a JSON array body is refused |
+| Introspection | enabled | `GRAPHQL_INTROSPECTION` (`false` disables) | introspection fields resolve to `null` |
+
+Each field costs `1`; a connection or list field multiplies the cost of its selection by `first` (default `20`), and `timeline` and `spendTotals` assume `20` and `25` items. Nested connections therefore multiply, which is what stops a request such as "100 proposals, each with 100 owner proposals". Select fewer fields, lower `first`, or raise `GRAPHQL_MAX_COMPLEXITY` for trusted deployments.
+
+### GraphQL errors
+
+Resolver errors use the standard GraphQL `errors` array with a machine-readable `extensions.code`:
+
+```json
+{ "data": null, "errors": [{ "message": "`first` must be between 1 and 100", "path": ["proposals"], "extensions": { "code": "PAGE_SIZE_EXCEEDED" } }] }
+```
+
+| `extensions.code` | Meaning |
+| --- | --- |
+| `PAGE_SIZE_EXCEEDED` | `first` is outside `1`–`100`. |
+| `INVALID_CURSOR` | `after` was not produced by this API. |
+| `INTERNAL_ERROR` | A datastore query failed; details are logged server-side only. |
+| `BAD_REQUEST` / `TIMEOUT` | Malformed or batched request body / execution time limit (HTTP-level error body with the same `errors` shape). |
+
+Rejected requests are counted in `accord_api_graphql_rejections_total`.
+
 ---
+
+## Webhooks
+
+Consumers that would rather be pushed new events than poll can subscribe to signed webhooks. The webhook service runs in the **indexer** (`indexer/src/webhooks.js`), because that is where events enter the store; the analytics API itself serves pull queries. Subscription configuration, the delivery payload, retry/backoff settings and the dead-letter workflow are documented in the [indexer README](../indexer/README.md#webhooks).
+
+Receivers verify each delivery with the `X-Accord-Signature` header, `t=<unix seconds>,v1=<hex>`, where `v1 = HMAC_SHA256(secret, "<t>." + rawBody)`:
+
+1. Use the raw request body, not a re-serialized one.
+2. Reject if `|now - t|` is over your tolerance (300 seconds recommended); retries are re-signed with a fresh `t`.
+3. Compare in constant time against every `v1` in the header (more than one is sent only during secret rotation).
+4. De-duplicate on `X-Accord-Event-Id`: delivery is at least once.
+
+Failures retry with exponential backoff and jitter, then move to a dead-letter queue visible at the indexer's `GET /webhooks/deliveries?status=dead`.
 
 ## Event Payload Schemas
 

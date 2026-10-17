@@ -1,7 +1,14 @@
-use std::{collections::HashMap, env, net::SocketAddr};
+use std::{collections::HashMap, env, net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    http::{StatusCode, header},
+    middleware,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -20,10 +27,32 @@ struct Config {
     contract_id: String,
 }
 
+mod graphql;
+mod metrics;
+
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
     contract_id: String,
+    schema: graphql::AccordSchema,
+    graphql_timeout: Duration,
+}
+
+impl AppState {
+    fn new(pool: PgPool, contract_id: String) -> Self {
+        Self {
+            pool,
+            contract_id,
+            schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
+            graphql_timeout: graphql::GraphqlConfig::default().timeout,
+        }
+    }
+
+    fn with_graphql(mut self, config: graphql::GraphqlConfig) -> Self {
+        self.schema = graphql::build_schema(&config);
+        self.graphql_timeout = config.timeout;
+        self
+    }
 }
 
 impl Config {
@@ -67,9 +96,17 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/livez", get(livez))
+        .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics_endpoint))
+        .route(
+            "/graphql",
+            post(graphql::handler).layer(DefaultBodyLimit::max(graphql::MAX_BODY_BYTES)),
+        )
         .route("/proposals", get(proposals::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
+        .layer(middleware::from_fn(metrics::track))
         .with_state(state)
 }
 
@@ -316,6 +353,86 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             )
         }
     }
+}
+
+#[derive(Serialize)]
+struct LivenessResponse {
+    status: &'static str,
+}
+
+/// Liveness: the process is up and serving requests; never touches the database.
+async fn livez() -> Json<LivenessResponse> {
+    Json(LivenessResponse { status: "ok" })
+}
+
+/// Readiness: the datastore answers within two seconds.
+async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
+    let ping = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query("SELECT 1").execute(&state.pool),
+    )
+    .await;
+    match ping {
+        Ok(Ok(_)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ok", "checks": { "database": "ok" } })),
+        ),
+        failure => {
+            tracing::error!(?failure, "analytics database readiness check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "unavailable",
+                    "checks": { "database": "unavailable" }
+                })),
+            )
+        }
+    }
+}
+
+async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
+    use std::fmt::Write as _;
+
+    let mut body = metrics::registry().render();
+
+    let size = state.pool.size();
+    let idle = state.pool.num_idle() as u32;
+    body.push_str("# HELP accord_api_db_pool_connections Database pool connections by state.\n");
+    body.push_str("# TYPE accord_api_db_pool_connections gauge\n");
+    let _ = writeln!(
+        body,
+        "accord_api_db_pool_connections{{state=\"idle\"}} {idle}"
+    );
+    let _ = writeln!(
+        body,
+        "accord_api_db_pool_connections{{state=\"active\"}} {}",
+        size.saturating_sub(idle)
+    );
+
+    // Ingestion progress is best effort: a missing checkpoint row or an
+    // unreachable database must not fail the scrape.
+    let checkpoint = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query_as::<_, (i64, f64)>(
+            "SELECT last_ledger, EXTRACT(EPOCH FROM (NOW() - updated_at))::float8 \
+             FROM checkpoints WHERE contract_id = $1",
+        )
+        .bind(&state.contract_id)
+        .fetch_optional(&state.pool),
+    )
+    .await;
+    if let Ok(Ok(Some((ledger, age)))) = checkpoint {
+        body.push_str(
+            "# HELP accord_api_indexed_ledger Last ledger recorded by the indexer checkpoint.\n",
+        );
+        body.push_str("# TYPE accord_api_indexed_ledger gauge\n");
+        let _ = writeln!(body, "accord_api_indexed_ledger {ledger}");
+        body.push_str("# HELP accord_api_checkpoint_age_seconds Seconds since the indexer checkpoint last advanced.\n");
+        body.push_str("# TYPE accord_api_checkpoint_age_seconds gauge\n");
+        let _ = writeln!(body, "accord_api_checkpoint_age_seconds {}", age.max(0.0));
+    }
+
+    ([(header::CONTENT_TYPE, metrics::CONTENT_TYPE)], body)
 }
 
 mod proposals {
@@ -835,6 +952,7 @@ mod proposals {
 
     pub(super) fn internal_error(error: sqlx::Error) -> (StatusCode, Json<ApiError>) {
         tracing::error!(%error, "failed to query indexed proposals");
+        metrics::record_error("database");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
@@ -905,6 +1023,7 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::from_env()?;
+    let graphql_config = graphql::GraphqlConfig::from_env()?;
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
@@ -926,10 +1045,7 @@ async fn main() -> Result<()> {
     tracing::info!(%address, "analytics API listening");
     axum::serve(
         listener,
-        app(AppState {
-            pool,
-            contract_id: config.contract_id,
-        }),
+        app(AppState::new(pool, config.contract_id).with_graphql(graphql_config)),
     )
     .await?;
     Ok(())
@@ -951,13 +1067,10 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
             .unwrap();
-        let response = app(AppState {
-            pool,
-            contract_id: "test-contract".to_owned(),
-        })
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+        let response = app(AppState::new(pool, "test-contract".to_owned()))
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
@@ -967,18 +1080,15 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
             .unwrap();
-        let response = app(AppState {
-            pool,
-            contract_id: "test-contract".to_owned(),
-        })
-        .oneshot(
-            Request::builder()
-                .uri("/proposals?limit=101")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let response = app(AppState::new(pool, "test-contract".to_owned()))
+            .oneshot(
+                Request::builder()
+                    .uri("/proposals?limit=101")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -992,22 +1102,89 @@ mod tests {
         let pool = PgPoolOptions::new()
             .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
             .unwrap();
-        let response = app(AppState {
-            pool,
-            contract_id: "test-contract".to_owned(),
-        })
-        .oneshot(
-            Request::builder()
-                .uri("/proposals/not-a-number")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+        let response = app(AppState::new(pool, "test-contract".to_owned()))
+            .oneshot(
+                Request::builder()
+                    .uri("/proposals/not-a-number")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(error["error"]["code"], "INVALID_PARAMETER");
+    }
+
+    async fn get(state: AppState, uri: &str) -> axum::http::Response<Body> {
+        app(state)
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    fn unreachable_state() -> AppState {
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(200))
+            .connect_lazy("postgres://accord:accord@127.0.0.1:1/accord_analytics")
+            .unwrap();
+        AppState::new(pool, "test-contract".to_owned())
+    }
+
+    #[tokio::test]
+    async fn livez_is_ok_without_a_database() {
+        let response = get(unreachable_state(), "/livez").await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn readyz_reports_unavailable_when_the_database_is_down() {
+        let response = get(unreachable_state(), "/readyz").await;
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "unavailable");
+        assert_eq!(json["checks"]["database"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn metrics_expose_request_counters_and_latency_histograms() {
+        let state = unreachable_state();
+        get(state.clone(), "/livez").await;
+        get(state.clone(), "/no-such-route").await;
+
+        let response = get(state, "/metrics").await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains(
+            "accord_api_http_requests_total{method=\"GET\",route=\"/livez\",status=\"200\"}"
+        ));
+        assert!(text.contains(
+            "accord_api_http_requests_total{method=\"GET\",route=\"unmatched\",status=\"404\"}"
+        ));
+        assert!(text.contains(
+            "accord_api_http_request_duration_seconds_bucket{method=\"GET\",route=\"/livez\",le=\"+Inf\"}"
+        ));
+        assert!(text.contains("accord_api_db_pool_connections{state=\"idle\"}"));
+        assert!(
+            !text.contains("accord_api_indexed_ledger"),
+            "no checkpoint row, no gauge"
+        );
     }
 }

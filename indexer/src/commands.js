@@ -113,20 +113,20 @@ export async function walkHistory({
   // range and never finished; any other stored checkpoint belongs to a
   // different job and is replaced.
   const resuming =
-    store.getState(doneKey) !== "true" &&
-    Number(store.getState(fromKey)) === start &&
-    Number(store.getState(toKey)) === end;
+    (await store.getState(doneKey)) !== "true" &&
+    Number(await store.getState(fromKey)) === start &&
+    Number(await store.getState(toKey)) === end;
 
-  let cursor = resuming ? store.getState(cursorKey) ?? "" : "";
-  let walkLedger = resuming ? Number(store.getState(startLedgerKey) ?? start) : start;
-  let pages = resuming ? Number(store.getState(`${stateKey}_pages`) ?? 0) : 0;
-  let eventsIndexed = resuming ? Number(store.getState(eventsKey) ?? 0) : 0;
+  let cursor = resuming ? (await store.getState(cursorKey)) ?? "" : "";
+  let walkLedger = resuming ? Number(await store.getState(startLedgerKey) ?? start) : start;
+  let pages = resuming ? Number(await store.getState(`${stateKey}_pages`) ?? 0) : 0;
+  let eventsIndexed = resuming ? Number(await store.getState(eventsKey) ?? 0) : 0;
 
-  store.setState(fromKey, start);
-  store.setState(toKey, end);
-  store.setState(doneKey, "false");
+  await store.setState(fromKey, start);
+  await store.setState(toKey, end);
+  await store.setState(doneKey, "false");
 
-  let furthestLedger = Math.max(start - 1, resuming ? Number(store.getState(`${stateKey}_ledger`) ?? start - 1) : start - 1);
+  let furthestLedger = Math.max(start - 1, resuming ? Number(await store.getState(`${stateKey}_ledger`) ?? start - 1) : start - 1);
 
   while (pages < maxPages) {
     const response = await stellar.getEvents({
@@ -148,18 +148,18 @@ export async function walkHistory({
       if (eventLedger < start) continue;
 
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-      if (transferEntry && store.recordTransfer(transferEntry)) eventsIndexed += 1;
+      if (transferEntry && (await store.recordTransfer(transferEntry))) eventsIndexed += 1;
       const accordEntry = parseAccordEvent(event, treasuryAddress);
-      if (accordEntry && store.recordAccordEvent(accordEntry)) eventsIndexed += 1;
+      if (accordEntry && (await store.recordAccordEvent(accordEntry))) eventsIndexed += 1;
       if (eventLedger > furthestLedger) furthestLedger = eventLedger;
     }
 
     const exhausted = response.events.length < pageLimit || passedEnd;
 
     if (exhausted) {
-      store.setState(eventsKey, eventsIndexed);
-      store.setState(doneKey, "true");
-      store.setState(cursorKey, "");
+      await store.setState(eventsKey, eventsIndexed);
+      await store.setState(doneKey, "true");
+      await store.setState(cursorKey, "");
       onProgress({
         start,
         end,
@@ -178,11 +178,11 @@ export async function walkHistory({
     }
     cursor = response.cursor;
     pages += 1;
-    store.setState(cursorKey, cursor);
-    store.setState(startLedgerKey, walkLedger);
-    store.setState(`${stateKey}_pages`, pages);
-    store.setState(`${stateKey}_ledger`, furthestLedger);
-    store.setState(eventsKey, eventsIndexed);
+    await store.setState(cursorKey, cursor);
+    await store.setState(startLedgerKey, walkLedger);
+    await store.setState(`${stateKey}_pages`, pages);
+    await store.setState(`${stateKey}_ledger`, furthestLedger);
+    await store.setState(eventsKey, eventsIndexed);
 
     onProgress({
       start,
@@ -231,8 +231,8 @@ export async function backfill(options) {
   });
 
   if (walk.complete) {
-    finishHistoryRun(store, range.end);
-    store.recomputeBalances();
+    await finishHistoryRun(store, range.end);
+    await store.recomputeBalances();
   }
 
   return { ...range, ...walk, nothingToDo: false };
@@ -258,27 +258,27 @@ export async function reindex(options) {
   onRangeResolved(range, onProgress);
 
   const resumingRebuild =
-    store.getState("store_rebuilding") === "true" &&
-    store.getState("reindex_done") !== "true" &&
-    Number(store.getState("reindex_from")) === range.start &&
-    Number(store.getState("reindex_to")) === range.end;
+    (await store.getState("store_rebuilding")) === "true" &&
+    (await store.getState("reindex_done")) !== "true" &&
+    Number(await store.getState("reindex_from")) === range.start &&
+    Number(await store.getState("reindex_to")) === range.end;
 
   if (range.start > range.end) {
-    if (!resumingRebuild) store.clearHistory();
+    if (!resumingRebuild) await store.clearHistory();
     onProgress({ ...range, events: 0, pages: 0, percent: 1, complete: true, resumed: resumingRebuild, note: "nothing to reindex" });
     return { ...range, eventsIndexed: 0, pages: 0, complete: true, nothingToDo: true };
   }
 
   if (!resumingRebuild) {
-    const cleared = store.clearHistory();
+    const cleared = await store.clearHistory();
     // A fresh rebuild must not inherit the previous walk's checkpoint.
     for (const key of ["reindex_cursor", "reindex_start_ledger", "reindex_pages", "reindex_ledger", "reindex_events", "reindex_done"]) {
-      store.setState(key, "");
+      await store.setState(key, "");
     }
     onProgress({ ...range, cleared, events: 0, pages: 0, percent: 0, complete: false, resumed: false, note: "cleared store" });
   }
 
-  store.setState("store_rebuilding", "true");
+  await store.setState("store_rebuilding", "true");
 
   const walk = await walkHistory({
     stellar, store, tokens, treasuryAddress,
@@ -287,20 +287,20 @@ export async function reindex(options) {
   });
 
   if (walk.complete) {
-    finishHistoryRun(store, range.end);
-    store.recomputeBalances();
-    store.setState("store_rebuilding", "false");
+    await finishHistoryRun(store, range.end);
+    await store.recomputeBalances();
+    await store.setState("store_rebuilding", "false");
   }
 
   return { ...range, ...walk, nothingToDo: false, resumedRebuild: resumingRebuild };
 }
 
-function finishHistoryRun(store, end) {
+async function finishHistoryRun(store, end) {
   // Hand the range over to the live indexer: it should continue from the first
   // ledger after the range we just covered, never from an older checkpoint.
-  const currentNext = Number(store.getState("next_ledger") ?? 0);
-  if (end + 1 > currentNext) store.setState("next_ledger", end + 1);
-  store.setState("event_cursor", "");
+  const currentNext = Number(await store.getState("next_ledger") ?? 0);
+  if (end + 1 > currentNext) await store.setState("next_ledger", end + 1);
+  await store.setState("event_cursor", "");
 }
 
 function onRangeResolved(range, onProgress) {
