@@ -1,6 +1,8 @@
 import { UserCog } from "lucide-react";
 import { Link, useInRouterContext } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import type { Owner, Role } from "../types/accord";
 
 function OwnerLink({
@@ -59,10 +61,30 @@ function RoleBadge({ role }: { role: Role }) {
 
 export function OwnersPage({
   owners,
+  ownerAddresses,
   threshold,
   totalOwners,
   onManageRoles,
 }: OwnersPageProps) {
+  const effectiveAddresses =
+    ownerAddresses && ownerAddresses.length > 0
+      ? ownerAddresses
+      : owners.map((o) => o.fullAddress);
+  const { weights: liveWeights, totalWeight: liveTotal, loading } =
+    useOwnerWeights(effectiveAddresses);
+
+  const fallbackWeights: Record<string, number> = {};
+  let fallbackTotal = 0;
+  for (const o of owners) {
+    const w = typeof o.weight === "number" ? o.weight : 1;
+    fallbackWeights[o.fullAddress] = w;
+    fallbackTotal += w;
+  }
+
+  const weights =
+    Object.keys(liveWeights).length > 0 ? liveWeights : fallbackWeights;
+  const totalWeight = liveTotal > 0 ? liveTotal : fallbackTotal;
+
   return (
     <>
       <div className="mb-8">
@@ -71,6 +93,16 @@ export function OwnersPage({
           Requires {threshold} of {totalOwners} signers
         </p>
       </div>
+
+      {owners.length > 0 && (
+        <GovernanceHealthWidget
+          weights={weights}
+          totalWeight={totalWeight}
+          threshold={threshold}
+          totalOwners={totalOwners}
+          loading={loading && Object.keys(weights).length === 0}
+        />
+      )}
 
       {owners.length === 0 ? (
         <EmptyState
