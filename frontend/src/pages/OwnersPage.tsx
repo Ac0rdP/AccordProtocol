@@ -219,6 +219,10 @@ export function OwnersPage({
     }
   }
 
+  const weights =
+    Object.keys(liveWeights).length > 0 ? liveWeights : fallbackWeights;
+  const totalWeight = liveTotal > 0 ? liveTotal : fallbackTotal;
+
   return (
     <>
       <div className="mb-8">
@@ -228,14 +232,24 @@ export function OwnersPage({
         </p>
       </div>
 
-      {/* Owners list */}
+      {owners.length > 0 && (
+        <GovernanceHealthWidget
+          weights={weights}
+          totalWeight={totalWeight}
+          threshold={threshold}
+          totalOwners={totalOwners}
+          loading={loading && Object.keys(weights).length === 0}
+        />
+      )}
+
       {owners.length === 0 ? (
-        <div className="py-12 text-center">
-          <p className="text-sm text-zinc-600">No owners found.</p>
-        </div>
+        <EmptyState
+          title="No owners found"
+          description="Owners will appear here once the multisig is initialized."
+        />
       ) : (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800 mb-8">
-          {visibleOwners.map((owner) => (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
+          {owners.map((owner) => (
             <div
               key={owner.fullAddress}
               className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
@@ -246,17 +260,32 @@ export function OwnersPage({
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm text-zinc-300">{owner.label}</p>
+                    <OwnerLink
+                      to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
+                      className="text-sm text-zinc-300 hover:text-emerald-400 font-medium transition-colors"
+                    >
+                      {owner.label}
+                    </OwnerLink>
                     {typeof owner.weight === "number" && (
                       <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
                         Weight {owner.weight}
                       </span>
                     )}
                   </div>
-                  <p className="font-mono text-xs text-zinc-500">{owner.address}</p>
-                  <div className="mt-2 flex flex-wrap gap-1.5" aria-label={`${owner.label} roles`}>
+                  <OwnerLink
+                    to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
+                    className="font-mono text-xs text-zinc-500 hover:text-zinc-300 transition-colors block"
+                  >
+                    {owner.address}
+                  </OwnerLink>
+                  <div
+                    className="mt-2 flex flex-wrap gap-1.5"
+                    aria-label={`${owner.label} roles`}
+                  >
                     {owner.roles.length > 0 ? (
-                      owner.roles.map((role) => <RoleBadge key={role} role={role} />)
+                      owner.roles.map((role) => (
+                        <RoleBadge key={role} role={role} />
+                      ))
                     ) : (
                       <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
                         No roles
@@ -344,49 +373,16 @@ export function OwnersPage({
                   htmlFor="sl-amount"
                   className="text-xs text-zinc-400 block mb-1.5"
                 >
-                  Limit Amount
-                </label>
-                <input
-                  id="sl-amount"
-                  value={slAmount}
-                  onChange={(e) => setSlAmount(e.target.value)}
-                  placeholder="0.00"
-                  type="number"
-                  min="0"
-                  step="any"
-                  aria-label="Spending limit amount"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
-                />
-              </div>
-              <div className="w-28">
-                <label className="text-xs text-zinc-400 block mb-1.5">
-                  Token
-                </label>
-                <div
-                  className="grid grid-cols-3 gap-1"
-                  role="group"
-                  aria-label="Token selector"
+                  Activity Profile
+                </OwnerLink>
+                <button
+                  type="button"
+                  onClick={() => onManageRoles(owner.fullAddress)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 >
-                  {TOKEN_SYMBOLS.map((symbol) => {
-                    const active = slToken === symbol;
-                    return (
-                      <button
-                        key={symbol}
-                        type="button"
-                        onClick={() => setSlToken(symbol)}
-                        aria-pressed={active}
-                        aria-label={`Select token ${symbol}`}
-                        className={`rounded-lg border px-1.5 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
-                          active
-                            ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
-                            : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-                        }`}
-                      >
-                        {symbol}
-                      </button>
-                    );
-                  })}
-                </div>
+                  <UserCog size={14} />
+                  Manage Roles
+                </button>
               </div>
             </div>
 

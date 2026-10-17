@@ -13,6 +13,9 @@ on:
       - 'Cargo.lock'
       - 'docker-compose.yml'
       - 'scripts/**'
+      - 'ops/**'
+      - 'docs/OPERATIONS.md'
+      - 'docs/RUNBOOK.md'
       - 'frontend/src/lib/analytics*'
       - 'frontend/src/lib/__tests__/analytics*'
       - 'frontend/src/components/*Chart*'
@@ -52,9 +55,63 @@ jobs:
         run: |
           node scripts/query-analytics.js --help
 
+  indexer:
+    name: Indexer Tests (SQLite + Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_indexer_test
+          POSTGRES_USER: accord
+          POSTGRES_PASSWORD: accord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord -d accord_indexer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: indexer/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix indexer ci
+
+      - name: Run indexer tests against both storage backends
+        working-directory: indexer
+        env:
+          TEST_POSTGRES_URL: postgres://accord:accord@localhost:5432/accord_indexer_test
+        run: npm test
+
   analytics-api:
     name: Analytics API Rust Checks
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_analytics_test
+          POSTGRES_USER: accord
+          POSTGRES_PASSWORD: accord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord -d accord_analytics_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout repository
@@ -72,4 +129,6 @@ jobs:
         run: cargo clippy -p accord-analytics-api --all-targets -- -D warnings
 
       - name: Run API tests
+        env:
+          TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
         run: cargo test -p accord-analytics-api

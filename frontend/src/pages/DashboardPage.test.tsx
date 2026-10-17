@@ -1,8 +1,26 @@
 import React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage";
 import type { RoleAccessBanner } from "../hooks/useRoles";
+
+vi.mock("../lib/contract", () => ({
+  getDueRecurring: vi.fn().mockResolvedValue([]),
+  getOwnerWeightChangeEvents: vi.fn().mockResolvedValue([]),
+  getHistoricalWeightChangeEvents: vi.fn().mockResolvedValue([]),
+  getOwnerWeights: vi.fn().mockResolvedValue({}),
+  getRequiredQuorumWeight: vi.fn().mockResolvedValue(0),
+}));
+
+vi.mock("../hooks/useOwnerWeights", () => ({
+  useOwnerWeights: () => ({
+    weights: {},
+    totalWeight: 0,
+    loading: false,
+    error: null,
+  }),
+}));
 
 const baseProps = {
   activeProposals: [],
@@ -14,13 +32,18 @@ const baseProps = {
   onRevoke: vi.fn(),
   onCreateProposal: vi.fn(),
   onCreateRecurringPayment: vi.fn(),
+  walletRoles: [],
   roleBanner: null,
   loading: false,
   error: null,
 };
 
 function renderDashboard(roleBanner: RoleAccessBanner | null) {
-  return render(<DashboardPage {...baseProps} roleBanner={roleBanner} />);
+  return render(
+    <MemoryRouter>
+      <DashboardPage {...baseProps} roleBanner={roleBanner} />
+    </MemoryRouter>,
+  );
 }
 
 describe("DashboardPage role access banner", () => {
@@ -51,15 +74,17 @@ describe("DashboardPage role access banner", () => {
     expect(screen.getByText("Limited role access")).toBeTruthy();
 
     rerender(
-      <DashboardPage
-        {...baseProps}
-        roleBanner={{
-          key: "unrecognized:GCONNECTED",
-          variant: "unrecognized",
-          title: "Unrecognized wallet",
-          message: "This wallet is not assigned a role in this Accord.",
-        }}
-      />
+      <MemoryRouter>
+        <DashboardPage
+          {...baseProps}
+          roleBanner={{
+            key: "unrecognized:GCONNECTED",
+            variant: "unrecognized",
+            title: "Unrecognized wallet",
+            message: "This wallet is not assigned a role in this Accord.",
+          }}
+        />
+      </MemoryRouter>,
     );
 
     expect(screen.getByText("Unrecognized wallet")).toBeTruthy();

@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApprovalBar } from "../components/ApprovalBar";
+import { EmptyState } from "../components/EmptyState";
+import { ErrorState } from "../components/ErrorState";
+import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { PageState } from "../components/PageState";
 import type { Proposal, ProposalEvent } from "../types/accord";
@@ -163,18 +166,18 @@ export function ProposalDetailPage({
 
   if (!proposal) {
     return (
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-8 text-center">
-        <p className="text-lg font-semibold text-white">Proposal not found</p>
-        <p className="mt-2 text-sm text-zinc-500">
-          No proposal matches this URL.
-        </p>
-        <Link
-          to="/app"
-          className="mt-6 inline-flex rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
-        >
-          Back to dashboard
-        </Link>
-      </div>
+      <EmptyState
+        title="Proposal not found"
+        description="No proposal matches this URL."
+        action={
+          <Link
+            to="/app"
+            className="inline-flex rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          >
+            Back to dashboard
+          </Link>
+        }
+      />
     );
   }
 
@@ -252,20 +255,18 @@ export function ProposalDetailPage({
             Activity Timeline
           </p>
           {loadingEvents && (
-            <span className="text-xs text-zinc-500 animate-pulse">
-              Loading events...
-            </span>
+            <LoadingState message="Loading events…" variant="inline" />
           )}
         </div>
 
         {eventsError && (
-          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
-            {eventsError}
+          <div className="mt-4">
+            <ErrorState message={eventsError} variant="section" />
           </div>
         )}
 
         {!loadingEvents && !eventsError && events.length === 0 && (
-          <p className="mt-4 text-sm text-zinc-500">No activity yet</p>
+          <EmptyState variant="section" title="No activity yet" />
         )}
 
         {!loadingEvents && !eventsError && events.length > 0 && (

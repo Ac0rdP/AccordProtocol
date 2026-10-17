@@ -11,6 +11,7 @@ use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
 use proptest::prelude::*;
 use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
 use std::format;
+use std::string::ToString;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -11333,6 +11334,7 @@ fn contract_error_name(error: ContractError) -> &'static str {
         ContractError::RoleNotGranted => "RoleNotGranted",
         ContractError::InvalidRole => "InvalidRole",
         ContractError::DeprecatedEntrypoint => "DeprecatedEntrypoint",
+        ContractError::RecoveryActive => "RecoveryActive",
     }
 }
 
@@ -11747,4 +11749,980 @@ fn resource_ceiling_weight_lookups_at_max_config() {
     assert_within_resource_ceiling(&env, "get_delegations (all incoming)");
     client.get_active_delegations();
     assert_within_resource_ceiling(&env, "get_active_delegations");
+}
+
+// ─── Issue #1: Checked arithmetic on recurring counters ──────────────────────
+
+/// Helper: create and fully approve+execute a recurring proposal, returning
+/// the numeric schedule id (always 1 for a fresh contract).
+fn create_recurring_schedule_via_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    token: &Address,
+    recipient: &Address,
+    amount: i128,
+    interval: u64,
+    total_cap: i128,
+) -> u64 {
+    let create_id = client.create_recurring_proposal(
+        owner_a,
+        recipient,
+        token,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 365),
+        &0_u64,
+        &total_cap,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(env, "checked arithmetic schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(owner_a, &create_id);
+    client.approve(owner_b, &create_id);
+    client.execute(owner_c, &create_id);
+    // The first schedule always gets id 1 on a fresh env.
+    1_u64
+}
+
+/// The final disbursement is clamped to the remaining cap so total_disbursed
+/// never overshoots total_cap.
+#[test]
+fn disburse_recurring_final_period_is_clamped_to_total_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // cap = 2_500, amount = 1_000 → after 2 periods total_disbursed = 2_000,
+    // the third disbursement must be clamped to 500 (not 1_000).
+    let total_cap = 2_500_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    // Period 1.
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 1_000);
+
+    // Period 2.
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 2_000);
+
+    // Period 3: would be 3_000 but cap is 2_500 → clamped to 500.
+    set_timestamp(&env, NOW + interval * 3 + 3);
+    let before = token_client.balance(&recipient);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    let paid = token_client.balance(&recipient) - before;
+    assert_eq!(paid, 500, "final disbursement must be clamped, not the full period amount");
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(
+        schedule.total_disbursed, total_cap,
+        "total_disbursed must equal total_cap exactly after clamped final payout"
+    );
+}
+
+/// Once the cap is fully consumed the schedule must refuse further disbursements.
+#[test]
+fn disburse_recurring_cannot_disburse_beyond_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Exact cap: 2 × 1_000 = 2_000.
+    let total_cap = 2_000_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, total_cap);
+
+    // A third attempt is rejected — the cap is exhausted.
+    set_timestamp(&env, NOW + interval * 3 + 3);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentComplete))
+    );
+}
+
+/// After the cap is drained, periods_disbursed equals the number of times
+/// we actually transferred — it must not be incremented on a rejected call.
+#[test]
+fn disburse_recurring_periods_disbursed_does_not_increment_on_cap_reject() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let total_cap = 1_000_i128;
+    let amount = 1_000_i128;
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    let after_one = client.get_recurring_payment(&schedule_id);
+    assert_eq!(after_one.periods_disbursed, 1);
+
+    // Cap reached; next call must fail without incrementing periods_disbursed.
+    set_timestamp(&env, NOW + interval * 2 + 2);
+    let _ = client.try_disburse_recurring(&owner_a, &schedule_id);
+    let after_fail = client.get_recurring_payment(&schedule_id);
+    assert_eq!(
+        after_fail.periods_disbursed, 1,
+        "periods_disbursed must not increment when disbursement is rejected by cap"
+    );
+}
+
+/// An amount that would overflow i128 when added to total_disbursed is
+/// rejected with ArithmeticError rather than wrapping.
+#[test]
+fn disburse_recurring_near_i128_max_amount_is_rejected_not_wrapped() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+
+    // Use i128::MAX as the per-period amount with no cap so the first addition
+    // to total_disbursed (0 + i128::MAX = ok) works, but the second
+    // (i128::MAX + i128::MAX) overflows.
+    //
+    // However, total_cap must be >= amount per contract validation, and we must
+    // be able to fund the treasury — so instead we set amount to i128::MAX / 2
+    // and total_cap to i128::MAX, then manually move total_disbursed close to
+    // the edge via direct storage mutation, and attempt a final disburse that
+    // would overflow.
+    //
+    // Because we cannot easily set total_disbursed to near i128::MAX in a live
+    // funded schedule without actually transferring that much, we instead test
+    // the checked_add path by constructing a schedule where a single-period
+    // amount would wrap when added: amount = 1, total_disbursed = i128::MAX
+    // (injected via direct env storage).  We verify ArithmeticError is returned.
+    let amount = 1_i128;
+    let total_cap = i128::MAX; // validation: cap >= amount
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        amount, interval, total_cap,
+    );
+
+    // Inject total_disbursed = i128::MAX so the next checked_add overflows.
+    env.as_contract(&client.address, || {
+        let key = recur_key(schedule_id);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.total_disbursed = i128::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + interval + 1);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+}
+
+/// periods_disbursed at u32::MAX cannot be incremented: the call fails with
+/// ArithmeticError before any funds move and leaves the schedule untouched.
+#[test]
+fn disburse_recurring_period_count_overflow_is_rejected_before_transfer() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        1_000, interval, 1_000_000,
+    );
+
+    env.as_contract(&client.address, || {
+        let key = recur_key(schedule_id);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.periods_disbursed = u32::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + interval + 1);
+    let before = token_client.balance(&recipient);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(token_client.balance(&recipient), before);
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(schedule.periods_disbursed, u32::MAX);
+    assert_eq!(schedule.total_disbursed, 0);
+}
+
+/// A fixed-amount schedule cannot pay out more periods than fit before its
+/// end_time, even when the cap would still allow them.
+#[test]
+fn disburse_recurring_cannot_exceed_period_window() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+    let amount = 1_000_i128;
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &amount,
+        &interval,
+        &NOW,
+        &(NOW + interval * 2),
+        &0_u64,
+        &(amount * 100),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "two periods only"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+    let schedule_id = 1_u64;
+
+    set_timestamp(&env, NOW + interval);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    set_timestamp(&env, NOW + interval * 2);
+    client.disburse_recurring(&owner_a, &schedule_id);
+
+    set_timestamp(&env, NOW + interval * 3);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentComplete))
+    );
+    let schedule = client.get_recurring_payment(&schedule_id);
+    assert_eq!(schedule.periods_disbursed, 2);
+    assert_eq!(schedule.total_disbursed, amount * 2);
+}
+
+/// Linear-vesting payout math near the numeric limit returns ArithmeticError
+/// instead of wrapping.
+#[test]
+fn linear_vesting_near_i128_max_amount_is_rejected_not_wrapped() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let create_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &10_000_000_i128,
+        &3600_u64,
+        &NOW,
+        &(NOW + 10_000),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::LinearVesting,
+        &str(&env, "vesting overflow"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    env.as_contract(&client.address, || {
+        let key = recur_key(1);
+        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
+        s.amount = i128::MAX;
+        s.total_cap = i128::MAX;
+        env.storage().persistent().set(&key, &s);
+    });
+
+    set_timestamp(&env, NOW + 5_000);
+    let before = token_client.balance(&recipient);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &1),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(token_client.balance(&recipient), before);
+    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0);
+}
+
+// ─── Event schema version ────────────────────────────────────────────────────
+
+/// Returns `(topic, version)` for every event the contract emitted during the
+/// most recent call. Event payloads are contract-type structs, which encode as
+/// maps keyed by field name, so the `version` field is read without naming the
+/// concrete event type.
+fn last_call_event_versions(
+    env: &Env,
+    client: &AccordContractClient,
+) -> std::vec::Vec<(Symbol, u32)> {
+    let mut seen = std::vec::Vec::new();
+    for event in env
+        .events()
+        .all()
+        .filter_by_contract(&client.address)
+        .events()
+        .iter()
+    {
+        let xdr::ContractEventBody::V0(body) = &event.body;
+        let topic: Symbol = body.topics.first().expect("event topic").clone().into_val(env);
+        let payload: Map<Symbol, Val> = body.data.clone().into_val(env);
+        let version: u32 = payload
+            .get(Symbol::new(env, "version"))
+            .unwrap_or_else(|| panic!("event payload has no version field"))
+            .into_val(env);
+        seen.push((topic, version));
+    }
+    seen
+}
+
+/// Asserts the last call emitted `topic` and that every event it emitted
+/// carries the current schema version.
+fn assert_last_call_emitted_versioned(
+    env: &Env,
+    client: &AccordContractClient,
+    topic: Symbol,
+) {
+    let seen = last_call_event_versions(env, client);
+    assert!(
+        seen.iter().any(|(t, _)| *t == topic),
+        "expected the call to emit the requested event"
+    );
+    for (_, version) in seen {
+        assert_eq!(version, EVENT_SCHEMA_VERSION);
+    }
+}
+
+#[test]
+fn proposal_lifecycle_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000, &token_client.address),
+        &str(&env, "Versioned events"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("created"));
+
+    client.approve(&owner_a, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("approved"));
+
+    client.revoke(&owner_a, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("revoked"));
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("executed"));
+}
+
+#[test]
+fn governance_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, new_owner, _) = setup(2);
+    let id = client.create_add_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &1,
+        &str(&env, "Add owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("a_own"));
+}
+
+#[test]
+fn guardian_events_carry_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian = Address::generate(&env);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    approvers.push_back(owner_c.clone());
+
+    client.set_guardian(&approvers, &guardian);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("guard_set"));
+
+    client.freeze(&guardian);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("frozen"));
+
+    client.unfreeze(&approvers);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("unfrozen"));
+}
+
+#[test]
+fn recurring_disbursement_event_carries_current_schema_version() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let interval = 3_600_u64;
+    let schedule_id = create_recurring_schedule_via_proposal(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &token_client.address, &recipient,
+        1_000, interval, 10_000,
+    );
+
+    set_timestamp(&env, NOW + interval + 1);
+    client.disburse_recurring(&owner_a, &schedule_id);
+    assert_last_call_emitted_versioned(&env, &client, symbol_short!("rpay"));
+}
+
+// ─── Adversarial token / reentrancy tests ────────────────────────────────────
+//
+// `execute` and `disburse_recurring` are the only two places the contract moves
+// funds. These tests register hostile token contracts and assert that every
+// failure mode surfaces as `TransferFailed` and leaves proposal, schedule and
+// active-count state untouched. See docs/SECURITY.md, "Token interaction safety".
+
+const TOKEN_MODE_OK: u32 = 0;
+const TOKEN_MODE_PANIC: u32 = 1;
+const TOKEN_MODE_REENTER_EXECUTE: u32 = 2;
+const TOKEN_MODE_REENTER_DISBURSE: u32 = 3;
+
+/// A token whose `transfer` can trap, selectively fail for one recipient, or
+/// call back into the Accord contract while the transfer is in flight.
+#[contract]
+pub struct AdversarialToken;
+
+#[contractimpl]
+impl AdversarialToken {
+    pub fn init(
+        env: Env,
+        accord: Address,
+        mode: u32,
+        balance: i128,
+        bad_to: Address,
+        reenter_caller: Address,
+        reenter_id: u64,
+    ) {
+        let s = env.storage().instance();
+        s.set(&Symbol::new(&env, "accord"), &accord);
+        s.set(&Symbol::new(&env, "mode"), &mode);
+        s.set(&Symbol::new(&env, "balance"), &balance);
+        s.set(&Symbol::new(&env, "bad_to"), &bad_to);
+        s.set(&Symbol::new(&env, "caller"), &reenter_caller);
+        s.set(&Symbol::new(&env, "id"), &reenter_id);
+        s.set(&Symbol::new(&env, "sent"), &0_u32);
+    }
+
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "EVIL")
+    }
+
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "Adversarial")
+    }
+
+    pub fn balance(env: Env, _id: Address) -> i128 {
+        env.storage().instance().get(&Symbol::new(&env, "balance")).unwrap()
+    }
+
+    /// Number of transfers that completed (and were not reverted).
+    pub fn sent(env: Env) -> u32 {
+        env.storage().instance().get(&Symbol::new(&env, "sent")).unwrap()
+    }
+
+    pub fn transfer(env: Env, _from: Address, to: Address, _amount: i128) {
+        let s = env.storage().instance();
+        let mode: u32 = s.get(&Symbol::new(&env, "mode")).unwrap();
+        let bad_to: Address = s.get(&Symbol::new(&env, "bad_to")).unwrap();
+        if mode == TOKEN_MODE_PANIC || to == bad_to {
+            panic!("token transfer failed");
+        }
+        if mode == TOKEN_MODE_REENTER_EXECUTE || mode == TOKEN_MODE_REENTER_DISBURSE {
+            let accord: Address = s.get(&Symbol::new(&env, "accord")).unwrap();
+            let caller: Address = s.get(&Symbol::new(&env, "caller")).unwrap();
+            let id: u64 = s.get(&Symbol::new(&env, "id")).unwrap();
+            let client = AccordContractClient::new(&env, &accord);
+            if mode == TOKEN_MODE_REENTER_EXECUTE {
+                client.execute(&caller, &id);
+            } else {
+                client.disburse_recurring(&caller, &id);
+            }
+        }
+        let sent: u32 = s.get(&Symbol::new(&env, "sent")).unwrap();
+        s.set(&Symbol::new(&env, "sent"), &(sent + 1));
+    }
+}
+
+/// A token whose `transfer` reports failure by returning `false` instead of
+/// trapping. The SEP-41 `transfer` returns nothing, so a boolean is a
+/// mistyped result that the contract must not read as success.
+#[contract]
+pub struct FalseReturnToken;
+
+#[contractimpl]
+impl FalseReturnToken {
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn symbol(env: Env) -> String {
+        String::from_str(&env, "FALSE")
+    }
+
+    pub fn name(env: Env) -> String {
+        String::from_str(&env, "FalseReturn")
+    }
+
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        i128::MAX
+    }
+
+    pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) -> bool {
+        false
+    }
+}
+
+/// Initializes a 3-owner contract (threshold 2, weight 1 each) and returns it
+/// with its owners. Tokens are registered by the individual tests.
+fn adversarial_contract() -> (
+    Env,
+    AccordContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let owner_c = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+    let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+    client.initialize(&owners, &weights, &2, &0);
+    (env, client, owner_a, owner_b, owner_c)
+}
+
+fn register_adversarial_token(
+    env: &Env,
+    accord: &Address,
+    mode: u32,
+    balance: i128,
+    bad_to: &Address,
+    reenter_caller: &Address,
+    reenter_id: u64,
+) -> AdversarialTokenClient<'static> {
+    let token_id = env.register(AdversarialToken, ());
+    let token = AdversarialTokenClient::new(env, &token_id);
+    token.init(accord, &mode, &balance, bad_to, reenter_caller, &reenter_id);
+    token
+}
+
+/// Creates a Ready (fully approved) single-transfer proposal.
+fn ready_transfer_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    transfers: &Vec<Transfer>,
+) -> u64 {
+    let id = client.create_proposal(
+        owner_a,
+        transfers,
+        &str(env, "adversarial"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(owner_a, &id);
+    client.approve(owner_b, &id);
+    id
+}
+
+/// Asserts a rejected `execute` left the proposal un-executed and the active
+/// count exactly where it was.
+fn assert_execute_rejected_cleanly(
+    env: &Env,
+    client: &AccordContractClient,
+    executor: &Address,
+    id: u64,
+) {
+    let active_before = env.as_contract(&client.address, || read_active_count(env));
+    assert!(active_before > 0, "proposal must be counted as active");
+
+    assert_eq!(
+        client.try_execute(executor, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    assert_ne!(client.get_proposal(&id).status, ProposalStatus::Executed);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(env)),
+        active_before,
+        "a failed execute must not change the active count"
+    );
+}
+
+#[test]
+fn execute_with_trapping_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_c, 0,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn execute_with_false_returning_token_is_rejected_and_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token_id = env.register(FalseReturnToken, ());
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token_id));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+}
+
+#[test]
+fn execute_with_reentrant_token_is_rejected_and_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_REENTER_EXECUTE, i128::MAX, &Address::generate(&env), &owner_c, 1,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+    assert_eq!(id, 1);
+
+    // The token calls back into `execute` for the same proposal mid-transfer.
+    // The host forbids the re-entry, the token's transfer traps, and the whole
+    // call is rejected without marking the proposal executed.
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn execute_with_insufficient_treasury_balance_is_rejected_before_transfer() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let recipient = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, 99, &Address::generate(&env), &owner_c, 0,
+    );
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0, "no transfer may be attempted when the balance is short");
+}
+
+#[test]
+fn execute_with_failing_second_transfer_reverts_the_first() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let good = Address::generate(&env);
+    let bad = Address::generate(&env);
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, i128::MAX, &bad, &owner_c, 0,
+    );
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer { to: good, token: token.address.clone(), amount: 100 });
+    transfers.push_back(Transfer { to: bad, token: token.address.clone(), amount: 100 });
+    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &transfers);
+
+    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
+    assert_eq!(token.sent(), 0, "the first transfer must be rolled back with the failed call");
+}
+
+/// Creates and executes a recurring-payment proposal for `token`, returning the
+/// schedule id. Creating the schedule never moves funds.
+fn adversarial_recurring_schedule(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    token: &Address,
+    interval: u64,
+) -> u64 {
+    let create_id = client.create_recurring_proposal(
+        owner_a,
+        &Address::generate(env),
+        token,
+        &1_000_i128,
+        &interval,
+        &NOW,
+        &(NOW + 86_400 * 365),
+        &0_u64,
+        &100_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(env, "adversarial schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(owner_a, &create_id);
+    client.approve(owner_b, &create_id);
+    client.execute(owner_c, &create_id);
+    1_u64
+}
+
+fn assert_disburse_rejected_cleanly(
+    env: &Env,
+    client: &AccordContractClient,
+    caller: &Address,
+    schedule_id: u64,
+    interval: u64,
+) {
+    let before = client.get_recurring_payment(&schedule_id);
+    let active_before = client.get_active_recurring_count();
+
+    set_timestamp(env, NOW + interval + 1);
+    assert_eq!(
+        client.try_disburse_recurring(caller, &schedule_id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    let after = client.get_recurring_payment(&schedule_id);
+    assert_eq!(after.total_disbursed, before.total_disbursed);
+    assert_eq!(after.periods_disbursed, before.periods_disbursed);
+    assert_eq!(after.last_disbursed_at, before.last_disbursed_at);
+    assert_eq!(client.get_active_recurring_count(), active_before);
+}
+
+#[test]
+fn disburse_recurring_with_trapping_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn disburse_recurring_with_false_returning_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token_id = env.register(FalseReturnToken, ());
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token_id, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+}
+
+#[test]
+fn disburse_recurring_with_reentrant_token_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_REENTER_DISBURSE, i128::MAX, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
+
+#[test]
+fn disburse_recurring_with_insufficient_balance_preserves_state() {
+    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
+    let token = register_adversarial_token(
+        &env, &client.address, TOKEN_MODE_OK, 999, &Address::generate(&env), &owner_a, 1,
+    );
+    let interval = 3_600_u64;
+    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
+
+    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
+    assert_eq!(token.sent(), 0);
+}
+
+// ─── Removed owner's weight is subtracted from total weight exactly once ─────
+
+#[test]
+fn remove_owner_subtracts_exactly_their_weight_from_total() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    assert_eq!(client.get_total_weight(), 12);
+
+    remove_owner_via(&env, &client, &owners[0], &owners[3]);
+
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
+    assert_eq!(client.get_owners().len(), 3);
+}
+
+#[test]
+fn remove_owner_with_approvals_and_spending_limit_subtracts_only_their_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[3].clone();
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+
+    // Give the target a spending limit entry.
+    let limit_id = client.create_spending_limit_proposal(
+        &owners[0],
+        &target,
+        &token,
+        &1_000_i128,
+        &str(&env, "limit target"),
+        &DEADLINE,
+    );
+    approve_and_execute(&client, &owners[0], limit_id);
+    assert_eq!(client.get_spending_limit(&target, &token), Some(1_000));
+
+    // Give the target an active approval on a pending proposal.
+    let pending_id = client.create_add_owner_proposal(
+        &owners[0],
+        &Address::generate(&env),
+        &1,
+        &str(&env, "pending add"),
+        &DEADLINE,
+    );
+    client.approve(&target, &pending_id);
+    assert_eq!(client.get_proposal(&pending_id).approval_weight, 2);
+
+    remove_owner_via(&env, &client, &owners[0], &target);
+
+    // Only the target's weight (2) leaves the total, once; the approval and
+    // spending-limit entries play no part in the subtraction.
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "remove owner with approvals and limit");
+    assert_eq!(client.get_proposal(&pending_id).approval_weight, 0);
+}
+
+#[test]
+fn remove_heaviest_owner_leaves_total_equal_to_remaining_sum() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+
+    remove_owner_via(&env, &client, &owners[1], &owners[0]);
+
+    assert_eq!(client.get_total_weight(), 3 + 3 + 2);
+    let remaining: u32 = client
+        .get_owner_weights()
+        .iter()
+        .map(|entry| entry.weight)
+        .sum();
+    assert_eq!(client.get_total_weight(), remaining);
+    assert_total_weight_invariant(&env, &client, "remove heaviest owner");
+}
+
+#[test]
+fn duplicate_remove_owner_proposals_subtract_weight_only_once() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[3].clone();
+
+    // Both proposals pass creation while the target is still an owner.
+    let first = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "first"), &DEADLINE);
+    let second = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "second"), &DEADLINE);
+    client.approve(&owners[0], &first);
+    client.approve(&owners[0], &second);
+
+    client.execute(&owners[0], &first);
+    assert_eq!(client.get_total_weight(), 10);
+
+    // Whether or not the second execution is accepted, the weight of an owner
+    // who is already gone cannot be subtracted again.
+    let _ = client.try_execute(&owners[0], &second);
+    assert_eq!(client.get_total_weight(), 10);
+    assert_total_weight_invariant(&env, &client, "duplicate removal");
+}
+
+#[test]
+fn rejected_remove_owner_at_creation_leaves_total_weight_unchanged() {
+    // A=3, B=1, C=1 → total 5, threshold 4: removing A would leave 2 < 4.
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone()]);
+    let weights = Vec::from_array(&env, [3_u32, 1, 1]);
+    client.initialize(&owners, &weights, &4, &0);
+
+    assert_eq!(
+        client.try_create_remove_owner_proposal(&b, &a, &str(&env, "too heavy"), &DEADLINE),
+        Err(Ok(ContractError::WouldBreakThreshold))
+    );
+    assert_eq!(client.get_total_weight(), 5);
+
+    // A non-owner target is rejected too, with no effect on the total.
+    let stranger = Address::generate(&env);
+    assert!(client
+        .try_create_remove_owner_proposal(&b, &stranger, &str(&env, "not an owner"), &DEADLINE)
+        .is_err());
+    assert_eq!(client.get_total_weight(), 5);
+}
+
+#[test]
+fn rejected_remove_owner_at_execution_leaves_total_weight_unchanged() {
+    // Weights 3,3,2,2 → total 10, threshold 7. Removing either weight-2 owner
+    // passes creation (8 >= 7), but once one is gone the other would leave 6.
+    let env = Env::default();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let d = Address::generate(&env);
+    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone(), d.clone()]);
+    let weights = Vec::from_array(&env, [3_u32, 3, 2, 2]);
+    client.initialize(&owners, &weights, &7, &0);
+
+    let remove_c = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
+    let remove_d = client.create_remove_owner_proposal(&a, &d, &str(&env, "remove d"), &DEADLINE);
+    for id in [remove_c, remove_d] {
+        client.approve(&a, &id);
+        client.approve(&b, &id);
+        client.approve(&c, &id);
+    }
+
+    client.execute(&a, &remove_d);
+    assert_eq!(client.get_total_weight(), 8);
+
+    assert_eq!(
+        client.try_execute(&a, &remove_c),
+        Err(Ok(ContractError::WouldBreakThreshold))
+    );
+    assert_eq!(client.get_total_weight(), 8);
+    assert_eq!(client.get_owners().len(), 3);
+}
+
+#[test]
+fn remove_owner_cannot_underflow_total_weight() {
+    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
+    let target = owners[0].clone();
+    let id = client.create_remove_owner_proposal(&owners[1], &target, &str(&env, "remove"), &DEADLINE);
+    client.approve(&owners[1], &id);
+
+    // Corrupt the stored total so it is smaller than the owner's weight (4).
+    env.as_contract(&client.address, || write_total_weight(&env, 1));
+
+    assert_eq!(
+        client.try_execute(&owners[1], &id),
+        Err(Ok(ContractError::ArithmeticError))
+    );
+    assert_eq!(client.get_total_weight(), 1);
+    assert_eq!(client.get_owners().len(), 4);
 }

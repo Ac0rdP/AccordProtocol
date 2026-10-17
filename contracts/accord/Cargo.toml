@@ -5,6 +5,12 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+# Coverage gate (read by .github/workflows/contract.yml; see CONTRIBUTING.md,
+# "Coverage threshold"). CI fails when line coverage of the contract source
+# (test and benchmark code excluded) drops below this percentage.
+[package.metadata.coverage]
+min-line-coverage = 85
+
 [lib]
 crate-type = ["lib", "cdylib"]
 doctest = false

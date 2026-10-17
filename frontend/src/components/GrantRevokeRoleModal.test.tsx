@@ -83,8 +83,11 @@ describe("GrantRevokeRoleModal", () => {
     render(<GrantRevokeRoleModal {...defaultProps} />);
 
     fillBaseFields(newOwner);
+    const deadline = new Date();
+    deadline.setDate(deadline.getDate() + 14);
+    const deadlineValue = deadline.toISOString().slice(0, 10);
     fireEvent.change(screen.getByLabelText("Deadline"), {
-      target: { value: "2026-09-30" },
+      target: { value: deadlineValue },
     });
     fireEvent.click(screen.getByRole("button", { name: "Submit Role Proposal" }));
 
@@ -96,7 +99,7 @@ describe("GrantRevokeRoleModal", () => {
       newOwner,
       "Owner",
       "Rotate signer set",
-      1790726400n
+      BigInt(Math.floor(new Date(deadlineValue).getTime() / 1000)),
     );
     expect(createRevokeRoleProposal).not.toHaveBeenCalled();
     expect(defaultProps.onSubmitted).toHaveBeenCalledTimes(1);
@@ -109,8 +112,11 @@ describe("GrantRevokeRoleModal", () => {
 
     fillBaseFields(secondOwner);
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    const deadline = new Date();
+    deadline.setDate(deadline.getDate() + 14);
+    const deadlineValue = deadline.toISOString().slice(0, 10);
     fireEvent.change(screen.getByLabelText("Deadline"), {
-      target: { value: "2026-09-30" },
+      target: { value: deadlineValue },
     });
     fireEvent.click(screen.getByRole("button", { name: "Submit Role Proposal" }));
 
@@ -122,7 +128,7 @@ describe("GrantRevokeRoleModal", () => {
       secondOwner,
       "Owner",
       "Rotate signer set",
-      1790726400n
+      BigInt(Math.floor(new Date(deadlineValue).getTime() / 1000)),
     );
     expect(createGrantRoleProposal).not.toHaveBeenCalled();
   });

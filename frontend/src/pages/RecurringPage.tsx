@@ -1,5 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
 import { PageState } from "../components/PageState";
 import {
@@ -210,25 +212,24 @@ export function RecurringPage({
         </div>
       </div>
 
+      <RecurringForecastChart schedules={schedules} loading={loading} />
+
       {!loading && activeSchedules.length > 0 && (
         <DisbursementTimeline schedules={activeSchedules} />
       )}
 
       <div className="space-y-3">
         {loading ? (
-          <>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 animate-pulse h-32" />
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 animate-pulse h-32" />
-          </>
+          <LoadingState message="Loading schedules…" variant="section" />
         ) : filtered.length === 0 ? (
-          <div className="text-center py-16 text-zinc-500 text-sm">
-            <p className="font-semibold mb-2">No schedules found</p>
-            <p>
-              {activeTab === "all"
+          <EmptyState
+            title="No schedules found"
+            description={
+              activeTab === "all"
                 ? "No recurring schedules have been created yet."
-                : `No ${activeTab} schedules found.`}
-            </p>
-          </div>
+                : `No ${activeTab} schedules found.`
+            }
+          />
         ) : (
           filtered.map((schedule) => (
             <RecurringPaymentCard

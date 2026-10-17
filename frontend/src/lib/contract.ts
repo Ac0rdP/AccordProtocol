@@ -278,17 +278,9 @@ const ROLE_ALIASES: Record<string, Role> = {
   proposer: "Proposer",
   approver: "Approver",
   executor: "Executor",
+  spendinglimit: "SpendingLimit",
+  spending_limit: "SpendingLimit",
 };
-
-function normalizeRole(value: unknown): Role | null {
-  if (typeof value === "string") {
-    const key = value.trim();
-    if (!key) return null;
-    const normalized = key.toLowerCase();
-    return ROLE_ALIASES[normalized] ?? null;
-  }
-  return null;
-}
 
 function mapAccessRole(raw: unknown): Role | null {
   let key: string;
