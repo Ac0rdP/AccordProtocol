@@ -275,3 +275,15 @@ Run these checks after every deploy or upgrade to confirm the contract is live a
   https://stellar.expert/explorer/testnet/contract/CONTRACT_ID
   ```
 - [ ] **Frontend connects** — start the frontend (`npm run dev`), open the app in a browser, and confirm proposals load without errors. If the page shows a connection error, double-check `VITE_CONTRACT_ADDRESS` and `VITE_SOROBAN_RPC_URL` in `frontend/.env.local`.
+
+---
+
+## Operational Runbooks
+
+For production operations, incident containment, rollback procedures, and key rotations, refer to the operational runbooks:
+
+- [Incident Response Runbook](./runbooks/INCIDENT_RESPONSE.md) — severity levels, detection, immediate containment (`freeze`, `enter_recovery`), escalation, and recovery.
+- [Upgrade Rollback Runbook](./runbooks/UPGRADE_ROLLBACK.md) — diagnosing flawed deployments, in-place WASM rollback via `upgrade`, bytecode TTL verification, and post-rollback state checks.
+- [Key Rotation Runbook](./runbooks/KEY_ROTATION.md) — step-by-step procedures for rotating multisig owner keys and replacing the guardian address.
+- [Runbooks Index](./runbooks/README.md) — directory overview, operational prerequisites, and secrets policy.
+

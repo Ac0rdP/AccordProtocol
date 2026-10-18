@@ -31,3 +31,12 @@ Documentation and preparation materials for third-party security audits:
 - [Auditor Selection & RFQ Template](../audit/AUDITOR_SELECTION.md): Firm criteria, RFQ template, and candidate directory.
 - [Audit Remediation & Tracking](../audit/REMEDIATION.md): Post-report triage, private remediation, and public tracking.
 - [Security Policy & Threat Model](../SECURITY.md): Threat model, invariant arguments, and safe harbor terms.
+## Visual Walkthroughs & Core Flows
+
+For visual guides and animated walkthroughs of core operations, see [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md):
+
+- [Onboarding & Wallet Connection](../WALKTHROUGHS.md#flow-1-onboarding--wallet-connection)
+- [Creating a Multisig Proposal](../WALKTHROUGHS.md#flow-2-creating-a-multisig-proposal)
+- [Reviewing, Approving & Executing Proposals](../WALKTHROUGHS.md#flow-3-reviewing-approving--executing-proposals)
+- [Recurring Payments & Contributor Payroll](../WALKTHROUGHS.md#flow-4-recurring-payments--contributor-payroll)
+- [Treasury Analytics & Activity Monitoring](../WALKTHROUGHS.md#flow-5-treasury-analytics--activity-monitoring)

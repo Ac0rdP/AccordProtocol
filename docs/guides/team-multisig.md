@@ -2,6 +2,11 @@
 
 This guide walks five team members through setting up a 3-of-5 Accord multisig from scratch — from collecting wallet addresses to submitting the team's first proposal. By the end, three of the five members must approve any proposal before funds can move, ensuring no single person can release payments alone.
 
+![Multisig Proposal Creation Walkthrough](../assets/walkthroughs/02-create-multisig-proposal.svg)
+
+> **Visual Summary**: Initialize Multisig → Configure Proposal Parameters → Simulate & Sign via Freighter.  
+> See the complete visual catalog in [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md).
+
 ---
 
 ## Before You Start

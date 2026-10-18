@@ -1,0 +1,198 @@
+name: SBOM & dependency vulnerabilities
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - 'package-lock.json'
+      - '**/package-lock.json'
+      - '**/package.json'
+      - 'deny.toml'
+      - '.github/workflows/*.yml'
+      - '.github/workflows/*.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '**/Cargo.toml'
+      - 'package-lock.json'
+      - '**/package-lock.json'
+      - '**/package.json'
+      - 'deny.toml'
+      - '.github/workflows/*.yml'
+      - '.github/workflows/*.yaml'
+  schedule:
+    # Weekly supply-chain check, Mondays at 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      fail_on_high:
+        description: Fail the run when high or critical vulnerabilities are found
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: Generate SBOM & report vulnerabilities
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (Rust, npm & GitHub Actions)
+        run: |
+          "${{ steps.syft.outputs.cmd }}" dir:. \
+            --output spdx-json=accord-sbom.spdx.json
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accord-sbom-spdx
+          path: accord-sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Install Grype
+        id: grype
+        uses: anchore/scan-action/download-grype@v7
+        with:
+          cache-db: true
+
+      - name: Scan SBOM for vulnerabilities
+        # High/critical findings are reported and alerted on; set the
+        # `fail_on_high` dispatch input to make a run block on them.
+        run: |
+          "${{ steps.grype.outputs.cmd }}" "sbom:accord-sbom.spdx.json" \
+            --output json=grype-results.json \
+            --output sarif=grype-results.sarif \
+            --output table=grype-results.txt
+
+      - name: Upload vulnerability report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-vulnerability-report
+          path: |
+            grype-results.json
+            grype-results.sarif
+            grype-results.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Upload results to code scanning
+        # Fork pull requests have a read-only token, so this is best effort.
+        if: always() && hashFiles('grype-results.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: grype-results.sarif
+          category: sbom-vulnerabilities
+
+      - name: Report vulnerabilities in job summary
+        id: summary
+        if: always()
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          from collections import Counter
+
+          sbom_path = "accord-sbom.spdx.json"
+          results_path = "grype-results.json"
+
+          packages = 0
+          if os.path.exists(sbom_path):
+              with open(sbom_path, encoding="utf-8") as f:
+                  packages = len(json.load(f).get("packages", []))
+
+          matches = []
+          if os.path.exists(results_path):
+              with open(results_path, encoding="utf-8") as f:
+                  matches = json.load(f).get("matches", [])
+
+          counts = Counter(
+              (m.get("vulnerability", {}).get("severity") or "unknown").lower()
+              for m in matches
+          )
+
+          lines = [
+              "## Dependency vulnerability scan",
+              "",
+              f"- Dependencies in SBOM: **{packages}**",
+              f"- Known vulnerabilities: **{len(matches)}**",
+              f"- Critical: **{counts.get('critical', 0)}**",
+              f"- High: **{counts.get('high', 0)}**",
+              f"- Medium: **{counts.get('medium', 0)}**",
+              f"- Low: **{counts.get('low', 0)}**",
+              f"- Negligible: **{counts.get('negligible', 0)}**",
+              "",
+          ]
+
+          blocking = [
+              m for m in matches
+              if (m.get("vulnerability", {}).get("severity") or "").lower()
+              in ("critical", "high")
+          ]
+
+          if blocking:
+              lines.extend(
+                  [
+                      "| Package | Installed | Vulnerability | Severity | Fixed in |",
+                      "| --- | --- | --- | --- | --- |",
+                  ]
+              )
+              for match in blocking[:25]:
+                  artifact = match.get("artifact", {})
+                  vuln = match.get("vulnerability", {})
+                  package = artifact.get("name", "unknown")
+                  version = artifact.get("version", "unknown")
+                  vuln_id = vuln.get("id", "unknown")
+                  severity = (vuln.get("severity") or "unknown").lower()
+                  fixes = vuln.get("fix", {}).get("versions") or []
+                  fixed_in = ", ".join(fixes) if fixes else "not available"
+                  lines.append(
+                      f"| `{package}` | `{version}` | {vuln_id} | {severity} | {fixed_in} |"
+                  )
+                  print(
+                      f"::error title=High-severity dependency vulnerability::"
+                      f"{package} {version} is affected by {vuln_id} ({severity})."
+                  )
+              if len(blocking) > 25:
+                  lines.append(f"| ... | | {len(blocking) - 25} more | | |")
+              lines.append("")
+          else:
+              lines.extend(["No high or critical vulnerabilities found.", ""])
+
+          lines.append("Full results are attached as the `dependency-vulnerability-report` artifact.")
+          summary = "\n".join(lines)
+          print(summary)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(summary + "\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"high_count={len(blocking)}\n")
+          PY
+
+      - name: Fail on high-severity findings (opt-in)
+        if: inputs.fail_on_high && steps.summary.outputs.high_count != '0'
+        run: |
+          echo "::error::Grype found high or critical dependency vulnerabilities. See the job summary and artifacts."
+          exit 1

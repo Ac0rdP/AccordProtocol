@@ -3,6 +3,7 @@ import type {
   CategorySpendBucket, OwnerSpendBucket, TreasuryBalance,
   TreasuryFlowBucket, TreasurySummary,
 } from "../types/accord";
+import { createRateLimiter, validateAnalyticsQuery } from "./analyticsSecurity";
 
 export class AnalyticsApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly body?: unknown) {
@@ -20,11 +21,23 @@ export function buildAnalyticsQuery(query: AnalyticsQuery = {}): string {
   return params.toString();
 }
 
-export function createAnalyticsClient(baseUrl = import.meta.env.VITE_API_BASE_URL || "") {
+export type AnalyticsClientOptions = {
+  /** Token for protected routes. Never put a service credential in Vite env vars. */
+  accessToken?: string;
+  /** Disable only for tests or when the server owns throttling in a trusted environment. */
+  rateLimit?: number;
+};
+
+export function createAnalyticsClient(baseUrl = import.meta.env.VITE_API_BASE_URL || "", options: AnalyticsClientOptions = {}) {
+  const consumeRequest = createRateLimiter(options.rateLimit);
   async function get<T>(path: string, query: AnalyticsQuery = {}, signal?: AbortSignal): Promise<T> {
+    validateAnalyticsQuery(query);
+    consumeRequest();
     const search = buildAnalyticsQuery(query);
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (options.accessToken) headers.Authorization = `Bearer ${options.accessToken}`;
     const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}${search ? `?${search}` : ""}`, {
-      headers: { Accept: "application/json" }, signal,
+      headers, signal,
     });
     let body: unknown;
     try {
