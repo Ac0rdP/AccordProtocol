@@ -1,0 +1,22 @@
+# Gitleaks configuration for Accord Protocol.
+#
+# Keep the default rule set. The allowlist below contains reviewed false
+# positives only. Never add a generic pattern to silence a real finding:
+# rotate the credential, remove it from the working tree, and purge it from
+# history instead. Every change to this file requires maintainer review; see
+# CONTRIBUTING.md ("Secret scanning").
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed public Stellar testnet token IDs and placeholder test values."
+
+regexes = [
+  # Public Stellar testnet XLM Stellar Asset Contract address used throughout
+  # tests, examples, and docs. Public chain addresses and contract IDs are not
+  # secrets.
+  '''CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC''',
+
+  # Placeholder webhook signing secret in an indexer unit-test fixture.
+  '''whsec_0123456789abcdef''',
+]

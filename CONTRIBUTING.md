@@ -475,6 +475,41 @@ Use **GitHub Draft PRs** when you want early feedback on direction before the ch
 - Match the **style and patterns** of surrounding code unless an issue mandates a deliberate migration.
 - Do not add **secrets**, private keys, or personal configuration to the repository.
 
+### Secret scanning
+
+Every pull request and push to `main` runs Gitleaks over the full git history in
+the `Security checks` workflow (`.github/workflows/security.yml`). A finding
+fails the job. CI pins Gitleaks `8.30.1`; the reviewed configuration lives in
+[`.gitleaks.toml`](./.gitleaks.toml).
+
+Run the same scan locally:
+
+```bash
+gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
+```
+
+**If a real secret is detected:**
+
+1. Treat the credential as compromised and revoke or rotate it **immediately**,
+   before cleaning up the repository. Do not wait for the scan to be allowlisted.
+2. Remove it from the working tree and replace it with an environment variable
+   or a managed secret-store reference. Never commit a real value in a fixture,
+   test, script, or example.
+3. If the secret is already in git history, coordinate with maintainers to purge
+   it from history with `git filter-repo` (or an equivalent tool), then
+   force-push the affected branches. Assume anyone who fetched the history
+   already has the value.
+4. Audit provider logs and dependent systems for unauthorized use, and follow
+   the incident process in [`docs/SECRETS_MANAGEMENT.md`](./docs/SECRETS_MANAGEMENT.md)
+   and [`docs/INCIDENT_RESPONSE.md`](./docs/INCIDENT_RESPONSE.md).
+5. Never paste the leaked value into a public issue, pull request, or chat.
+   Reference it by provider and rotation status only.
+
+**False positives:** add the narrowest possible exact regex or path to the
+allowlist in [`.gitleaks.toml`](./.gitleaks.toml), with a comment explaining why
+the value is public or synthetic. Every allowlist change requires maintainer
+review. Do not add broad patterns or disable default rules to silence a finding.
+
 ---
 
 ## Testing and quality gates

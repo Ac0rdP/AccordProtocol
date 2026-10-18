@@ -25,6 +25,6 @@ Logs, traces, error reports, URLs, request bodies, and CI output must redact aut
 
 ## Repository and CI guard
 
-The `scripts/check-secrets.sh` scan runs in CI and fails on private-key blocks, common cloud/RPC token formats, bearer assignments, or non-placeholder secret assignments. It is a defense-in-depth check, not a replacement for secret scanning and provider revocation. False positives must be fixed by using placeholders or an explicit reviewed allowlist—not by weakening the patterns.
+The `scripts/check-secrets.sh` scan runs in CI and fails on private-key blocks, common cloud/RPC token formats, bearer assignments, or non-placeholder secret assignments. Gitleaks also runs over the full git history on every pull request and push to `main`; its reviewed configuration and allowlist live in [`.gitleaks.toml`](../.gitleaks.toml). Both checks are defense-in-depth, not a replacement for secret scanning and provider revocation. Detected secrets must be revoked/rotated first, then removed from the tree and purged from history; remediation steps are in [`CONTRIBUTING.md`](../CONTRIBUTING.md#secret-scanning). False positives must be fixed by using placeholders or an explicit reviewed allowlist—not by weakening the patterns, and every allowlist change requires maintainer review.
 
 Review this document quarterly, after an incident, and whenever a service or provider changes. Verify rotation in a tabletop exercise at least twice yearly.
