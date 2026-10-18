@@ -44,7 +44,7 @@ jobs:
           cargo deny check
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Build smart contracts
         run: |
@@ -326,7 +326,7 @@ jobs:
 
       - name: Install Stellar CLI
         if: steps.guard.outputs.skip != 'true'
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Simulate get_total_proposals on deployed testnet contract
         if: steps.guard.outputs.skip != 'true'
@@ -366,7 +366,7 @@ jobs:
 
       - name: Install Stellar CLI
         if: steps.guard.outputs.skip != 'true'
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Verify total-weight invariant on testnet
         if: steps.guard.outputs.skip != 'true'

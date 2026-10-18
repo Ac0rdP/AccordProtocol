@@ -136,7 +136,7 @@ jobs:
           target: wasm32v1-none
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Build smart contracts
         run: stellar contract build
