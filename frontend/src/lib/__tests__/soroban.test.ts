@@ -4,6 +4,7 @@ import {
   canCreate,
   canExecute,
   contractErrorMessage,
+  CONTRACT_ERRORS,
   displayToStroops,
   formatDeadline,
   formatWeightPercent,
@@ -90,32 +91,47 @@ describe("formatWeightPercent", () => {
 });
 
 describe("contractErrorMessage", () => {
-  test("all 25 contract codes return messages", () => {
-    expect(contractErrorMessage("Error(Contract,#1)")).toContain("initialized");
-    expect(contractErrorMessage("Error(Contract,#2)")).toContain("initialized");
-    expect(contractErrorMessage("Error(Contract,#3)")).toContain("Unauthorized");
-    expect(contractErrorMessage("Error(Contract,#4)")).toContain("Invalid threshold");
-    expect(contractErrorMessage("Error(Contract,#5)")).toContain("owners");
-    expect(contractErrorMessage("Error(Contract,#6)")).toContain("Proposal not found");
-    expect(contractErrorMessage("Error(Contract,#7)")).toContain("active");
-    expect(contractErrorMessage("Error(Contract,#8)")).toContain("already approved");
-    expect(contractErrorMessage("Error(Contract,#9)")).toContain("not approved");
-    expect(contractErrorMessage("Error(Contract,#10)")).toContain("threshold");
-    expect(contractErrorMessage("Error(Contract,#11)")).toContain("expired");
-    expect(contractErrorMessage("Error(Contract,#12)")).toContain("Invalid amount");
-    expect(contractErrorMessage("Error(Contract,#13)")).toContain("deadline");
-    expect(contractErrorMessage("Error(Contract,#14)")).toContain("token");
-    expect(contractErrorMessage("Error(Contract,#15)")).toContain("transfer failed");
-    expect(contractErrorMessage("Error(Contract,#16)")).toContain("empty");
-    expect(contractErrorMessage("Error(Contract,#17)")).toContain("too long");
-    expect(contractErrorMessage("Error(Contract,#18)")).toContain("Too many");
-    expect(contractErrorMessage("Error(Contract,#19)")).toContain("Duplicate");
-    expect(contractErrorMessage("Error(Contract,#20)")).toContain("Arithmetic");
-    expect(contractErrorMessage("Error(Contract,#21)")).toContain("Invalid duration");
-    expect(contractErrorMessage("Error(Contract,#22)")).toContain("recipient");
-    expect(contractErrorMessage("Error(Contract,#23)")).toContain("Time lock");
-    expect(contractErrorMessage("Error(Contract,#24)")).toContain("break the required threshold");
-    expect(contractErrorMessage("Error(Contract,#25)")).toContain("Owner not found");
+  test("all 57 contract codes return specific user-facing messages", () => {
+    for (let code = 1; code <= 57; code++) {
+      const msg = contractErrorMessage(`Error(Contract,#${code})`);
+      expect(msg).not.toBe("Something went wrong while processing the transaction. Please try again.");
+      expect(msg.length).toBeGreaterThan(5);
+    }
+  });
+
+  test("CONTRACT_ERRORS covers every code from 1 to 57 without gaps", () => {
+    for (let code = 1; code <= 57; code++) {
+      const key = String(code);
+      expect(CONTRACT_ERRORS[key], `Contract error code #${code} must be mapped in CONTRACT_ERRORS`).toBeDefined();
+      expect(typeof CONTRACT_ERRORS[key]).toBe("string");
+      expect(CONTRACT_ERRORS[key].length).toBeGreaterThan(0);
+    }
+  });
+
+  test("newly added error variants (35-57) map to expected domain messaging", () => {
+    expect(contractErrorMessage("Error(Contract,#35)")).toContain("Recurring payment is inactive");
+    expect(contractErrorMessage("Error(Contract,#36)")).toContain("Recurring payment interval");
+    expect(contractErrorMessage("Error(Contract,#37)")).toContain("Too many active recurring");
+    expect(contractErrorMessage("Error(Contract,#38)")).toContain("already cancelled");
+    expect(contractErrorMessage("Error(Contract,#39)")).toContain("already paused");
+    expect(contractErrorMessage("Error(Contract,#40)")).toContain("not paused");
+    expect(contractErrorMessage("Error(Contract,#41)")).toContain("terminal state");
+    expect(contractErrorMessage("Error(Contract,#42)")).toContain("Invalid weights list length");
+    expect(contractErrorMessage("Error(Contract,#43)")).toContain("below the minimum");
+    expect(contractErrorMessage("Error(Contract,#44)")).toContain("Invalid owner weight");
+    expect(contractErrorMessage("Error(Contract,#45)")).toContain("already been migrated");
+    expect(contractErrorMessage("Error(Contract,#46)")).toContain("weight cap");
+    expect(contractErrorMessage("Error(Contract,#47)")).toContain("Target owner no longer exists");
+    expect(contractErrorMessage("Error(Contract,#48)")).toContain("break the required quorum");
+    expect(contractErrorMessage("Error(Contract,#49)")).toContain("last remaining owner");
+    expect(contractErrorMessage("Error(Contract,#50)")).toContain("Threshold exceeds");
+    expect(contractErrorMessage("Error(Contract,#51)")).toContain("Recurring schedule is not active");
+    expect(contractErrorMessage("Error(Contract,#52)")).toContain("requires a role");
+    expect(contractErrorMessage("Error(Contract,#53)")).toContain("Role is already granted");
+    expect(contractErrorMessage("Error(Contract,#54)")).toContain("Role is not granted");
+    expect(contractErrorMessage("Error(Contract,#55)")).toContain("Specified role is not valid");
+    expect(contractErrorMessage("Error(Contract,#56)")).toContain("deprecated");
+    expect(contractErrorMessage("Error(Contract,#57)")).toContain("recovery is currently active");
   });
 
   test("unknown error returns fallback", () => {

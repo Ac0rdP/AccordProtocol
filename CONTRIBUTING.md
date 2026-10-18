@@ -590,6 +590,19 @@ Never update snapshots just to make a red build green. Property tests use
 snapshots and no property-test snapshots should be committed. Use the same
 helper for any new randomized test.
 
+##### Governance event payload snapshots
+
+Every governance event (`ProposalCreatedEvent`, `ProposalApprovedEvent`, `ProposalRevokedEvent`, `ProposalExecutedEvent`, `AddOwnerExecutedEvent`, `RemoveOwnerExecutedEvent`, `ChangeThresholdExecutedEvent`, `SetSpendingLimitExecutedEvent`, `OwnerWeightChangedEvent`, `GovernanceMigratedEvent`, `RbacMigratedEvent`, `RoleGrantedEvent`, `RoleRevokedEvent`, etc.) is snapshot-tested to ensure payload schemas, field types, and versioning do not change silently.
+
+Downstream consumers (indexers, analytics processors, dashboards) depend on stable event payload shapes. Whenever an event struct is intentionally updated or a new event is introduced:
+1. Ensure the event struct includes `version: EVENT_SCHEMA_VERSION`.
+2. Add or update the deterministic unit test in `contracts/accord/src/test.rs` capturing the payload shape.
+3. Run `bash scripts/verify-snapshots.sh` locally to generate the updated snapshots under `contracts/accord/test_snapshots/`.
+4. Review the snapshot diff with `git diff contracts/accord/test_snapshots/`.
+5. Stage and commit the snapshot files together with the contract changes.
+
+CI enforces snapshot verification via `Contract Snapshot Verification` in `.github/workflows/contract.yml`.
+
 #### Coverage threshold
 
 CI (`Contract Coverage` in `.github/workflows/contract.yml`) measures line coverage of the contract source with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov), excluding `test.rs` and `bench.rs`, and **fails when it drops below the minimum** in `contracts/accord/Cargo.toml`:

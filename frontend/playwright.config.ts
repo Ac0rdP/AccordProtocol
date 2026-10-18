@@ -13,6 +13,11 @@ export default defineConfig({
   },
   projects: [
     {
+      name: "e2e",
+      testIgnore: /responsive-screenshots\.spec\.ts/,
+      use: { viewport: { width: 1280, height: 720 } },
+    },
+    {
       name: "responsive-375",
       testMatch: /responsive-screenshots\.spec\.ts/,
       use: { viewport: { width: 375, height: 900 } },

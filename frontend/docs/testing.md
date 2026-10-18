@@ -23,11 +23,24 @@ snapshot directories, and commit the updated baselines with the code change.
 
 ## Accessibility checks
 
+### Component-level checks
 Component tests use `axe-core` through `vitest-axe`. New components should test
 each meaningful state, including error, loading, empty, and interactive states,
 and assert `toHaveNoViolations()` against the rendered container. A violation
 fails the Vitest suite and must be fixed or intentionally excluded with a
 documented reason.
+
+### End-to-end checks (Playwright)
+End-to-end accessibility tests (`frontend/e2e/accessibility.spec.ts`) scan complete
+pages and real user flows using `axe-core` in headless Chromium. Unlike component unit
+tests, E2E accessibility checks catch page-level problems such as document landmark
+structure (`<main>`, `<header>`, `<footer>`), heading hierarchy, color contrast in
+real rendered layouts, and accessible names during live navigation.
+
+All main routes (`/`, `/docs`, `/app`, `/app/onboarding`, `/app/owners`, `/app/recurring`,
+`/app/analytics`, `/app/history`, `/app/settings`) are checked against WCAG 2.1 Level AA
+rules (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`). Any new accessibility violation fails
+the E2E run and must be resolved before merging.
 
 Coverage is configured in [`vitest.config.ts`](../vitest.config.ts) and is
 collected with `@vitest/coverage-v8`.
