@@ -21,6 +21,17 @@ fn set_timestamp(env: &Env, ts: u64) {
     env.ledger().set(l);
 }
 
+/// Builds an Env that does not write a test snapshot when it is dropped.
+///
+/// Property tests generate new random inputs on every run, so any snapshots
+/// they produced would differ from run to run and could never be verified in
+/// CI. Deterministic tests keep the default capture behaviour.
+fn non_snapshot_env() -> Env {
+    Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
 #[test]
 fn recovery_blocks_value_but_allows_governance() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
@@ -4872,7 +4883,7 @@ proptest! {
         // Derive a threshold in 1..=owner_count from the independent seed.
         let threshold = (threshold_seed - 1) % owner_count + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -4926,7 +4937,7 @@ proptest! {
     fn total_weight_matches_all_current_owner_weights(
         operations in proptest::collection::vec((0u8..=2, 1u32..=10), 1..=20)
     ) {
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
         let contract_id = env.register(AccordContract, ());
@@ -5009,7 +5020,7 @@ proptest! {
     ) {
         let threshold = (threshold_seed - 1) % owner_count + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -5066,7 +5077,7 @@ proptest! {
         let owner_count = owner_weights.len() as u32;
         let threshold = ((threshold_seed - 1) % owner_count) + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -9542,7 +9553,7 @@ proptest! {
     fn role_members_index_matches_per_address_roles(
         operations in proptest::collection::vec((0u8..=3, 0u32..=1_000, 0u8..=2), 1..=30)
     ) {
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
         let contract_id = env.register(AccordContract, ());

@@ -147,6 +147,37 @@ jobs:
                   print(f"Contract: {os.path.basename(f)} | Size: {size_kb:.2f} KB ({size_bytes} bytes)")
           '
 
+  # Snapshot verification (#815). Runs the deterministic contract tests and
+  # reports when the working tree's snapshots differ from the committed ones.
+  # The report is advisory so an existing stale baseline cannot block every
+  # pull request; the full patch is uploaded as an artifact. Property tests opt
+  # out of snapshot capture because their random inputs would churn the
+  # directory on every run.
+  snapshots:
+    name: Contract Snapshot Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Run tests and report snapshot drift
+        env:
+          SNAPSHOT_VERIFY_WARN_ONLY: '1'
+        run: bash scripts/verify-snapshots.sh
+
+      - name: Upload snapshot verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-snapshot-verification
+          path: target/snapshot-verification
+          retention-days: 30
+          if-no-files-found: ignore
+
   # Coverage gate (#813). Separate from `ci` so a failing test there is reported
   # once, there; --ignore-run-fail lets this job still measure coverage and
   # enforce the threshold. The threshold lives in contracts/accord/Cargo.toml.

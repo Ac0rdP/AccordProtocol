@@ -550,17 +550,45 @@ python3 scripts/generate-contract-types.py
 stellar contract test
 ```
 
-#### Updating snapshots
+#### Test snapshots
 
-Soroban tests may store **snapshot files** alongside the test source that capture expected contract output. When you make an **intentional** contract behaviour change a test may fail only because its stored snapshot no longer matches the new output — not because the logic is wrong.
+Soroban writes a snapshot for every `Env` created by a test into
+`contracts/accord/test_snapshots/` when the `Env` is dropped. The committed
+snapshots are the baseline for the `Contract Snapshot Verification` CI job
+(`.github/workflows/contract.yml`), which runs the suite and **reports drift as
+a warning**. The report is advisory so an existing stale baseline cannot block
+every pull request; the full patch is uploaded as the
+`contract-snapshot-verification` artifact. The job never rewrites or commits
+snapshots.
 
-To regenerate all snapshot files in one pass, set the `UPDATE_EXPECT` environment variable when running the test suite:
+Run the same check locally:
 
 ```bash
-UPDATE_EXPECT=1 stellar contract test
+bash scripts/verify-snapshots.sh
 ```
 
-After regeneration, review each updated snapshot file to confirm the new output is correct, then **commit the updated snapshot files alongside your code change**. A PR that changes contract behaviour but omits the refreshed snapshots will fail CI.
+The script runs `cargo test -p accord --lib --no-fail-fast`, writes the
+changed-file list and a readable patch to `target/snapshot-verification/`, and
+exits non-zero on drift. Set `SNAPSHOT_VERIFY_WARN_ONLY=1` to match CI's
+advisory mode. Test failures are reported by the regular Contract CI job; a
+failure that writes a changed snapshot is still reported as drift. Snapshot
+files are pinned to LF with `.gitattributes` so Windows line-ending conversion
+is not mistaken for drift.
+
+**Updating snapshots intentionally.** Snapshots are rewritten automatically
+when the tests run, so a normal `cargo test` is enough. If a contract change
+intentionally alters behaviour:
+
+1. Run `cargo test -p accord --lib`.
+2. Review the changed files under `contracts/accord/test_snapshots/` (the patch
+   from `scripts/verify-snapshots.sh` is easy to read).
+3. `git add contracts/accord/test_snapshots` and commit the refreshed snapshots
+   in the same PR.
+
+Never update snapshots just to make a red build green. Property tests use
+`non_snapshot_env()` on purpose: their inputs are random, so they do not write
+snapshots and no property-test snapshots should be committed. Use the same
+helper for any new randomized test.
 
 #### Coverage threshold
 

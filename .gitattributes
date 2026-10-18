@@ -1,0 +1,4 @@
+# Snapshot files are written by the test suite. Keep LF in the repository and
+# the working tree so a fresh run reproduces the committed bytes on every
+# platform, and so line-ending conversion is not reported as snapshot drift.
+contracts/accord/test_snapshots/** text eol=lf
