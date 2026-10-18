@@ -274,7 +274,7 @@ This project follows the [all-contributors](https://github.com/all-contributors/
 
 This contract is **unaudited**. Do not use on mainnet with significant funds until a formal security audit is completed.
 
-Found a vulnerability? See [`docs/SECURITY.md`](./docs/SECURITY.md) for responsible disclosure guidelines.
+Found a vulnerability? See our canonical [`SECURITY.md`](./SECURITY.md) for vulnerability scope, reporting channels, and coordinated disclosure guidelines. Protocol threat modeling and operational safety analyses are documented in [`docs/SECURITY.md`](./docs/SECURITY.md).
 
 ---
 
