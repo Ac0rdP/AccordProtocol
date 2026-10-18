@@ -2,7 +2,10 @@
 
 This checklist tracks everything that must be in place before Accord Protocol engages a third-party security auditor. It expands on the audit status note in [`docs/SECURITY.md`](./SECURITY.md), which states that the contract is unaudited and that a formal review is required before mainnet deployment.
 
+For the full consolidated audit package covering pinned toolchains, in-scope attack surfaces, protocol invariants, and storage architecture, refer to the [Audit Preparation Pack](./AUDIT_PREP.md).
+
 **When to complete this:** Work through every item while preparing for audit engagement. All boxes should be checked—and verifiable—before sharing the codebase with an auditor or scheduling the review kickoff. Revisit the checklist after major contract, frontend, or infrastructure changes.
+
 
 ---
 
