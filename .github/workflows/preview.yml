@@ -100,7 +100,7 @@ jobs:
           echo "value=${base%/}/pr-${PR_NUMBER}/" >> "$GITHUB_OUTPUT"
 
       - name: Comment the preview URL on the pull request
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PREVIEW_URL: ${{ steps.url.outputs.value }}
         with:
@@ -167,7 +167,7 @@ jobs:
           fi
 
       - name: Remove the preview comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const marker = '<!-- accord-preview -->';
