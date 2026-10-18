@@ -21,3 +21,13 @@ Beginner-friendly guides for using Accord Protocol.
 ## Localized Guides (i18n)
 
 Translations of these guides into other languages are organized in [`docs/i18n/`](../i18n/README.md). See the [Internationalized Documentation Guide](../i18n/README.md) for available locales, translation guidelines, and how to contribute new translations.
+
+---
+
+## Security & External Audit
+
+Documentation and preparation materials for third-party security audits:
+- [Audit Scope & Specifications](../audit/SCOPE.md): Formal scope, objectives, and code metrics.
+- [Auditor Selection & RFQ Template](../audit/AUDITOR_SELECTION.md): Firm criteria, RFQ template, and candidate directory.
+- [Audit Remediation & Tracking](../audit/REMEDIATION.md): Post-report triage, private remediation, and public tracking.
+- [Security Policy & Threat Model](../SECURITY.md): Threat model, invariant arguments, and safe harbor terms.

@@ -68,7 +68,7 @@ All maintainers handling security reports must act according to assigned roles, 
 
 ### Step 8: Post-Mortem & Lessons Learned
 - Conduct an internal retrospective to identify root causes and evaluate whether test suites or CI linters can catch similar issues automatically.
-- Update the remediation tracking log in accordance with `docs/audit/REMEDIATION.md` (see external audit preparation).
+- Update the remediation tracking log in accordance with [`docs/audit/REMEDIATION.md`](./audit/REMEDIATION.md).
 
 ---
 

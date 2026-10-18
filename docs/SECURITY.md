@@ -17,6 +17,11 @@
 
 Accord Protocol is **unaudited**. Do not deploy to mainnet with significant funds until a formal third-party audit is completed. The contract has been reviewed for common Soroban anti-patterns but has not undergone a professional security review.
 
+External audit planning and preparation resources:
+- [Audit Scope & Specifications](./audit/SCOPE.md): Defines in-scope entrypoints, files, and measured codebase metrics.
+- [Auditor Selection & RFQ Template](./audit/AUDITOR_SELECTION.md): Selection criteria, Request-for-Quote template, and candidate directory.
+- [Audit Remediation & Tracking](./audit/REMEDIATION.md): Post-audit triage, verification workflow, and public remediation tracker.
+
 Known areas that require attention before mainnet:
 - Reentrancy via external token calls (mitigated by Soroban's re-entry ban and the call-ordering described in [Token interaction safety](#token-interaction-safety); the argument is below and still warrants formal review)
 - TTL expiry edge cases under high ledger load
