@@ -1,6 +1,6 @@
 # Accord Contract API Reference
 
-> **External Integrators**: Building an external dApp, DAO integration, or backend service that calls Accord? See the step-by-step [Contract Integration Guide](./CONTRACT_INTEGRATION_GUIDE.md) for network configuration, Soroban authorization entries, call construction, and event subscriptions.
+> **External Integrators**: Building an external dApp, DAO integration, or backend service that calls Accord? See the step-by-step [Contract Integration Guide](./CONTRACT_INTEGRATION_GUIDE.md) for network configuration, Soroban authorization entries, call construction, and event subscriptions. For the complete on-chain storage key inventory and rent cost model, see [Storage Data-Model Reference](./STORAGE_MODEL.md).
 
 All amounts are in the token's smallest unit (stroops for XLM-derived tokens).
 All deadlines are Unix timestamps (seconds since epoch).

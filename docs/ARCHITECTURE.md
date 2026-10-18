@@ -53,6 +53,8 @@ See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contrac
 
 ## 3. Storage Layout (Soroban)
 
+> **Complete Storage Reference**: For a comprehensive, key-by-key inventory covering every storage key, granularity, TTL behavior, and rent cost model, see [Storage Data-Model Reference](./STORAGE_MODEL.md).
+
 ### Instance Storage (low-cost, short TTL)
 
 All instance-storage keys share **one** `LedgerEntry` (the contract instance). The TTL bump and threshold apply to that single shared entry; all keys expire together.
