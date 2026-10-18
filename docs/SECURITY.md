@@ -272,3 +272,15 @@ We aim to acknowledge reports within 72 hours and publish a fix within 14 days f
 - Stellar protocol-level issues (report to Stellar Development Foundation)
 - Frontend-only UI bugs with no on-chain consequence
 - Issues in third-party libraries we depend on (report upstream)
+
+---
+
+## Operational Runbooks
+
+Operational runbooks provide step-by-step procedures for handling critical security events and emergency operations:
+
+- [Incident Response Runbook](./runbooks/INCIDENT_RESPONSE.md): Severity classification, emergency containment (`freeze`, `enter_recovery`), escalation paths, evidence preservation, and post-incident reviews.
+- [Upgrade Rollback Runbook](./runbooks/UPGRADE_ROLLBACK.md): Identifying flawed deployments, rolling back in-place WASM, and verifying state consistency.
+- [Key Rotation Runbook](./runbooks/KEY_ROTATION.md): Step-by-step replacement of owner keys and guardian address using on-chain governance.
+- [Runbooks Index](./runbooks/README.md): Comprehensive listing and operational prerequisites.
+
