@@ -6,7 +6,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
 use proptest::prelude::*;
 use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
 use std::format;
@@ -34,6 +34,22 @@ fn t(env: &Env, to: &Address, amount: i128, token: &Address) -> Vec<Transfer> {
         amount,
     });
     transfers
+}
+
+fn has_contract_event(env: &Env, contract: &Address, expected_topic: Symbol) -> bool {
+    let events = env.events().all().filter_by_contract(contract);
+    events.events().iter().any(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let topic: Symbol = topic.clone().into_val(env);
+                topic == expected_topic
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Sets up an env with 3 owners, a threshold, and a funded token.
@@ -1181,6 +1197,119 @@ fn approve_increments_count_and_sets_flag() {
     assert!(client.has_approved(&id, &owner_a));
     client.approve(&owner_b, &id);
     assert_eq!(client.get_proposal(&id).approvals, 2);
+}
+
+#[test]
+fn approve_sponsored_accepts_owner_authorization_for_exact_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Sponsored approval"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let invocation = MockAuthInvoke {
+        contract: &client.address,
+        fn_name: "approve_sponsored",
+        args: Vec::from_array(&env, [owner_a.clone().into_val(&env), id.into_val(&env)]),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &owner_a,
+        invoke: &invocation,
+    }]);
+
+    client.approve_sponsored(&owner_a, &id);
+
+    assert!(client.has_approved(&id, &owner_a));
+    assert_eq!(client.get_proposal(&id).approvals, 1);
+}
+
+#[test]
+fn approve_sponsored_rejects_auth_for_a_different_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Proposal-bound auth"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let other_id = id + 1;
+    let invocation = MockAuthInvoke {
+        contract: &client.address,
+        fn_name: "approve_sponsored",
+        args: Vec::from_array(
+            &env,
+            [owner_a.clone().into_val(&env), other_id.into_val(&env)],
+        ),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &owner_a,
+        invoke: &invocation,
+    }]);
+
+    assert!(client.try_approve_sponsored(&owner_a, &id).is_err());
+    assert!(!client.has_approved(&id, &owner_a));
+}
+
+#[test]
+fn approve_sponsored_rejects_replay() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "One approval only"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.approve_sponsored(&owner_a, &id);
+
+    assert_eq!(
+        client.try_approve_sponsored(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+#[test]
+fn approve_sponsored_rejects_unauthorized_address() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Owner-only sponsored approval"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    assert_eq!(
+        client.try_approve_sponsored(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &non_owner));
 }
 
 #[test] 
@@ -9445,4 +9574,389 @@ fn concurrent_role_proposals_execute_deterministically() {
         if role == Role::Viewer { count += 1; }
     }
     assert_eq!(count, 1);
+}
+
+// ─── Approved-token registry ────────────────────────────────────────────────
+
+#[test]
+fn asset_registry_is_optional_and_enforces_governed_approvals() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    assert!(!client.get_asset_registry_enabled());
+    assert!(!client.is_token_approved(&token_client.address));
+
+    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+        &owner_a,
+        &true,
+        &str(&env, "Enable approved tokens"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &registry_proposal);
+    client.approve(&owner_b, &registry_proposal);
+    client.execute(&owner_c, &registry_proposal);
+    assert!(client.get_asset_registry_enabled());
+    assert_eq!(
+        client.try_create_spending_limit_proposal(
+            &owner_a,
+            &owner_a,
+            &token_client.address,
+            &500,
+            &str(&env, "Unapproved token limit"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+
+    let transfer = t(
+        &env,
+        &Address::generate(&env),
+        1_000,
+        &token_client.address,
+    );
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &transfer,
+            &str(&env, "Unapproved token"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+
+    let add_proposal = client.create_add_approved_token_proposal(
+        &owner_a,
+        &token_client.address,
+        &str(&env, "Approve treasury token"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &add_proposal);
+    client.approve(&owner_b, &add_proposal);
+    client.execute(&owner_c, &add_proposal);
+    assert!(client.is_token_approved(&token_client.address));
+
+    let approved_transfer = client.create_proposal(
+        &owner_a,
+        &transfer,
+        &str(&env, "Approved token"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &approved_transfer);
+    client.approve(&owner_b, &approved_transfer);
+    client.execute(&owner_c, &approved_transfer);
+    assert_eq!(
+        client.get_proposal(&approved_transfer).status,
+        ProposalStatus::Executed
+    );
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let registry_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_tok")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected approved-token change event");
+    let event_data = match &registry_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: ApprovedTokenChangedEvent = event_data.into_val(&env);
+    assert_eq!(event.token, token_client.address);
+    assert!(event.approved);
+
+    let remove_proposal = client.create_remove_approved_token_proposal(
+        &owner_a,
+        &token_client.address,
+        &str(&env, "Remove treasury token"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_proposal);
+    client.approve(&owner_b, &remove_proposal);
+    client.execute(&owner_c, &remove_proposal);
+    assert!(!client.is_token_approved(&token_client.address));
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &transfer,
+            &str(&env, "Removed token"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
+    let token_events = latest_contract_events
+        .events()
+        .iter()
+        .filter(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_tok")
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(token_events, 2);
+
+    let registry_event = latest_contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_en")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected registry-enabled event");
+    let event_data = match &registry_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: AssetRegistryEnabledEvent = event_data.into_val(&env);
+    assert!(event.enabled);
+}
+
+#[test]
+fn asset_registry_is_rechecked_when_transfer_executes() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let pending_limit = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &500,
+        &str(&env, "Limit created while unrestricted"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &pending_limit);
+    client.approve(&owner_b, &pending_limit);
+    let pending_transfer = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000,
+            &token_client.address,
+        ),
+        &str(&env, "Created while unrestricted"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &pending_transfer);
+    client.approve(&owner_b, &pending_transfer);
+
+    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+        &owner_a,
+        &true,
+        &str(&env, "Enable approved tokens"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &registry_proposal);
+    client.approve(&owner_b, &registry_proposal);
+    client.execute(&owner_c, &registry_proposal);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &pending_transfer),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+    assert_eq!(
+        client.try_execute(&owner_c, &pending_limit),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+}
+
+// ─── Guardian transfer proposal ────────────────────────────────────────────
+
+#[test]
+fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian = Address::generate(&env);
+    let id = client.create_transfer_guardian_proposal(
+        &owner_a,
+        &guardian,
+        &str(&env, "Rotate guardian"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    assert_eq!(client.get_guardian(), None);
+
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_eq!(client.get_guardian(), Some(guardian.clone()));
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("guard_set")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected guardian-set event");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: GuardianSetEvent = event_data.into_val(&env);
+    assert_eq!(event.guardian, guardian);
+}
+
+// ─── Escrow ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let params = EscrowParams {
+        recipient: recipient.clone(),
+        token: token_client.address.clone(),
+        amount: 1_000,
+        release_mode: EscrowReleaseMode::OwnerQuorumUntil(NOW + 100),
+    };
+    let proposal = client.create_escrow_proposal(
+        &owner_a,
+        &params,
+        &str(&env, "Milestone escrow"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
+    let escrow_id = 1_u64;
+    assert_eq!(client.get_escrow(&escrow_id).amount, 1_000);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_crt")));
+
+    let competing_transfer = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Attempt to spend reserved funds"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &competing_transfer);
+    client.approve(&owner_b, &competing_transfer);
+    assert_eq!(
+        client.try_execute(&owner_c, &competing_transfer),
+        Err(Ok(ContractError::TransferFailed))
+    );
+
+    let mut insufficient = Vec::new(&env);
+    insufficient.push_back(owner_a.clone());
+    assert_eq!(
+        client.try_release_escrow(&insufficient, &escrow_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a);
+    approvers.push_back(owner_b);
+    client.release_escrow(&approvers, &escrow_id);
+    assert_eq!(token_client.balance(&recipient), 1_000);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_rel")));
+    assert_eq!(
+        client.try_get_escrow(&escrow_id),
+        Err(Ok(ContractError::EscrowNotFound))
+    );
+}
+
+#[test]
+fn deadline_escrow_rejects_early_release_then_pays_at_deadline() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let deadline = NOW + 10;
+    let params = EscrowParams {
+        recipient: recipient.clone(),
+        token: token_client.address.clone(),
+        amount: 2_000,
+        release_mode: EscrowReleaseMode::Deadline(deadline),
+    };
+    let proposal = client.create_escrow_proposal(
+        &owner_a,
+        &params,
+        &str(&env, "Deadline escrow"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
+
+    assert_eq!(
+        client.try_release_escrow_by_deadline(&owner_c, &1),
+        Err(Ok(ContractError::EscrowConditionNotMet))
+    );
+    set_timestamp(&env, deadline);
+    client.release_escrow_by_deadline(&owner_c, &1);
+    assert_eq!(token_client.balance(&recipient), 2_000);
+}
+
+#[test]
+fn expired_quorum_escrow_can_be_refunded_without_payout() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let treasury_balance = token_client.balance(&client.address);
+    let params = EscrowParams {
+        recipient: Address::generate(&env),
+        token: token_client.address.clone(),
+        amount: 3_000,
+        release_mode: EscrowReleaseMode::OwnerQuorumUntil(NOW + 10),
+    };
+    let proposal = client.create_escrow_proposal(
+        &owner_a,
+        &params,
+        &str(&env, "Refundable escrow"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
+    set_timestamp(&env, NOW + 11);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a);
+    approvers.push_back(owner_b);
+    assert_eq!(
+        client.try_release_escrow(&approvers, &1),
+        Err(Ok(ContractError::EscrowConditionNotMet))
+    );
+    client.refund_escrow(&owner_c, &1);
+
+    assert_eq!(token_client.balance(&client.address), treasury_balance);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_ref")));
+    assert_eq!(
+        client.try_get_escrow(&1),
+        Err(Ok(ContractError::EscrowNotFound))
+    );
 }
