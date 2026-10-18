@@ -2,6 +2,8 @@
 
 This document outlines all the custom events emitted by the Accord Protocol contract (`contracts/accord/src/lib.rs`). 
 
+For a complete guide on polling, decoding, and streaming these events from external applications via Soroban RPC, see the [Contract Integration Guide](./CONTRACT_INTEGRATION_GUIDE.md#consuming--decoding-events).
+
 The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to their payload struct.
 
 | Topic Name     | Struct Name                      | Payload Description |

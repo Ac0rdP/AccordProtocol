@@ -212,7 +212,28 @@ Check [`ROADMAP.md`](./ROADMAP.md) for an overview of upcoming milestones, targe
 ### GitHub issues
 
 - Use **open issues** as the primary source of scoped work.
-- Prefer issues that have a **clear acceptance criteria** (what “done” means, which files or behaviors are in scope).
+- Prefer issues that have **clear acceptance criteria** (what “done” means, which files or behaviors are in scope).
+
+### Choosing your first issue
+
+If you are new to Accord Protocol, we recommend starting with issues scoped specifically for onboarding:
+
+1. **Look for beginner-friendly tags**:
+   - `good first issue`: Scoped to be self-contained and achievable without deep architectural knowledge.
+   - `documentation`: Clarifying guides, updating diagrams, writing tutorials, fixing typos.
+   - `testing`: Adding edge-case unit tests in Rust or UI tests for frontend components.
+   - `frontend-good-first-issue`: UI tweaks, accessibility (a11y) improvements, or styling fixes.
+2. **Assess technical scope**:
+   - **Frontend / React**: Best if you know TypeScript and Tailwind CSS; starts in `frontend/`.
+   - **Soroban Contracts**: Best if you know Rust; starts in `contracts/accord/src/`.
+   - **Docs & DevRel**: Best for first-time open-source contributors; located in `docs/`.
+3. **Claiming an issue**:
+   - Check that the issue is not already assigned to someone else.
+   - Leave a comment stating that you want to work on it with a brief 1-2 sentence outline of your proposed approach.
+   - Wait for a maintainer to assign the issue to you before submitting code, preventing overlapping work.
+4. **Avoid common pitfalls**:
+   - Do not bundle unrequested refactorings into a first issue.
+   - Keep the scope tightly bounded to the issue's acceptance criteria.
 
 ### Stellar Drips Wave
 
@@ -242,7 +263,45 @@ If you discover that an issue is **wrongly scoped** or **blocked**, comment on t
 
 ### What happens after you open a PR
 
-Once your pull request is open, a maintainer will review it. Expect a first review within a few days; complex changes may take longer. Review comments appear directly on the PR in GitHub — on specific lines of code, on the overall diff, or as general discussion. Subscribe to email notifications for the PR so you do not miss feedback.
+Once your pull request is open, automated CI workflows trigger immediately to test and lint your code. Review comments appear directly on the PR in GitHub — on specific lines of code, on the overall diff, or as general discussion. Subscribe to email notifications for the PR so you do not miss feedback.
+
+### Review process and SLAs
+
+We value your time and aim to keep review cycles predictable and transparent. Our maintainer team commits to the following Service Level Agreements (SLAs):
+
+| Review Stage | Expected Turnaround | Description |
+|---|---|---|
+| **Initial Triage** | **Within 24–48 hours** | PR is acknowledged, labeled, and assigned a reviewer. Basic CI status is verified. |
+| **First In-Depth Review** | **Within 3 business days (72 hours)** | Detailed line-by-line feedback, architecture review, and test validation. |
+| **Follow-up Reviews** | **Within 2 business days (48 hours)** | Re-review after contributor pushes requested changes or answers questions. |
+| **Final Merge** | **Within 24 hours of approval** | Once all reviews are approved and CI passes, a maintainer squashes or merges the PR. |
+
+**Review stages:**
+1. **Automated CI**: GitHub Actions runs contract tests, lints, and builds automatically. PRs with failing CI will not be reviewed until green.
+2. **Peer Review**: Verification of code style, component modularity, and test coverage.
+3. **Architecture & Security**: For contract changes (`contracts/accord`), security invariants and storage costs are reviewed by a core maintainer.
+4. **Approval & Merge**: The PR is merged into `main` and credited in the changelog.
+
+**Escalation**: If you have addressed all comments and have not received a response within the SLA window, feel free to politely ping the assigned reviewer in the PR comments or reach out on the project's discussion channel.
+
+### Definition of Done (DoD)
+
+Before a pull request can be approved and merged, it must meet our Definition of Done:
+
+- [ ] **Acceptance Criteria**: The change fulfills 100% of the acceptance criteria defined in the linked issue.
+- [ ] **Scoped Focus**: No unrelated changes, unnecessary dependency updates, or accidental formatting refactors.
+- [ ] **Test Coverage**:
+  - For Soroban contracts: Unit tests cover all success and failure branches in `contracts/accord/src/test.rs`.
+  - For Frontend: Component tests or mocks in `frontend/` reflect new state transitions.
+- [ ] **CI Passing**: All automated GitHub Actions checks pass without warnings or errors:
+  - Contract: `cargo test` passes all tests.
+  - Rust Lints: `cargo fmt --check` and `cargo clippy -- -D warnings` pass cleanly.
+  - Frontend: `npm run lint` and `npm run build` succeed.
+- [ ] **Documentation**:
+  - Updated relevant docs in `docs/` or `README.md` if any user-facing behavior, API, or configuration changed.
+  - If storage keys or TTL constants changed, `docs/ARCHITECTURE.md` and `docs/STORAGE_MODEL.md` are updated.
+- [ ] **Clean Git History**: Commits follow the convention `feat(<module>): ...` or `fix(<module>): ...` with concise imperative messages.
+- [ ] **Linked Issue**: The PR description includes `Closes #<issue_number>` or `Fixes #<issue_number>`.
 
 ### Review and merge criteria
 
@@ -302,6 +361,69 @@ A strong PR description helps reviewers and future readers. Include:
 2. **Why** it was needed (link the issue: `Fixes #123` or `Refs #123`).
 3. **How to verify** (commands you ran, screenshots for UI).
 4. **Risks or follow-ups** (known limitations, TODOs that are intentionally left).
+
+### Examples of well-formed pull requests
+
+Here are practical examples of well-formed pull requests across different domains:
+
+#### Example 1: Contract feature or bugfix PR
+
+```markdown
+## Title: fix(contract): prevent duplicate approver weight in quorum calculation (#412)
+
+### Summary
+Fixes an edge case where an owner who re-approved an active proposal could have their weight counted twice if the approval key was not checked before updating cumulative weight.
+
+### Changes
+- Updated `approve()` in `contracts/accord/src/lib.rs` to check `has_approved()` prior to adding weight.
+- Added regression test `test_duplicate_approval_rejected` in `contracts/accord/src/test.rs`.
+
+### Verification
+Ran local contract checks:
+```bash
+cargo test
+cargo fmt --check
+cargo clippy -- -D warnings
+```
+All 32 tests pass without warnings.
+
+### Definition of Done Checklist
+- [x] Meets all acceptance criteria in #412
+- [x] Unit tests added covering edge case
+- [x] CI checks pass locally
+- [x] Storage/event docs updated (none affected)
+
+Closes #412
+```
+
+#### Example 2: Frontend UI improvement PR
+
+```markdown
+## Title: feat(frontend): add filter dropdown for proposal category (#520)
+
+### Summary
+Adds a filter selector allowing users to filter proposals by category (Transfer, Payroll, Grant, Ops).
+
+### Changes
+- Added `CategoryFilter` component in `frontend/src/components/CategoryFilter.tsx`.
+- Integrated filter into `frontend/src/pages/Dashboard.tsx`.
+- Updated test coverage for filter state transitions.
+
+### Verification
+- Tested with mock data across all 4 categories.
+- Verified responsive layout on desktop and mobile viewports.
+- Screenshot:
+  [Screenshot attached showing filter dropdown in active state]
+- Ran `npm run lint` and `npm run build` cleanly.
+
+### Definition of Done Checklist
+- [x] Meets acceptance criteria in #520
+- [x] Responsive layout verified
+- [x] Linting and build green
+- [x] No extraneous changes
+
+Closes #520
+```
 
 ### PR size and scope
 
@@ -367,7 +489,23 @@ Run the relevant checks before requesting review.
 ```bash
 cd frontend
 npm run lint
+npm run test          # unit tests + page-state matrix tests
 npm run build
+npm run check:bundle  # production bundle budget (run after `npm run build`)
+npm run e2e           # Playwright end-to-end suite
+```
+
+Bundle and load-performance budgets are documented in
+[`frontend/docs/performance-budgets.md`](./frontend/docs/performance-budgets.md).
+Raise a budget only as a deliberate, reviewed change — never to make a red build
+green.
+
+After editing any `#[contracttype]` or `#[contracterror]` definition, regenerate
+the frontend contract types and commit the result — see
+[`docs/CONTRACT_TYPES.md`](./docs/CONTRACT_TYPES.md):
+
+```bash
+python3 scripts/generate-contract-types.py
 ```
 
 ### Contracts (from repo root)
@@ -427,7 +565,7 @@ If your change touches both areas, run **both** frontend and contract commands a
 ### Adding tests
 
 - **Contracts:** add or extend tests alongside behavior changes. Prefer tests that encode **invariants** (for example, cannot execute below threshold).
-- **Frontend:** when logic grows beyond trivial UI, consider unit tests or component tests if the project introduces a test runner; until then, document manual test steps clearly in the PR.
+- **Frontend:** add or extend Vitest unit/component tests (`npm run test`) for logic and page states, and Playwright end-to-end tests (`npm run e2e`) for user flows. Every page must cover loading, empty, and error states in the page-state matrix (`frontend/src/pages/pageStateMatrix.test.tsx`).
 
 ---
 

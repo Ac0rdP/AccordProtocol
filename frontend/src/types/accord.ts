@@ -1,15 +1,31 @@
-export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
+// Contract-derived enums come from the generated file so the frontend can never
+// drift from contracts/accord/src/lib.rs. Run
+// `python3 scripts/generate-contract-types.py` after changing the contract.
+import type {
+  ContractProposalCategory,
+  ContractProposalStatus,
+  ContractRecurringStatus,
+  ContractRole,
+} from "./contract.generated";
 
+export { ContractError } from "./contract.generated";
+
+/** Lower-cased view of the on-chain status enum used by the UI. */
+export type ProposalStatus = Lowercase<ContractProposalStatus>;
+
+/**
+ * UI roles are a superset of the contract's capability roles: the contract
+ * stores Proposer/Approver/Executor/Viewer, while the UI also models the
+ * legacy Owner/Guardian/SpendingLimit labels used in navigation and banners.
+ */
 export type Role =
   | "Owner"
-  | "Viewer"
   | "Guardian"
   | "SpendingLimit"
-  | "Proposer"
-  | "Approver"
-  | "Executor";
+  | ContractRole;
 
-export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
+/** Matches the contract's ProposalCategory enum exactly. */
+export type ProposalCategory = ContractProposalCategory;
 
 export type ProposalKind =
   | "transfer"
@@ -97,8 +113,14 @@ export type OwnerWeightChangeEvent = {
   timestamp: string;
 };
 
-export type RecurringStatus = "active" | "paused" | "completed" | "cancelled";
+/** Lower-cased view of the on-chain RecurringStatus enum used by the UI. */
+export type RecurringStatus = Lowercase<ContractRecurringStatus>;
 
+/**
+ * UI-facing snake_case form of the contract's RecurringKind enum. The mapping
+ * is asserted against the generated contract type by
+ * `src/types/contract.generated.test.ts`.
+ */
 export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
 
 export type RecurringPayment = {
@@ -120,7 +142,8 @@ export type RecurringPayment = {
   description: string;
 };
 
-export type RecurringScheduleStatus = "active" | "paused" | "completed" | "cancelled";
+/** Recurring schedules share the same lifecycle states as recurring payments. */
+export type RecurringScheduleStatus = RecurringStatus;
 
 export type RecurringSchedule = {
   id: number;

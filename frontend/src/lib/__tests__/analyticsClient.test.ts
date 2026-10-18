@@ -35,6 +35,25 @@ describe("analytics client", () => {
     expect(await createAnalyticsClient("").getBalance({ timeSeries: true, offset: 0 })).toEqual(body);
     expect(fetchMock.mock.calls[0][0]).toBe("/treasury/balance?offset=0&timeSeries=true");
   });
+  it("sends bearer authorization for protected API calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ fixture: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+    await createAnalyticsClient("", { accessToken: "user-token" }).getProposal(7);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Accept: "application/json", Authorization: "Bearer user-token" });
+  });
+  it("rejects invalid input before making a request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(client.getSummary({ limit: 101 })).rejects.toThrow("limit");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("rejects over-limit use", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ fixture: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const limited = createAnalyticsClient("", { rateLimit: 1 });
+    await limited.getSummary();
+    await expect(limited.getSummary()).rejects.toMatchObject({ status: 429 });
+  });
   it.each([{ error: { message: "Invalid range" } }, { message: "Invalid range" }, { error: "Invalid range" }])("surfaces structured errors", async (body) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => body }));
     await expect(client.getSummary()).rejects.toMatchObject({ name: "AnalyticsApiError", message: "Invalid range", status: 400, body });

@@ -1,0 +1,10 @@
+{
+  "$comment": "Load-time budgets for a key page, measured with headless Chromium against `vite preview`. See frontend/docs/performance-budgets.md before raising these values.",
+  "url": "/",
+  "runs": 3,
+  "budgets": {
+    "firstContentfulPaintMs": 2500,
+    "domContentLoadedMs": 4000,
+    "loadEventMs": 6000
+  }
+}
