@@ -920,6 +920,7 @@ The same panel also serves as a diagnostic tool: if an execute call fails with `
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
 | [ANALYTICS_API.md](ANALYTICS_API.md)                                      | Analytics HTTP API and indexed event schema reference          |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
+| [docs/adr/README.md](adr/README.md)                                      | Architecture Decision Records (ADRs) and index table           |
 
 ## 12. Owner-Authorization Check Resource Cost
 

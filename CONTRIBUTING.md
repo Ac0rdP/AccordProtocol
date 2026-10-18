@@ -672,6 +672,24 @@ We document significant architectural decisions in [`docs/adr/`](./docs/adr/) us
 
 Do not write an ADR for routine bug fixes, refactoring that preserves existing interfaces, or regular dependency updates. See [`docs/adr/README.md`](./docs/adr/README.md) for numbering, status lifecycles, and supersession guidelines.
 
+### API documentation build
+
+The project generates unified API reference documentation combining:
+1. **Rustdoc** for the Soroban smart contract (`contracts/accord`)
+2. **TypeDoc** for the frontend client libraries and domain types (`frontend/src/types` and `frontend/src/lib`)
+
+**Local build command:**
+```bash
+# Build both documentation suites into docs-site/
+bash scripts/build-docs.sh docs-site
+
+# Or using Makefile:
+make docs
+```
+
+**Publishing and GitHub Pages:**
+API references are published to GitHub Pages on pushes to `main` via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). The expected live address is `https://thegreatfeez.github.io/accord-protocol/` (maintainers should confirm upon enabling GitHub Actions as the Pages source). Pull requests validate documentation generation in CI without deploying.
+
 ---
 
 ## Dependency updates
