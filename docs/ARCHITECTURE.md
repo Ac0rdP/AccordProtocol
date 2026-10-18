@@ -56,6 +56,7 @@ See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contrac
 ## 3. Storage Layout (Soroban)
 
 > Architectural decisions: [ADR-0002: Storage Layout and TTL Strategy](adr/0002-storage-layout-and-ttl-strategy.md) &bull; [ADR-0007: Contract Upgradeability and Schema Migration](adr/0007-contract-upgradeability-and-migration.md).
+> **Complete Storage Reference**: For a comprehensive, key-by-key inventory covering every storage key, granularity, TTL behavior, and rent cost model, see [Storage Data-Model Reference](./STORAGE_MODEL.md).
 
 ### Instance Storage (low-cost, short TTL)
 

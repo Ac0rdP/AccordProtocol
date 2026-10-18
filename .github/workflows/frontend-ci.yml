@@ -7,18 +7,22 @@ on:
     branches: [ main ]
     paths:
       - 'frontend/**'
+      - 'packages/sdk/**'
+      - 'examples/**'
       - 'contracts/accord/src/lib.rs'
       - 'scripts/generate-contract-types.py'
       - 'docs/CONTRACT_TYPES.md'
       - '.github/workflows/frontend-ci.yml'
 
+
 permissions:
   contents: read
   pull-requests: write
 
+# Cancel superseded pull-request runs on the same branch; never cancel main.
 concurrency:
-  group: frontend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
@@ -177,6 +181,12 @@ jobs:
       - name: Install dependencies
         run: npm --prefix frontend ci
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
       - name: Install Playwright browsers
         working-directory: frontend
         run: npx playwright install --with-deps chromium
@@ -197,3 +207,34 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           if-no-files-found: ignore
+
+  sdk-and-example-build:
+    name: SDK & example dApp build & smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install SDK dependencies & build
+        working-directory: packages/sdk
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test
+          npm run build
+
+      - name: Install Example dApp dependencies & build
+        working-directory: examples/multisig-dapp
+        run: |
+          npm install
+          npm run build
+
+      - name: Run Example dApp smoke test
+        working-directory: examples/multisig-dapp
+        run: npm run test:smoke

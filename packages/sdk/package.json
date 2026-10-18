@@ -1,0 +1,42 @@
+{
+  "name": "@accord-protocol/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript client SDK for Accord Protocol multisig treasury smart contracts on Stellar Soroban",
+  "license": "Apache-2.0",
+  "author": "Accord Protocol Contributors",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && tsc -p tsconfig.types.json",
+    "build:esm": "tsc -p tsconfig.esm.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "build:types": "tsc -p tsconfig.types.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@stellar/stellar-sdk": "^13.0.0 || ^14.0.0 || ^15.0.0"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "^15.1.0",
+    "typescript": "~6.0.2",
+    "vitest": "^3.2.6"
+  }
+}

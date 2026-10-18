@@ -44,6 +44,22 @@ Owner A creates a proposal → Owner B & C approve → threshold met → any own
 
 ---
 
+## Visual Walkthroughs
+
+New to Accord? Explore visual, step-by-step walkthroughs for onboarding and core multisig workflows (available in responsive animated SVG and lightweight GIF formats):
+
+| Flow | Focus | Visual Walkthrough |
+|---|---|---|
+| **[Onboarding & Wallet Connection](docs/WALKTHROUGHS.md#flow-1-onboarding--wallet-connection)** | Freighter installation, Testnet network switch, and Friendbot XLM faucet funding | ![Wallet Setup](docs/assets/walkthroughs/01-wallet-connection-onboarding.svg) |
+| **[Create Multisig Proposal](docs/WALKTHROUGHS.md#flow-2-creating-a-multisig-proposal)** | Transfer drafting, parameter validation, Soroban RPC simulation, and wallet signing | ![Create Proposal](docs/assets/walkthroughs/02-create-multisig-proposal.svg) |
+| **[Approve & Execute](docs/WALKTHROUGHS.md#flow-3-reviewing-approving--executing-proposals)** | Co-owner review, voting weights, quorum reach, and autonomous on-chain token execution | ![Approve & Execute](docs/assets/walkthroughs/03-approve-and-execute-proposal.svg) |
+| **[Recurring Payroll & Streams](docs/WALKTHROUGHS.md#flow-4-recurring-payments--contributor-payroll)** | Scheduled contributor payroll, token vesting, and automated periodic disbursement | ![Recurring Payroll](docs/assets/walkthroughs/04-recurring-payroll-schedule.svg) |
+| **[Treasury Analytics & Monitoring](docs/WALKTHROUGHS.md#flow-5-treasury-analytics--activity-monitoring)** | Reserve metrics, quorum participation health, and live on-chain event stream | ![Treasury Analytics](docs/assets/walkthroughs/05-treasury-analytics-monitoring.svg) |
+
+Full catalog, step-by-step transcripts, and asset maintenance procedures: [`docs/WALKTHROUGHS.md`](./docs/WALKTHROUGHS.md)
+
+---
+
 ## Live Deployment (Testnet)
 
 | | |
@@ -174,6 +190,15 @@ cd contracts/accord && cargo test
 Full API reference: [`docs/CONTRACT_API.md`](./docs/CONTRACT_API.md)
 
 Analytics HTTP API and indexed event schemas: [`docs/ANALYTICS_API.md`](./docs/ANALYTICS_API.md) — how those events flow into the indexer: [`docs/ARCHITECTURE.md` §13](./docs/ARCHITECTURE.md#13-indexer--analytics-architecture)
+
+Operational Runbooks: [`docs/runbooks/`](./docs/runbooks/README.md) — [Incident Response](./docs/runbooks/INCIDENT_RESPONSE.md), [Upgrade Rollback](./docs/runbooks/UPGRADE_ROLLBACK.md), [Key Rotation](./docs/runbooks/KEY_ROTATION.md)
+
+Audit-Prep Pack: [`docs/AUDIT_PREP.md`](./docs/AUDIT_PREP.md)
+
+Client SDK: [`packages/sdk/`](./packages/sdk/README.md) (`@accord-protocol/sdk`)
+
+Example dApp: [`examples/multisig-dapp/`](./examples/multisig-dapp/README.md) — runnable React/Vite multisig application demonstrating SDK integration with Freighter wallet.
+
 
 ---
 
