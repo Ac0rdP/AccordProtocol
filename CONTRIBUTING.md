@@ -363,7 +363,23 @@ Run the relevant checks before requesting review.
 ```bash
 cd frontend
 npm run lint
+npm run test          # unit tests + page-state matrix tests
 npm run build
+npm run check:bundle  # production bundle budget (run after `npm run build`)
+npm run e2e           # Playwright end-to-end suite
+```
+
+Bundle and load-performance budgets are documented in
+[`frontend/docs/performance-budgets.md`](./frontend/docs/performance-budgets.md).
+Raise a budget only as a deliberate, reviewed change — never to make a red build
+green.
+
+After editing any `#[contracttype]` or `#[contracterror]` definition, regenerate
+the frontend contract types and commit the result — see
+[`docs/CONTRACT_TYPES.md`](./docs/CONTRACT_TYPES.md):
+
+```bash
+python3 scripts/generate-contract-types.py
 ```
 
 ### Contracts (from repo root)
@@ -423,7 +439,7 @@ If your change touches both areas, run **both** frontend and contract commands a
 ### Adding tests
 
 - **Contracts:** add or extend tests alongside behavior changes. Prefer tests that encode **invariants** (for example, cannot execute below threshold).
-- **Frontend:** when logic grows beyond trivial UI, consider unit tests or component tests if the project introduces a test runner; until then, document manual test steps clearly in the PR.
+- **Frontend:** add or extend Vitest unit/component tests (`npm run test`) for logic and page states, and Playwright end-to-end tests (`npm run e2e`) for user flows. Every page must cover loading, empty, and error states in the page-state matrix (`frontend/src/pages/pageStateMatrix.test.tsx`).
 
 ---
 

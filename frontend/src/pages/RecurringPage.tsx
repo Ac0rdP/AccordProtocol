@@ -3,7 +3,7 @@ import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
-import { RecurringForecastChart } from "../components/RecurringForecastChart";
+import { PageState } from "../components/PageState";
 import {
   getRecurringPaymentsPaged,
   getTotalRecurringPayments,
@@ -106,8 +106,16 @@ function DisbursementTimeline({ schedules }: { schedules: RecurringSchedule[] })
 
 export function RecurringPage({
   walletAddress,
+  loading: forcedLoading = false,
+  error = null,
+  onRetry,
 }: {
   walletAddress?: string | null;
+  /** Forces the loading state (used by the page-state matrix tests). */
+  loading?: boolean;
+  /** Forces the error state (used by the page-state matrix tests). */
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<StatusFilter>("all");
   const [schedules, setSchedules] = useState<RecurringSchedule[]>([]);
@@ -164,6 +172,21 @@ export function RecurringPage({
     : schedules.filter((s) => s.status === activeTab);
 
   const activeSchedules = schedules.filter((s) => s.status === "active");
+
+  if (forcedLoading) {
+    return <PageState status="loading" title="Loading recurring schedules…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load recurring schedules"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
 
   return (
     <>
