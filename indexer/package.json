@@ -1,0 +1,21 @@
+{
+  "name": "accord-treasury-indexer",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=../.env src/index.js",
+    "serve": "node --env-file-if-exists=../.env src/index.js",
+    "backfill": "node --env-file-if-exists=../.env src/index.js backfill",
+    "reindex": "node --env-file-if-exists=../.env src/index.js reindex",
+    "replay": "node --env-file-if-exists=../.env src/index.js replay",
+    "test": "node --test",
+    "migrate": "node --env-file-if-exists=../.env src/migrate.js"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^15.1.0",
+    "pg": "~8.23.1"
+  }
+}

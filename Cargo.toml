@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "contracts/*",
+  "analytics-api",
 ]
 
 [workspace.dependencies]

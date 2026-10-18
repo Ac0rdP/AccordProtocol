@@ -1,8 +1,31 @@
-export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
+// Contract-derived enums come from the generated file so the frontend can never
+// drift from contracts/accord/src/lib.rs. Run
+// `python3 scripts/generate-contract-types.py` after changing the contract.
+import type {
+  ContractProposalCategory,
+  ContractProposalStatus,
+  ContractRecurringStatus,
+  ContractRole,
+} from "./contract.generated";
 
-export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
+export { ContractError } from "./contract.generated";
 
-export type Role = "Owner" | "Viewer" | "Guardian" | "SpendingLimit";
+/** Lower-cased view of the on-chain status enum used by the UI. */
+export type ProposalStatus = Lowercase<ContractProposalStatus>;
+
+/**
+ * UI roles are a superset of the contract's capability roles: the contract
+ * stores Proposer/Approver/Executor/Viewer, while the UI also models the
+ * legacy Owner/Guardian/SpendingLimit labels used in navigation and banners.
+ */
+export type Role =
+  | "Owner"
+  | "Guardian"
+  | "SpendingLimit"
+  | ContractRole;
+
+/** Matches the contract's ProposalCategory enum exactly. */
+export type ProposalCategory = ContractProposalCategory;
 
 export type ProposalKind =
   | "transfer"
@@ -10,17 +33,25 @@ export type ProposalKind =
   | "remove_owner"
   | "change_threshold"
   | "set_spending_limit"
-  | "change_owner_weight";
+  | "change_owner_weight"
+  | "grant_role"
+  | "revoke_role"
+  | "recurring";
 
 export type Proposal = {
   id: number;
   kind: ProposalKind;
   to: string;
   amount: string;
+  /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
+  rawAmount?: string;
   token: string;
   description: string;
   approvals: number;
   threshold: number;
+  quorumWeight?: number;
+  approvalWeight?: number;
+  totalWeight?: number;
   status: ProposalStatus;
   deadline: string;
   deadlineTs: number;
@@ -28,6 +59,9 @@ export type Proposal = {
   proposer: string;
   userHasApproved: boolean;
   approverAddresses: string[];
+  approverWeights?: Record<string, number>;
+  executedAt?: string | null;
+  category?: ProposalCategory;
 };
 
 export type Owner = {
@@ -42,4 +76,235 @@ export type DashboardStat = {
   label: string;
   value: string;
   sub: string;
+};
+
+export type ProposalEventType =
+  | "approved"
+  | "revoked"
+  | "executed"
+  | "owner_weight_changed"
+  | "recurring_payment_created"
+  | "recurring_payment_disbursed"
+  | "recurring_payment_paused"
+  | "recurring_payment_cancelled"
+  | (string & {});
+
+export type ProposalEvent = {
+  type: ProposalEventType;
+  actor: string;
+  timestamp: string;
+  ledger?: number;
+  scheduleId?: number | string;
+  amount?: string;
+  token?: string;
+  recipient?: string;
+  details?: string;
+};
+
+export type OwnerWeightChangeEvent = {
+  /** Full address of the owner whose voting weight changed. */
+  owner: string;
+  oldWeight: number;
+  newWeight: number;
+  /** Total voting weight after the change, when the event reports it. */
+  newTotalWeight?: number;
+  ledger?: number;
+  /** Human-readable time (or ledger) the change was recorded. */
+  timestamp: string;
+};
+
+/** Lower-cased view of the on-chain RecurringStatus enum used by the UI. */
+export type RecurringStatus = Lowercase<ContractRecurringStatus>;
+
+/**
+ * UI-facing snake_case form of the contract's RecurringKind enum. The mapping
+ * is asserted against the generated contract type by
+ * `src/types/contract.generated.test.ts`.
+ */
+export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
+
+export type RecurringPayment = {
+  id: number;
+  proposer: string;
+  recipient: string;
+  token: string;
+  amount: string;
+  intervalSecs: number;
+  startTime: number;
+  endTime?: number;
+  cliffTime?: number;
+  totalCap?: string;
+  totalDisbursed: string;
+  lastDisbursedAt: number;
+  status: RecurringStatus;
+  kind: RecurringKind;
+  category: ProposalCategory;
+  description: string;
+};
+
+/** Recurring schedules share the same lifecycle states as recurring payments. */
+export type RecurringScheduleStatus = RecurringStatus;
+
+export type RecurringSchedule = {
+  id: number;
+  recipient: string;
+  amount: string;
+  token?: string;
+  cadence?: string;
+  interval?: number;
+  totalDisbursed: string;
+  status: RecurringScheduleStatus;
+  kind?: RecurringKind;
+  cliff?: number | string;
+  endDate?: number | string;
+  cap?: string;
+  nextDisbursementTs?: number;
+  description?: string;
+};
+
+export type Delegation = {
+  delegator: string;
+  delegate: string;
+  weight: number;
+  expiry: string;
+  expiryTs: number;
+  active: boolean;
+};
+
+export type OwnerDelegations = {
+  outgoing: Delegation | null;
+  incoming: Delegation[];
+};
+
+/** Analytics amounts are decimal token units, serialized as strings to preserve precision. */
+export type AnalyticsAmount = string;
+export type AnalyticsGranularity = "day" | "week" | "month";
+
+export type AnalyticsQuery = {
+  /** Inclusive ISO date/date-time range. Empty strings omit the bound. */
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+  category?: ProposalCategory;
+  owner?: string;
+  status?: ProposalStatus;
+  limit?: number;
+  offset?: number;
+  sort?: "deadline" | "amount" | "createdAt";
+  order?: "asc" | "desc";
+  granularity?: AnalyticsGranularity;
+  timeSeries?: boolean;
+};
+
+export type AnalyticsTimeSeriesPoint = {
+  /** ISO 8601 UTC timestamp. */
+  timestamp: string;
+  /** Token identifier to balance in decimal token units. */
+  values: Record<string, AnalyticsAmount>;
+};
+
+export type TreasuryBalance = {
+  balances: Record<string, AnalyticsAmount>;
+  timeSeries?: AnalyticsTimeSeriesPoint[];
+};
+
+/** An indexed treasury balance snapshot. `timestamp` is Unix seconds. */
+export type BalanceSnapshot = {
+  timestamp: number;
+  balances: Record<string, AnalyticsAmount>;
+};
+
+/** An indexed treasury deposit (inflow). `timestamp` is Unix seconds. */
+export type TreasuryDeposit = {
+  timestamp: number;
+  token: string;
+  amount: AnalyticsAmount;
+};
+
+export type CategorySpendBucket = {
+  category: ProposalCategory;
+  token: string;
+  total: AnalyticsAmount;
+  count: number;
+  /** Percentage points, 0–100 (not a fraction). */
+  share: number;
+};
+
+export type OwnerSpendBucket = {
+  owner: string;
+  token: string;
+  total: AnalyticsAmount;
+  count: number;
+};
+
+export type TreasuryFlowBucket = {
+  /** ISO 8601 UTC start of the bucket. */
+  timestamp: string;
+  token: string;
+  inflow: AnalyticsAmount;
+  outflow: AnalyticsAmount;
+};
+
+export type TreasurySummary = {
+  totalDisbursed: Record<string, AnalyticsAmount>;
+  totalInflows: Record<string, AnalyticsAmount>;
+  activeProposals: number;
+  ownerCount: number;
+  largestOutflow: { token: string; amount: AnalyticsAmount } | null;
+};
+
+export type AnalyticsProposalPage = {
+  proposals: Proposal[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AnalyticsProposalDetail = {
+  proposal: Proposal;
+  timeline: ProposalEvent[];
+};
+
+export type TreasuryAnalytics = {
+  summary: TreasurySummary;
+  balance: TreasuryBalance;
+  spendByCategory: CategorySpendBucket[];
+  spendByOwner: OwnerSpendBucket[];
+  flow: TreasuryFlowBucket[];
+};
+
+export type AnalyticsApiErrorCode =
+  | "VALIDATION_ERROR"
+  | "INVALID_PARAMETER"
+  | "NOT_FOUND"
+  | "INTERNAL_ERROR"
+  | "BAD_REQUEST";
+
+export type AnalyticsApiErrorDetail = {
+  field?: string;
+  message: string;
+  code?: string;
+};
+
+export type AnalyticsApiErrorResponse = {
+  error: {
+    code: AnalyticsApiErrorCode | string;
+    message: string;
+    details?: AnalyticsApiErrorDetail[];
+  };
+};
+
+export type ParsedAnalyticsQuery = {
+  startDate?: string;
+  endDate?: string;
+  token?: string;
+  category?: ProposalCategory;
+  owner?: string;
+  status?: ProposalStatus;
+  limit: number;
+  offset: number;
+  sort: "deadline" | "amount" | "createdAt";
+  order: "asc" | "desc";
+  granularity?: AnalyticsGranularity;
+  timeSeries?: boolean;
 };

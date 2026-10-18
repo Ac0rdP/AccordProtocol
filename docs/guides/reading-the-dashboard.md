@@ -2,6 +2,11 @@
 
 This guide explains everything you see on the Accord Protocol dashboard — what each part of a proposal card means, how to interpret proposal statuses, and what actions are available to you depending on your role.
 
+![Proposal Approval & Execution Walkthrough](../assets/walkthroughs/03-approve-and-execute-proposal.svg)
+
+> **Visual Summary**: Review Pending Proposal → Sign Approval → Quorum Reached (`Ready`) → Execute On-Chain.  
+> See the complete visual catalog in [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md).
+
 ---
 
 ## The Proposal List

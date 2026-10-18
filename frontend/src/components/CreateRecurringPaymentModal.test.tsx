@@ -92,7 +92,8 @@ describe("CreateRecurringPaymentModal", () => {
       null,
       null,
       null,
-      "Payroll"
+      "Payroll",
+      "FixedAmountPerPeriod"
     );
     expect(defaultProps.onSubmitted).toHaveBeenCalledTimes(1);
     expect(defaultProps.onClose).toHaveBeenCalledTimes(1);

@@ -9,21 +9,36 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "test:coverage": "vitest run --coverage",
+    "test:coverage:ci": "vitest run --coverage --coverage.reporter=json-summary --coverage.reporter=lcov --coverage.reporter=html",
+    "test:watch": "vitest",
+    "test:visual": "vitest run --config vitest.visual.config.ts",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build -o storybook-static",
+    "test:analytics": "vitest run src/lib/analytics.test.ts src/lib/__tests__/analytics* src/components/SpendByCategoryChart.test.tsx src/components/SpendByOwnerChart.test.tsx src/components/TreasuryBalanceChart.test.tsx src/components/StatCard.test.tsx src/components/AnalyticsSectionState.test.tsx",
+    "e2e": "playwright test",
+    "test:e2e": "vite preview --port 5173 & playwright test",
+    "check:bundle": "node scripts/check-bundle-budget.mjs",
+    "perf": "node scripts/check-performance-budget.mjs",
+    "types:generate": "python3 ../scripts/generate-contract-types.py"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^15.1.0",
     "@tailwindcss/vite": "^4.2.4",
+    "jspdf": "^4.2.1",
     "lucide-react": "^1.21.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.18.0",
+    "recharts": "^3.10.1",
     "tailwindcss": "^4.2.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.61.1",
+    "@storybook/addon-docs": "^10.6.2",
+    "@storybook/react-vite": "^10.6.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -32,15 +47,19 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "~3.2.7",
     "@vitest/ui": "^3.2.6",
+    "axe-core": "^4.14.0",
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
     "jsdom": "^26.1.0",
+    "storybook": "^10.6.2",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",
-    "vitest": "^3.2.6"
+    "vitest": "^3.2.6",
+    "vitest-axe": "^0.1.0"
   }
 }

@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
-import type { Proposal, ProposalStatus } from "../types/accord";
+import type { Proposal, ProposalCategory, ProposalStatus, RecurringSchedule } from "../types/accord";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { ProposalCard } from "../components/ProposalCard";
+import { PageState } from "../components/PageState";
 import {
   getProposalsPaged,
   getTotalProposals,
   getThreshold,
   mapProposal,
 } from "../lib/contract";
+import { formatInterval } from "../lib/soroban";
 
 type Filter = "all" | ProposalStatus;
+type CategoryFilter = "all" | ProposalCategory;
 
 const TABS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
@@ -19,14 +24,32 @@ const TABS: { key: Filter; label: string }[] = [
   { key: "revoked", label: "Revoked" },
 ];
 
+const CATEGORY_OPTIONS: { key: CategoryFilter; label: string }[] = [
+  { key: "all", label: "All Categories" },
+  { key: "Transfer", label: "Transfer" },
+  { key: "Payroll", label: "Payroll" },
+  { key: "Grant", label: "Grant" },
+  { key: "Ops", label: "Ops" },
+  { key: "Other", label: "Other" },
+];
+
 export function HistoryPage({
   proposals,
   onApprove,
+  recurringSchedules = [],
+  loading = false,
+  error = null,
+  onRetry,
 }: {
   proposals: Proposal[];
   onApprove: (id: number) => void;
+  recurringSchedules?: RecurringSchedule[];
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<Filter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [proposerFilter, setProposerFilter] = useState("");
   const [displayedProposals, setDisplayedProposals] = useState<Proposal[]>(proposals);
@@ -86,6 +109,7 @@ export function HistoryPage({
 
   const filteredProposals = displayedProposals
     .filter((p) => activeTab === "all" || p.status === activeTab)
+    .filter((p) => categoryFilter === "all" || p.category === categoryFilter)
     .filter((p) =>
       p.description.toLowerCase().includes(searchTerm.toLowerCase())
     )
@@ -95,11 +119,90 @@ export function HistoryPage({
         p.proposer.toLowerCase().includes(proposerFilter.toLowerCase())
     );
 
+  const hasExecutedProposals = displayedProposals.some((p) => p.status === "executed");
+  const hasRecurringSchedules = recurringSchedules.length > 0;
+  const canExportCSV = hasExecutedProposals || hasRecurringSchedules;
+
+  const handleExportCSV = () => {
+    const executed = displayedProposals.filter((p) => p.status === "executed");
+    if (!canExportCSV) return;
+
+    const sections: string[] = [];
+
+    if (executed.length > 0) {
+      const headers = ["ID", "Amount", "Token", "Recipient", "Date", "Approval Weight", "Quorum Weight"];
+      const rows = executed.map(
+        (p) => `${p.id},"${p.amount}","${p.token}","${p.to}","${p.executedAt || p.deadline}","${p.approvalWeight ?? 0}","${p.quorumWeight ?? 0}"`
+      );
+      sections.push([headers.join(","), ...rows].join("\n"));
+    }
+
+    if (hasRecurringSchedules) {
+      const scheduleHeaders = ["Schedule ID", "Recipient", "Amount", "Cadence", "Total Disbursed"];
+      const scheduleRows = recurringSchedules.map((s) => {
+        const cadence = s.cadence ?? (s.interval !== undefined ? formatInterval(s.interval) : "—");
+        return `${s.id},"${s.recipient}","${s.amount}","${cadence}","${s.totalDisbursed}"`;
+      });
+      const scheduleSection = ["Recurring Schedules", scheduleHeaders.join(","), ...scheduleRows].join("\n");
+      sections.push(scheduleSection);
+    }
+
+    const csvContent = sections.join("\n\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "accord-history.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  if (loading) {
+    return <PageState status="loading" title="Loading proposal history…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load proposal history"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
+
   return (
     <>
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Proposal History</h2>
-        <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 rounded-lg">
+        <div className="flex items-center gap-3">
+          {canExportCSV && (
+            <button
+              onClick={handleExportCSV}
+              className="text-xs px-3 py-1 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center gap-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              Export CSV
+            </button>
+          )}
+          <select
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value as CategoryFilter)}
+            aria-label="Filter by category"
+            className="text-xs px-3 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg capitalize transition-colors hover:text-white focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+          >
+            {CATEGORY_OPTIONS.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 rounded-lg">
           {TABS.map((tab) => (
             <button
               key={tab.key}
@@ -114,6 +217,7 @@ export function HistoryPage({
               {tab.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -156,11 +260,14 @@ export function HistoryPage({
 
       <div className="space-y-3">
         {filteredProposals.length === 0 ? (
-          <p className="text-zinc-600 text-sm py-8 text-center">
-            {searchTerm || proposerFilter
-              ? "No proposals match your search"
-              : `No ${activeTab === "all" ? "" : `${activeTab} `}proposals found`}
-          </p>
+          <EmptyState
+            variant="section"
+            title={
+              searchTerm || proposerFilter || categoryFilter !== "all"
+                ? "No proposals match your search"
+                : `No ${activeTab === "all" ? "" : `${activeTab} `}proposals found`
+            }
+          />
         ) : (
           filteredProposals.map((proposal) => (
             <ProposalCard
@@ -185,13 +292,7 @@ export function HistoryPage({
             className="w-full py-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-sm font-medium text-zinc-300 hover:text-white transition-all flex items-center justify-center gap-2 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             {loadingMore ? (
-              <>
-                <svg className="animate-spin h-4 w-4 text-zinc-400" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                <span>Loading proposals...</span>
-              </>
+              <LoadingState message="Loading proposals…" variant="inline" />
             ) : (
               "Load More"
             )}

@@ -1,0 +1,62 @@
+name: SDK Publish
+
+on:
+  push:
+    tags:
+      - 'sdk-v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Build, test & publish SDK to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        working-directory: packages/sdk
+        run: npm ci
+
+      - name: Verify git tag matches package.json version
+        working-directory: packages/sdk
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#sdk-v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "Release tag version: $TAG_VERSION"
+          echo "Package JSON version: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "ERROR: Git tag ($TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+      - name: Type-check
+        working-directory: packages/sdk
+        run: npm run typecheck
+
+      - name: Run unit tests
+        working-directory: packages/sdk
+        run: npm run test
+
+      - name: Build package (ESM, CJS & TypeScript declarations)
+        working-directory: packages/sdk
+        run: npm run build
+
+      - name: Verify package bundle contents
+        working-directory: packages/sdk
+        run: npm run pack:dry
+
+      - name: Publish to npm with provenance
+        working-directory: packages/sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

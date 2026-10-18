@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { ErrorState } from "./ErrorState";
 
 type Props = { children: ReactNode };
 type State = { hasError: boolean };
@@ -17,16 +18,10 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="text-center py-16">
-          <p className="text-red-400 text-sm mb-4">Something went wrong.</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            className="text-sm px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
-          >
-            Reload
-          </button>
-        </div>
+        <ErrorState
+          message="Something went wrong."
+          onRetry={() => window.location.reload()}
+        />
       );
     }
     return this.props.children;

@@ -6,9 +6,11 @@ import {
   contractErrorMessage,
   displayToStroops,
   formatDeadline,
+  formatWeightPercent,
   missingRoleTooltip,
   shortenAddr,
   stroopsToDisplay,
+  weightToPercent,
 } from "../soroban";
 
 describe("stroopsToDisplay", () => {
@@ -48,6 +50,42 @@ describe("displayToStroops", () => {
 
   test("large values", () => {
     expect(displayToStroops(1000000000)).toBe(10000000000000000n);
+  });
+});
+
+describe("weightToPercent", () => {
+  test("returns the owner share for a normal weight", () => {
+    expect(weightToPercent(5, 20)).toBe(25);
+  });
+
+  test("returns zero for a zero-weight owner", () => {
+    expect(weightToPercent(0, 20)).toBe(0);
+  });
+
+  test("returns 100 for a single-owner total", () => {
+    expect(weightToPercent(7, 7)).toBe(100);
+  });
+
+  test("returns zero when total weight is zero", () => {
+    expect(weightToPercent(5, 0)).toBe(0);
+  });
+});
+
+describe("formatWeightPercent", () => {
+  test("formats a normal weight share with one decimal place", () => {
+    expect(formatWeightPercent(5, 20)).toBe("25.0%");
+  });
+
+  test("formats a zero-weight owner", () => {
+    expect(formatWeightPercent(0, 20)).toBe("0.0%");
+  });
+
+  test("formats a 100-percent single-owner share", () => {
+    expect(formatWeightPercent(7, 7)).toBe("100.0%");
+  });
+
+  test("formats zero when total weight is zero", () => {
+    expect(formatWeightPercent(5, 0)).toBe("0.0%");
   });
 });
 
@@ -120,18 +158,39 @@ describe("shortenAddr", () => {
 });
 
 describe("permission helpers", () => {
-  test("allow owner roles to create, approve, and execute", () => {
-    expect(canCreate(["Owner"])).toBe(true);
-    expect(canApprove(["Owner"])).toBe(true);
-    expect(canExecute(["Owner"])).toBe(true);
+  test("canCreate returns true when Proposer role is present", () => {
+    expect(canCreate(["Proposer", "Viewer"])).toBe(true);
   });
 
-  test("block non-owner roles and explain the missing role", () => {
-    expect(canCreate(["Viewer"])).toBe(false);
-    expect(canApprove(["Guardian"])).toBe(false);
-    expect(canExecute([])).toBe(false);
+  test("canCreate returns false when Proposer role is absent", () => {
+    expect(canCreate(["Approver", "Executor"])).toBe(false);
+  });
+
+  test("canApprove returns true when Approver role is present", () => {
+    expect(canApprove(["Approver", "Viewer"])).toBe(true);
+  });
+
+  test("canApprove returns false when Approver role is absent", () => {
+    expect(canApprove(["Proposer", "Executor"])).toBe(false);
+  });
+
+  test("canExecute returns true when Executor role is present", () => {
+    expect(canExecute(["Executor", "Viewer"])).toBe(true);
+  });
+
+  test("canExecute returns false when Executor role is absent", () => {
+    expect(canExecute(["Proposer", "Approver"])).toBe(false);
+  });
+
+  test("missingRoleTooltip returns the correct role requirement message", () => {
     expect(missingRoleTooltip("execute")).toBe(
-      "Executing proposals requires the Owner role."
+      "Executing proposals requires the Executor role."
+    );
+    expect(missingRoleTooltip("create")).toBe(
+      "Creating proposals requires the Proposer role."
+    );
+    expect(missingRoleTooltip("approve")).toBe(
+      "Approving proposals requires the Approver role."
     );
   });
 });

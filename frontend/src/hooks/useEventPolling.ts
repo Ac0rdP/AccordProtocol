@@ -1,48 +1,73 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { getContractEvents, getLatestLedger } from "../lib/contract";
+import { startPolling } from "../lib/polling";
+import { startEventPush, type EventPushConnection } from "../lib/eventPush";
+
+export type EventPollingOptions = {
+  pushUrl?: string;
+  useSSE?: boolean;
+  disablePush?: boolean;
+  reconnectIntervalMs?: number;
+};
 
 export function useEventPolling(
   refresh: () => void | Promise<void>,
-  intervalMs: number
+  intervalMs: number,
+  options: EventPollingOptions = {},
 ) {
-  const lastSeenLedger = useRef<number | null>(null);
-
   useEffect(() => {
-    let cancelled = false;
+    let lastSeenLedger: number | null = null;
+    let pushActive = false;
 
-    async function init() {
-      try {
-        const currentLedger = await getLatestLedger();
-        if (!cancelled) {
-          lastSeenLedger.current = currentLedger;
+    const polling = startPolling(
+      async (signal) => {
+        if (pushActive) return;
+
+        if (lastSeenLedger === null) {
+          lastSeenLedger = await getLatestLedger();
+          return;
         }
-      } catch (err) {
-        console.error("Failed to initialize event polling ledger checkpoint", err);
-      }
+        const latest = await getContractEvents(lastSeenLedger, { throwOnError: true });
+        if (latest > lastSeenLedger && !signal.aborted) {
+          await refresh();
+          if (!signal.aborted) lastSeenLedger = latest;
+        }
+      },
+      intervalMs,
+      (error) => console.error("Error during event polling", error),
+    );
+
+    let pushConn: EventPushConnection | null = null;
+
+    if (!options.disablePush) {
+      pushConn = startEventPush(
+        async () => {
+          await refresh();
+        },
+        {
+          url: options.pushUrl,
+          useSSE: options.useSSE,
+          reconnectIntervalMs: options.reconnectIntervalMs,
+          onStatusChange: (status) => {
+            pushActive = status === "connected";
+            if (status === "fallback" || status === "disconnected") {
+              void polling.refresh();
+            }
+          },
+        },
+      );
     }
 
-    init();
-
-    const intervalId = setInterval(async () => {
-      if (lastSeenLedger.current === null) {
-        return;
-      }
-
-      try {
-        const latest = await getContractEvents(lastSeenLedger.current);
-
-        if (latest > lastSeenLedger.current && !cancelled) {
-          await refresh();
-          lastSeenLedger.current = latest;
-        }
-      } catch (err) {
-        console.error("Error during event polling", err);
-      }
-    }, intervalMs);
-
     return () => {
-      cancelled = true;
-      clearInterval(intervalId);
+      polling.stop();
+      pushConn?.close();
     };
-  }, [refresh, intervalMs]);
+  }, [
+    refresh,
+    intervalMs,
+    options.pushUrl,
+    options.useSSE,
+    options.disablePush,
+    options.reconnectIntervalMs,
+  ]);
 }

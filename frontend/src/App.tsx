@@ -1,31 +1,44 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
   Route,
   Routes,
   useLocation,
   useNavigate,
+  useParams,
 } from "react-router-dom";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
+import { ErrorState } from "./components/ErrorState";
+import { GlobalSearch } from "./components/GlobalSearch";
 import { GrantRevokeRoleModal } from "./components/GrantRevokeRoleModal";
+import { LoadingState } from "./components/LoadingState";
 import { useContract } from "./hooks/useContract";
 import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
 import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
 import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
+import { isFrozen } from "./lib/contract";
+import { PWAInstallBanner } from "./components/PWAInstallBanner";
+import { ThemeControl } from "./components/ThemeControl";
+import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
+import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { OnboardingPage } from "./pages/OnboardingPage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
+import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { label: "dashboard", to: "/app" },
+  { label: "recurring", to: "/app/recurring" },
   { label: "history", to: "/app/history" },
+  { label: "analytics", to: "/app/analytics" },
   { label: "owners", to: "/app/owners" },
   { label: "settings", to: "/app/settings" },
   { label: "docs", to: "/docs" },
@@ -43,10 +56,16 @@ export default function App() {
   const [txError, setTxError] = useState<string | null>(null);
   const [txPending, setTxPending] = useState(false);
   const [isStale, setIsStale] = useState(false);
+  const [contractFrozen, setContractFrozen] = useState(false);
+  const [theme, setTheme] = useState<ThemeChoice>(() => getStoredTheme());
+  // Ref to return focus to the "+ New" trigger after modal closes (Task 4)
+  const newProposalButtonRef = useRef<HTMLButtonElement>(null);
+  const recurringButtonRef = useRef<HTMLButtonElement>(null);
 
   const wallet = useWallet();
   const navigate = useNavigate();
   const location = useLocation();
+  const routeParams = useParams();
 
   const {
     proposals,
@@ -63,9 +82,56 @@ export default function App() {
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
 
-  // If the wallet is disconnected (e.g. externally, from the Freighter popup)
-  // while a transaction is in flight, the pending request can never resolve.
-  // Clear the pending state and surface an error instead of a stuck banner.
+  // Apply theme with system mode subscription
+  useEffect(() => {
+    applyTheme(theme);
+    if (theme === "system") {
+      const unsubscribe = subscribeToSystemTheme(() => {
+        applyTheme("system");
+      });
+      return unsubscribe;
+    }
+  }, [theme]);
+
+  // Deep-link handling: ensure direct proposal URLs or query params open the correct page
+  useEffect(() => {
+    const directMatch = location.pathname.match(/^\/proposals\/(\d+)/);
+    if (directMatch) {
+      const id = directMatch[1];
+      navigate(`/app/proposals/${id}`, { replace: true });
+      return;
+    }
+
+    if (location.pathname === "/onboarding" || location.pathname === "/onboarding/") {
+      navigate("/app/onboarding", { replace: true });
+      return;
+    }
+
+    const params = new URLSearchParams(location.search);
+    const proposalParam = params.get("proposal");
+    if (proposalParam) {
+      navigate(`/app/proposals/${proposalParam}`, { replace: true });
+    }
+  }, [location.pathname, location.search, navigate]);
+
+  // Return focus to the New Proposal trigger when modal transitions from open → closed
+  const wasShowCreateRef = useRef(false);
+  useEffect(() => {
+    if (!showCreate && wasShowCreateRef.current) {
+      newProposalButtonRef.current?.focus();
+    }
+    wasShowCreateRef.current = showCreate;
+  }, [showCreate]);
+
+  // Return focus to the Recurring trigger when modal transitions from open → closed
+  const wasShowRecurringRef = useRef(false);
+  useEffect(() => {
+    if (!showCreateRecurring && wasShowRecurringRef.current) {
+      recurringButtonRef.current?.focus();
+    }
+    wasShowRecurringRef.current = showCreateRecurring;
+  }, [showCreateRecurring]);
+
   useEffect(() => {
     if (!wallet.address && txPending) {
       setTxPending(false);
@@ -84,8 +150,31 @@ export default function App() {
     return () => clearInterval(interval);
   }, [lastSuccessAt]);
 
-  const activeProposals = proposals.filter((proposal) =>
-    ["pending", "ready"].includes(proposal.status),
+  // Poll frozen state
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const f = await isFrozen();
+        if (!cancelled) setContractFrozen(f);
+      } catch {
+        // ignore
+      }
+    }
+    check();
+    const interval = setInterval(check, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [lastSuccessAt]);
+
+  const activeProposals = useMemo(
+    () =>
+      proposals.filter((proposal) =>
+        ["pending", "ready"].includes(proposal.status),
+      ),
+    [proposals]
   );
   const walletRoles = useRoles({
     walletAddress: wallet.address,
@@ -94,66 +183,88 @@ export default function App() {
     error,
   });
 
-  async function withTx(
-    fn: () => Promise<void>,
-    optimisticPatch?: OptimisticPatch
-  ) {
-    if (!wallet.address) {
-      await wallet.connect();
-      return;
-    }
+  const { address, connect } = wallet;
 
-    setTxError(null);
-    setTxPending(true);
+  const ownerWeightForWallet = useCallback(
+    (addr: string | null | undefined) => {
+      if (!addr) return 0;
+      const index = ownerAddresses.indexOf(addr);
+      return index >= 0 ? owners[index]?.weight ?? 0 : 0;
+    },
+    [ownerAddresses, owners]
+  );
 
-    if (optimisticPatch) {
-      optimisticUpdate(optimisticPatch.id, optimisticPatch.patch);
-    }
+  const withTx = useCallback(
+    async (
+      fn: () => Promise<void>,
+      optimisticPatch?: OptimisticPatch
+    ) => {
+      if (!address) {
+        await connect();
+        return;
+      }
 
-    try {
-      await fn();
-      refresh();
-    } catch (err) {
-      setTxError(err instanceof Error ? err.message : "Transaction failed");
-    } finally {
-      setTxPending(false);
-    }
-  }
+      setTxError(null);
+      setTxPending(true);
 
-  const handleApprove = (id: number) => {
+      if (optimisticPatch) {
+        optimisticUpdate(optimisticPatch.id, optimisticPatch.patch);
+      }
+
+      try {
+        await fn();
+        refresh();
+      } catch (err) {
+        setTxError(err instanceof Error ? err.message : "Transaction failed");
+      } finally {
+        setTxPending(false);
+      }
+    },
+    [address, connect, optimisticUpdate, refresh]
+  );
+
+  const handleApprove = useCallback((id: number) => {
     const proposal = proposals.find((candidate) => candidate.id === id);
     if (!proposal) {
       return withTx(() => approveProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = proposal.approvals + 1;
-    const status = approvals >= proposal.threshold ? "ready" : proposal.status;
+    const approvalWeight = (proposal.approvalWeight ?? 0) + myWeight;
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+    const status = approvalWeight >= quorumWeight ? "ready" : proposal.status;
 
     return withTx(() => approveProposal(wallet.address!, id), {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: true,
       },
     });
-  };
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
-  const handleExecute = (id: number) =>
+  const handleExecute = useCallback((id: number) =>
     withTx(() => executeProposal(wallet.address!, id), {
       id,
       patch: { status: "executed" },
-    });
+    }), [wallet.address, withTx]);
 
-  const handleRevoke = (id: number) => {
+  const handleRevoke = useCallback((id: number) => {
     const proposal = proposals.find((candidate) => candidate.id === id);
     if (!proposal) {
       return withTx(() => revokeProposal(wallet.address!, id));
     }
 
+    const myWeight = ownerWeightForWallet(wallet.address);
     const approvals = Math.max(proposal.approvals - 1, 0);
+    const approvalWeight = Math.max((proposal.approvalWeight ?? 0) - myWeight, 0);
+    const quorumWeight = proposal.quorumWeight ?? proposal.threshold;
+
     const status =
-      approvals >= proposal.threshold && proposal.status === "ready"
+      approvalWeight >= quorumWeight && proposal.status === "ready"
         ? "ready"
         : "pending";
 
@@ -161,11 +272,12 @@ export default function App() {
       id,
       patch: {
         approvals,
+        approvalWeight,
         status,
         userHasApproved: false,
       },
     });
-  };
+  }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
@@ -178,12 +290,13 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <header className="border-b border-zinc-800 px-6 py-4">
-        <div className="mx-auto flex max-w-4xl items-center justify-between">
+    <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      <PWAInstallBanner />
+      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
           <Link
             to="/"
-            className="flex items-center gap-3 transition-opacity hover:opacity-80"
+            className="flex shrink-0 items-center gap-3 transition-opacity hover:opacity-80"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500 text-xs font-bold text-black">
               A
@@ -193,6 +306,8 @@ export default function App() {
               testnet
             </span>
           </Link>
+
+          <GlobalSearch proposals={proposals} owners={owners} />
 
           <nav className="flex items-center gap-1">
             {NAV_ITEMS.map(({ label, to }) => (
@@ -209,6 +324,13 @@ export default function App() {
                 {label}
               </Link>
             ))}
+
+            {/* Explicit Light, System, Dark theme control */}
+            <ThemeControl
+              currentTheme={theme}
+              onThemeChange={setTheme}
+              className="ml-1"
+            />
           </nav>
 
           {!wallet.installed ? (
@@ -241,27 +363,32 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-6 py-8">
+      <main className="mx-auto max-w-4xl px-4 sm:px-6 py-8">
+        {contractFrozen && (
+          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/20 px-4 py-3 text-sm text-red-300 font-medium flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 shrink-0">
+              <path fillRule="evenodd" d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.5-2.598-4.5L9.4 3.003zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z" clipRule="evenodd" />
+            </svg>
+            Contract is currently frozen. All proposal creation and execution has been paused.
+          </div>
+        )}
+
         {isStale && !loading && (
-          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400 font-medium">
+          <div className="mb-6 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-400 font-medium">
             Data may be out of date — last updated over 60 seconds ago.
           </div>
         )}
 
         {txError && (
-          <div className="mb-6 flex items-center justify-between rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            <span>{txError}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setTxError(null);
-                refresh();
-              }}
-              className="ml-4 shrink-0 underline hover:text-red-300"
-            >
-              Dismiss
-            </button>
-          </div>
+          <ErrorState
+            message={txError}
+            variant="banner"
+            onRetry={() => {
+              setTxError(null);
+              refresh();
+            }}
+            onDismiss={() => setTxError(null)}
+          />
         )}
 
         {wallet.networkMismatch && (
@@ -314,29 +441,61 @@ export default function App() {
             </a>
           </div>
         ) : loading ? (
-          <div className="py-16 text-center text-sm text-zinc-500">
-            Loading contract data…
-          </div>
+          <LoadingState message="Loading contract data…" />
         ) : (
-          <Routes>
-            <Route
-              index
+          <>
+            {owners.length === 0 && location.pathname !== "/app/onboarding" && (
+              <div
+                data-testid="no-multisig-banner"
+                className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs text-emerald-200"
+              >
+                <div>
+                  <p className="font-semibold text-emerald-300 text-sm">No multisig configured yet</p>
+                  <p className="text-zinc-400 mt-0.5">
+                    Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.
+                  </p>
+                </div>
+                <Link
+                  to="/app/onboarding"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-black hover:bg-emerald-400 transition-colors shrink-0"
+                >
+                  Start Setup Wizard →
+                </Link>
+              </div>
+            )}
+            <Routes>
+              <Route
+                path="onboarding"
+                element={<OnboardingPage wallet={wallet} onComplete={refresh} />}
+              />
+              <Route
+                index
               element={
-                <DashboardPage
-                  activeProposals={activeProposals}
-                  owners={owners}
-                  dashboardStats={stats}
-                  walletAddress={wallet.address}
-                  onApprove={handleApprove}
-                  onExecute={handleExecute}
-                  onRevoke={handleRevoke}
-                  onCreateProposal={() => setShowCreate(true)}
-                  onCreateRecurringPayment={() => setShowCreateRecurring(true)}
-                  walletRoles={walletRoles.roles}
-                  roleBanner={walletRoles.banner}
-                  loading={loading}
-                  error={error}
-                />
+                routeParams.id ? (
+                  <ProposalDetailPage
+                    proposals={proposals}
+                    walletAddress={wallet.address}
+                    onApprove={handleApprove}
+                    onExecute={handleExecute}
+                  />
+                ) : (
+                  <DashboardPage
+                    activeProposals={activeProposals}
+                    owners={owners}
+                    dashboardStats={stats}
+                    walletAddress={wallet.address}
+                    onApprove={handleApprove}
+                    onExecute={handleExecute}
+                    onRevoke={handleRevoke}
+                    onCreateProposal={() => setShowCreate(true)}
+                    onCreateRecurringPayment={() => setShowCreateRecurring(true)}
+                    walletRoles={walletRoles.roles}
+                    roleBanner={walletRoles.banner}
+                    loading={loading}
+                    error={error}
+                    onRetry={refresh}
+                  />
+                )
               }
             />
             <Route
@@ -346,24 +505,80 @@ export default function App() {
               }
             />
             <Route
+              path="recurring"
+              element={
+                <RecurringPage walletAddress={wallet.address} />
+              }
+            />
+            <Route path="analytics" element={<AnalyticsPage />} />
+            <Route
               path="owners"
               element={
                 <OwnersPage
                   owners={owners}
+                  ownerAddresses={ownerAddresses}
                   threshold={threshold}
                   totalOwners={owners.length}
                   onManageRoles={setRoleModalTarget}
+                  walletAddress={wallet.address}
+                  onProposalSubmitted={refresh}
                 />
               }
             />
-            <Route path="settings" element={<SettingsPage stats={stats} />} />
-            <Route path="proposals/:id" element={<ProposalDetailPage />} />
+            <Route
+              path="settings"
+              element={
+                <SettingsPage
+                  stats={stats}
+                  walletAddress={wallet.address}
+                  ownerAddresses={ownerAddresses}
+                  onProposalSubmitted={refresh}
+                />
+              }
+            />
+            <Route
+              path="owners/:address"
+              element={
+                <OwnerProfilePage
+                  proposals={proposals}
+                  owners={owners}
+                  walletAddress={wallet.address}
+                  walletRoles={walletRoles.roles}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                  onRevoke={handleRevoke}
+                />
+              }
+            />
+            <Route
+              path="settings"
+              element={
+                <SettingsPage
+                  stats={stats}
+                  walletAddress={wallet.address}
+                  ownerAddresses={ownerAddresses}
+                  onProposalSubmitted={refresh}
+                />
+              }
+            />
+            <Route
+              path="proposals/:id"
+              element={
+                <ProposalDetailPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={handleApprove}
+                  onExecute={handleExecute}
+                />
+              }
+            />
             <Route
               path="*"
               element={<NotFoundPage onGoHome={() => navigate("/app")} />}
             />
           </Routes>
-        )}
+        </>
+      )}
       </main>
       
       {showCreate && (
@@ -371,6 +586,7 @@ export default function App() {
           walletAddress={wallet.address}
           onClose={() => setShowCreate(false)}
           onSubmitted={refresh}
+          triggerRef={newProposalButtonRef}
         />
       )}
       {showCreateRecurring && (
@@ -378,6 +594,7 @@ export default function App() {
           walletAddress={wallet.address}
           onClose={() => setShowCreateRecurring(false)}
           onSubmitted={refresh}
+          triggerRef={recurringButtonRef}
         />
       )}
       {roleModalTarget && (

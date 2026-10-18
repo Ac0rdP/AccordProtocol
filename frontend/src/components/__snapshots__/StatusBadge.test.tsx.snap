@@ -1,0 +1,61 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`StatusBadge > renders executed status 1`] = `
+<span
+  aria-label="Status: executed"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-sky-500/10 text-sky-400 border border-sky-500/20"
+  role="status"
+>
+  executed
+</span>
+`;
+
+exports[`StatusBadge > renders expired status 1`] = `
+<span
+  aria-label="Status: expired"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-zinc-500/10 text-zinc-500 border border-zinc-500/20"
+  role="status"
+>
+  expired
+</span>
+`;
+
+exports[`StatusBadge > renders pending status 1`] = `
+<span
+  aria-label="Status: pending"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-yellow-500/10 text-yellow-400 border border-yellow-500/20"
+  role="status"
+>
+  pending
+</span>
+`;
+
+exports[`StatusBadge > renders ready badge at the weighted-quorum transition boundary 1`] = `
+<span
+  aria-label="Status: ready"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+  role="status"
+>
+  ready
+</span>
+`;
+
+exports[`StatusBadge > renders ready status 1`] = `
+<span
+  aria-label="Status: ready"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+  role="status"
+>
+  ready
+</span>
+`;
+
+exports[`StatusBadge > renders revoked status 1`] = `
+<span
+  aria-label="Status: revoked"
+  class="text-xs px-2 py-0.5 rounded-full font-mono bg-red-500/10 text-red-400 border border-red-500/20"
+  role="status"
+>
+  revoked
+</span>
+`;
