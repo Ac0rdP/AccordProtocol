@@ -15,6 +15,13 @@ min-line-coverage = 85
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+[features]
+# CI-only fixture used by the testnet upgrade simulation (#816). It builds a
+# contract whose `initialize` omits the governance-migration flag and the
+# storage-schema stamp, so the deployed instance looks like a pre-migration
+# deployment. Never enable this for a production build.
+legacy-fixture = []
+
 [dependencies]
 soroban-sdk = { workspace = true }
 

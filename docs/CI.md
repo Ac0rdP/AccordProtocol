@@ -11,13 +11,43 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 
 | Workflow | File | Triggers | Purpose |
 | --- | --- | --- | --- |
-| Smart Contract — Build & CI | `.github/workflows/contract.yml` | push to `main`/`v*` tags, PRs | Builds the Soroban contract, runs the weight-fixture and RBAC suites, enforces coverage and resource-benchmark gates, and (on push/tags) runs the testnet smoke test and weight-invariant gate. |
+| Smart Contract — Build & CI | `.github/workflows/contract.yml` | push to `main`/`v*` tags, PRs | Builds the Soroban contract, runs the weight-fixture and RBAC suites, enforces coverage and resource-benchmark gates, runs the testnet upgrade simulation on relevant PRs, and (on push/tags) runs the testnet smoke test and weight-invariant gate. |
 | Frontend CI & Coverage | `.github/workflows/frontend-ci.yml` | pushes/PRs touching `frontend/**` | Type-check, lint (advisory), unit tests with coverage thresholds, and responsive screenshot comparisons. |
 | Frontend Storybook & Visual Regression | `.github/workflows/frontend-storybook.yml` | pushes/PRs touching `frontend/**` | Visual snapshot tests and a Storybook build. |
 | Indexer & Analytics CI | `.github/workflows/indexer-analytics.yml` | pushes/PRs touching indexer/analytics paths | Indexer tests against SQLite and Postgres, the analytics test suite, and the analytics API Rust checks (fmt, Clippy, tests). |
 | Frontend Preview | `.github/workflows/preview.yml` | `frontend/**` PRs | Builds a seeded frontend preview per PR, publishes it to `gh-pages`, comments the URL, and tears it down on close. |
 | Nightly Full Suite | `.github/workflows/nightly.yml` | `schedule` (03:17 UTC), manual | Runs every component suite — including the slower E2E run — and files/updates a single tracked issue on failure. |
 | Release | `.github/workflows/release.yml` | `v*` tags, manual | Gates on all suites, builds the contract artifact + manifest, publishes the SDK to GitHub Packages, and creates a GitHub Release with generated notes. |
+
+## Testnet upgrade simulation
+
+`contract.yml` includes a `Testnet Upgrade Simulation` job that runs on pull
+requests touching `contracts/accord/**`, the workspace manifests, the simulation
+script, or the contract workflow itself. It:
+
+1. Builds a legacy-shaped contract with the `legacy-fixture` cargo feature, so
+   `initialize` leaves the governance-migration flag and storage-schema marker
+   absent.
+2. Deploys that build to testnet using an ephemeral Friendbot-funded identity.
+3. Adds two owners and creates a partially-unapproved in-flight proposal.
+4. Uploads the PR build and upgrades the same contract ID in place.
+5. Runs `migrate_to_weighted_governance`.
+6. Verifies owner set, weights, total weight, threshold, storage-schema version,
+   proposal count, and the in-flight proposal before approving/revoking it.
+
+No repository secrets are required: the identity is generated per run and
+removed in an exit trap. The contract itself is left isolated on testnet
+(Soroban has no contract-delete operation) and holds no funds. The job uploads
+`target/testnet-upgrade-simulation/` as an artifact with the full check report.
+
+Run it locally with the Stellar CLI and the `wasm32v1-none` Rust target:
+
+```bash
+bash scripts/testnet-upgrade-simulation.sh
+```
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md#automated-testnet-upgrade-simulation) for
+the operator-facing description and cleanup notes.
 
 ## Concurrency and cancellation
 

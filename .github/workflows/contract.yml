@@ -271,6 +271,76 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
+  # Detect whether a PR touches contract/build paths so the testnet upgrade
+  # simulation (#816) only runs when it can actually catch a regression.
+  testnet-upgrade-changes:
+    name: Detect testnet upgrade paths
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect relevant changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          printf 'Changed files:\n%s\n' "$changed"
+          if grep -Eq '^(contracts/accord/|Cargo\.toml$|Cargo\.lock$|scripts/testnet-upgrade-simulation\.sh$|\.github/workflows/contract\.yml$)' <<< "$changed"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Testnet upgrade simulation (#816). Deploys a legacy-shaped fixture,
+  # upgrades it to the PR build, migrates governance, and verifies state.
+  # Only runs for relevant PRs; the regular Contract CI job covers builds and
+  # unit tests, so this job is intentionally independent of it.
+  testnet-upgrade-simulation:
+    name: Testnet Upgrade Simulation
+    runs-on: ubuntu-latest
+    needs: testnet-upgrade-changes
+    if: github.event_name == 'pull_request' && needs.testnet-upgrade-changes.outputs.relevant == 'true'
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
+          cache: true
+
+      - name: Install Stellar CLI
+        uses: stellar/stellar-cli@v28.1.0
+
+      - name: Run deploy, upgrade, migrate, verify simulation
+        env:
+          NETWORK: testnet
+          IDENTITY: accord-upgrade-sim-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/testnet-upgrade-simulation.sh
+
+      - name: Upload simulation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-upgrade-simulation
+          path: target/testnet-upgrade-simulation
+          retention-days: 30
+          if-no-files-found: ignore
+
   # Runs only on push to main — never on pull requests.
   # Requires TESTNET_CONTRACT_ID to be set as a repository variable under
   # Settings → Secrets and variables → Actions → Variables.
