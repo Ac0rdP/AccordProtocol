@@ -148,6 +148,29 @@ node src/index.js replay --from 1000 --to 1100 --replay-store ./data/replay.sqli
   the balances the range produces. See the runbook in
   [docs/RUNBOOK.md](../docs/RUNBOOK.md).
 
+## Idempotent ingestion (event dedupe)
+
+Every event is identified by its position on chain: the **dedupe key**
+`ledger:transaction:eventIndex` (for example `42:ab12…:3`). The key is built in
+`src/events.js` (`eventDedupeKey`) from the event's ledger, its transaction
+hash, and its event index — the RPC's `eventIndex`/`index` when present,
+otherwise the numeric suffix of the Soroban event id (`<toid>-<eventIndex>`).
+It does not depend on paging tokens or cursors, so re-fetching the same event
+always produces the same key.
+
+Both stores keep the key in a `dedupe_key` column with a unique index, on
+`ledger_entries` and `accord_events`. A record whose key (or legacy `event_id`)
+is already present is skipped and reported as not recorded, so a retry, a
+re-read of a ledger, a `backfill` overlap or a `reindex` never inflates counts
+or balances. The live indexer, `backfill`, `reindex` and `replay` all parse events
+through the same functions, so they share the one key.
+
+Rows indexed before the column existed keep a `NULL` key and stay protected by
+the `event_id` constraint; run `reindex` once to give them keys. Postgres gets
+the column from migration `0004_event_dedupe_key`; SQLite adds it on open.
+`test/dedupe.test.js` re-runs ingestion, backfill and reindex on both backends
+and asserts no duplicates.
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two

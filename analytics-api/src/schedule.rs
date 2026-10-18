@@ -31,6 +31,24 @@ pub struct ReportConfig {
     pub from: String,
 }
 
+impl ReportConfig {
+    /// A configuration with scheduling and delivery switched off.
+    #[cfg(test)]
+    pub fn disabled() -> Self {
+        Self {
+            schedule: None,
+            expression: None,
+            formats: vec![ReportFormat::Csv],
+            recipients: Vec::new(),
+            period_days: 30,
+            output_dir: None,
+            max_attempts: 3,
+            retry_backoff: Duration::from_millis(10),
+            from: "reports@example.com".to_owned(),
+        }
+    }
+}
+
 /// What the configuration looks like over the wire on `GET /reports`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,7 +285,8 @@ fn write_to_output_dir(
     fs::create_dir_all(directory)
         .map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
     let path = directory.join(report.filename(format));
-    fs::write(&path, bytes).map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    fs::write(&path, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
     Ok(Some(path.display().to_string()))
 }
 
@@ -299,7 +318,14 @@ pub async fn run_reports(
             }
 
             let outcome = match generate_and_deliver(
-                pool, network, contract_id, config, transport, period, format, now,
+                pool,
+                network,
+                contract_id,
+                config,
+                transport,
+                period,
+                format,
+                now,
             )
             .await
             {
@@ -547,7 +573,10 @@ mod tests {
         let period = ReportPeriod::ending_at(now, config("0 0 6 1 * *").period_days);
 
         assert_eq!(period.end, now);
-        assert_eq!(period.start, Utc.with_ymd_and_hms(2026, 9, 1, 6, 0, 0).unwrap());
+        assert_eq!(
+            period.start,
+            Utc.with_ymd_and_hms(2026, 9, 1, 6, 0, 0).unwrap()
+        );
     }
 
     #[test]

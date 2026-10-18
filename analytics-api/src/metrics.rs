@@ -22,6 +22,36 @@ const LATENCY_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
+/// Counter families keyed by one label: `(name, help, label name)`.
+pub(crate) const RATE_LIMIT_REQUESTS: Family = (
+    "accord_api_rate_limit_requests_total",
+    "Requests counted by the rate limiter, by outcome.",
+    "outcome",
+);
+pub(crate) const CACHE_REQUESTS: Family = (
+    "accord_api_cache_requests_total",
+    "Cacheable reads, by whether the cache answered them.",
+    "result",
+);
+pub(crate) const CACHE_INVALIDATIONS: Family = (
+    "accord_api_cache_invalidations_total",
+    "Times the response cache was cleared, by cause.",
+    "cause",
+);
+pub(crate) const ALERTS: Family = (
+    "accord_api_alerts_total",
+    "Alerts by outcome: fired, suppressed (cooldown or storm cap) or delivery_failed.",
+    "outcome",
+);
+const FAMILIES: &[Family] = &[
+    RATE_LIMIT_REQUESTS,
+    CACHE_REQUESTS,
+    CACHE_INVALIDATIONS,
+    ALERTS,
+];
+
+pub(crate) type Family = (&'static str, &'static str, &'static str);
+
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 #[derive(Default)]
@@ -62,6 +92,7 @@ pub(crate) struct Registry {
     durations: Mutex<BTreeMap<(String, String), Histogram>>,
     errors: Mutex<BTreeMap<String, u64>>,
     rejections: Mutex<BTreeMap<String, u64>>,
+    labeled: Mutex<BTreeMap<(&'static str, String), u64>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -94,6 +125,12 @@ impl Registry {
 
     pub(crate) fn inc_rejection(&self, reason: &str) {
         *lock(&self.rejections).entry(reason.to_owned()).or_default() += 1;
+    }
+
+    pub(crate) fn inc_labeled(&self, family: Family, label: &str) {
+        *lock(&self.labeled)
+            .entry((family.0, label.to_owned()))
+            .or_default() += 1;
     }
 
     /// Renders every registered family. Gauges that are sampled at scrape time
@@ -146,6 +183,17 @@ impl Registry {
                 escape(reason)
             );
         }
+
+        let labeled = lock(&self.labeled);
+        for (name, help, label_name) in FAMILIES {
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} counter");
+            for ((family, label), value) in labeled.iter() {
+                if family == name {
+                    let _ = writeln!(out, "{name}{{{label_name}=\"{}\"}} {value}", escape(label));
+                }
+            }
+        }
         out
     }
 }
@@ -157,6 +205,10 @@ pub(crate) fn registry() -> &'static Registry {
 
 pub(crate) fn record_error(kind: &str) {
     registry().inc_error(kind);
+}
+
+pub(crate) fn record_labeled(family: Family, label: &str) {
+    registry().inc_labeled(family, label);
 }
 
 pub(crate) fn record_rejection(reason: &str) {
@@ -215,6 +267,20 @@ mod tests {
         assert!(text.contains(&format!(
             "accord_api_http_request_duration_seconds_count{{{labels}}} 3"
         )));
+    }
+
+    #[test]
+    fn renders_labeled_counter_families() {
+        let registry = Registry::default();
+        registry.inc_labeled(super::RATE_LIMIT_REQUESTS, "limited");
+        registry.inc_labeled(super::CACHE_REQUESTS, "hit");
+        registry.inc_labeled(super::CACHE_REQUESTS, "hit");
+
+        let text = registry.render();
+
+        assert!(text.contains("accord_api_rate_limit_requests_total{outcome=\"limited\"} 1"));
+        assert!(text.contains("accord_api_cache_requests_total{result=\"hit\"} 2"));
+        assert!(text.contains("# TYPE accord_api_cache_invalidations_total counter"));
     }
 
     #[test]

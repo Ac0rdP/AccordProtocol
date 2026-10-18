@@ -135,8 +135,9 @@ impl ReportTransport for DirectoryReportTransport {
 
     fn send<'a>(&'a self, envelope: &'a ReportEnvelope) -> SendFuture<'a> {
         Box::pin(async move {
-            fs::create_dir_all(&self.directory)
-                .map_err(|error| format!("failed to create {}: {error}", self.directory.display()))?;
+            fs::create_dir_all(&self.directory).map_err(|error| {
+                format!("failed to create {}: {error}", self.directory.display())
+            })?;
             for attachment in &envelope.attachments {
                 let path = self.directory.join(&attachment.filename);
                 fs::write(&path, &attachment.bytes)
@@ -347,9 +348,11 @@ mod tests {
     // runs on the tokio runtime even though it never sends anything.
     #[tokio::test]
     async fn smtp_transport_keeps_credentials_out_of_its_description() {
-        let transport =
-            SmtpReportTransport::new("smtp://user:secret@mail.example.com:587", "reports@example.com")
-                .unwrap();
+        let transport = SmtpReportTransport::new(
+            "smtp://user:secret@mail.example.com:587",
+            "reports@example.com",
+        )
+        .unwrap();
 
         let description = transport.describe();
         assert!(description.contains("mail.example.com:587"));
