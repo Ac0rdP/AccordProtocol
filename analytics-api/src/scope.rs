@@ -48,7 +48,9 @@ impl ScopeConfig {
     pub fn from_env() -> Result<Self> {
         let contract_ids = match env::var("CONTRACT_IDS") {
             Ok(value) => split_list(&value),
-            Err(_) => env::var("CONTRACT_ID").map(|value| split_list(&value)).unwrap_or_default(),
+            Err(_) => env::var("CONTRACT_ID")
+                .map(|value| split_list(&value))
+                .unwrap_or_default(),
         };
         if contract_ids.is_empty() {
             bail!("CONTRACT_ID or CONTRACT_IDS must identify at least one indexed Accord contract");
