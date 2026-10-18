@@ -658,6 +658,20 @@ For example, a `contractCode` of `3` means `Unauthorized` (the signer is not a r
 - Update **this file** when contribution rules or quality gates change.
 - For small behavior changes, **PR description** may be enough; for new contributor-facing workflows, prefer durable docs in the repo.
 
+### Architecture decision records
+
+We document significant architectural decisions in [`docs/adr/`](./docs/adr/) using the [ADR template](./docs/adr/template.md).
+
+**When to write an ADR:**
+- Any change to the contract's authorization model, operational roles, or governance thresholds
+- Any change to the storage layout, storage key naming conventions, or entry lifetime (TTL) strategy
+- Any change to the contract upgrade mechanism, schema versioning, or on-chain migration strategy
+- Any change to the public contract interface, error codes, or event architecture
+- Introducing a new platform, language, major framework, or architectural pattern across frontend, contract, or indexer
+- Any design decision that would be costly or difficult to reverse
+
+Do not write an ADR for routine bug fixes, refactoring that preserves existing interfaces, or regular dependency updates. See [`docs/adr/README.md`](./docs/adr/README.md) for numbering, status lifecycles, and supersession guidelines.
+
 ---
 
 ## Dependency updates
