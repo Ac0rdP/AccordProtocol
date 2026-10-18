@@ -8,7 +8,7 @@ number.
 
 This runbook covers what the job checks, how it reports, and what to do when it
 fires. The configuration reference lives in
-[ANALYTICS_API.md — Reconciliation and Drift Detection](ANALYTICS_API.md#reconciliation-and-drift-detection).
+[indexer/README.md](../indexer/README.md).
 
 ---
 

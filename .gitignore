@@ -20,4 +20,7 @@ current-issue.md
 issue-tracker.md
 issues.md
 
+# Documentation build output
+docs-site/
+
 fix.md

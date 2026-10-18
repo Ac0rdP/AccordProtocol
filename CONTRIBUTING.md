@@ -19,10 +19,11 @@ Please read the [README](./README.md) first for product context, architecture, a
 9. [Testing and quality gates](#testing-and-quality-gates)
 10. [Debugging tips](#debugging-tips)
 11. [Documentation](#documentation)
-12. [Release process](#release-process)
-13. [Security and responsible disclosure](#security-and-responsible-disclosure)
-14. [Licensing](#licensing)
-15. [Questions and maintainer contact](#questions-and-maintainer-contact)
+12. [Dependency updates](#dependency-updates)
+13. [Release process](#release-process)
+14. [Security and responsible disclosure](#security-and-responsible-disclosure)
+15. [Licensing](#licensing)
+16. [Questions and maintainer contact](#questions-and-maintainer-contact)
 
 ---
 
@@ -791,6 +792,101 @@ Before submitting a translation:
 - Review [`docs/i18n/README.md`](./docs/i18n/README.md) for directory layout, what must not be translated (code, commands, identifiers, contract types), and the required YAML header block.
 - Each translation requires review by a fluent or native speaker and a maintainer. If no fluent reviewer is currently available, PRs are accepted with `status: draft`.
 - Run `node scripts/check-translation-staleness.js` locally to ensure metadata and source commit references are valid.
+### Architecture decision records
+
+We document significant architectural decisions in [`docs/adr/`](./docs/adr/) using the [ADR template](./docs/adr/template.md).
+
+**When to write an ADR:**
+- Any change to the contract's authorization model, operational roles, or governance thresholds
+- Any change to the storage layout, storage key naming conventions, or entry lifetime (TTL) strategy
+- Any change to the contract upgrade mechanism, schema versioning, or on-chain migration strategy
+- Any change to the public contract interface, error codes, or event architecture
+- Introducing a new platform, language, major framework, or architectural pattern across frontend, contract, or indexer
+- Any design decision that would be costly or difficult to reverse
+
+Do not write an ADR for routine bug fixes, refactoring that preserves existing interfaces, or regular dependency updates. See [`docs/adr/README.md`](./docs/adr/README.md) for numbering, status lifecycles, and supersession guidelines.
+
+### API documentation build
+
+The project generates unified API reference documentation combining:
+1. **Rustdoc** for the Soroban smart contract (`contracts/accord`)
+2. **TypeDoc** for the frontend client libraries and domain types (`frontend/src/types` and `frontend/src/lib`)
+
+**Local build command:**
+```bash
+# Build both documentation suites into docs-site/
+bash scripts/build-docs.sh docs-site
+
+# Or using Makefile:
+make docs
+```
+
+**Publishing and GitHub Pages:**
+API references are published to GitHub Pages on pushes to `main` via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). The expected live address is `https://thegreatfeez.github.io/accord-protocol/` (maintainers should confirm upon enabling GitHub Actions as the Pages source). Pull requests validate documentation generation in CI without deploying.
+
+### Documentation link check and allowlist policy
+
+CI validates internal links, relative markdown paths, fragment anchors, and external URLs on every pull request and push to `main` via [`.github/workflows/docs.yml`](./.github/workflows/docs.yml), and runs weekly to detect external link rot.
+
+**Local verification:**
+```bash
+# If lychee is installed locally:
+lychee --config lychee.toml --ignore-path .lycheeignore "**/*.md"
+```
+
+**Allowlist policy:**
+- The reviewed allowlist lives in [`.lycheeignore`](./.lycheeignore).
+- **Mandatory comment**: Every pattern added to `.lycheeignore` must include a required reason comment explaining why it is excluded (e.g. anti-bot rate limits, parameterized placeholder URL, local test server).
+- **No broken links**: Genuine broken links and missing anchors must be fixed in source documentation; allowlisting broken links to bypass CI is forbidden.
+- **Review requirement**: Any changes to `.lycheeignore` require explicit maintainer review.
+
+---
+
+## Dependency updates
+
+The project uses [Dependabot](https://docs.github.com/en/code-security/dependabot) to keep dependencies current across Cargo crates, npm packages, and GitHub Actions. The automation is configured in [`.github/dependabot.yml`](./.github/dependabot.yml).
+
+### Cadence and limits
+
+- **Schedule**: Weekly on Mondays at 09:00 UTC (proposed default; maintainers to confirm).
+- **Open pull request limits**: Bounded to at most 10 open pull requests per package ecosystem to avoid notification fatigue.
+
+### Grouping and lockstep dependency families
+
+To reduce PR noise without hiding risk, Dependabot is configured with grouped updates:
+- **Minor and patch updates**: Grouped together within each ecosystem so routine maintenance arrives in single, consolidated PRs.
+- **Major updates**: Excluded from groups and opened as separate, isolated pull requests to ensure individual review, migration notes, and compatibility verification.
+- **Lockstep dependency families**:
+  - **Soroban ecosystem (`Cargo.toml`)**: `soroban-*` crates are grouped together to prevent version skew across SDK packages.
+  - **Stellar JavaScript SDKs (`frontend/package.json`, `indexer/package.json`)**: `@stellar/*` packages (`@stellar/stellar-sdk`, `@stellar/freighter-api`) are grouped so protocol bindings stay aligned.
+  - **React ecosystem (`frontend/package.json`)**: `react`, `react-dom`, and `@types/react*` packages are grouped to move in lockstep.
+  - **GitHub Actions (`.github/workflows`)**: Workflow action minor and patch updates are grouped.
+
+### Review, assignment, and auto-merge policy
+
+- **Review policy**: All dependency pull requests must be manually reviewed and approved by repository maintainers. Auto-merge is explicitly disabled.
+- **Reviewers and CODEOWNERS**: GitHub has deprecated the `reviewers` option in `dependabot.yml` in favor of `CODEOWNERS`. When a `CODEOWNERS` file is established with maintainer handles, Dependabot will automatically request reviews according to ownership rules.
+- **CI requirements**: Every Dependabot PR must pass all standard CI workflows before merge:
+  - Contract build, unit tests, coverage gate, and benchmarks (`.github/workflows/contract.yml`)
+  - Frontend lint, typecheck, unit tests, contract types currency check, and bundle budgets (`.github/workflows/frontend-ci.yml`)
+  - Indexer tests and analytics checks (`.github/workflows/indexer-analytics.yml`)
+  Dependabot branches run with a read-only `GITHUB_TOKEN` and no access to repository secrets; no required CI check depends on repository secrets or uses `pull_request_target`.
+
+### Handling major and security updates
+
+- **Security updates**: When a vulnerability advisory is published for a dependency, Dependabot or maintainers submit a targeted PR addressing the advisory. Security updates take precedence over routine weekly batches.
+- **Major upgrades**: Major version bumps represent breaking changes. The PR description must note the breaking API changes, required code adaptations, and testing evidence.
+
+### Adding a new manifest directory
+
+When adding a new service, crate, or application with its own manifest:
+1. Open [`.github/dependabot.yml`](./.github/dependabot.yml).
+2. Add a new entry under `updates:` specifying:
+   - `package-ecosystem`: `"npm"`, `"cargo"`, etc.
+   - `directory`: The relative path to the manifest directory (e.g. `"/services/new-service"`).
+   - `schedule`: The standard weekly cadence matching existing entries.
+   - `groups`: Ecosystem-specific grouping configuration.
+3. Commit the configuration change alongside the new manifest.
 
 ---
 
