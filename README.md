@@ -177,6 +177,12 @@ Analytics HTTP API and indexed event schemas: [`docs/ANALYTICS_API.md`](./docs/A
 
 Operational Runbooks: [`docs/runbooks/`](./docs/runbooks/README.md) — [Incident Response](./docs/runbooks/INCIDENT_RESPONSE.md), [Upgrade Rollback](./docs/runbooks/UPGRADE_ROLLBACK.md), [Key Rotation](./docs/runbooks/KEY_ROTATION.md)
 
+Audit-Prep Pack: [`docs/AUDIT_PREP.md`](./docs/AUDIT_PREP.md)
+
+Client SDK: [`packages/sdk/`](./packages/sdk/README.md) (`@accord-protocol/sdk`)
+
+Example dApp: [`examples/multisig-dapp/`](./examples/multisig-dapp/README.md) — runnable React/Vite multisig application demonstrating SDK integration with Freighter wallet.
+
 
 ---
 
