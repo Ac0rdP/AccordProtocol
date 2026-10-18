@@ -58,13 +58,49 @@ curl -s http://127.0.0.1:8080/graphql \
   -d '{"query":"{ proposals(first: 3) { nodes { id status } totalCount } }"}'
 ```
 
+## Rate limiting and caching
+
+Requests are limited per client and the heavy reads (`/proposals`, `/proposals/:id`,
+`/spend/by-category`) are cached briefly; the cache is cleared as soon as the
+watcher sees newly indexed events. Probes and `/metrics` are never limited.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RATE_LIMIT_REQUESTS` | `120` | Requests per client per window; `0` disables limiting. |
+| `RATE_LIMIT_WINDOW_SECS` | `60` | Window length. |
+| `RATE_LIMIT_TRUST_PROXY` | `false` | Identify clients by `X-Forwarded-For` (only behind a trusted proxy). |
+| `CACHE_TTL_SECS` | `30` | Cached read freshness; `0` disables the cache. |
+| `CACHE_MAX_ENTRIES` | `500` | Cache size bound. |
+
+Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Details:
+[Rate limiting and caching](../docs/ANALYTICS_API.md#rate-limiting-and-caching).
+
+## Alerting
+
+Set `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` to alert on spend over a
+threshold and on unusual approval patterns. Alerts are stored (`GET /alerts`) and
+sent to `ALERT_CHANNELS` (`log`, `email` via `SMTP_URL`/`REPORT_OUTPUT_DIR` and
+`ALERT_RECIPIENTS`). Cooldowns (`ALERT_COOLDOWN_SECS`), a storm cap
+(`ALERT_MAX_PER_WINDOW` per `ALERT_STORM_WINDOW_SECS`) and per-event dedupe keep
+a burst from flooding the channels; `ALERT_POLL_SECS` sets the watcher interval
+and `ALERT_BACKFILL=true` evaluates already-indexed history on first start. Rule
+format and behaviour: [Alerting](../docs/ANALYTICS_API.md#alerting).
+
+## OpenAPI specification
+
+[`docs/analytics-api.openapi.json`](../docs/analytics-api.openapi.json) describes
+the HTTP API. `cargo test -p accord-analytics-api` fails if it drifts from the
+router or the parameter validation, and the contract tests in
+`src/contract_tests.rs` pin pagination, filtering, sorting and invalid-parameter
+handling for every list endpoint.
+
 ## Metrics and health
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /livez` | Liveness: `200` whenever the process is serving; never touches the database. |
 | `GET /readyz` | Readiness: `200` when the database answers within 2 seconds, otherwise `503`. |
-| `GET /metrics` | Prometheus text format: request counts and latency per route, error and GraphQL rejection counters, database pool gauges, and the indexer checkpoint (`accord_api_indexed_ledger`, `accord_api_checkpoint_age_seconds`). |
+| `GET /metrics` | Prometheus text format: request counts and latency per route, error and GraphQL rejection counters, rate-limit, cache and alert counters, database pool gauges, and the indexer checkpoint (`accord_api_indexed_ledger`, `accord_api_checkpoint_age_seconds`). |
 
 `/health` is unchanged. Point Kubernetes liveness probes at `/livez` and
 readiness probes at `/readyz`.
@@ -72,7 +108,7 @@ readiness probes at `/readyz`.
 ## Tests
 
 `cargo test -p accord-analytics-api` runs the unit and HTTP-level tests. The
-database-backed GraphQL tests run when `TEST_DATABASE_URL` points at a
+database-backed GraphQL, contract (pagination/filter/sort) and alerting tests run when `TEST_DATABASE_URL` points at a
 PostgreSQL database (each test creates and drops its own schema) and are
 skipped otherwise:
 

@@ -10,6 +10,27 @@ function addressString(value) {
   return String(value);
 }
 
+/**
+ * The stable identity of a contract event: `ledger:transaction:eventIndex`.
+ *
+ * It is derived from where the event sits on chain, so re-fetching it from the
+ * RPC (a retry, a backfill overlap, a reindex) always yields the same key. The
+ * event index is the RPC's own `eventIndex`/`index` when present, otherwise the
+ * numeric suffix of the Soroban event id (`<toid>-<eventIndex>`); an id with no
+ * usable suffix is used verbatim so two events can never share a key.
+ */
+export function eventDedupeKey(event) {
+  const ledger = Number(event.ledger);
+  const transaction = event.txHash ?? "unknown";
+  const id = String(event.id ?? event.pagingToken ?? "");
+  const suffix = id.includes("-") ? id.slice(id.lastIndexOf("-") + 1) : "";
+  const explicit = event.eventIndex ?? event.index;
+  const index = explicit !== undefined && explicit !== null
+    ? String(explicit)
+    : /^\d+$/.test(suffix) ? String(Number(suffix)) : id;
+  return `${ledger}:${transaction}:${index}`;
+}
+
 export function parseTokenTransferEvent(event, tokenNames, treasuryAddress, target) {
   const tokenAddress = String(event.contractId ?? "");
   const token = tokenNames.get(tokenAddress.toLowerCase());
@@ -34,6 +55,7 @@ export function parseTokenTransferEvent(event, tokenNames, treasuryAddress, targ
     network: target?.network ?? null,
     contractId: target?.contractId ?? treasuryAddress,
     eventId: String(event.id ?? event.pagingToken ?? `${ledger}:${transactionHash ?? "unknown"}`),
+    dedupeKey: eventDedupeKey(event),
     token,
     tokenAddress,
     direction: isInflow ? "inflow" : "outflow",
@@ -86,6 +108,7 @@ export function parseAccordEvent(event, treasuryAddress, target) {
     network: target?.network ?? null,
     contractId: target?.contractId ?? treasuryAddress,
     eventId: String(event.id ?? event.pagingToken ?? `${ledger}:${transactionHash ?? "unknown"}`),
+    dedupeKey: eventDedupeKey(event),
     topic: topicName,
     schemaVersion,
     payload: sanitize(payload),

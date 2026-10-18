@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -19,11 +19,18 @@ use sqlx::{
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod alerts;
+mod limits;
 mod mail;
 mod reports;
 mod schedule;
 mod scope;
 
+#[cfg(test)]
+mod contract_tests;
+
+use alerts::AlertEngine;
+use limits::Limits;
 use mail::ReportTransport;
 use reports::{ReportFormat, ReportPeriod};
 use schedule::{ReportConfig, ReportConfigSummary, ReportRunRecord, run_reports};
@@ -35,6 +42,7 @@ struct Config {
     listen_port: u16,
     database_url: String,
     scope: ScopeConfig,
+    limits: limits::LimitsConfig,
 }
 
 mod graphql;
@@ -43,19 +51,51 @@ mod metrics;
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
+    /// The contract the GraphQL schema is scoped to (the first configured one).
     contract_id: String,
+    scope: ScopeConfig,
+    reports: Arc<ReportConfig>,
+    transport: Option<Arc<dyn ReportTransport>>,
+    limits: Arc<Limits>,
+    alert_engine: Option<Arc<AlertEngine>>,
     schema: graphql::AccordSchema,
     graphql_timeout: Duration,
 }
 
 impl AppState {
+    #[cfg(test)]
     fn new(pool: PgPool, contract_id: String) -> Self {
+        let scope = ScopeConfig::new(vec![contract_id.clone()], vec!["testnet".to_owned()]);
+        Self::with_scope(pool, scope, Arc::new(ReportConfig::disabled()), None)
+    }
+
+    fn with_scope(
+        pool: PgPool,
+        scope: ScopeConfig,
+        reports: Arc<ReportConfig>,
+        transport: Option<Arc<dyn ReportTransport>>,
+    ) -> Self {
         Self {
             pool,
-            contract_id,
+            contract_id: scope.contract_ids.first().cloned().unwrap_or_default(),
+            scope,
+            reports,
+            transport,
+            limits: Arc::new(Limits::disabled()),
+            alert_engine: None,
             schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
             graphql_timeout: graphql::GraphqlConfig::default().timeout,
         }
+    }
+
+    fn with_limits(mut self, limits: Arc<Limits>) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    fn with_alerts(mut self, engine: Option<Arc<AlertEngine>>) -> Self {
+        self.alert_engine = engine;
+        self
     }
 
     fn with_graphql(mut self, config: graphql::GraphqlConfig) -> Self {
@@ -75,6 +115,7 @@ impl Config {
         let database_url = env::var("DATABASE_URL")
             .context("DATABASE_URL must point to the indexer PostgreSQL database")?;
         let scope = ScopeConfig::from_env()?;
+        let limits = limits::LimitsConfig::from_env()?;
 
         if listen_host.is_empty() {
             bail!("LISTEN_HOST must not be empty");
@@ -85,6 +126,7 @@ impl Config {
             listen_port,
             database_url,
             scope,
+            limits,
         })
     }
 }
@@ -115,6 +157,11 @@ fn app(state: AppState) -> Router {
         .route("/proposals", get(proposals::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
+        .route("/reports", get(report_api::list))
+        .route("/reports/run", post(report_api::run_now))
+        .route("/alerts", get(alert_api::list))
+        .route("/alerts/rules", get(alert_api::rules))
+        .layer(middleware::from_fn_with_state(state.clone(), limits::guard))
         .layer(middleware::from_fn(metrics::track))
         .with_state(state)
 }
@@ -123,6 +170,10 @@ mod spend {
     use super::*;
 
     const CATEGORIES: &[&str] = &["Transfer", "Payroll", "Grant", "Ops", "Other"];
+
+    /// Query parameters `GET /spend/by-category` accepts.
+    pub(super) const QUERY_PARAMS: &[&str] =
+        &["token", "startDate", "endDate", "contractId", "network"];
 
     #[derive(Serialize)]
     pub(super) struct CategorySpendBucket {
@@ -242,7 +293,7 @@ mod spend {
     ) -> Result<SpendQuery, Vec<proposals::ErrorDetail>> {
         let mut details = Vec::new();
         for key in raw.keys() {
-            if !["token", "startDate", "endDate", "contractId", "network"].contains(&key.as_str()) {
+            if !QUERY_PARAMS.contains(&key.as_str()) {
                 details.push(proposals::detail(
                     key,
                     "is not a supported query parameter",
@@ -346,7 +397,19 @@ mod spend {
 mod report_api {
     use super::*;
 
-    const STATUSES: &[&str] = &["generated", "delivered", "failed"];
+    pub(super) const STATUSES: &[&str] = &["generated", "delivered", "failed"];
+
+    /// Query parameters `GET /reports` accepts.
+    pub(super) const LIST_PARAMS: &[&str] = &[
+        "limit",
+        "offset",
+        "status",
+        "format",
+        "contractId",
+        "network",
+    ];
+    /// Query parameters `POST /reports/run` accepts.
+    pub(super) const RUN_PARAMS: &[&str] = &["format", "periodDays", "contractId", "network"];
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -374,9 +437,7 @@ mod report_api {
     ) -> Result<Json<ReportPage>, (StatusCode, Json<proposals::ApiError>)> {
         let mut details = Vec::new();
         for key in raw.keys() {
-            if !["limit", "offset", "status", "format", "contractId", "network"]
-                .contains(&key.as_str())
-            {
+            if !LIST_PARAMS.contains(&key.as_str()) {
                 details.push(proposals::detail(
                     key,
                     "is not a supported query parameter",
@@ -422,7 +483,8 @@ mod report_api {
             ));
         }
 
-        let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM report_runs WHERE TRUE");
+        let mut count =
+            QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM report_runs WHERE TRUE");
         push_scope(&mut count, "", &scope);
         add_filters(&mut count, status.as_deref(), format);
         let total: i64 = count
@@ -467,7 +529,7 @@ mod report_api {
     ) -> Result<Json<ManualRunResponse>, (StatusCode, Json<proposals::ApiError>)> {
         let mut details = Vec::new();
         for key in raw.keys() {
-            if !["format", "periodDays", "contractId", "network"].contains(&key.as_str()) {
+            if !RUN_PARAMS.contains(&key.as_str()) {
                 details.push(proposals::detail(
                     key,
                     "is not a supported query parameter",
@@ -550,6 +612,172 @@ mod report_api {
 
     fn internal_error(error: sqlx::Error) -> (StatusCode, Json<proposals::ApiError>) {
         tracing::error!(%error, "failed to query treasury report runs");
+        proposals::internal_error(error)
+    }
+}
+
+mod alert_api {
+    use super::*;
+    use alerts::{Rule, StormSettings};
+
+    pub(super) const SEVERITIES: &[&str] = &["info", "warning", "critical"];
+
+    /// Query parameters `GET /alerts` accepts.
+    pub(super) const QUERY_PARAMS: &[&str] = &[
+        "limit",
+        "offset",
+        "ruleId",
+        "severity",
+        "contractId",
+        "network",
+    ];
+
+    #[derive(Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct AlertRecord {
+        id: i64,
+        rule_id: String,
+        kind: String,
+        severity: String,
+        network: String,
+        contract_id: String,
+        subject: String,
+        message: String,
+        details: SqlJson<serde_json::Value>,
+        fired_at: DateTime<Utc>,
+        delivered_channels: SqlJson<Vec<String>>,
+        failed_channels: SqlJson<Vec<String>>,
+    }
+
+    #[derive(Serialize)]
+    pub(super) struct AlertPage {
+        alerts: Vec<AlertRecord>,
+        total: i64,
+        limit: i64,
+        offset: i64,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct RulesResponse {
+        enabled: bool,
+        rules: Vec<Rule>,
+        cooldown_secs: Option<u64>,
+        max_alerts_per_window: Option<u32>,
+        storm_window_secs: Option<u64>,
+    }
+
+    /// `GET /alerts` — raised alerts, newest first.
+    pub(super) async fn list(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<AlertPage>, (StatusCode, Json<proposals::ApiError>)> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !QUERY_PARAMS.contains(&key.as_str()) {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+        let limit = proposals::parse_integer(&raw, "limit", 20, 1, 100, &mut details);
+        let offset = proposals::parse_integer(&raw, "offset", 0, 0, i64::MAX, &mut details);
+        let severity = proposals::nonempty(&raw, "severity");
+        if let Some(value) = severity.as_deref()
+            && !SEVERITIES.contains(&value)
+        {
+            details.push(proposals::detail(
+                "severity",
+                "must be one of: info, warning, critical",
+                "INVALID_SEVERITY",
+            ));
+        }
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            ));
+        }
+        let rule_id = proposals::nonempty(&raw, "ruleId");
+
+        let mut count = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM alerts WHERE TRUE");
+        push_scope(&mut count, "", &scope);
+        add_filters(&mut count, rule_id.as_deref(), severity.as_deref());
+        let total: i64 = count
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+        let mut rows = QueryBuilder::<Postgres>::new(
+            "SELECT id, rule_id, kind, severity, network, contract_id, subject, message, \
+             details, fired_at, delivered_channels, failed_channels FROM alerts WHERE TRUE",
+        );
+        push_scope(&mut rows, "", &scope);
+        add_filters(&mut rows, rule_id.as_deref(), severity.as_deref());
+        rows.push(" ORDER BY fired_at DESC, id DESC LIMIT ");
+        rows.push_bind(limit);
+        rows.push(" OFFSET ");
+        rows.push_bind(offset);
+        let alerts = rows
+            .build_query_as::<AlertRecord>()
+            .fetch_all(&state.pool)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(Json(AlertPage {
+            alerts,
+            total,
+            limit,
+            offset,
+        }))
+    }
+
+    /// `GET /alerts/rules` — the configured rules and storm protection.
+    pub(super) async fn rules(State(state): State<AppState>) -> Json<RulesResponse> {
+        Json(match &state.alert_engine {
+            Some(engine) => {
+                let StormSettings {
+                    cooldown,
+                    max_alerts,
+                    window,
+                } = engine.settings().clone();
+                RulesResponse {
+                    enabled: true,
+                    rules: engine.rules().to_vec(),
+                    cooldown_secs: Some(cooldown.as_secs()),
+                    max_alerts_per_window: Some(max_alerts),
+                    storm_window_secs: Some(window.as_secs()),
+                }
+            }
+            None => RulesResponse {
+                enabled: false,
+                rules: Vec::new(),
+                cooldown_secs: None,
+                max_alerts_per_window: None,
+                storm_window_secs: None,
+            },
+        })
+    }
+
+    fn add_filters<'a>(
+        builder: &mut QueryBuilder<'a, Postgres>,
+        rule_id: Option<&'a str>,
+        severity: Option<&'a str>,
+    ) {
+        if let Some(rule_id) = rule_id {
+            builder.push(" AND rule_id = ").push_bind(rule_id);
+        }
+        if let Some(severity) = severity {
+            builder.push(" AND severity = ").push_bind(severity);
+        }
+    }
+
+    fn internal_error(error: sqlx::Error) -> (StatusCode, Json<proposals::ApiError>) {
+        tracing::error!(%error, "failed to query alerts");
         proposals::internal_error(error)
     }
 }
@@ -637,6 +865,14 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
         size.saturating_sub(idle)
     );
 
+    body.push_str("# HELP accord_api_cache_entries Responses currently held in the cache.\n");
+    body.push_str("# TYPE accord_api_cache_entries gauge\n");
+    let _ = writeln!(
+        body,
+        "accord_api_cache_entries {}",
+        limits::cache_len(&state.limits)
+    );
+
     // Ingestion progress is best effort: a missing checkpoint row or an
     // unreachable database must not fail the scrape.
     let checkpoint = tokio::time::timeout(
@@ -666,8 +902,26 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
 mod proposals {
     use super::*;
 
-    const STATUSES: &[&str] = &["pending", "ready", "executed", "expired", "revoked"];
-    const CATEGORIES: &[&str] = &["Transfer", "Payroll", "Grant", "Ops", "Other"];
+    pub(super) const STATUSES: &[&str] = &["pending", "ready", "executed", "expired", "revoked"];
+    pub(super) const CATEGORIES: &[&str] = &["Transfer", "Payroll", "Grant", "Ops", "Other"];
+
+    /// Query parameters `GET /proposals` accepts.
+    pub(super) const QUERY_PARAMS: &[&str] = &[
+        "limit",
+        "offset",
+        "sort",
+        "order",
+        "status",
+        "category",
+        "owner",
+        "token",
+        "startDate",
+        "endDate",
+        "contractId",
+        "network",
+    ];
+    /// Query parameters `GET /proposals/{id}` accepts.
+    pub(super) const DETAIL_PARAMS: &[&str] = &["contractId", "network"];
 
     #[derive(Debug, Deserialize, sqlx::FromRow)]
     #[serde(rename_all = "camelCase")]
@@ -952,7 +1206,7 @@ mod proposals {
 
         let mut details = Vec::new();
         for key in raw.keys() {
-            if !["contractId", "network"].contains(&key.as_str()) {
+            if !DETAIL_PARAMS.contains(&key.as_str()) {
                 details.push(detail(
                     key,
                     "is not a supported query parameter",
@@ -1052,22 +1306,8 @@ mod proposals {
         config: &ScopeConfig,
     ) -> Result<ProposalQuery, Vec<ErrorDetail>> {
         let mut details = Vec::new();
-        let allowed = [
-            "limit",
-            "offset",
-            "sort",
-            "order",
-            "status",
-            "category",
-            "owner",
-            "token",
-            "startDate",
-            "endDate",
-            "contractId",
-            "network",
-        ];
         for key in raw.keys() {
-            if !allowed.contains(&key.as_str()) {
+            if !QUERY_PARAMS.contains(&key.as_str()) {
                 details.push(detail(
                     key,
                     "is not a supported query parameter",
@@ -1263,7 +1503,11 @@ mod proposals {
             assert_eq!(query.status.as_deref(), Some("executed"));
             assert_eq!(query.category.as_deref(), Some("Payroll"));
             assert_eq!(query.sort, "amount");
-            assert_eq!(query.scope.contract_ids.len(), 2, "defaults to every contract");
+            assert_eq!(
+                query.scope.contract_ids.len(),
+                2,
+                "defaults to every contract"
+            );
             assert_eq!(query.scope.networks.len(), 2, "defaults to every network");
         }
 
@@ -1356,6 +1600,39 @@ async fn main() -> Result<()> {
         tracing::info!("no REPORT_SCHEDULE configured; scheduled treasury reports are off");
     }
 
+    let limits = Arc::new(Limits::new(&config.limits));
+
+    // Alerting is off unless rules are configured; the watcher still runs so
+    // new indexed events clear the response cache.
+    let alert_config = alerts::AlertConfig::from_env()?;
+    let (alert_engine, alert_channels, alert_interval) = match &alert_config {
+        Some(alert_config) => (
+            Some(Arc::new(AlertEngine::new(
+                alert_config.rules.clone(),
+                alert_config.settings.clone(),
+            ))),
+            alert_config.build_channels(transport.clone())?,
+            alert_config.poll_interval,
+        ),
+        None => {
+            tracing::info!("no ALERT_RULES configured; alerting is off");
+            (None, Vec::new(), Duration::from_secs(15))
+        }
+    };
+    let watcher = alerts::spawn(
+        alerts::Watcher {
+            pool: pool.clone(),
+            pairs: config.scope.pairs(),
+            limits: Arc::clone(&limits),
+            alerts: alert_engine.as_ref().map(|engine| alerts::AlertRuntime {
+                engine: Arc::clone(engine),
+                channels: alert_channels,
+                backfill: alert_config.as_ref().is_some_and(|config| config.backfill),
+            }),
+        },
+        alert_interval,
+    );
+
     let address: SocketAddr = format!("{}:{}", config.listen_host, config.listen_port)
         .parse()
         .context("LISTEN_HOST and LISTEN_PORT did not form a valid socket address")?;
@@ -1367,14 +1644,22 @@ async fn main() -> Result<()> {
         %address,
         contracts = config.scope.contract_ids.len(),
         networks = config.scope.networks.len(),
+        rate_limit = config.limits.rate_limit_requests,
+        cache_ttl_secs = config.limits.cache_ttl.as_secs(),
+        alert_rules = alert_engine.as_ref().map_or(0, |engine| engine.rules().len()),
         "analytics API listening"
     );
+    let state = AppState::with_scope(pool, config.scope.clone(), reports, transport)
+        .with_limits(limits)
+        .with_alerts(alert_engine)
+        .with_graphql(graphql_config);
     axum::serve(
         listener,
-        app(AppState::new(pool, config.contract_id).with_graphql(graphql_config)),
+        app(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
 
+    watcher.abort();
     if let Some(scheduler) = scheduler {
         scheduler.abort();
     }
@@ -1396,27 +1681,17 @@ mod tests {
     /// The handlers under test reject their input before touching the database,
     /// so a lazy pool that never connects is enough.
     fn state() -> AppState {
-        AppState {
-            pool: PgPoolOptions::new()
+        AppState::with_scope(
+            PgPoolOptions::new()
                 .connect_lazy("postgres://accord:accord@localhost/accord_analytics")
                 .unwrap(),
-            scope: ScopeConfig::new(
+            ScopeConfig::new(
                 vec!["test-contract".to_owned(), "other-contract".to_owned()],
                 vec!["testnet".to_owned()],
             ),
-            reports: Arc::new(ReportConfig {
-                schedule: None,
-                expression: None,
-                formats: vec![super::ReportFormat::Csv],
-                recipients: Vec::new(),
-                period_days: 30,
-                output_dir: None,
-                max_attempts: 3,
-                retry_backoff: std::time::Duration::from_millis(10),
-                from: "reports@example.com".to_owned(),
-            }),
-            transport: None,
-        }
+            Arc::new(ReportConfig::disabled()),
+            None,
+        )
     }
 
     async fn error_body(response: axum::response::Response) -> serde_json::Value {
@@ -1427,10 +1702,6 @@ mod tests {
     #[tokio::test]
     async fn root_returns_service_status() {
         let response = app(state())
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let response = app(AppState::new(pool, "test-contract".to_owned()))
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -1449,15 +1720,6 @@ mod tests {
             )
             .await
             .unwrap();
-        let response = app(AppState::new(pool, "test-contract".to_owned()))
-            .oneshot(
-                Request::builder()
-                    .uri("/proposals?limit=101")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
         let error = error_body(response).await;
@@ -1468,15 +1730,6 @@ mod tests {
     #[tokio::test]
     async fn proposal_detail_rejects_malformed_ids() {
         let response = app(state())
-            .oneshot(
-                Request::builder()
-                    .uri("/proposals/not-a-number")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let response = app(AppState::new(pool, "test-contract".to_owned()))
             .oneshot(
                 Request::builder()
                     .uri("/proposals/not-a-number")

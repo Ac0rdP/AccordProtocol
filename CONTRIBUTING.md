@@ -475,6 +475,41 @@ Use **GitHub Draft PRs** when you want early feedback on direction before the ch
 - Match the **style and patterns** of surrounding code unless an issue mandates a deliberate migration.
 - Do not add **secrets**, private keys, or personal configuration to the repository.
 
+### Secret scanning
+
+Every pull request and push to `main` runs Gitleaks over the full git history in
+the `Security checks` workflow (`.github/workflows/security.yml`). A finding
+fails the job. CI pins Gitleaks `8.30.1`; the reviewed configuration lives in
+[`.gitleaks.toml`](./.gitleaks.toml).
+
+Run the same scan locally:
+
+```bash
+gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
+```
+
+**If a real secret is detected:**
+
+1. Treat the credential as compromised and revoke or rotate it **immediately**,
+   before cleaning up the repository. Do not wait for the scan to be allowlisted.
+2. Remove it from the working tree and replace it with an environment variable
+   or a managed secret-store reference. Never commit a real value in a fixture,
+   test, script, or example.
+3. If the secret is already in git history, coordinate with maintainers to purge
+   it from history with `git filter-repo` (or an equivalent tool), then
+   force-push the affected branches. Assume anyone who fetched the history
+   already has the value.
+4. Audit provider logs and dependent systems for unauthorized use, and follow
+   the incident process in [`docs/SECRETS_MANAGEMENT.md`](./docs/SECRETS_MANAGEMENT.md)
+   and [`docs/INCIDENT_RESPONSE.md`](./docs/INCIDENT_RESPONSE.md).
+5. Never paste the leaked value into a public issue, pull request, or chat.
+   Reference it by provider and rotation status only.
+
+**False positives:** add the narrowest possible exact regex or path to the
+allowlist in [`.gitleaks.toml`](./.gitleaks.toml), with a comment explaining why
+the value is public or synthetic. Every allowlist change requires maintainer
+review. Do not add broad patterns or disable default rules to silence a finding.
+
 ---
 
 ## Testing and quality gates
@@ -515,17 +550,45 @@ python3 scripts/generate-contract-types.py
 stellar contract test
 ```
 
-#### Updating snapshots
+#### Test snapshots
 
-Soroban tests may store **snapshot files** alongside the test source that capture expected contract output. When you make an **intentional** contract behaviour change a test may fail only because its stored snapshot no longer matches the new output — not because the logic is wrong.
+Soroban writes a snapshot for every `Env` created by a test into
+`contracts/accord/test_snapshots/` when the `Env` is dropped. The committed
+snapshots are the baseline for the `Contract Snapshot Verification` CI job
+(`.github/workflows/contract.yml`), which runs the suite and **reports drift as
+a warning**. The report is advisory so an existing stale baseline cannot block
+every pull request; the full patch is uploaded as the
+`contract-snapshot-verification` artifact. The job never rewrites or commits
+snapshots.
 
-To regenerate all snapshot files in one pass, set the `UPDATE_EXPECT` environment variable when running the test suite:
+Run the same check locally:
 
 ```bash
-UPDATE_EXPECT=1 stellar contract test
+bash scripts/verify-snapshots.sh
 ```
 
-After regeneration, review each updated snapshot file to confirm the new output is correct, then **commit the updated snapshot files alongside your code change**. A PR that changes contract behaviour but omits the refreshed snapshots will fail CI.
+The script runs `cargo test -p accord --lib --no-fail-fast`, writes the
+changed-file list and a readable patch to `target/snapshot-verification/`, and
+exits non-zero on drift. Set `SNAPSHOT_VERIFY_WARN_ONLY=1` to match CI's
+advisory mode. Test failures are reported by the regular Contract CI job; a
+failure that writes a changed snapshot is still reported as drift. Snapshot
+files are pinned to LF with `.gitattributes` so Windows line-ending conversion
+is not mistaken for drift.
+
+**Updating snapshots intentionally.** Snapshots are rewritten automatically
+when the tests run, so a normal `cargo test` is enough. If a contract change
+intentionally alters behaviour:
+
+1. Run `cargo test -p accord --lib`.
+2. Review the changed files under `contracts/accord/test_snapshots/` (the patch
+   from `scripts/verify-snapshots.sh` is easy to read).
+3. `git add contracts/accord/test_snapshots` and commit the refreshed snapshots
+   in the same PR.
+
+Never update snapshots just to make a red build green. Property tests use
+`non_snapshot_env()` on purpose: their inputs are random, so they do not write
+snapshots and no property-test snapshots should be committed. Use the same
+helper for any new randomized test.
 
 #### Coverage threshold
 
@@ -784,6 +847,14 @@ For example, a `contractCode` of `3` means `Unauthorized` (the signer is not a r
 - Update **this file** when contribution rules or quality gates change.
 - For small behavior changes, **PR description** may be enough; for new contributor-facing workflows, prefer durable docs in the repo.
 
+### Translating the docs
+
+We welcome translations of Accord Protocol guides and documentation! Localized documents live in `docs/i18n/<locale>/` and mirror the English source structure.
+
+Before submitting a translation:
+- Review [`docs/i18n/README.md`](./docs/i18n/README.md) for directory layout, what must not be translated (code, commands, identifiers, contract types), and the required YAML header block.
+- Each translation requires review by a fluent or native speaker and a maintainer. If no fluent reviewer is currently available, PRs are accepted with `status: draft`.
+- Run `node scripts/check-translation-staleness.js` locally to ensure metadata and source commit references are valid.
 ### Architecture decision records
 
 We document significant architectural decisions in [`docs/adr/`](./docs/adr/) using the [ADR template](./docs/adr/template.md).

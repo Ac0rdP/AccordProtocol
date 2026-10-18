@@ -94,11 +94,22 @@ export function openLedgerStore(databasePath) {
     database.exec("ALTER TABLE accord_events ADD COLUMN schema_version INTEGER");
   }
 
+  // The chain-position dedupe key (`ledger:transaction:eventIndex`, see
+  // events.js). Rows from before it existed keep a NULL key and stay covered
+  // by the `event_id` constraint; NULLs never collide in a unique index.
+  for (const table of ["ledger_entries", "accord_events"]) {
+    const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((column) => column.name === "dedupe_key")) {
+      database.exec(`ALTER TABLE ${table} ADD COLUMN dedupe_key TEXT`);
+    }
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${table}_dedupe_key_idx ON ${table} (dedupe_key)`);
+  }
+
   const insertEntry = database.prepare(`
     INSERT INTO ledger_entries (
       event_id, token, token_address, direction, amount, balance, ledger,
-      transaction_hash, occurred_at, from_address, to_address
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      transaction_hash, occurred_at, from_address, to_address, dedupe_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const deleteEntriesAbove = database.prepare("DELETE FROM ledger_entries WHERE ledger > ?");
   const deleteEventsAbove = database.prepare("DELETE FROM accord_events WHERE ledger > ?");
@@ -136,8 +147,8 @@ export function openLedgerStore(databasePath) {
   }
   const insertAccordEvent = database.prepare(`
     INSERT INTO accord_events (
-      event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version, dedupe_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const selectBalance = database.prepare(
     "SELECT balance FROM token_balances WHERE token = ?"
@@ -217,14 +228,15 @@ export function openLedgerStore(databasePath) {
           entry.transactionHash ?? null,
           entry.occurredAt,
           entry.from,
-          entry.to
+          entry.to,
+          entry.dedupeKey ?? null
         );
         updateBalance.run(entry.token, balanceAfter.toString());
         database.exec("COMMIT");
         return true;
       } catch (error) {
         database.exec("ROLLBACK");
-        if (String(error.message).includes("UNIQUE constraint failed: ledger_entries.event_id")) {
+        if (/UNIQUE constraint failed: ledger_entries\.(event_id|dedupe_key)/.test(String(error.message))) {
           return false;
         }
         throw error;
@@ -269,11 +281,12 @@ export function openLedgerStore(databasePath) {
           entry.ledger,
           entry.transactionHash ?? null,
           entry.occurredAt,
-          entry.schemaVersion ?? null
+          entry.schemaVersion ?? null,
+          entry.dedupeKey ?? null
         );
         return true;
       } catch (error) {
-        if (String(error.message).includes("UNIQUE constraint failed: accord_events.event_id")) {
+        if (/UNIQUE constraint failed: accord_events\.(event_id|dedupe_key)/.test(String(error.message))) {
           return false;
         }
         throw error;

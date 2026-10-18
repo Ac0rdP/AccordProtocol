@@ -68,7 +68,9 @@ impl FromStr for ReportFormat {
         match value.trim().to_ascii_lowercase().as_str() {
             "csv" => Ok(Self::Csv),
             "pdf" => Ok(Self::Pdf),
-            other => Err(format!("unsupported report format \"{other}\", expected csv or pdf")),
+            other => Err(format!(
+                "unsupported report format \"{other}\", expected csv or pdf"
+            )),
         }
     }
 }
@@ -215,7 +217,9 @@ impl TreasuryReport {
     pub fn to_csv(&self) -> Result<Vec<u8>, String> {
         // Flexible records let the totals section use its own, narrower header
         // below the transaction rows in the same file.
-        let mut writer = csv::WriterBuilder::new().flexible(true).from_writer(Vec::new());
+        let mut writer = csv::WriterBuilder::new()
+            .flexible(true)
+            .from_writer(Vec::new());
         let write_error = |error: csv::Error| format!("failed to write report CSV: {error}");
 
         writer
@@ -257,7 +261,9 @@ impl TreasuryReport {
 
         // Totals follow the detail rows, each prefixed so a spreadsheet filter
         // can separate them from the transactions.
-        writer.write_record::<[&str; 0], &str>([]).map_err(write_error)?;
+        writer
+            .write_record::<[&str; 0], &str>([])
+            .map_err(write_error)?;
         writer
             .write_record(["section", "token", "category", "total", "count"])
             .map_err(write_error)?;
@@ -312,8 +318,7 @@ impl TreasuryReport {
             ops.push(Op::ShowText {
                 items: vec![TextItem::Text(format!(
                     "{}  #{}  {}  {}  {} {}  -> {}",
-                    line
-                        .executed_at
+                    line.executed_at
                         .unwrap_or(line.created_at)
                         .format("%Y-%m-%d"),
                     line.proposal_id,
@@ -379,7 +384,13 @@ fn truncate(value: &str, width: usize) -> String {
     if value.chars().count() <= width {
         return value.to_owned();
     }
-    format!("{}…", value.chars().take(width.saturating_sub(1)).collect::<String>())
+    format!(
+        "{}…",
+        value
+            .chars()
+            .take(width.saturating_sub(1))
+            .collect::<String>()
+    )
 }
 
 fn start_page(heading: &str, summary: &[String], top: f32) -> Vec<Op> {
@@ -467,7 +478,9 @@ mod tests {
 
     #[test]
     fn csv_contains_a_header_every_transfer_and_the_totals() {
-        let csv = report(vec![line(1, "500.0000000"), line(2, "1000.0000000")]).to_csv().unwrap();
+        let csv = report(vec![line(1, "500.0000000"), line(2, "1000.0000000")])
+            .to_csv()
+            .unwrap();
         let text = String::from_utf8(csv).unwrap();
         let lines: Vec<&str> = text.lines().collect();
 
@@ -495,7 +508,10 @@ mod tests {
         let bytes = report(vec![line(1, "500.0000000")]).to_pdf();
 
         assert!(bytes.starts_with(b"%PDF-"), "has a PDF header");
-        assert!(bytes.ends_with(b"%%EOF\n") || bytes.ends_with(b"%%EOF"), "has a PDF trailer");
+        assert!(
+            bytes.ends_with(b"%%EOF\n") || bytes.ends_with(b"%%EOF"),
+            "has a PDF trailer"
+        );
         assert!(bytes.len() > 500, "is not an empty shell");
     }
 
@@ -513,7 +529,10 @@ mod tests {
     fn file_names_are_stable_and_filesystem_safe() {
         let report = report(Vec::new());
 
-        assert_eq!(report.file_stem(), "accord-testnet-contractaaaa-20260901-20260930");
+        assert_eq!(
+            report.file_stem(),
+            "accord-testnet-contractaaaa-20260901-20260930"
+        );
         assert_eq!(
             report.filename(ReportFormat::Csv),
             "accord-testnet-contractaaaa-20260901-20260930.csv"
