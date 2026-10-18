@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="100%" height="100%">
+  <defs>
+    <style>
+      @keyframes cycleScenes {
+        0%, 30% { opacity: 1; transform: translateY(0); }
+        33%, 97% { opacity: 0; transform: translateY(10px); }
+        100% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes sceneTwo {
+        0%, 30% { opacity: 0; transform: translateY(-10px); }
+        35%, 65% { opacity: 1; transform: translateY(0); }
+        68%, 100% { opacity: 0; transform: translateY(10px); }
+      }
+      @keyframes sceneThree {
+        0%, 65% { opacity: 0; transform: translateY(-10px); }
+        70%, 97% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(10px); }
+      }
+      @keyframes pulseBadge {
+        0%, 100% { transform: scale(1); opacity: 0.95; }
+        50% { transform: scale(1.05); opacity: 1; }
+      }
+      @keyframes progressBar {
+        0% { width: 0%; }
+        33% { width: 33%; }
+        66% { width: 66%; }
+        100% { width: 100%; }
+      }
+      .scene-1 { animation: cycleScenes 12s infinite; }
+      .scene-2 { animation: sceneTwo 12s infinite; }
+      .scene-3 { animation: sceneThree 12s infinite; }
+      .pulse { animation: pulseBadge 2s infinite ease-in-out; transform-origin: center; }
+      .progress { animation: progressBar 12s linear infinite; }
+    </style>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.4" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="480" fill="url(#bgGrad)" rx="16" />
+
+  <!-- Window Chrome Header -->
+  <rect width="800" height="44" fill="#0f172a" rx="16" />
+  <rect y="30" width="800" height="14" fill="#0f172a" />
+  <line x1="0" y1="44" x2="800" y2="44" stroke="#334155" stroke-width="1" />
+  
+  <!-- Window Dots -->
+  <circle cx="24" cy="22" r="6" fill="#ef4444" />
+  <circle cx="44" cy="22" r="6" fill="#f59e0b" />
+  <circle cx="64" cy="22" r="6" fill="#10b981" />
+
+  <!-- URL Bar -->
+  <rect x="180" y="10" width="440" height="24" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1" />
+  <text x="400" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" fill="#94a3b8" text-anchor="middle">
+    🔒 https://accord-protocol.vercel.app/testnet
+  </text>
+
+  <!-- Network Badge -->
+  <rect x="680" y="12" width="90" height="20" rx="10" fill="#065f46" stroke="#10b981" stroke-width="1" />
+  <circle cx="692" cy="22" r="4" fill="#34d399" />
+  <text x="734" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" font-weight="600" fill="#a7f3d0" text-anchor="middle">TESTNET</text>
+
+  <!-- Top Hero / Banner -->
+  <text x="40" y="85" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700" fill="#f8fafc">Walkthrough: Recurring Payments & Payroll</text>
+  <text x="40" y="108" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" fill="#94a3b8">Automate contributor streams, vesting schedules, and batch payroll</text>
+
+  <!-- Status / Flow Badge -->
+  <g class="pulse">
+    <rect x="620" y="70" width="140" height="28" rx="14" fill="#6366f1" opacity="0.2" />
+    <rect x="620" y="70" width="140" height="28" rx="14" fill="none" stroke="#6366f1" stroke-width="1.5" />
+    <text x="690" y="88" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#6366f1" text-anchor="middle">PAYROLL STREAMING</text>
+  </g>
+
+  <!-- Main Canvas / Workspace Box -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="130" width="720" height="300" rx="12" fill="url(#cardGrad)" stroke="#334155" stroke-width="1" />
+  </g>
+
+  <!-- Animated Timeline / Progress Indicator at Bottom of Card -->
+  <rect x="40" y="426" width="720" height="4" fill="#1e293b" />
+  <rect x="40" y="426" width="0" height="4" fill="url(#accentGrad)" class="progress" />
+
+  <!-- SCENE 1 -->
+  <g class="scene-1">
+    <rect x="60" y="150" width="220" height="32" rx="6" fill="#3b82f6" opacity="0.15" />
+    <text x="75" y="171" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" fill="#60a5fa">Step 1: Configure Stream Schedule</text>
+    
+    <rect x="60" y="200" width="680" height="200" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+    
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">1. Set disbursement interval, start time, and total cap</text>
+    <rect x="90" y="260" width="380" height="38" rx="6" fill="#1e293b" stroke="#6366f1" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#c7d2fe">Interval: 30 Days | Amount: 2,500 USDC | Cap: 30,000 USDC</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Supports Fixed Period Payouts or Linear Vesting with Cliffs.</text>
+    
+  </g>
+
+  <!-- SCENE 2 -->
+  <g class="scene-2">
+    <rect x="60" y="150" width="220" height="32" rx="6" fill="#f59e0b" opacity="0.15" />
+    <text x="75" y="171" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" fill="#fbbf24">Step 2: Owner Consensus Approval</text>
+    
+    <rect x="60" y="200" width="680" height="200" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+    
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">2. Multisig owners review and sign stream proposal</text>
+    <rect x="90" y="260" width="400" height="38" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#fde68a">Proposal #18 (CreateRecurring) Approved & Activated</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Contract records schedule under persistent storage ("RECUR", id).</text>
+    
+  </g>
+
+  <!-- SCENE 3 -->
+  <g class="scene-3">
+    <rect x="60" y="150" width="220" height="32" rx="6" fill="#10b981" opacity="0.15" />
+    <text x="75" y="171" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="700" fill="#34d399">Step 3: Autonomous Execution & History</text>
+    
+    <rect x="60" y="200" width="680" height="200" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1" />
+    
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">3. Trigger disbursement or let automated crank disburse</text>
+    <rect x="90" y="260" width="420" height="38" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a7f3d0">Disbursed Period #1: 2,500 USDC | Next due in: 29d 23h</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Includes emergency Pause, Resume, and Cancel safeguards.</text>
+    
+  </g>
+
+  <!-- Step indicators -->
+  <circle cx="370" cy="455" r="4" fill="#3b82f6" />
+  <circle cx="400" cy="455" r="4" fill="#f59e0b" />
+  <circle cx="430" cy="455" r="4" fill="#10b981" />
+</svg>

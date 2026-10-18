@@ -4,6 +4,11 @@ This guide walks you through setting up and managing automated, recurring payrol
 
 While a standard payroll flow requires creating, approving, and executing a new proposal every month (see [Payroll Multisig](payroll-multisig.md)), recurring payments allow the multisig owners to approve a single long-term schedule once. Once active, funds can be disbursed periodically without requiring new approvals for each payment.
 
+![Recurring Payroll Schedule Walkthrough](../assets/walkthroughs/04-recurring-payroll-schedule.svg)
+
+> **Visual Summary**: Define Stream Interval & Cap → Multi-Owner Approval → Automated / Crank Periodic Disbursement.  
+> See the complete visual catalog in [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md).
+
 ---
 
 ## Before You Start
