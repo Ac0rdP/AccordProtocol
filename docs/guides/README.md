@@ -15,3 +15,9 @@ Beginner-friendly guides for using Accord Protocol.
 | [Treasury Analytics](treasury-analytics.md) | Read the analytics page's stat cards and charts, use filters, and export CSV/PDF |
 | [Monitoring Your Multisig](monitoring-your-multisig.md) | Query Horizon events, spot missed executions, and verify state after an upgrade |
 | [Troubleshooting](troubleshooting.md) | Diagnose wallet, transaction, and network errors |
+
+---
+
+## Localized Guides (i18n)
+
+Translations of these guides into other languages are organized in [`docs/i18n/`](../i18n/README.md). See the [Internationalized Documentation Guide](../i18n/README.md) for available locales, translation guidelines, and how to contribute new translations.
