@@ -784,6 +784,14 @@ For example, a `contractCode` of `3` means `Unauthorized` (the signer is not a r
 - Update **this file** when contribution rules or quality gates change.
 - For small behavior changes, **PR description** may be enough; for new contributor-facing workflows, prefer durable docs in the repo.
 
+### Translating the docs
+
+We welcome translations of Accord Protocol guides and documentation! Localized documents live in `docs/i18n/<locale>/` and mirror the English source structure.
+
+Before submitting a translation:
+- Review [`docs/i18n/README.md`](./docs/i18n/README.md) for directory layout, what must not be translated (code, commands, identifiers, contract types), and the required YAML header block.
+- Each translation requires review by a fluent or native speaker and a maintainer. If no fluent reviewer is currently available, PRs are accepted with `status: draft`.
+- Run `node scripts/check-translation-staleness.js` locally to ensure metadata and source commit references are valid.
 ### Architecture decision records
 
 We document significant architectural decisions in [`docs/adr/`](./docs/adr/) using the [ADR template](./docs/adr/template.md).

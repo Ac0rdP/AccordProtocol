@@ -1,4 +1,10 @@
-# Security Policy
+# Security Policy & Threat Model
+
+> [!TIP]
+> **Reporting a Vulnerability:** See the canonical repository [Vulnerability Disclosure Policy and Bug Bounty Framework](../SECURITY.md) for vulnerability scope, severity tiers, reporting channels, and safe harbor terms.
+> Maintainers handling reports should consult the [Coordinated Disclosure Workflow](./DISCLOSURE_WORKFLOW.md).
+>
+> This document details the protocol's threat model, token interaction safety arguments, adversarial test coverage, and operational security best practices.
 
 ## Supported Versions
 
@@ -10,6 +16,11 @@
 ## Audit Status
 
 Accord Protocol is **unaudited**. Do not deploy to mainnet with significant funds until a formal third-party audit is completed. The contract has been reviewed for common Soroban anti-patterns but has not undergone a professional security review. Detailed scope, attack surface analysis, protocol invariants, and verification steps are consolidated in the [Audit Preparation Pack](./AUDIT_PREP.md).
+
+External audit planning and preparation resources:
+- [Audit Scope & Specifications](./audit/SCOPE.md): Defines in-scope entrypoints, files, and measured codebase metrics.
+- [Auditor Selection & RFQ Template](./audit/AUDITOR_SELECTION.md): Selection criteria, Request-for-Quote template, and candidate directory.
+- [Audit Remediation & Tracking](./audit/REMEDIATION.md): Post-audit triage, verification workflow, and public remediation tracker.
 
 Known areas that require attention before mainnet:
 - Reentrancy via external token calls (mitigated by Soroban's re-entry ban and the call-ordering described in [Token interaction safety](#token-interaction-safety); the argument is below and still warrants formal review)
