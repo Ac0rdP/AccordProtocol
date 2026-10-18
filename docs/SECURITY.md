@@ -1,4 +1,10 @@
-# Security Policy
+# Security Policy & Threat Model
+
+> [!TIP]
+> **Reporting a Vulnerability:** See the canonical repository [Vulnerability Disclosure Policy and Bug Bounty Framework](../SECURITY.md) for vulnerability scope, severity tiers, reporting channels, and safe harbor terms.
+> Maintainers handling reports should consult the [Coordinated Disclosure Workflow](./DISCLOSURE_WORKFLOW.md).
+>
+> This document details the protocol's threat model, token interaction safety arguments, adversarial test coverage, and operational security best practices.
 
 ## Supported Versions
 
