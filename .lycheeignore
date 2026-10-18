@@ -1,0 +1,27 @@
+# Lychee link-checker reviewed allowlist
+# Every entry MUST have a comment explaining why it is excluded from checks.
+# Changes to this file require maintainer review.
+
+# Local addresses and non-routable host fixtures used in documentation examples
+# Reason: Local test server URLs that are not active during static link checks
+^http://localhost:[0-9]+
+^http://127.0.0.1:[0-9]+
+
+# Stellar testnet Friendbot query template
+# Reason: Parameterized faucet URL with placeholder YOUR_PUBLIC_KEY_HERE intended for user replacement
+^https://friendbot\.stellar\.org/\?addr=
+
+# GitHub issue references and PR links
+# Reason: Templates, issue trackers, and planned future milestones not yet created on GitHub
+^https://github\.com/thegreatfeez/accord-protocol/issues
+^https://github\.com/thegreatfeez/accord-protocol/pull
+
+# Rate-limited third-party ecosystem documentation or explorer sites
+# Reason: Cloudflare / DDoS guards on these third-party platforms block automated GitHub Actions IP ranges (HTTP 403)
+^https://lab\.stellar\.org
+^https://drips\.network/wave/stellar
+^https://stellar\.expert
+
+# Expected GitHub Pages published URL (not live until first deployment)
+# Reason: Statically referenced expected deployment URL that will be live once GitHub Pages is enabled
+^https://thegreatfeez\.github\.io/accord-protocol/

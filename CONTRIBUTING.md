@@ -690,6 +690,22 @@ make docs
 **Publishing and GitHub Pages:**
 API references are published to GitHub Pages on pushes to `main` via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). The expected live address is `https://thegreatfeez.github.io/accord-protocol/` (maintainers should confirm upon enabling GitHub Actions as the Pages source). Pull requests validate documentation generation in CI without deploying.
 
+### Documentation link check and allowlist policy
+
+CI validates internal links, relative markdown paths, fragment anchors, and external URLs on every pull request and push to `main` via [`.github/workflows/docs.yml`](./.github/workflows/docs.yml), and runs weekly to detect external link rot.
+
+**Local verification:**
+```bash
+# If lychee is installed locally:
+lychee --config lychee.toml --ignore-path .lycheeignore "**/*.md"
+```
+
+**Allowlist policy:**
+- The reviewed allowlist lives in [`.lycheeignore`](./.lycheeignore).
+- **Mandatory comment**: Every pattern added to `.lycheeignore` must include a required reason comment explaining why it is excluded (e.g. anti-bot rate limits, parameterized placeholder URL, local test server).
+- **No broken links**: Genuine broken links and missing anchors must be fixed in source documentation; allowlisting broken links to bypass CI is forbidden.
+- **Review requirement**: Any changes to `.lycheeignore` require explicit maintainer review.
+
 ---
 
 ## Dependency updates
