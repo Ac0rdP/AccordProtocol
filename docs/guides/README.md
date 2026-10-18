@@ -15,3 +15,15 @@ Beginner-friendly guides for using Accord Protocol.
 | [Treasury Analytics](treasury-analytics.md) | Read the analytics page's stat cards and charts, use filters, and export CSV/PDF |
 | [Monitoring Your Multisig](monitoring-your-multisig.md) | Query Horizon events, spot missed executions, and verify state after an upgrade |
 | [Troubleshooting](troubleshooting.md) | Diagnose wallet, transaction, and network errors |
+
+---
+
+## Visual Walkthroughs & Core Flows
+
+For visual guides and animated walkthroughs of core operations, see [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md):
+
+- [Onboarding & Wallet Connection](../WALKTHROUGHS.md#flow-1-onboarding--wallet-connection)
+- [Creating a Multisig Proposal](../WALKTHROUGHS.md#flow-2-creating-a-multisig-proposal)
+- [Reviewing, Approving & Executing Proposals](../WALKTHROUGHS.md#flow-3-reviewing-approving--executing-proposals)
+- [Recurring Payments & Contributor Payroll](../WALKTHROUGHS.md#flow-4-recurring-payments--contributor-payroll)
+- [Treasury Analytics & Activity Monitoring](../WALKTHROUGHS.md#flow-5-treasury-analytics--activity-monitoring)
