@@ -57,24 +57,50 @@ See [`docs/SETUP.md`](./SETUP.md) for a step-by-step guide across macOS, Linux, 
 
 ---
 
-## Finding Work
+## Finding Work & Choosing a First Issue
 
 1. Check the [GitHub Issues](https://github.com/thegreatfeez/accord-protocol/issues) tab for open issues.
-2. Issues tagged **`good first issue`** are scoped for new contributors.
-3. Issues tagged **`drips-wave`** are eligible for Stellar Drips Wave rewards.
-4. Comment on an issue before starting to avoid duplicated effort.
-5. Do not start work on an issue that is already assigned or actively being addressed.
+2. Filter by beginner labels:
+   - **`good first issue`**: Self-contained tasks requiring minimal codebase context.
+   - **`documentation`**: Updating guides, diagrams, and README walkthroughs.
+   - **`testing`**: Adding unit tests for contract corner cases or UI components.
+   - **`drips-wave`**: Issues eligible for Stellar Drips Wave developer rewards.
+3. **Claiming an issue**:
+   - Check that no other contributor is assigned or actively working on it.
+   - Post a comment on the issue with a brief 1-2 sentence proposal on your approach.
+   - Wait for maintainer assignment before starting deep work to avoid collision.
+4. For comprehensive guidance on repository layout and environment details, see the authoritative root [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 
-## Contribution Workflow
+## Contribution Workflow & Review SLAs
 
 1. **Fork** the repository (or clone if you have direct access).
 2. **Create a branch** from `main` using the naming conventions below.
 3. **Implement** the smallest change that satisfies the issue, with tests.
 4. **Run local checks** (see [Testing](#testing)).
 5. **Open a pull request** into `main` with a clear title and description.
-6. **Respond to review feedback** promptly — maintainers aim to review within 3 business days.
+6. **Review SLAs (Service Level Agreements)**:
+   - **Initial Triage**: 24–48 business hours.
+   - **First Review**: Within 3 business days (72 hours).
+   - **Follow-up Review**: Within 2 business days (48 hours).
+   - **Merge**: Within 24 hours of final approval.
+7. **Respond to review feedback** promptly; reviewers will test and verify your PR.
+
+---
+
+## Definition of Done (DoD)
+
+Every PR must satisfy the following checklist before merge:
+
+- [ ] All issue acceptance criteria are 100% satisfied.
+- [ ] New unit tests accompany contract logic or frontend component changes.
+- [ ] All CI checks pass:
+  - `cargo test`, `cargo fmt --check`, `cargo clippy -- -D warnings`
+  - `npm run lint`, `npm run build`
+- [ ] Documentation updated if API, storage, or workflows are touched.
+- [ ] Clean commit history adhering to `feat(<module>): ...` or `fix(<module>): ...`.
+- [ ] Issue linked via `Closes #<ID>` or `Fixes #<ID>`.
 
 ---
 
@@ -97,14 +123,38 @@ See [`docs/SETUP.md`](./SETUP.md) for a step-by-step guide across macOS, Linux, 
 - Keep the subject line ≤ 72 characters
 - Add a blank line + body when explaining a non-obvious "why"
 
-### Pull Request Description
+### Pull Request Description & Example
 
 Include:
 
 1. **What** changed (high level)
 2. **Why** it was needed — link the issue (`Fixes #N` or `Refs #N`)
-3. **How to verify** — commands run, screenshots for UI changes
-4. **Risks / follow-ups** — known limitations, deferred work
+3. **How to verify** (commands you ran, test evidence)
+4. **Definition of Done checklist**
+
+#### Example PR Description:
+
+```markdown
+## Title: feat(docs): update multisig onboarding guide (#305)
+
+### Summary
+Clarifies step-by-step wallet connection and funding steps for Testnet co-owners.
+
+### Changes
+- Updated `docs/guides/connecting-your-wallet.md` with visual walkthrough embed.
+- Added Friendbot faucet recovery instructions.
+
+### Verification
+- Tested all documentation links locally.
+- Verified markdown rendering.
+
+### Checklist
+- [x] Meets acceptance criteria for #305
+- [x] Links verified
+- [x] Definition of Done satisfied
+
+Closes #305
+```
 
 Use **Draft PRs** for early feedback when the change is not yet polished.
 
