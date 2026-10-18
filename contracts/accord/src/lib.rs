@@ -1968,6 +1968,7 @@ impl AccordContract {
         // A contract initialized through this function already has real,
         // explicit per-owner weights from the start, so it never needs (and
         // must never accept) `migrate_to_weighted_governance`.
+        #[cfg(not(feature = "legacy-fixture"))]
         env.storage()
             .instance()
             .set(&governance_version_key(), &true);
@@ -1976,6 +1977,10 @@ impl AccordContract {
             update_owner_roles(&env, &owner, &roles);
         }
         write_role_version(&env, RBAC_VERSION);
+        // The `legacy-fixture` feature deliberately leaves the schema marker
+        // absent so the testnet upgrade simulation can exercise a real
+        // pre-versioning deployment and verify that migration stamps it.
+        #[cfg(not(feature = "legacy-fixture"))]
         write_storage_version(&env);
         bump_instance(&env);
 

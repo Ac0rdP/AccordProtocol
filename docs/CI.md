@@ -20,6 +20,36 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | Nightly Full Suite | `.github/workflows/nightly.yml` | `schedule` (03:17 UTC), manual | Runs every component suite — including the slower E2E run — and files/updates a single tracked issue on failure. |
 | Release | `.github/workflows/release.yml` | `v*` tags, manual | Gates on all suites, builds the contract artifact + manifest, publishes the SDK to GitHub Packages, and creates a GitHub Release with generated notes. |
 
+## Testnet upgrade simulation
+
+`contract.yml` includes a `Testnet Upgrade Simulation` job that runs on pull
+requests touching `contracts/accord/**`, the workspace manifests, the simulation
+script, or the contract workflow itself. It:
+
+1. Builds a legacy-shaped contract with the `legacy-fixture` cargo feature, so
+   `initialize` leaves the governance-migration flag and storage-schema marker
+   absent.
+2. Deploys that build to testnet using an ephemeral Friendbot-funded identity.
+3. Adds two owners and creates a partially-unapproved in-flight proposal.
+4. Uploads the PR build and upgrades the same contract ID in place.
+5. Runs `migrate_to_weighted_governance`.
+6. Verifies owner set, weights, total weight, threshold, storage-schema version,
+   proposal count, and the in-flight proposal before approving/revoking it.
+
+No repository secrets are required: the identity is generated per run and
+removed in an exit trap. The contract itself is left isolated on testnet
+(Soroban has no contract-delete operation) and holds no funds. The job uploads
+`target/testnet-upgrade-simulation/` as an artifact with the full check report.
+
+Run it locally with the Stellar CLI and the `wasm32v1-none` Rust target:
+
+```bash
+bash scripts/testnet-upgrade-simulation.sh
+```
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md#automated-testnet-upgrade-simulation) for
+the operator-facing description and cleanup notes.
+
 ## Concurrency and cancellation
 
 Every workflow sets a `concurrency` group keyed on the workflow and ref, with
