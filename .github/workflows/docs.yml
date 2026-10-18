@@ -54,7 +54,7 @@ jobs:
 
       - name: Setup Node.js toolchain
         if: github.event_name != 'pull_request' || steps.filter.outputs.run_checks == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: 'npm'
