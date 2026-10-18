@@ -1,0 +1,33 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "Accord Protocol — Frontend Client API",
+  "entryPoints": [
+    "src/types/accord.ts",
+    "src/types/contract.generated.ts",
+    "src/lib/contract.ts",
+    "src/lib/wallet.ts",
+    "src/lib/soroban.ts",
+    "src/lib/analyticsApi.ts",
+    "src/lib/proposalStateMachine.ts"
+  ],
+  "out": "../docs-site/typescript",
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.stories.tsx",
+    "**/test/**",
+    "**/e2e/**",
+    "**/node_modules/**"
+  ],
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "excludeInternal": true,
+  "treatWarningsAsErrors": true,
+  "validation": {
+    "notExported": true,
+    "invalidLink": true
+  },
+  "cleanOutputDir": true,
+  "readme": "none",
+  "githubPages": false
+}

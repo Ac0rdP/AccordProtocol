@@ -168,7 +168,7 @@ Use **Draft PRs** for early feedback when the change is not yet polished.
 - Prefer small, composable components; lift state only as high as needed.
 - Use semantic HTML and label all form controls (accessibility).
 - Follow existing Tailwind patterns; avoid one-off inline styles.
-- Use `BigInt` (not `Number`) for all on-chain token amounts — see [Architecture](./ARCHITECTURE.md#7-token-handling).
+- Use `BigInt` (not `Number`) for all on-chain token amounts — see [Architecture](./ARCHITECTURE.md#9-token-handling).
 
 ### Rust / Soroban (`contracts/`)
 

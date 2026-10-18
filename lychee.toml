@@ -1,0 +1,27 @@
+# Lychee link checker configuration
+# See https://lychee.cli.rs/configuration/
+
+# Maximum number of retries per request
+max_retries = 3
+
+# Wait time between retries in seconds
+retry_wait_time = 2
+
+# Request timeout in seconds
+timeout = 20
+
+# HTTP status codes accepted as successful (includes 429 rate limit as acceptable in CI)
+accept = [200, 204, 206, 301, 302, 307, 308, 429]
+
+# Verify fragment anchors / headers in local and remote documents
+include_fragments = true
+
+# Exclude email address checks
+include_mail = false
+
+# Enable caching to minimize external requests
+cache = true
+max_cache_age = "1d"
+
+# Formatted output
+format = "markdown"

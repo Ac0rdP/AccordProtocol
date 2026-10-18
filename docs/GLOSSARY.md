@@ -11,7 +11,7 @@ A ledger is the fundamental unit of state and time on the Stellar network, simil
 
 **Stroop**
 A stroop is the smallest indivisible unit of XLM, equal to one ten-millionth (0.0000001) of one XLM. Smart contracts and on-chain balances always work in stroops (or the equivalent smallest unit for other tokens) rather than fractional amounts, since computers can't represent fractional currency exactly.
-See also: [Architecture §7 — Token Handling](./ARCHITECTURE.md#7-token-handling).
+See also: [Architecture §9 — Token Handling](./ARCHITECTURE.md#9-token-handling).
 
 **XLM**
 XLM ("lumens") is the native digital currency of the Stellar network, used to pay transaction fees and to fund the minimum balance every Stellar account must hold. In Accord Protocol, XLM can also be the asset a proposal transfers, in which case its amount is expressed in stroops.
