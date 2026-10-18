@@ -7642,6 +7642,38 @@ fn migrate_to_rbac_grants_default_roles_and_is_single_run() {
 }
 
 #[test]
+fn migrate_to_rbac_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let rbac_event = contract_events.events().iter().find(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == symbol_short!("rbac_mig")
+    });
+    let event = rbac_event.expect("expected an 'rbac_mig' event to be emitted");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RbacMigratedEvent = event_data.into_val(&env);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+    assert_eq!(event.owners_count, 3);
+    assert_eq!(event.migrated_at, NOW);
+}
+
+#[test]
 fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
     let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
     let new_owner = Address::generate(&env);
@@ -10459,6 +10491,84 @@ fn revoke_role_proposal_stores_kind_and_emits_creation_event() {
 }
 
 #[test]
+fn grant_role_execute_emits_role_granted_event() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
+    let role = Symbol::new(&env, "Viewer");
+
+    let id = client.create_grant_role_proposal(
+        &owner_a,
+        &non_owner,
+        &role,
+        &str(&env, "Grant Viewer to non_owner"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let grant_event = contract_events.events().iter().find(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == Symbol::new(&env, "role_granted")
+    });
+    let event = grant_event.expect("expected a 'role_granted' event to be emitted");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RoleGrantedEvent = event_data.into_val(&env);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+    assert_eq!(event.target, non_owner);
+    assert_eq!(event.role, Role::Viewer);
+    assert!(event.before.is_empty());
+    assert!(event.after.contains(&Role::Viewer));
+}
+
+#[test]
+fn revoke_role_execute_emits_role_revoked_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let role = Symbol::new(&env, "Executor");
+
+    let id = client.create_revoke_role_proposal(
+        &owner_a,
+        &owner_c,
+        &role,
+        &str(&env, "Revoke Executor from owner_c"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let revoke_event = contract_events.events().iter().find(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == Symbol::new(&env, "role_revoked")
+    });
+    let event = revoke_event.expect("expected a 'role_revoked' event to be emitted");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RoleRevokedEvent = event_data.into_val(&env);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+    assert_eq!(event.target, owner_c);
+    assert_eq!(event.role, Role::Executor);
+    assert!(event.before.contains(&Role::Executor));
+    assert!(!event.after.contains(&Role::Executor));
+}
+
+#[test]
 fn role_proposal_creation_rejects_duplicate_and_missing_role() {
     let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
     grant_all_roles(&env, &client, &non_owner);
@@ -11269,6 +11379,101 @@ fn total_weight_bound_holds_with_delegations_active() {
     assert_eq!(client.get_effective_weight(&b), 7);
     assert_eq!(client.get_effective_weight(&c), 4);
     assert_eq!(sum_effective_weights(&client), total);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Property tests asserting that randomized sequences of delegation, revocation,
+    /// expiration (timestamp advance), and owner removal NEVER break the effective-weight
+    /// invariants (issue #852).
+    #[test]
+    fn delegation_effective_weight_invariants_hold(
+        operations in proptest::collection::vec((0u8..=3, 0usize..=10, 0usize..=10, 1u32..=5, 0u64..=1_000), 1..=25)
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        let mut current_time = NOW;
+        set_timestamp(&env, current_time);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let mut initial_owners = Vec::new(&env);
+        let mut initial_weights = Vec::new(&env);
+        for _ in 0..4 {
+            initial_owners.push_back(Address::generate(&env));
+            initial_weights.push_back(5);
+        }
+        client.initialize(&initial_owners, &initial_weights, &1, &0);
+
+        let anchor = initial_owners.get(0).unwrap();
+
+        let assert_invariants = |c: &AccordContractClient| {
+            let total_raw = c.get_total_weight();
+            let owners = c.get_owners();
+            let mut sum_effective = 0u32;
+            for o in owners.iter() {
+                let eff = c.get_effective_weight(&o);
+                assert!(eff <= total_raw, "effective weight must not exceed total weight");
+                sum_effective += eff;
+            }
+            assert_eq!(sum_effective, total_raw, "sum of effective weights must equal total weight");
+        };
+
+        assert_invariants(&client);
+
+        for (op_kind, delegator_idx, delegate_idx, weight_seed, time_delta) in operations {
+            let current_owners = client.get_owners();
+            if current_owners.is_empty() {
+                break;
+            }
+
+            match op_kind {
+                // Op 0: Delegate
+                0 => {
+                    let d_idx = delegator_idx % current_owners.len() as usize;
+                    let del_idx = delegate_idx % current_owners.len() as usize;
+                    if d_idx != del_idx {
+                        let delegator = current_owners.get(d_idx as u32).unwrap();
+                        let delegate = current_owners.get(del_idx as u32).unwrap();
+                        let raw_weight = 5u32;
+                        let weight = 1 + (weight_seed % raw_weight);
+                        let expiry = if time_delta % 2 == 0 {
+                            Some(current_time + time_delta)
+                        } else {
+                            None
+                        };
+                        write_test_delegation(&env, &client, &delegator, &delegate, weight, expiry);
+                    }
+                }
+                // Op 1: Revoke / Undelegate
+                1 => {
+                    let d_idx = delegator_idx % current_owners.len() as usize;
+                    let delegator = current_owners.get(d_idx as u32).unwrap();
+                    revoke_test_delegation(&env, &client, &delegator);
+                }
+                // Op 2: Advance time (test expiry)
+                2 => {
+                    current_time += time_delta;
+                    set_timestamp(&env, current_time);
+                }
+                // Op 3: Remove owner (cannot remove anchor, must keep at least 2 owners)
+                3 => {
+                    if current_owners.len() > 2 {
+                        let target_idx = (delegator_idx % (current_owners.len() - 1) as usize) + 1;
+                        let target = current_owners.get(target_idx as u32).unwrap();
+                        if target != anchor {
+                            remove_owner_via(&env, &client, &anchor, &target);
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            assert_invariants(&client);
+        }
+    }
 }
 
 // ─── ContractError completeness (#749) ───────────────────────────────────────

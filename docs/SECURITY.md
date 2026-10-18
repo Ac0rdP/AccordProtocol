@@ -144,6 +144,25 @@ Specific mechanisms are in place to enforce security boundaries:
 - **Execute-time invariant re-validation for weight changes**: Governance proposals are validated when created but executed later, so a `ChangeOwnerWeight` proposal re-checks *at execution time* that the resulting total weight would not leave any still-active (Pending/Ready) proposal un-quorumable — if any active proposal's snapshotted `quorum_weight` would exceed the new total weight, execution is rejected with `WouldBreakQuorum`. Owner-removal is guarded at creation time (a removal that would drop remaining weight below the threshold is rejected up front by `create_remove_owner_proposal` with `WouldBreakQuorum`), and threshold changes are validated against total weight at creation. Because those removal and threshold checks evaluate state at creation rather than the combined effect of several proposals executing together, operators should still sequence interacting governance proposals deliberately — approving and executing one before creating the next — so two concurrent removals (or a removal plus a threshold change) cannot combine to push the multisig below a reachable quorum.
 - **Role Separation & Non-Owner Execution Invariants**: Operational roles restrict who can propose, approve, or execute. The `execute` function requires `Role::ExecuteProposal` but cannot alter stored proposal parameters, requires un-revoked quorum approval evaluated strictly by `derive_status`, respects guardian freezes, and enforces timelocks and deadlines — ensuring non-owner executors act strictly as permissionless execution cranks without custody or discretionary authority.
 
+### Delegation Effective-Weight Invariants
+
+Delegation layers temporary or indefinite voting weight transfers between owners. The contract guarantees the following mathematical and temporal invariants across all operations:
+
+1. **Conservation of Total Weight (Sum Invariant)**:
+   For any owner set and any sequence of active, expired, or revoked delegations:
+   $$\sum_{o \in \text{Owners}} \text{effective\_weight}(o) = \text{total\_weight}$$
+   Delegation transfers voting power strictly between valid owners without minting or destroying total weight.
+2. **Bounded Effective Weight**:
+   For every owner $o \in \text{Owners}$:
+   $$0 \le \text{effective\_weight}(o) \le \text{total\_weight}$$
+   An owner's effective weight can never underflow or exceed the total multisig voting weight.
+3. **Temporal Invariant (Expiry)**:
+   Delegations configured with an expiration timestamp $T_{\text{expiry}}$ automatically lapse once the ledger timestamp satisfies $T_{\text{ledger}} \ge T_{\text{expiry}}$. Expired delegations contribute zero weight to the delegate and deduct zero weight from the delegator.
+4. **Revocation Invariant**:
+   Undelegating or revoking a delegation immediately restores the delegator's effective weight and removes the delegate's incoming weight contribution.
+5. **Clean Removal Invariant**:
+   Executing an owner removal via governance (`RemoveOwner`) deletes all outgoing delegations from the removed owner and all incoming delegations to the removed owner from remaining owners. This restores the remaining delegators' raw weights and prevents dangling delegations from persisting or reviving upon re-addition.
+
 ### Weighted Governance Threat Model Addendum
 
 The threat model above predates weighted voting, where every owner's approval counted as exactly one vote. Weighted governance introduces a new class of risk: voting power concentrating in a single owner, or a colluding group of owners, until the multisig stops functioning as a multisig in practice even though it still looks like one on paper.
