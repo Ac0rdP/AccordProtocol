@@ -128,7 +128,10 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       if (amount <= 0n) throw new Error("Transfer amount must be positive");
 
       return withTransaction(async (client) => {
-        const duplicate = await client.query("SELECT 1 FROM ledger_entries WHERE event_id = $1", [entry.eventId]);
+        const duplicate = await client.query(
+          "SELECT 1 FROM ledger_entries WHERE event_id = $1 OR dedupe_key = $2",
+          [entry.eventId, entry.dedupeKey ?? null]
+        );
         if (duplicate.rowCount > 0) return false;
 
         const current = await client.query("SELECT balance FROM token_balances WHERE token = $1", [entry.token]);
@@ -138,8 +141,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         await client.query(
           `INSERT INTO ledger_entries (
              event_id, token, token_address, direction, amount, balance, ledger,
-             transaction_hash, occurred_at, from_address, to_address
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+             transaction_hash, occurred_at, from_address, to_address, dedupe_key
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
             entry.eventId,
             entry.token,
@@ -152,6 +155,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
             entry.occurredAt,
             entry.from,
             entry.to,
+            entry.dedupeKey ?? null,
           ]
         );
         await client.query(
@@ -198,8 +202,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
 
     async recordAccordEvent(entry) {
       const { rowCount } = await pool.query(
-        `INSERT INTO accord_events (event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (event_id) DO NOTHING`,
+        `INSERT INTO accord_events (event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version, dedupe_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
         [
           entry.eventId,
           entry.topic,
@@ -208,6 +212,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
           entry.transactionHash ?? null,
           entry.occurredAt,
           entry.schemaVersion ?? null,
+          entry.dedupeKey ?? null,
         ]
       );
       return rowCount > 0;
