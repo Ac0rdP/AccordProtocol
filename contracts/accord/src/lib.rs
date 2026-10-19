@@ -113,6 +113,22 @@ pub struct CreateRecurringParams {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub enum EscrowReleaseMode {
+    OwnerQuorumUntil(u64),
+    Deadline(u64),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EscrowParams {
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub release_mode: EscrowReleaseMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub enum ProposalKind {
     /// Transfer(transfers)
     Transfer(Vec<Transfer>),
@@ -145,6 +161,14 @@ pub enum ProposalKind {
     GrantRole(Address, Symbol),
     /// RevokeRole(target, role)
     RevokeRole(Address, Symbol),
+    /// Governance-managed approved-asset registry.
+    SetAssetRegistryEnabled(bool),
+    AddApprovedToken(Address),
+    RemoveApprovedToken(Address),
+    /// Rotate the emergency guardian through normal proposal quorum.
+    TransferGuardian(Address),
+    /// Create escrow whose balance is reserved until its release condition.
+    CreateEscrow(EscrowParams),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -214,9 +238,12 @@ pub struct SpendingLimitEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct SpendingWindowEntry {
+pub struct EscrowRecord {
+    pub id: u64,
+    pub recipient: Address,
     pub token: Address,
-    pub window_secs: u64,
+    pub amount: i128,
+    pub release_mode: EscrowReleaseMode,
 }
 
 /// An owner's delegation of (part of) their voting weight to another owner.
@@ -319,6 +346,46 @@ pub struct GuardianSetEvent {
     pub guardian: Address,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ApprovedTokenChangedEvent {
+    pub token: Address,
+    pub approved: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetRegistryEnabledEvent {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EscrowCreatedEvent {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub release_mode: EscrowReleaseMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EscrowReleasedEvent {
+    pub id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct EscrowRefundedEvent {
+    pub id: u64,
+    pub token: Address,
+    pub amount: i128,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -606,10 +673,11 @@ pub enum ContractError {
     RoleNotGranted = 54,
     /// Thrown when a specified role is not valid for the current context.
     InvalidRole = 55,
-    /// Thrown when a deprecated entrypoint is called. The caller must use the
-    /// documented canonical replacement instead (see the entrypoint gating
-    /// matrix and the function's own documentation).
-    DeprecatedEntrypoint = 56,
+    AssetNotApproved = 56,
+    AssetRegistryState = 57,
+    EscrowNotFound = 58,
+    EscrowConditionNotMet = 59,
+    EscrowFundsUnavailable = 60,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -771,6 +839,26 @@ fn delegation_key(delegator: &Address) -> (Symbol, Address) {
     (symbol_short!("DELEG"), delegator.clone())
 }
 
+fn asset_registry_enabled_key() -> Symbol {
+    symbol_short!("ASTEN")
+}
+
+fn approved_token_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("ATOKEN"), token.clone())
+}
+
+fn escrow_next_id_key() -> Symbol {
+    symbol_short!("ESCNEXT")
+}
+
+fn escrow_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("ESCROW"), id)
+}
+
+fn escrow_reserved_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("ERES"), token.clone())
+}
+
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
     a.checked_add(b).ok_or(ContractError::ArithmeticError)
 }
@@ -806,6 +894,11 @@ const PERSISTENT_BUMP: u32 = 518_400;
 // low while ensuring no entry expires mid-workflow.
 const PERSISTENT_THRESHOLD: u32 = 17_280;
 
+// Escrows can remain live for the 90-day proposal horizon. Keep their record
+// and aggregate reservation alive beyond that horizon even if untouched.
+const ESCROW_PERSISTENT_BUMP: u32 = 1_814_400;
+const ESCROW_PERSISTENT_THRESHOLD: u32 = 259_200;
+
 fn bump_instance(env: &Env) {
     env.storage()
         .instance()
@@ -816,6 +909,18 @@ fn bump_persistent<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
     env.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_THRESHOLD, PERSISTENT_BUMP);
+}
+
+fn bump_escrow_persistent<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
+    env.storage().persistent().extend_ttl(
+        key,
+        ESCROW_PERSISTENT_THRESHOLD,
+        ESCROW_PERSISTENT_BUMP,
+    );
+    env.storage().instance().extend_ttl(
+        ESCROW_PERSISTENT_THRESHOLD,
+        ESCROW_PERSISTENT_BUMP,
+    );
 }
 
 // ─── Validation Constants ────────────────────────────────────────────────────
@@ -1322,6 +1427,61 @@ fn write_proposal(env: &Env, proposal: &Proposal) {
     bump_persistent(env, &key);
 }
 
+fn read_escrow(env: &Env, id: u64) -> Result<EscrowRecord, ContractError> {
+    let key = escrow_key(id);
+    let escrow = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ContractError::EscrowNotFound)?;
+    bump_escrow_persistent(env, &key);
+    Ok(escrow)
+}
+
+fn write_escrow(env: &Env, escrow: &EscrowRecord) {
+    let key = escrow_key(escrow.id);
+    env.storage().persistent().set(&key, escrow);
+    bump_escrow_persistent(env, &key);
+}
+
+fn read_reserved_balance(env: &Env, token: &Address) -> i128 {
+    let key = escrow_reserved_key(token);
+    let reserved = env.storage().persistent().get(&key).unwrap_or(0_i128);
+    if reserved > 0 {
+        bump_escrow_persistent(env, &key);
+    }
+    reserved
+}
+
+fn write_reserved_balance(env: &Env, token: &Address, amount: i128) {
+    let key = escrow_reserved_key(token);
+    if amount == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &amount);
+        bump_escrow_persistent(env, &key);
+    }
+}
+
+fn available_balance(env: &Env, token: &Address) -> Result<i128, ContractError> {
+    token::Client::new(env, token)
+        .balance(&env.current_contract_address())
+        .checked_sub(read_reserved_balance(env, token))
+        .ok_or(ContractError::ArithmeticError)
+}
+
+fn read_next_escrow_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&escrow_next_id_key())
+        .unwrap_or(1_u64)
+}
+
+fn write_next_escrow_id(env: &Env, id: u64) {
+    env.storage().instance().set(&escrow_next_id_key(), &id);
+    bump_instance(env);
+}
+
 /// Returns the effective weight that was counted for this owner's approval of
 /// `proposal_id`, or 0 if they have not approved (or have since revoked). The
 /// exact weight is stored — rather than recomputed from current delegation
@@ -1661,7 +1821,33 @@ fn derive_status(env: &Env, proposal: &Proposal) -> ProposalStatus {
     }
 }
 
-fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+fn asset_registry_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&asset_registry_enabled_key())
+        .unwrap_or(false)
+}
+
+fn token_is_approved(env: &Env, token_address: &Address) -> bool {
+    let key = approved_token_key(token_address);
+    let approved = env.storage().persistent().get(&key).unwrap_or(false);
+    if approved {
+        bump_persistent(env, &key);
+    }
+    approved
+}
+
+fn write_token_approved(env: &Env, token_address: &Address, approved: bool) {
+    let key = approved_token_key(token_address);
+    if approved {
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
     if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
@@ -1671,17 +1857,63 @@ fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractErro
     Ok(())
 }
 
-fn resolve_asset(env: &Env, asset: &AssetReference) -> Result<Address, ContractError> {
-    let token = match asset {
-        AssetReference::Address(address) => address.clone(),
-        AssetReference::Classic(identifier) => env
-            .storage()
-            .instance()
-            .get(&classic_asset_key(identifier))
-            .ok_or(ContractError::InvalidToken)?,
+fn validate_asset_registry(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    if asset_registry_enabled(env) && !token_is_approved(env, token_address) {
+        return Err(ContractError::AssetNotApproved);
+    }
+    Ok(())
+}
+
+fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    validate_token_interface(env, token_address)?;
+    validate_asset_registry(env, token_address)
+}
+
+fn create_governance_proposal(
+    env: &Env,
+    proposer: Address,
+    kind: ProposalKind,
+    description: String,
+    deadline: u64,
+) -> Result<u64, ContractError> {
+    validate_description(&description)?;
+    validate_deadline(env, deadline)?;
+
+    let threshold = read_threshold(env)?;
+    let id = read_next_id(env);
+    let proposal = Proposal {
+        id,
+        proposer: proposer.clone(),
+        description,
+        deadline,
+        approvals: 0,
+        approval_weight: 0,
+        status: ProposalStatus::Pending,
+        kind,
+        ready_at: 0,
+        quorum_weight: threshold,
+        category: ProposalCategory::Other,
     };
-    validate_token(env, &token)?;
-    Ok(token)
+    write_proposal(env, &proposal);
+    register_active_proposal(env, id)?;
+    write_next_id(
+        env,
+        id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+    );
+
+    env.events().publish(
+        (symbol_short!("created"),),
+        ProposalCreatedEvent {
+            id,
+            proposer,
+            threshold,
+            category: ProposalCategory::Other,
+            transfers: Vec::new(env),
+            quorum_weight: threshold,
+            total_weight_at_creation: read_total_weight(env),
+        },
+    );
+    Ok(id)
 }
 
 fn validate_recurring_payment(
@@ -1825,15 +2057,6 @@ pub struct AccordContract;
 // proposal lifecycle operations, while governance changes remain owner-weight
 // gated. Role-gated entrypoints below must enforce the role listed here.
 //
-// Check order: on every entrypoint that carries both gates, the role gate runs
-// before the frozen gate, so a call that is both missing the role and blocked by
-// a freeze fails with `MissingRole` rather than `ContractFrozen`. The frozen gate
-// covers the create and execute paths only: `approve`, `revoke` and
-// `cancel_expired` are role-gated but stay callable while frozen, so a freeze
-// cannot strand in-flight approvals or block the expiry sweep. The owner-weight
-// governance entrypoints below carry no frozen gate either, since `unfreeze`
-// must remain callable while frozen.
-//
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
@@ -1843,29 +2066,30 @@ pub struct AccordContract;
 //   create_recurring_proposal, create_cancel_recurring_proposal,
 //   create_pause_recurring_proposal, create_resume_recurring_proposal,
 //   create_modify_recurring_proposal, create_grant_role_proposal,
-//   create_revoke_role_proposal.
-// Approver + owner membership/weight: approve, revoke.
+//   create_revoke_role_proposal, create_set_asset_registry_enabled_proposal,
+//   create_add_approved_token_proposal, create_remove_approved_token_proposal,
+//   create_transfer_guardian_proposal, create_escrow_proposal.
+// Approver + owner membership/weight: approve, approve_sponsored, revoke.
 // Executor role: execute, cancel_expired (owner membership is not required).
-// Owner membership: (none — the legacy direct schedule cancellation
-//   `cancel_recurring_schedule` is deprecated; recurring schedules are cancelled
-//   only through the `create_cancel_recurring_proposal` governance path).
-// Deprecated (always returns `DeprecatedEntrypoint`): cancel_recurring_schedule —
-//   retained for bindings compatibility only; use create_cancel_recurring_proposal.
+// Owner membership: cancel_recurring_schedule.
 // Permissionless/authenticated caller: disburse_recurring_schedule (permissionless
-//   crank); disburse_recurring (any authenticated caller).
+//   crank); disburse_recurring (any authenticated caller); release_escrow_by_deadline
+//   and refund_escrow (any authenticated caller).
 // Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
-//   set_guardian, unfreeze, upgrade. Guardian-only: freeze.
+//   set_guardian, release_escrow, unfreeze, upgrade. TransferGuardian proposals
+//   rotate the guardian through the standard proposal quorum. Guardian-only: freeze.
 // Read-only, no authorization: get_spent_tracker, get_recurring_payment,
 //   get_next_disbursement_time, get_recurring_payments_paged,
-//   get_active_recurring_count, get_approvers, get_version, get_storage_version,
-//   get_total_weight, is_governance_migrated, get_role_version, get_roles,
-//   has_role, get_role_members, get_owner_weight, get_owner_weights,
+//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   is_governance_migrated, get_role_version, get_roles, has_role,
+//   get_role_members, get_owner_weight, get_owner_weights,
 //   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
 //   get_effective_weight, get_proposal, get_proposals_paged, get_owners,
 //   get_spending_limit, get_owner_spending_limits,
 //   get_remaining_spending_limit, get_threshold, get_required_quorum_weight,
 //   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
-//   get_proposal_approval_progress, is_frozen, get_guardian.
+//   get_proposal_approval_progress, is_frozen, get_guardian,
+//   get_asset_registry_enabled, is_token_approved, get_escrow.
 #[contractimpl]
 impl AccordContract {
     /// One-shot initializer. Sets the list of owners with their individual
@@ -2467,11 +2691,12 @@ impl AccordContract {
             .checked_add(1)
             .ok_or(ContractError::ArithmeticError)?;
 
+        validate_token(&env, &schedule.token)?;
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
-        match token_client.try_balance(&treasury) {
-            Ok(Ok(balance)) if balance >= actual_amount => {}
-            _ => return Err(ContractError::TransferFailed),
+        let balance = available_balance(&env, &schedule.token)?;
+        if balance < disbursement_amount {
+            return Err(ContractError::TransferFailed);
         }
         if !transfer_succeeded(token_client.try_transfer(&treasury, &schedule.recipient, &actual_amount))
         {
@@ -2627,6 +2852,7 @@ impl AccordContract {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
+        validate_asset_registry(&env, &token)?;
 
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
@@ -2975,6 +3201,131 @@ impl AccordContract {
         Ok(id)
     }
 
+    /// Creates a governance proposal to enable or disable the approved-token registry.
+    pub fn create_set_asset_registry_enabled_proposal(
+        env: Env,
+        proposer: Address,
+        enabled: bool,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::SetAssetRegistryEnabled(enabled),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to allow a token when the registry is enabled.
+    pub fn create_add_approved_token_proposal(
+        env: Env,
+        proposer: Address,
+        token: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        validate_token_interface(&env, &token)?;
+        if token_is_approved(&env, &token) {
+            return Err(ContractError::AssetRegistryState);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddApprovedToken(token),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to remove a token from the approved-token registry.
+    pub fn create_remove_approved_token_proposal(
+        env: Env,
+        proposer: Address,
+        token: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        if !token_is_approved(&env, &token) {
+            return Err(ContractError::AssetRegistryState);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveApprovedToken(token),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a normal-quorum proposal to rotate the emergency guardian.
+    pub fn create_transfer_guardian_proposal(
+        env: Env,
+        proposer: Address,
+        new_guardian: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::TransferGuardian(new_guardian),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to reserve treasury tokens until the selected release condition.
+    pub fn create_escrow_proposal(
+        env: Env,
+        proposer: Address,
+        params: EscrowParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.recipient == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+        validate_token(&env, &params.token)?;
+        let now = env.ledger().timestamp();
+        let release_at = match &params.release_mode {
+            EscrowReleaseMode::OwnerQuorumUntil(release_at)
+            | EscrowReleaseMode::Deadline(release_at) => *release_at,
+        };
+        if release_at <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if release_at - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CreateEscrow(params),
+            description,
+            deadline,
+        )
+    }
+
     /// Approves a proposal. The approver must be an owner and must not have already approved.
     ///
     /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
@@ -3034,6 +3385,17 @@ impl AccordContract {
         );
 
         Ok(())
+    }
+
+    /// Relayer entrypoint for an owner-authorized approval. The transaction
+    /// sponsor pays the network fee; `approver` must still authorize this exact
+    /// call, and the approval remains bound to `proposal_id`.
+    pub fn approve_sponsored(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::approve(env, approver, proposal_id)
     }
 
     /// Revokes the caller's approval from a proposal that has not yet been executed.
@@ -3124,7 +3486,22 @@ impl AccordContract {
         // Dispatch on proposal kind.
         match &proposal.kind {
             ProposalKind::Transfer(transfers) => {
-                require_not_recovery(&env)?;
+                for transfer in transfers.iter() {
+                    validate_token(&env, &transfer.token)?;
+                    if available_balance(&env, &transfer.token)? < transfer.amount {
+                        return Err(ContractError::TransferFailed);
+                    }
+                    if token::Client::new(&env, &transfer.token)
+                        .try_transfer(
+                            &env.current_contract_address(),
+                            &transfer.to,
+                            &transfer.amount,
+                        )
+                        .is_err()
+                    {
+                        return Err(ContractError::TransferFailed);
+                    }
+                }
                 // Track cumulative spending per token for the proposer.
                 let proposer = proposal.proposer.clone();
                 let mut tracked_tokens: Vec<Address> = Vec::new(&env);
@@ -3387,6 +3764,7 @@ impl AccordContract {
                 );
             }
             ProposalKind::SetSpendingLimit(owner, token, limit) => {
+                validate_asset_registry(&env, token)?;
                 let prev_limit = read_spending_limit(&env, owner, token);
                 write_spending_limit(&env, owner, token, *limit);
                 upsert_owner_spending_limit(&env, owner, token, *limit);
@@ -3463,6 +3841,7 @@ impl AccordContract {
                 );
             }
             ProposalKind::CreateRecurringPayment(params) => {
+                validate_token(&env, &params.token)?;
                 let active = read_active_recurring_count(&env);
                 if active >= MAX_ACTIVE_RECURRING {
                     return Err(ContractError::TooManyActiveRecurring);
@@ -3681,6 +4060,102 @@ impl AccordContract {
                         role: role.clone(),
                         before,
                         after,
+                    },
+                );
+            }
+            ProposalKind::SetAssetRegistryEnabled(enabled) => {
+                env.storage()
+                    .instance()
+                    .set(&asset_registry_enabled_key(), enabled);
+                bump_instance(&env);
+                env.events().publish(
+                    (symbol_short!("ast_en"),),
+                    AssetRegistryEnabledEvent { enabled: *enabled },
+                );
+            }
+            ProposalKind::AddApprovedToken(token_address) => {
+                validate_token_interface(&env, token_address)?;
+                if token_is_approved(&env, token_address) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_token_approved(&env, token_address, true);
+                env.events().publish(
+                    (symbol_short!("ast_tok"),),
+                    ApprovedTokenChangedEvent {
+                        token: token_address.clone(),
+                        approved: true,
+                    },
+                );
+            }
+            ProposalKind::RemoveApprovedToken(token_address) => {
+                if !token_is_approved(&env, token_address) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_token_approved(&env, token_address, false);
+                env.events().publish(
+                    (symbol_short!("ast_tok"),),
+                    ApprovedTokenChangedEvent {
+                        token: token_address.clone(),
+                        approved: false,
+                    },
+                );
+            }
+            ProposalKind::TransferGuardian(new_guardian) => {
+                write_guardian(&env, new_guardian);
+                env.events().publish(
+                    (symbol_short!("guard_set"),),
+                    GuardianSetEvent {
+                        guardian: new_guardian.clone(),
+                    },
+                );
+            }
+            ProposalKind::CreateEscrow(params) => {
+                validate_token(&env, &params.token)?;
+                if params.recipient == env.current_contract_address() {
+                    return Err(ContractError::InvalidRecipient);
+                }
+                let release_at = match &params.release_mode {
+                    EscrowReleaseMode::OwnerQuorumUntil(timestamp)
+                    | EscrowReleaseMode::Deadline(timestamp) => *timestamp,
+                };
+                if release_at <= env.ledger().timestamp() {
+                    return Err(ContractError::InvalidDeadline);
+                }
+                if params.amount < MIN_AMOUNT {
+                    return Err(ContractError::InvalidAmount);
+                }
+                let reserved = read_reserved_balance(&env, &params.token);
+                let new_reserved = reserved
+                    .checked_add(params.amount)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if available_balance(&env, &params.token)? < params.amount {
+                    return Err(ContractError::EscrowFundsUnavailable);
+                }
+
+                let id = read_next_escrow_id(&env);
+                write_next_escrow_id(
+                    &env,
+                    id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+                );
+                write_escrow(
+                    &env,
+                    &EscrowRecord {
+                        id,
+                        recipient: params.recipient.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        release_mode: params.release_mode.clone(),
+                    },
+                );
+                write_reserved_balance(&env, &params.token, new_reserved);
+                env.events().publish(
+                    (symbol_short!("esc_crt"),),
+                    EscrowCreatedEvent {
+                        id,
+                        recipient: params.recipient.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        release_mode: params.release_mode.clone(),
                     },
                 );
             }
@@ -4831,6 +5306,134 @@ impl AccordContract {
     /// Returns the current guardian address, or `None` if no guardian is set.
     pub fn get_guardian(env: Env) -> Option<Address> {
         read_guardian(&env)
+    }
+
+    /// Returns whether the approved-token registry is enforcing proposal tokens.
+    pub fn get_asset_registry_enabled(env: Env) -> bool {
+        asset_registry_enabled(&env)
+    }
+
+    /// Returns whether `token` is currently in the approved-token registry.
+    pub fn is_token_approved(env: Env, token: Address) -> bool {
+        token_is_approved(&env, &token)
+    }
+
+    /// Returns an active escrow record.
+    pub fn get_escrow(env: Env, escrow_id: u64) -> Result<EscrowRecord, ContractError> {
+        read_escrow(&env, escrow_id)
+    }
+
+    /// Releases a quorum-conditioned escrow after distinct owners reach quorum.
+    pub fn release_escrow(
+        env: Env,
+        approvers: Vec<Address>,
+        escrow_id: u64,
+    ) -> Result<(), ContractError> {
+        require_not_frozen(&env)?;
+        require_weighted_approvers(&env, &approvers)?;
+        let escrow = read_escrow(&env, escrow_id)?;
+        match &escrow.release_mode {
+            EscrowReleaseMode::OwnerQuorumUntil(deadline)
+                if env.ledger().timestamp() <= *deadline => {}
+            _ => return Err(ContractError::EscrowConditionNotMet),
+        }
+        validate_token_interface(&env, &escrow.token)?;
+        if token::Client::new(&env, &escrow.token)
+            .try_transfer(
+                &env.current_contract_address(),
+                &escrow.recipient,
+                &escrow.amount,
+            )
+            .is_err()
+        {
+            return Err(ContractError::TransferFailed);
+        }
+        let remaining = read_reserved_balance(&env, &escrow.token)
+            .checked_sub(escrow.amount)
+            .ok_or(ContractError::ArithmeticError)?;
+        write_reserved_balance(&env, &escrow.token, remaining);
+        env.storage().persistent().remove(&escrow_key(escrow_id));
+        env.events().publish(
+            (symbol_short!("esc_rel"),),
+            EscrowReleasedEvent {
+                id: escrow_id,
+                recipient: escrow.recipient,
+                token: escrow.token,
+                amount: escrow.amount,
+            },
+        );
+        Ok(())
+    }
+
+    /// Releases a deadline-conditioned escrow once its configured time is reached.
+    pub fn release_escrow_by_deadline(
+        env: Env,
+        caller: Address,
+        escrow_id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        require_not_frozen(&env)?;
+        let escrow = read_escrow(&env, escrow_id)?;
+        match &escrow.release_mode {
+            EscrowReleaseMode::Deadline(deadline)
+                if env.ledger().timestamp() >= *deadline => {}
+            _ => return Err(ContractError::EscrowConditionNotMet),
+        }
+        validate_token_interface(&env, &escrow.token)?;
+        if token::Client::new(&env, &escrow.token)
+            .try_transfer(
+                &env.current_contract_address(),
+                &escrow.recipient,
+                &escrow.amount,
+            )
+            .is_err()
+        {
+            return Err(ContractError::TransferFailed);
+        }
+        let remaining = read_reserved_balance(&env, &escrow.token)
+            .checked_sub(escrow.amount)
+            .ok_or(ContractError::ArithmeticError)?;
+        write_reserved_balance(&env, &escrow.token, remaining);
+        env.storage().persistent().remove(&escrow_key(escrow_id));
+        env.events().publish(
+            (symbol_short!("esc_rel"),),
+            EscrowReleasedEvent {
+                id: escrow_id,
+                recipient: escrow.recipient,
+                token: escrow.token,
+                amount: escrow.amount,
+            },
+        );
+        Ok(())
+    }
+
+    /// Unlocks the treasury reservation if a quorum-conditioned escrow expires unused.
+    pub fn refund_escrow(
+        env: Env,
+        caller: Address,
+        escrow_id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        let escrow = read_escrow(&env, escrow_id)?;
+        match &escrow.release_mode {
+            EscrowReleaseMode::OwnerQuorumUntil(deadline)
+                if env.ledger().timestamp() > *deadline => {}
+            _ => return Err(ContractError::EscrowConditionNotMet),
+        }
+        let remaining = read_reserved_balance(&env, &escrow.token)
+            .checked_sub(escrow.amount)
+            .ok_or(ContractError::ArithmeticError)?;
+        write_reserved_balance(&env, &escrow.token, remaining);
+        env.storage().persistent().remove(&escrow_key(escrow_id));
+        env.events().publish(
+            (symbol_short!("esc_ref"),),
+            EscrowRefundedEvent {
+                id: escrow_id,
+                token: escrow.token,
+                amount: escrow.amount,
+            },
+        );
+        Ok(())
     }
 
     // ─── Upgrade ─────────────────────────────────────────────────────────────

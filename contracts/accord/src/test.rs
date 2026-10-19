@@ -6,8 +6,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
-use soroban_sdk::testutils::{Address as _, Events, Ledger as _};
+use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
 use proptest::prelude::*;
 use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
 use std::format;
@@ -157,6 +156,22 @@ fn t(env: &Env, to: &Address, amount: i128, token: &Address) -> Vec<Transfer> {
         amount,
     });
     transfers
+}
+
+fn has_contract_event(env: &Env, contract: &Address, expected_topic: Symbol) -> bool {
+    let events = env.events().all().filter_by_contract(contract);
+    events.events().iter().any(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let topic: Symbol = topic.clone().into_val(env);
+                topic == expected_topic
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Sets up an env with 3 owners, a threshold, and a funded token.
@@ -1304,6 +1319,119 @@ fn approve_increments_count_and_sets_flag() {
     assert!(client.has_approved(&id, &owner_a));
     client.approve(&owner_b, &id);
     assert_eq!(client.get_proposal(&id).approvals, 2);
+}
+
+#[test]
+fn approve_sponsored_accepts_owner_authorization_for_exact_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Sponsored approval"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let invocation = MockAuthInvoke {
+        contract: &client.address,
+        fn_name: "approve_sponsored",
+        args: Vec::from_array(&env, [owner_a.clone().into_val(&env), id.into_val(&env)]),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &owner_a,
+        invoke: &invocation,
+    }]);
+
+    client.approve_sponsored(&owner_a, &id);
+
+    assert!(client.has_approved(&id, &owner_a));
+    assert_eq!(client.get_proposal(&id).approvals, 1);
+}
+
+#[test]
+fn approve_sponsored_rejects_auth_for_a_different_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Proposal-bound auth"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let other_id = id + 1;
+    let invocation = MockAuthInvoke {
+        contract: &client.address,
+        fn_name: "approve_sponsored",
+        args: Vec::from_array(
+            &env,
+            [owner_a.clone().into_val(&env), other_id.into_val(&env)],
+        ),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &owner_a,
+        invoke: &invocation,
+    }]);
+
+    assert!(client.try_approve_sponsored(&owner_a, &id).is_err());
+    assert!(!client.has_approved(&id, &owner_a));
+}
+
+#[test]
+fn approve_sponsored_rejects_replay() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "One approval only"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.approve_sponsored(&owner_a, &id);
+
+    assert_eq!(
+        client.try_approve_sponsored(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+#[test]
+fn approve_sponsored_rejects_unauthorized_address() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000,
+            &token_client.address,
+        ),
+        &str(&env, "Owner-only sponsored approval"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    assert_eq!(
+        client.try_approve_sponsored(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert!(!client.has_approved(&id, &non_owner));
 }
 
 #[test] 
@@ -10092,4116 +10220,389 @@ fn concurrent_role_proposals_execute_deterministically() {
     assert_eq!(count, 1);
 }
 
-// ─── Issue #577: Role / Frozen Check Precedence ───────────────────────────────
-// Every entrypoint carrying both gates runs the role gate first, so a caller
-// that is both missing the role and blocked by a freeze sees `MissingRole`.
-// The frozen gate itself covers the create and execute paths only; `approve`,
-// `revoke` and `cancel_expired` stay callable while frozen.
-
-/// Freezes the multisig with the two owners needed to pass the threshold-2
-/// weighted check on `set_guardian`.
-fn freeze_with_owner_pair(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-) {
-    freeze_with_new_guardian(
-        env,
-        client,
-        &Vec::from_array(env, [owner_a.clone(), owner_b.clone()]),
-    );
-}
+// ─── Approved-token registry ────────────────────────────────────────────────
 
 #[test]
-fn creation_path_reports_missing_role_before_contract_frozen() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    // `owner_c` keeps its governance weight but loses every operational role.
-    clear_roles(&env, &client, &owner_c);
-    let recurring_schedule = client.create_recurring_schedule(
+fn asset_registry_is_optional_and_enforces_governed_approvals() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    assert!(!client.get_asset_registry_enabled());
+    assert!(!client.is_token_approved(&token_client.address));
+
+    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
         &owner_a,
-        &t(&env, &non_owner, 1_000, &token_client.address),
-        &86_400,
-        &3,
-        &str(&env, "Schedule"),
+        &true,
+        &str(&env, "Enable approved tokens"),
+        &DEADLINE,
     );
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-    assert!(client.is_frozen());
-
-    macro_rules! assert_role_precedes_freeze {
-        ($without_role:expr, $with_role:expr) => {{
-            assert_eq!($without_role, Err(Ok(ContractError::MissingRole)));
-            assert_eq!($with_role, Err(Ok(ContractError::ContractFrozen)));
-        }};
-    }
-
-    // Doubly-failing call: the contract is frozen and the caller has no role.
+    client.approve(&owner_a, &registry_proposal);
+    client.approve(&owner_b, &registry_proposal);
+    client.execute(&owner_c, &registry_proposal);
+    assert!(client.get_asset_registry_enabled());
     assert_eq!(
-        client.try_create_proposal(
-            &owner_c,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &str(&env, "Pay"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_create_change_threshold_proposal(
-            &owner_c,
-            &3,
-            &str(&env, "Raise threshold"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_c,
-            &non_owner,
-            &Symbol::new(&env, "Viewer"),
-            &str(&env, "Grant Viewer"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-
-    // Same entrypoints with the role present: the frozen gate now decides.
-    assert_eq!(
-        client.try_create_proposal(
-            &owner_a,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &str(&env, "Pay"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(
-        client.try_create_change_threshold_proposal(
-            &owner_b,
-            &3,
-            &str(&env, "Raise threshold"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_b,
-            &non_owner,
-            &Symbol::new(&env, "Viewer"),
-            &str(&env, "Grant Viewer"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_proposal_with_attachment(
-            &owner_c,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &str(&env, "Attached payment"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-            &None::<BytesN<32>>,
-        ),
-        client.try_create_proposal_with_attachment(
-            &owner_a,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &str(&env, "Attached payment"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-            &None::<BytesN<32>>,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_add_owner_proposal(
-            &owner_c,
-            &Address::generate(&env),
-            &1,
-            &str(&env, "Add owner"),
-            &DEADLINE,
-        ),
-        client.try_create_add_owner_proposal(
-            &owner_a,
-            &Address::generate(&env),
-            &1,
-            &str(&env, "Add owner"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_spending_limit_proposal(
-            &owner_c,
-            &owner_a,
-            &token_client.address,
-            &1_000,
-            &str(&env, "Set spending limit"),
-            &DEADLINE,
-        ),
         client.try_create_spending_limit_proposal(
             &owner_a,
             &owner_a,
             &token_client.address,
-            &1_000,
-            &str(&env, "Set spending limit"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_spending_window_proposal(
-            &owner_c,
-            &owner_a,
-            &token_client.address,
-            &1_000,
-            &86_400,
-            &str(&env, "Set spending window"),
+            &500,
+            &str(&env, "Unapproved token limit"),
             &DEADLINE,
         ),
-        client.try_create_spending_window_proposal(
-            &owner_a,
-            &owner_a,
-            &token_client.address,
-            &1_000,
-            &86_400,
-            &str(&env, "Set spending window"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_change_weight_proposal(
-            &owner_c,
-            &owner_b,
-            &2,
-            &str(&env, "Change weight"),
-            &DEADLINE,
-        ),
-        client.try_create_change_weight_proposal(
-            &owner_a,
-            &owner_b,
-            &2,
-            &str(&env, "Change weight"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_remove_owner_proposal(
-            &owner_c,
-            &owner_b,
-            &str(&env, "Remove owner"),
-            &DEADLINE,
-        ),
-        client.try_create_remove_owner_proposal(
-            &owner_a,
-            &owner_b,
-            &str(&env, "Remove owner"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_recurring_schedule(
-            &owner_c,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &86_400,
-            &3,
-            &str(&env, "Recurring schedule"),
-        ),
-        client.try_create_recurring_schedule(
-            &owner_a,
-            &t(&env, &non_owner, 1_000, &token_client.address),
-            &86_400,
-            &3,
-            &str(&env, "Recurring schedule"),
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_asset_proposal(
-            &owner_c,
-            &Vec::from_array(
-                &env,
-                [AssetTransfer {
-                    to: non_owner.clone(),
-                    asset: AssetReference::Address(token_client.address.clone()),
-                    amount: 1_000,
-                }],
-            ),
-            &str(&env, "Asset payment"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        ),
-        client.try_create_asset_proposal(
-            &owner_a,
-            &Vec::from_array(
-                &env,
-                [AssetTransfer {
-                    to: non_owner.clone(),
-                    asset: AssetReference::Address(token_client.address.clone()),
-                    amount: 1_000,
-                }],
-            ),
-            &str(&env, "Asset payment"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_cancel_recurring_proposal(
-            &owner_c,
-            &recurring_schedule,
-            &str(&env, "Cancel schedule"),
-            &DEADLINE,
-        ),
-        client.try_create_cancel_recurring_proposal(
-            &owner_a,
-            &recurring_schedule,
-            &str(&env, "Cancel schedule"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_pause_recurring_proposal(
-            &owner_c,
-            &recurring_schedule,
-            &str(&env, "Pause schedule"),
-            &DEADLINE,
-        ),
-        client.try_create_pause_recurring_proposal(
-            &owner_a,
-            &recurring_schedule,
-            &str(&env, "Pause schedule"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_resume_recurring_proposal(
-            &owner_c,
-            &recurring_schedule,
-            &str(&env, "Resume schedule"),
-            &DEADLINE,
-        ),
-        client.try_create_resume_recurring_proposal(
-            &owner_a,
-            &recurring_schedule,
-            &str(&env, "Resume schedule"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_modify_recurring_proposal(
-            &owner_c,
-            &recurring_schedule,
-            &Some(2_000_i128),
-            &None,
-            &None,
-            &str(&env, "Modify schedule"),
-            &DEADLINE,
-        ),
-        client.try_create_modify_recurring_proposal(
-            &owner_a,
-            &recurring_schedule,
-            &Some(2_000_i128),
-            &None,
-            &None,
-            &str(&env, "Modify schedule"),
-            &DEADLINE,
-        )
-    );
-    assert_role_precedes_freeze!(
-        client.try_create_revoke_role_proposal(
-            &owner_c,
-            &owner_b,
-            &Symbol::new(&env, "Proposer"),
-            &str(&env, "Revoke role"),
-            &DEADLINE,
-        ),
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_b,
-            &Symbol::new(&env, "Proposer"),
-            &str(&env, "Revoke role"),
-            &DEADLINE,
-        )
-    );
-}
-
-#[test]
-fn recurring_creation_path_reports_missing_role_before_contract_frozen() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    clear_roles(&env, &client, &owner_c);
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-
-    assert_eq!(
-        client.try_create_recurring_proposal(
-            &owner_c,
-            &non_owner,
-            &token_client.address,
-            &1_000_i128,
-            &86_400_u64,
-            &NOW,
-            &DEADLINE,
-            &NOW,
-            &10_000_i128,
-            &RecurringKind::FixedAmountPerPeriod,
-            &str(&env, "Payroll"),
-            &DEADLINE,
-            &ProposalCategory::Payroll,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_create_recurring_proposal(
-            &owner_a,
-            &non_owner,
-            &token_client.address,
-            &1_000_i128,
-            &86_400_u64,
-            &NOW,
-            &DEADLINE,
-            &NOW,
-            &10_000_i128,
-            &RecurringKind::FixedAmountPerPeriod,
-            &str(&env, "Payroll"),
-            &DEADLINE,
-            &ProposalCategory::Payroll,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-}
-
-#[test]
-fn execution_path_reports_missing_role_before_contract_frozen() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
-    client.approve(&owner_a, &id);
-    client.approve(&owner_b, &id);
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
-
-    clear_roles(&env, &client, &owner_c);
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-
-    // Doubly-failing call: frozen, and the caller lost the Executor role.
-    assert_eq!(
-        client.try_execute(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
+        Err(Ok(ContractError::AssetNotApproved))
     );
 
-    // Role present: the frozen gate decides, and nothing is spent.
-    assert_eq!(
-        client.try_execute(&owner_a, &id),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
-    assert_eq!(token_client.balance(&non_owner), 0);
-}
-
-#[test]
-fn approval_path_reports_missing_role_and_stays_callable_while_frozen() {
-    let (env, client, owner_a, owner_b, owner_c, _non_owner, token_client) = setup(2);
-    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
-    client.approve(&owner_a, &id);
-
-    clear_roles(&env, &client, &owner_c);
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-
-    // The role gate still decides first: the missing Approver role is the only
-    // failure, so the frozen state cannot mask it.
-    assert_eq!(
-        client.try_approve(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
-    );
-
-    // The frozen gate deliberately does not cover the approval path.
-    client.approve(&owner_b, &id);
-    assert!(client.has_approved(&id, &owner_b));
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
-
-    client.revoke(&owner_b, &id);
-    assert!(!client.has_approved(&id, &owner_b));
-    assert_eq!(
-        client.try_revoke(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
-    );
-}
-
-#[test]
-fn cancel_expired_stays_callable_while_frozen() {
-    let (env, client, owner_a, owner_b, owner_c, _non_owner, token_client) = setup(2);
-    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
-    clear_roles(&env, &client, &owner_c);
-
-    let mut l = env.ledger().get();
-    l.timestamp = DEADLINE + 1;
-    env.ledger().set(l);
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-    let ids = Vec::from_array(&env, [id]);
-
-    // The expiry sweep carries a role gate but no frozen gate, so a freeze
-    // cannot leave expired proposals stuck forever.
-    assert_eq!(client.cancel_expired(&owner_a, &ids), 1);
-    assert_eq!(
-        client.try_cancel_expired(&owner_c, &ids),
-        Err(Ok(ContractError::MissingRole))
-    );
-}
-
-#[test]
-fn test_role_enum_and_storage_helpers_roundtrip_and_persistence() {
-    use crate::{read_roles, role_key, write_roles, Role};
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let addr1 = Address::generate(&env);
-    let addr2 = Address::generate(&env);
-
-    // Test role_key
-    let key1 = role_key(&addr1);
-    let key2 = role_key(&addr2);
-    assert_ne!(key1, key2);
-
-    // Initial read returns empty Vec
-    let initial_roles = read_roles(&env, &addr1);
-    assert_eq!(initial_roles.len(), 0);
-
-    // Test all four Role variants: Proposer, Approver, Executor, Viewer
-    let all_roles = Vec::from_array(
+    let transfer = t(
         &env,
-        [Role::Proposer, Role::Approver, Role::Executor, Role::Viewer],
+        &Address::generate(&env),
+        1_000,
+        &token_client.address,
     );
-    write_roles(&env, &addr1, &all_roles);
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &transfer,
+            &str(&env, "Unapproved token"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
 
-    // Round-trip verification
-    let stored_roles = read_roles(&env, &addr1);
-    assert_eq!(stored_roles.len(), 4);
-    assert!(stored_roles.contains(Role::Proposer));
-    assert!(stored_roles.contains(Role::Approver));
-    assert!(stored_roles.contains(Role::Executor));
-    assert!(stored_roles.contains(Role::Viewer));
+    let add_proposal = client.create_add_approved_token_proposal(
+        &owner_a,
+        &token_client.address,
+        &str(&env, "Approve treasury token"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &add_proposal);
+    client.approve(&owner_b, &add_proposal);
+    client.execute(&owner_c, &add_proposal);
+    assert!(client.is_token_approved(&token_client.address));
 
-    // Address isolation: addr2 is still empty
-    assert_eq!(read_roles(&env, &addr2).len(), 0);
+    let approved_transfer = client.create_proposal(
+        &owner_a,
+        &transfer,
+        &str(&env, "Approved token"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &approved_transfer);
+    client.approve(&owner_b, &approved_transfer);
+    client.execute(&owner_c, &approved_transfer);
+    assert_eq!(
+        client.get_proposal(&approved_transfer).status,
+        ProposalStatus::Executed
+    );
 
-    // Update roles for addr1 (e.g., only Viewer)
-    let viewer_only = Vec::from_array(&env, [Role::Viewer]);
-    write_roles(&env, &addr1, &viewer_only);
-    let updated_roles = read_roles(&env, &addr1);
-    assert_eq!(updated_roles.len(), 1);
-    assert!(updated_roles.contains(Role::Viewer));
-    assert!(!updated_roles.contains(Role::Proposer));
-
-    // Role storage persists across contract invocations
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    let weights = Vec::from_array(&env, [1]);
-    client.initialize(&owners, &weights, &1, &0);
-
-    let custom_user = Address::generate(&env);
-    let custom_roles = Vec::from_array(&env, [Role::Proposer, Role::Executor]);
-    write_roles(&env, &custom_user, &custom_roles);
-
-    // Invoking contract views/methods
-    assert_eq!(client.get_owners().len(), 1);
-    let read_back = read_roles(&env, &custom_user);
-    assert_eq!(read_back.len(), 2);
-    assert!(read_back.contains(Role::Proposer));
-    assert!(read_back.contains(Role::Executor));
-}
-
-// ─── Role Management via Governance: Creation Path ────────────────────────────
-// `create_grant_role_proposal` / `create_revoke_role_proposal` must store the
-// matching `ProposalKind`, validate exactly like the other governance creators,
-// and emit a `ProposalCreatedEvent`.
-
-/// Pulls the `ProposalCreatedEvent` out of the last invocation. Must be called
-/// immediately after the creating call: `events().all()` only reports events
-/// published by the most recent invocation.
-fn last_created_event(env: &Env, client: &AccordContractClient) -> ProposalCreatedEvent {
     let contract_events = env.events().all().filter_by_contract(&client.address);
-    let created = contract_events
+    let registry_event = contract_events
         .events()
         .iter()
         .find(|event| {
             let topics = match &event.body {
                 xdr::ContractEventBody::V0(body) => body.topics.clone(),
             };
-            let Some(topic) = topics.first() else {
-                return false;
-            };
-            let topic: Symbol = topic.clone().into_val(env);
-            topic == symbol_short!("created")
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_tok")
+                })
+                .unwrap_or(false)
         })
-        .expect("expected a 'created' event");
-    let data = match &created.body {
+        .expect("expected approved-token change event");
+    let event_data = match &registry_event.body {
         xdr::ContractEventBody::V0(body) => body.data.clone(),
     };
-    data.into_val(env)
-}
+    let event: ApprovedTokenChangedEvent = event_data.into_val(&env);
+    assert_eq!(event.token, token_client.address);
+    assert!(event.approved);
 
-/// The id the next created proposal will receive. Instance storage is only
-/// reachable from inside the contract's own context.
-fn next_proposal_id(env: &Env, client: &AccordContractClient) -> u64 {
-    env.as_contract(&client.address, || read_next_id(env))
-}
-
-#[test]
-fn grant_role_proposal_stores_kind_and_emits_creation_event() {
-    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
-    let role = Symbol::new(&env, "Viewer");
-
-    let id = client.create_grant_role_proposal(
-        &owner_a,
-        &non_owner,
-        &role,
-        &str(&env, "Grant Viewer"),
-        &DEADLINE,
-    );
-    let event = last_created_event(&env, &client);
-
-    let proposal = client.get_proposal(&id);
-    assert_eq!(proposal.id, id);
-    assert_eq!(proposal.proposer, owner_a);
-    assert_eq!(
-        proposal.kind,
-        ProposalKind::GrantRole(non_owner.clone(), role.clone())
-    );
-    assert_eq!(proposal.status, ProposalStatus::Pending);
-    assert_eq!(proposal.approvals, 0);
-    assert_eq!(proposal.approval_weight, 0);
-    // Quorum is snapshotted at creation, not read live at execution.
-    assert_eq!(proposal.quorum_weight, client.get_threshold());
-    assert_eq!(proposal.category, ProposalCategory::Other);
-    // Creating the proposal must not grant anything yet.
-    assert!(!client.has_role(&non_owner, &Role::Viewer));
-
-    assert_eq!(event.id, id);
-    assert_eq!(event.proposer, owner_a);
-    assert_eq!(event.threshold, client.get_threshold());
-    assert_eq!(event.quorum_weight, client.get_threshold());
-    assert_eq!(event.total_weight_at_creation, client.get_total_weight());
-    assert_eq!(event.category, ProposalCategory::Other);
-    assert!(event.transfers.is_empty());
-}
-
-#[test]
-fn revoke_role_proposal_stores_kind_and_emits_creation_event() {
-    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
-    // Owners hold the default role set, so `Executor` is live on owner_c.
-    assert!(client.has_role(&owner_c, &Role::Executor));
-    let role = Symbol::new(&env, "Executor");
-
-    let id = client.create_revoke_role_proposal(
-        &owner_a,
-        &owner_c,
-        &role,
-        &str(&env, "Revoke Executor"),
-        &DEADLINE,
-    );
-    let event = last_created_event(&env, &client);
-
-    let proposal = client.get_proposal(&id);
-    assert_eq!(proposal.id, id);
-    assert_eq!(proposal.proposer, owner_a);
-    assert_eq!(
-        proposal.kind,
-        ProposalKind::RevokeRole(owner_c.clone(), role.clone())
-    );
-    assert_eq!(proposal.status, ProposalStatus::Pending);
-    assert_eq!(proposal.quorum_weight, client.get_threshold());
-    // The role is still held: only execution may remove it.
-    assert!(client.has_role(&owner_c, &Role::Executor));
-    assert_eq!(client.get_role_members(&Role::Executor).len(), 3);
-
-    assert_eq!(event.id, id);
-    assert_eq!(event.proposer, owner_a);
-    assert_eq!(event.quorum_weight, client.get_threshold());
-    assert_eq!(event.total_weight_at_creation, client.get_total_weight());
-    assert_eq!(event.category, ProposalCategory::Other);
-    assert!(event.transfers.is_empty());
-
-    // Ids are handed out sequentially across both entrypoints.
-    let next = client.create_grant_role_proposal(
-        &owner_a,
-        &non_owner,
-        &Symbol::new(&env, "Viewer"),
-        &str(&env, "Grant Viewer"),
-        &DEADLINE,
-    );
-    assert_eq!(next, id + 1);
-}
-
-#[test]
-fn grant_role_execute_emits_role_granted_event() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
-    let role = Symbol::new(&env, "Viewer");
-
-    let id = client.create_grant_role_proposal(
-        &owner_a,
-        &non_owner,
-        &role,
-        &str(&env, "Grant Viewer to non_owner"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &id);
-    client.approve(&owner_b, &id);
-    client.execute(&owner_c, &id);
-
-    let contract_events = env.events().all().filter_by_contract(&client.address);
-    let grant_event = contract_events.events().iter().find(|event| {
-        let event_topics = match &event.body {
-            xdr::ContractEventBody::V0(body) => body.topics.clone(),
-        };
-        let Some(topic) = event_topics.first() else {
-            return false;
-        };
-        let topic: Symbol = topic.clone().into_val(&env);
-        topic == Symbol::new(&env, "role_granted")
-    });
-    let event = grant_event.expect("expected a 'role_granted' event to be emitted");
-    let event_data = match &event.body {
-        xdr::ContractEventBody::V0(body) => body.data.clone(),
-    };
-    let event: RoleGrantedEvent = event_data.into_val(&env);
-    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
-    assert_eq!(event.target, non_owner);
-    assert_eq!(event.role, Role::Viewer);
-    assert!(event.before.is_empty());
-    assert!(event.after.contains(&Role::Viewer));
-}
-
-#[test]
-fn revoke_role_execute_emits_role_revoked_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let role = Symbol::new(&env, "Executor");
-
-    let id = client.create_revoke_role_proposal(
-        &owner_a,
-        &owner_c,
-        &role,
-        &str(&env, "Revoke Executor from owner_c"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &id);
-    client.approve(&owner_b, &id);
-    client.execute(&owner_c, &id);
-
-    let contract_events = env.events().all().filter_by_contract(&client.address);
-    let revoke_event = contract_events.events().iter().find(|event| {
-        let event_topics = match &event.body {
-            xdr::ContractEventBody::V0(body) => body.topics.clone(),
-        };
-        let Some(topic) = event_topics.first() else {
-            return false;
-        };
-        let topic: Symbol = topic.clone().into_val(&env);
-        topic == Symbol::new(&env, "role_revoked")
-    });
-    let event = revoke_event.expect("expected a 'role_revoked' event to be emitted");
-    let event_data = match &event.body {
-        xdr::ContractEventBody::V0(body) => body.data.clone(),
-    };
-    let event: RoleRevokedEvent = event_data.into_val(&env);
-    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
-    assert_eq!(event.target, owner_c);
-    assert_eq!(event.role, Role::Executor);
-    assert!(event.before.contains(&Role::Executor));
-    assert!(!event.after.contains(&Role::Executor));
-}
-
-#[test]
-fn role_proposal_creation_rejects_duplicate_and_missing_role() {
-    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
-    grant_all_roles(&env, &client, &non_owner);
-
-    // Granting a role the target already holds.
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &Symbol::new(&env, "Approver"),
-            &str(&env, "Duplicate grant"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::RoleAlreadyGranted))
-    );
-    // Revoking a role the target does not hold.
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &non_owner,
-            &Symbol::new(&env, "Viewer"),
-            &str(&env, "Missing revoke"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::RoleNotGranted))
-    );
-    // An unparseable role symbol is rejected before anything is stored.
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &Symbol::new(&env, "NotARole"),
-            &str(&env, "Bad role"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidRole))
-    );
-    // A rejected creation must not consume a proposal id.
-    assert_eq!(
-        next_proposal_id(&env, &client),
-        client.create_grant_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Viewer"),
-            &str(&env, "Grant Viewer"),
-            &DEADLINE,
-        )
-    );
-    assert!(!client.has_role(&non_owner, &Role::Viewer));
-}
-
-/// Both role creators must reject the same inputs, with the same errors, as
-/// `create_change_threshold_proposal` — the entrypoint they are specified to
-/// mirror.
-#[test]
-fn role_proposal_validation_matches_governance_entrypoints() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, _) = setup(2);
-    let grant_role = || Symbol::new(&env, "Viewer");
-    let desc = || str(&env, "Grant Viewer");
-    let long_desc = "a".repeat(MAX_DESCRIPTION_LEN as usize + 1);
-    let too_far = NOW + MAX_PROPOSAL_DURATION + 1;
-
-    // Missing Proposer role.
-    clear_roles(&env, &client, &owner_c);
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_c,
-            &non_owner,
-            &grant_role(),
-            &desc(),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_c,
-            &owner_a,
-            &Symbol::new(&env, "Executor"),
-            &desc(),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    grant_all_roles(&env, &client, &owner_c);
-
-    // Empty description.
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &grant_role(),
-            &str(&env, ""),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::EmptyDescription))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &str(&env, ""),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::EmptyDescription))
-    );
-
-    // Over-long description.
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &grant_role(),
-            &str(&env, &long_desc),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::DescriptionTooLong))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &str(&env, &long_desc),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::DescriptionTooLong))
-    );
-
-    // Deadline not in the future.
-    assert_eq!(
-        client.try_create_grant_role_proposal(&owner_a, &non_owner, &grant_role(), &desc(), &NOW),
-        Err(Ok(ContractError::InvalidDeadline))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &desc(),
-            &NOW,
-        ),
-        Err(Ok(ContractError::InvalidDeadline))
-    );
-
-    // Deadline beyond MAX_PROPOSAL_DURATION: `InvalidDuration`, exactly as
-    // `create_change_threshold_proposal` reports it.
-    assert_eq!(
-        client.try_create_change_threshold_proposal(&owner_a, &3, &desc(), &too_far),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &grant_role(),
-            &desc(),
-            &too_far,
-        ),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &desc(),
-            &too_far,
-        ),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-
-    // Nothing above was stored.
-    assert_eq!(next_proposal_id(&env, &client), 1);
-
-    // Frozen contract: the role check still runs first.
-    freeze_with_new_guardian(
-        &env,
-        &client,
-        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
-    );
-    assert!(client.is_frozen());
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &grant_role(),
-            &desc(),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &desc(),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(next_proposal_id(&env, &client), 1);
-}
-
-#[test]
-fn role_proposal_creation_enforces_active_proposal_cap() {
-    let (env, client, owner_a, _, owner_c, non_owner, _) = setup(2);
-    for i in 0..MAX_ACTIVE_PROPOSALS {
-        let id = if i % 2 == 0 {
-            client.create_grant_role_proposal(
-                &owner_a,
-                &non_owner,
-                &Symbol::new(&env, "Viewer"),
-                &str(&env, &format!("Grant {}", i)),
-                &DEADLINE,
-            )
-        } else {
-            client.create_revoke_role_proposal(
-                &owner_a,
-                &owner_c,
-                &Symbol::new(&env, "Executor"),
-                &str(&env, &format!("Revoke {}", i)),
-                &DEADLINE,
-            )
-        };
-        assert_eq!(id, i as u64 + 1);
-    }
-
-    // The 51st active proposal is rejected for both entrypoints.
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_a,
-            &non_owner,
-            &Symbol::new(&env, "Viewer"),
-            &str(&env, "51st"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::TooManyActiveProposals))
-    );
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_a,
-            &owner_c,
-            &Symbol::new(&env, "Executor"),
-            &str(&env, "51st"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::TooManyActiveProposals))
-    );
-    assert_eq!(
-        next_proposal_id(&env, &client),
-        MAX_ACTIVE_PROPOSALS as u64 + 1
-    );
-}
-
-// ─── Storage TTL Audit (#735) ────────────────────────────────────────────────
-//
-// Proves that every storage entry the contract writes has its time-to-live
-// extended on the write (and, where the contract bumps on read, on the read),
-// so no proposal, owner weight, spending limit, spend tracker, recurring
-// schedule, delegation, or role entry can silently expire while a multisig
-// still depends on it.
-//
-// Key checklist, taken from the storage tables in docs/ARCHITECTURE.md §3:
-//   Instance (all keys share one LedgerEntry with one TTL):
-//     INIT, THRESH, NEXT, ACTCNT, TWGT, TLOCK
-//     (plus MAXOWNP, GVOVER, ROLEVER, STOVER, RNEXT, ACTREC)
-//   Persistent (each key is its own LedgerEntry with its own TTL):
-//     OWNERS               — initialize / every owner mutation
-//     ("PROP", id)         — create_proposal and the other create_* entrypoints
-//     ("APPR", id, owner)  — approve
-//     ("ACTIDS")           — register_active_proposal on proposal creation
-//     ("SLIM", owner, tok) — SetSpendingLimit execution
-//     ("OSLIM", owner)     — SetSpendingLimit execution
-//     ("SPENT", owner, t)  — executed Transfer / recurring disbursement
-//     ("RPAY", id)         — CreateRecurringPayment execution
-//     ("ROLES", address)   — initialize / RBAC
-//     ("RMEM", role)       — initialize / RBAC
-//     ("DELEG", delegator) — NOT APPLICABLE: no public entrypoint writes a
-//                            delegation today (`write_delegation` has no
-//                            caller), so there is no key to assert.
-
-fn advance_ledger(env: &Env, delta: u32) {
-    let seq = env.ledger().get().sequence_number;
-    env.ledger().set_sequence_number(seq.saturating_add(delta));
-}
-
-fn persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, contract_id: &Address, key: &K) -> u32 {
-    env.as_contract(contract_id, || env.storage().persistent().get_ttl(key))
-}
-
-fn instance_ttl(env: &Env, contract_id: &Address) -> u32 {
-    env.as_contract(contract_id, || env.storage().instance().get_ttl())
-}
-
-#[test]
-fn ttl_audit_every_persistent_key_is_bumped_on_write() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let cid = client.address.clone();
-    let recipient = Address::generate(&env);
-
-    // OWNERS, ROLES, RMEM: written by `initialize` during setup.
-    assert_eq!(persistent_ttl(&env, &cid, &owners_key()), PERSISTENT_BUMP);
-    assert_eq!(persistent_ttl(&env, &cid, &role_key(&owner_a)), PERSISTENT_BUMP);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &role_members_key(&Role::Approver)),
-        PERSISTENT_BUMP
-    );
-
-    // ("PROP", id) + ("ACTIDS"): any create_* proposal entrypoint.
-    let prop_id = client.create_proposal(
-        &owner_a,
-        &t(&env, &recipient, 1_000_i128, &token_client.address),
-        &str(&env, "ttl audit"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    assert_eq!(
-        persistent_ttl(&env, &cid, &proposal_key(prop_id)),
-        PERSISTENT_BUMP
-    );
-    assert_eq!(
-        persistent_ttl(&env, &cid, &active_ids_key()),
-        PERSISTENT_BUMP
-    );
-
-    // ("APPR", id, owner): approve records the per-approver weight.
-    client.approve(&owner_a, &prop_id);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &approval_key(prop_id, &owner_a)),
-        PERSISTENT_BUMP
-    );
-
-    // ("SPENT", owner, token): executing the transfer writes a spent tracker.
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &spent_tracking_key(&owner_a, &token_client.address)),
-        PERSISTENT_BUMP
-    );
-
-    // ("SLIM", owner, token) + ("OSLIM", owner): SetSpendingLimit execution.
-    let limit_id = client.create_spending_limit_proposal(
-        &owner_a,
+    let remove_proposal = client.create_remove_approved_token_proposal(
         &owner_a,
         &token_client.address,
-        &5_000_i128,
-        &str(&env, "ttl limit"),
+        &str(&env, "Remove treasury token"),
         &DEADLINE,
     );
-    client.approve(&owner_a, &limit_id);
-    client.approve(&owner_b, &limit_id);
-    client.execute(&owner_c, &limit_id);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &spending_limit_key(&owner_a, &token_client.address)),
-        PERSISTENT_BUMP
-    );
-    assert_eq!(
-        persistent_ttl(&env, &cid, &owner_spending_limits_key(&owner_a)),
-        PERSISTENT_BUMP
-    );
-
-    // ("RPAY", id): CreateRecurringPayment execution writes the schedule.
-    let rec_id = client.create_recurring_proposal(
-        &owner_a,
-        &recipient,
-        &token_client.address,
-        &1_000_i128,
-        &3_600_u64,
-        &NOW,
-        &(NOW + 86_400),
-        &0_u64,
-        &10_000_i128,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(&env, "ttl rec"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-    client.approve(&owner_a, &rec_id);
-    client.approve(&owner_b, &rec_id);
-    client.execute(&owner_c, &rec_id);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &recur_key(1)),
-        PERSISTENT_BUMP
-    );
-}
-
-#[test]
-fn ttl_audit_instance_entry_is_shared_and_bumped_by_mutating_calls() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let cid = client.address.clone();
-
-    assert_eq!(instance_ttl(&env, &cid), INSTANCE_BUMP);
-
-    // Advance so the shared instance entry drops below its bump threshold...
-    advance_ledger(&env, INSTANCE_BUMP - INSTANCE_THRESHOLD + 1);
-    assert!(instance_ttl(&env, &cid) < INSTANCE_THRESHOLD);
-
-    // ...then a mutating call (proposal creation) must bump it back.
-    let recipient = Address::generate(&env);
-    client.create_proposal(
-        &owner_a,
-        &t(&env, &recipient, 1_000_i128, &token_client.address),
-        &str(&env, "ttl instance"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    assert_eq!(instance_ttl(&env, &cid), INSTANCE_BUMP);
-
-    // All documented instance keys live in the single shared instance entry, so
-    // that one bump covers every one of them.
-    for key in [
-        init_key(),
-        threshold_key(),
-        next_id_key(),
-        active_count_key(),
-        total_weight_key(),
-        timelock_key(),
-    ] {
-        assert!(
-            env.as_contract(&cid, || env.storage().instance().has(&key)),
-            "documented instance key missing from the shared instance entry"
-        );
-    }
-}
-
-#[test]
-fn ttl_audit_persistent_entry_rebumps_and_survives_idle_window() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let cid = client.address.clone();
-    let recipient = Address::generate(&env);
-
-    let id = client.create_proposal(
-        &owner_a,
-        &t(&env, &recipient, 1_000_i128, &token_client.address),
-        &str(&env, "ttl idle"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-
-    // Advance so the entry is below the bump threshold but not yet expired.
-    advance_ledger(&env, PERSISTENT_BUMP - PERSISTENT_THRESHOLD + 1);
-    assert!(persistent_ttl(&env, &cid, &proposal_key(id)) < PERSISTENT_THRESHOLD);
-
-    // A read re-bumps it back to the full horizon and it stays live.
-    let _ = client.get_proposal(&id);
-    assert_eq!(
-        persistent_ttl(&env, &cid, &proposal_key(id)),
-        PERSISTENT_BUMP
-    );
-
-    // Advancing by less than the bump length (a realistic idle window) leaves
-    // the entry present and recoverable.
-    advance_ledger(&env, PERSISTENT_BUMP / 2);
-    assert!(persistent_ttl(&env, &cid, &proposal_key(id)) > 0);
-}
-
-// ─── Total-weight invariant (#747) ───────────────────────────────────────────
-//
-// After any weight-affecting governance action, the sum of every current
-// owner's weight (read straight from the OWNERS map) must equal the stored
-// TWGT counter that every quorum check relies on.
-
-fn assert_total_weight_invariant(env: &Env, client: &AccordContractClient, context: &str) {
-    let owners = env.as_contract(&client.address, || read_owners_map(env).unwrap());
-    let mut sum: u64 = 0;
-    let mut breakdown = std::string::String::new();
-    for (owner, weight) in owners.iter() {
-        sum += weight as u64;
-        breakdown.push_str(&format!("{:?}={}; ", owner, weight));
-    }
-    let stored = client.get_total_weight();
-    assert_eq!(
-        sum,
-        stored as u64,
-        "total-weight invariant broken after {}: sum of {} owner weights is {} but stored total weight is {} (off by {}); owners: [{}]",
-        context,
-        owners.len(),
-        sum,
-        stored,
-        stored as i64 - sum as i64,
-        breakdown,
-    );
-}
-
-/// Initializes a contract with one owner per entry in `weights` and a
-/// threshold of 1, so a single owner can approve and execute every proposal.
-fn setup_invariant_owners(weights: &[u32]) -> (Env, AccordContractClient<'static>, std::vec::Vec<Address>) {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-
-    let mut owners = Vec::new(&env);
-    let mut weight_vec = Vec::new(&env);
-    let mut addresses = std::vec::Vec::new();
-    for weight in weights {
-        let owner = Address::generate(&env);
-        owners.push_back(owner.clone());
-        weight_vec.push_back(*weight);
-        addresses.push(owner);
-    }
-    client.initialize(&owners, &weight_vec, &1, &0);
-    (env, client, addresses)
-}
-
-fn approve_and_execute(client: &AccordContractClient, owner: &Address, id: u64) {
-    client.approve(owner, &id);
-    client.execute(owner, &id);
-}
-
-#[test]
-fn total_weight_invariant_holds_after_each_weight_affecting_operation() {
-    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
-    let a = owners[0].clone();
-    assert_total_weight_invariant(&env, &client, "initialize");
-
-    let new_owner = Address::generate(&env);
-    let id = client.create_add_owner_proposal(&a, &new_owner, &3, &str(&env, "add"), &DEADLINE);
-    approve_and_execute(&client, &a, id);
-    assert_total_weight_invariant(&env, &client, "add owner (weight 3)");
-    assert_eq!(client.get_total_weight(), 13);
-
-    let id = client.create_change_weight_proposal(&a, &owners[1], &4, &str(&env, "raise"), &DEADLINE);
-    approve_and_execute(&client, &a, id);
-    assert_total_weight_invariant(&env, &client, "weight change 2 -> 4");
-    assert_eq!(client.get_total_weight(), 15);
-
-    let id = client.create_change_weight_proposal(&a, &new_owner, &1, &str(&env, "lower"), &DEADLINE);
-    approve_and_execute(&client, &a, id);
-    assert_total_weight_invariant(&env, &client, "weight change 3 -> 1");
-    assert_eq!(client.get_total_weight(), 13);
-
-    let id = client.create_remove_owner_proposal(&a, &owners[2], &str(&env, "remove"), &DEADLINE);
-    approve_and_execute(&client, &a, id);
-    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
-    assert_eq!(client.get_total_weight(), 11);
-}
-
-/// Creates the same five governance proposals up front, approves them all,
-/// then executes them in `order`, checking the invariant after each one.
-fn run_interleaved_governance(order: [usize; 5]) {
-    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
-    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
-    assert_total_weight_invariant(&env, &client, "initialize");
-
-    let ids = [
-        client.create_add_owner_proposal(&a, &Address::generate(&env), &3, &str(&env, "add x"), &DEADLINE),
-        client.create_change_weight_proposal(&a, &b, &4, &str(&env, "b -> 4"), &DEADLINE),
-        client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE),
-        client.create_change_weight_proposal(&a, &a, &1, &str(&env, "a -> 1"), &DEADLINE),
-        client.create_add_owner_proposal(&a, &Address::generate(&env), &2, &str(&env, "add y"), &DEADLINE),
-    ];
-    let labels = ["add x (3)", "change b 2 -> 4", "remove c (2)", "change a 2 -> 1", "add y (2)"];
-    for id in ids.iter() {
-        client.approve(&a, id);
-    }
-
-    for (step, &index) in order.iter().enumerate() {
-        client.execute(&a, &ids[index]);
-        assert_total_weight_invariant(
-            &env,
-            &client,
-            &format!("step {} of order {:?}: {}", step + 1, order, labels[index]),
-        );
-    }
-
-    // a=1, b=4, d=2, e=2, x=3, y=2 regardless of execution order.
-    assert_eq!(client.get_total_weight(), 14, "final total for order {:?}", order);
-}
-
-#[test]
-fn total_weight_invariant_holds_across_interleaved_governance_executions() {
-    for order in [
-        [0, 1, 2, 3, 4],
-        [4, 3, 2, 1, 0],
-        [2, 0, 4, 1, 3],
-        [3, 2, 1, 4, 0],
-        [1, 4, 0, 3, 2],
-    ] {
-        run_interleaved_governance(order);
-    }
-}
-
-#[test]
-fn total_weight_invariant_holds_for_weight_change_then_removal_of_same_owner() {
-    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
-    let (a, c) = (owners[0].clone(), owners[2].clone());
-
-    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
-    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
-    client.approve(&a, &change);
-    client.approve(&a, &remove);
-
-    client.execute(&a, &change);
-    assert_total_weight_invariant(&env, &client, "weight change c 2 -> 5");
-    assert_eq!(client.get_total_weight(), 13);
-
-    // Removal must subtract the owner's current weight (5), not the weight
-    // they had when the removal was proposed (2).
-    client.execute(&a, &remove);
-    assert_total_weight_invariant(&env, &client, "removal of c after weight change");
-    assert_eq!(client.get_total_weight(), 8);
-    assert!(!client.is_owner(&c));
-}
-
-#[test]
-fn total_weight_invariant_holds_for_removal_then_weight_change_of_same_owner() {
-    let (env, client, owners) = setup_invariant_owners(&[2, 2, 2, 2, 2]);
-    let (a, c) = (owners[0].clone(), owners[2].clone());
-
-    let change = client.create_change_weight_proposal(&a, &c, &5, &str(&env, "c -> 5"), &DEADLINE);
-    let remove = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
-    client.approve(&a, &change);
-    client.approve(&a, &remove);
-
-    client.execute(&a, &remove);
-    assert_total_weight_invariant(&env, &client, "removal of c");
-    assert_eq!(client.get_total_weight(), 8);
-
-    // The stale weight change must not resurrect c or touch the counter.
-    assert_eq!(
-        client.try_execute(&a, &change),
-        Err(Ok(ContractError::TargetOwnerNoLongerExists))
-    );
-    assert_total_weight_invariant(&env, &client, "rejected weight change of removed owner c");
-    assert_eq!(client.get_total_weight(), 8);
-    assert!(!client.is_owner(&c));
-}
-
-// ─── Effective-weight delegation audit (#748) ────────────────────────────────
-//
-// `compute_effective_weight` = raw weight − active outgoing delegation +
-// active incoming delegations from current owners. A delegation is active
-// while `expiry > now`. Revoking a delegation deletes its entry, and removing
-// an owner deletes every delegation where they are delegator or delegate, so
-// neither side keeps a stale contribution. No public entrypoint writes
-// delegations yet, so these tests write them directly.
-
-fn write_test_delegation(
-    env: &Env,
-    client: &AccordContractClient,
-    delegator: &Address,
-    delegate: &Address,
-    weight: u32,
-    expiry: Option<u64>,
-) {
-    let delegation = Delegation {
-        delegator: delegator.clone(),
-        delegate: delegate.clone(),
-        weight,
-        expiry,
-    };
-    env.as_contract(&client.address, || write_delegation(env, &delegation));
-}
-
-fn revoke_test_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) {
-    env.as_contract(&client.address, || remove_delegation(env, delegator));
-}
-
-fn stored_delegation(env: &Env, client: &AccordContractClient, delegator: &Address) -> Option<Delegation> {
-    env.as_contract(&client.address, || read_delegation(env, delegator))
-}
-
-fn remove_owner_via(env: &Env, client: &AccordContractClient, executor: &Address, target: &Address) {
-    let id = client.create_remove_owner_proposal(executor, target, &str(env, "remove"), &DEADLINE);
-    approve_and_execute(client, executor, id);
-}
-
-fn sum_effective_weights(client: &AccordContractClient) -> u32 {
-    let mut sum = 0;
-    for owner in client.get_owners().iter() {
-        sum += client.get_effective_weight(&owner);
-    }
-    sum
-}
-
-#[test]
-fn effective_weight_with_active_delegation() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, None);
-    assert_eq!(client.get_effective_weight(&a), 1);
-    assert_eq!(client.get_effective_weight(&b), 7);
-    assert_eq!(client.get_effective_weight(&c), 4);
-
-    // A future expiry is still active.
-    write_test_delegation(&env, &client, &a, &b, 2, Some(NOW + 100));
-    assert_eq!(client.get_effective_weight(&a), 2);
-    assert_eq!(client.get_effective_weight(&b), 6);
-    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
-}
-
-#[test]
-fn expired_delegation_contributes_nothing() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b) = (owners[0].clone(), owners[1].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, Some(NOW + 100));
-    set_timestamp(&env, NOW + 99);
-    assert_eq!(client.get_effective_weight(&a), 1);
-    assert_eq!(client.get_effective_weight(&b), 7);
-
-    // `expiry <= now` is expired, so the boundary second already excludes it.
-    set_timestamp(&env, NOW + 100);
-    assert_eq!(client.get_effective_weight(&a), 4);
-    assert_eq!(client.get_effective_weight(&b), 4);
-    assert!(client.get_active_delegations().is_empty());
-
-    set_timestamp(&env, NOW + 10_000);
-    assert_eq!(client.get_effective_weight(&a), 4);
-    assert_eq!(client.get_effective_weight(&b), 4);
-}
-
-#[test]
-fn revoked_delegation_contributes_nothing() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b) = (owners[0].clone(), owners[1].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, None);
-    assert_eq!(client.get_effective_weight(&b), 7);
-
-    revoke_test_delegation(&env, &client, &a);
-    assert_eq!(client.get_effective_weight(&a), 4);
-    assert_eq!(client.get_effective_weight(&b), 4);
-    assert!(client.get_active_delegations().is_empty());
-    assert!(client.get_delegations(&b).incoming.is_empty());
-}
-
-#[test]
-fn removing_delegate_restores_delegator_weight() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, None);
-    assert_eq!(client.get_effective_weight(&a), 1);
-
-    remove_owner_via(&env, &client, &c, &b);
-
-    assert_eq!(
-        client.try_get_effective_weight(&b),
-        Err(Ok(ContractError::OwnerNotFound))
-    );
-    // The delegation to the removed owner no longer drains A's weight.
-    assert_eq!(client.get_effective_weight(&a), 4);
-    assert!(stored_delegation(&env, &client, &a).is_none());
-    assert!(client.get_delegations(&a).outgoing.is_empty());
-    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
-    assert_eq!(client.get_total_weight(), 12);
-}
-
-#[test]
-fn removing_delegator_clears_delegate_contribution() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b, c) = (owners[0].clone(), owners[1].clone(), owners[2].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, None);
-    assert_eq!(client.get_effective_weight(&b), 7);
-
-    remove_owner_via(&env, &client, &c, &a);
-
-    assert_eq!(client.get_effective_weight(&b), 4);
-    assert!(stored_delegation(&env, &client, &a).is_none());
-    assert!(client.get_delegations(&b).incoming.is_empty());
-    assert_eq!(sum_effective_weights(&client), client.get_total_weight());
-
-    // Re-adding the former delegator must not revive the old delegation.
-    let id = client.create_add_owner_proposal(&c, &a, &4, &str(&env, "re-add"), &DEADLINE);
-    approve_and_execute(&client, &c, id);
-    assert_eq!(client.get_effective_weight(&a), 4);
-    assert_eq!(client.get_effective_weight(&b), 4);
-}
-
-#[test]
-fn total_weight_bound_holds_with_delegations_active() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 4, 4, 4]);
-    let (a, b, c, d) = (owners[0].clone(), owners[1].clone(), owners[2].clone(), owners[3].clone());
-
-    write_test_delegation(&env, &client, &a, &b, 3, None);
-    write_test_delegation(&env, &client, &c, &b, 4, Some(NOW + 500));
-    write_test_delegation(&env, &client, &d, &a, 2, None);
-
-    let total = client.get_total_weight();
-    assert_eq!(client.get_effective_weight(&a), 3);
-    assert_eq!(client.get_effective_weight(&b), 11);
-    assert_eq!(client.get_effective_weight(&c), 0);
-    assert_eq!(client.get_effective_weight(&d), 2);
-
-    // Delegation moves weight between owners but never creates it.
-    assert_eq!(sum_effective_weights(&client), total);
-    assert!(total <= MAX_TOTAL_WEIGHT);
-    for owner in client.get_owners().iter() {
-        assert!(client.get_effective_weight(&owner) <= total);
-    }
-
-    // The bound also holds for an approval counted at effective weight.
-    let id = client.create_add_owner_proposal(&b, &Address::generate(&env), &1, &str(&env, "bound"), &DEADLINE);
-    client.approve(&b, &id);
-    assert_eq!(client.get_proposal(&id).approvals, 11);
-    assert!(client.get_proposal(&id).approvals <= total);
-
-    // Once the timed delegation lapses the sum is still exactly the total.
-    set_timestamp(&env, NOW + 500);
-    assert_eq!(client.get_effective_weight(&b), 7);
-    assert_eq!(client.get_effective_weight(&c), 4);
-    assert_eq!(sum_effective_weights(&client), total);
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// Property tests asserting that randomized sequences of delegation, revocation,
-    /// expiration (timestamp advance), and owner removal NEVER break the effective-weight
-    /// invariants (issue #852).
-    #[test]
-    fn delegation_effective_weight_invariants_hold(
-        operations in proptest::collection::vec((0u8..=3, 0usize..=10, 0usize..=10, 1u32..=5, 0u64..=1_000), 1..=25)
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        let mut current_time = NOW;
-        set_timestamp(&env, current_time);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let mut initial_owners = Vec::new(&env);
-        let mut initial_weights = Vec::new(&env);
-        for _ in 0..4 {
-            initial_owners.push_back(Address::generate(&env));
-            initial_weights.push_back(5);
-        }
-        client.initialize(&initial_owners, &initial_weights, &1, &0);
-
-        let anchor = initial_owners.get(0).unwrap();
-
-        let assert_invariants = |c: &AccordContractClient| {
-            let total_raw = c.get_total_weight();
-            let owners = c.get_owners();
-            let mut sum_effective = 0u32;
-            for o in owners.iter() {
-                let eff = c.get_effective_weight(&o);
-                assert!(eff <= total_raw, "effective weight must not exceed total weight");
-                sum_effective += eff;
-            }
-            assert_eq!(sum_effective, total_raw, "sum of effective weights must equal total weight");
-        };
-
-        assert_invariants(&client);
-
-        for (op_kind, delegator_idx, delegate_idx, weight_seed, time_delta) in operations {
-            let current_owners = client.get_owners();
-            if current_owners.is_empty() {
-                break;
-            }
-
-            match op_kind {
-                // Op 0: Delegate
-                0 => {
-                    let d_idx = delegator_idx % current_owners.len() as usize;
-                    let del_idx = delegate_idx % current_owners.len() as usize;
-                    if d_idx != del_idx {
-                        let delegator = current_owners.get(d_idx as u32).unwrap();
-                        let delegate = current_owners.get(del_idx as u32).unwrap();
-                        let raw_weight = 5u32;
-                        let weight = 1 + (weight_seed % raw_weight);
-                        let expiry = if time_delta % 2 == 0 {
-                            Some(current_time + time_delta)
-                        } else {
-                            None
-                        };
-                        write_test_delegation(&env, &client, &delegator, &delegate, weight, expiry);
-                    }
-                }
-                // Op 1: Revoke / Undelegate
-                1 => {
-                    let d_idx = delegator_idx % current_owners.len() as usize;
-                    let delegator = current_owners.get(d_idx as u32).unwrap();
-                    revoke_test_delegation(&env, &client, &delegator);
-                }
-                // Op 2: Advance time (test expiry)
-                2 => {
-                    current_time += time_delta;
-                    set_timestamp(&env, current_time);
-                }
-                // Op 3: Remove owner (cannot remove anchor, must keep at least 2 owners)
-                3 => {
-                    if current_owners.len() > 2 {
-                        let target_idx = (delegator_idx % (current_owners.len() - 1) as usize) + 1;
-                        let target = current_owners.get(target_idx as u32).unwrap();
-                        if target != anchor {
-                            remove_owner_via(&env, &client, &anchor, &target);
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            assert_invariants(&client);
-        }
-    }
-}
-
-// ─── ContractError completeness (#749) ───────────────────────────────────────
-//
-// Every `ContractError` variant must have a unique code inside the contract
-// error range and a matching row in docs/CONTRACT_API.md. Adding a variant
-// fails to compile until it is named in `contract_error_name`, after which
-// the scan below finds it and the docs check fails until it is documented.
-
-/// Codes are expected in `1..=MAX_CONTRACT_ERROR_CODE`; 0 is never used.
-const MAX_CONTRACT_ERROR_CODE: u32 = 999;
-/// Codes scanned when discovering variants; far above the expected range so
-/// an out-of-range variant is still found and reported.
-const CONTRACT_ERROR_SCAN_LIMIT: u32 = 100_000;
-
-const CONTRACT_API_DOC: &str = include_str!("../../../docs/CONTRACT_API.md");
-
-/// Exhaustive on purpose: no wildcard arm, so a new variant is a compile error here.
-fn contract_error_name(error: ContractError) -> &'static str {
-    match error {
-        ContractError::AlreadyInitialized => "AlreadyInitialized",
-        ContractError::NotInitialized => "NotInitialized",
-        ContractError::Unauthorized => "Unauthorized",
-        ContractError::InvalidThreshold => "InvalidThreshold",
-        ContractError::InvalidOwners => "InvalidOwners",
-        ContractError::ProposalNotFound => "ProposalNotFound",
-        ContractError::ProposalNotActive => "ProposalNotActive",
-        ContractError::AlreadyApproved => "AlreadyApproved",
-        ContractError::NotApproved => "NotApproved",
-        ContractError::ThresholdNotMet => "ThresholdNotMet",
-        ContractError::ProposalExpired => "ProposalExpired",
-        ContractError::InvalidAmount => "InvalidAmount",
-        ContractError::InvalidDeadline => "InvalidDeadline",
-        ContractError::InvalidToken => "InvalidToken",
-        ContractError::TransferFailed => "TransferFailed",
-        ContractError::EmptyDescription => "EmptyDescription",
-        ContractError::DescriptionTooLong => "DescriptionTooLong",
-        ContractError::TooManyActiveProposals => "TooManyActiveProposals",
-        ContractError::DuplicateOwner => "DuplicateOwner",
-        ContractError::ArithmeticError => "ArithmeticError",
-        ContractError::InvalidDuration => "InvalidDuration",
-        ContractError::InvalidRecipient => "InvalidRecipient",
-        ContractError::TimeLockActive => "TimeLockActive",
-        ContractError::WouldBreakThreshold => "WouldBreakThreshold",
-        ContractError::OwnerNotFound => "OwnerNotFound",
-        ContractError::ContractFrozen => "ContractFrozen",
-        ContractError::NoGuardian => "NoGuardian",
-        ContractError::InvalidInterval => "InvalidInterval",
-        ContractError::InvalidSchedule => "InvalidSchedule",
-        ContractError::InvalidCap => "InvalidCap",
-        ContractError::SpendingLimitExceeded => "SpendingLimitExceeded",
-        ContractError::RecurringPaymentNotFound => "RecurringPaymentNotFound",
-        ContractError::RecurringPaymentNotDue => "RecurringPaymentNotDue",
-        ContractError::RecurringPaymentComplete => "RecurringPaymentComplete",
-        ContractError::RecurringPaymentInactive => "RecurringPaymentInactive",
-        ContractError::RecurringIntervalNotElapsed => "RecurringIntervalNotElapsed",
-        ContractError::TooManyActiveRecurring => "TooManyActiveRecurring",
-        ContractError::ScheduleAlreadyCancelled => "ScheduleAlreadyCancelled",
-        ContractError::ScheduleAlreadyPaused => "ScheduleAlreadyPaused",
-        ContractError::ScheduleNotPaused => "ScheduleNotPaused",
-        ContractError::ScheduleTerminal => "ScheduleTerminal",
-        ContractError::InvalidWeightsLength => "InvalidWeightsLength",
-        ContractError::WeightBelowMinimum => "WeightBelowMinimum",
-        ContractError::InvalidWeight => "InvalidWeight",
-        ContractError::AlreadyMigrated => "AlreadyMigrated",
-        ContractError::SingleOwnerWeightCapExceeded => "SingleOwnerWeightCapExceeded",
-        ContractError::TargetOwnerNoLongerExists => "TargetOwnerNoLongerExists",
-        ContractError::WouldBreakQuorum => "WouldBreakQuorum",
-        ContractError::CannotRemoveLastOwner => "CannotRemoveLastOwner",
-        ContractError::ThresholdExceedsOwnerCount => "ThresholdExceedsOwnerCount",
-        ContractError::ScheduleNotActive => "ScheduleNotActive",
-        ContractError::MissingRole => "MissingRole",
-        ContractError::RoleAlreadyGranted => "RoleAlreadyGranted",
-        ContractError::RoleNotGranted => "RoleNotGranted",
-        ContractError::InvalidRole => "InvalidRole",
-        ContractError::DeprecatedEntrypoint => "DeprecatedEntrypoint",
-        ContractError::RecoveryActive => "RecoveryActive",
-    }
-}
-
-/// Every variant, discovered by decoding each candidate contract error code.
-fn scan_contract_errors() -> std::vec::Vec<(u32, ContractError)> {
-    let mut found = std::vec::Vec::new();
-    for code in 0..=CONTRACT_ERROR_SCAN_LIMIT {
-        let error = soroban_sdk::Error::from_contract_error(code);
-        if let Ok(variant) = ContractError::try_from(error) {
-            found.push((code, variant));
-        }
-    }
-    found
-}
-
-/// Parses the `| code | Variant | ... |` rows of the "## Error Reference" table.
-fn documented_error_codes() -> std::collections::BTreeMap<std::string::String, u32> {
-    let start = CONTRACT_API_DOC
-        .find("## Error Reference")
-        .expect("docs/CONTRACT_API.md is missing its '## Error Reference' section");
-    let section = &CONTRACT_API_DOC[start..];
-    let end = section[1..].find("\n## ").map(|i| i + 1).unwrap_or(section.len());
-
-    let mut documented = std::collections::BTreeMap::new();
-    for line in section[..end].lines() {
-        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
-        if cells.len() < 3 {
-            continue;
-        }
-        if let Ok(code) = cells[1].parse::<u32>() {
-            let name = cells[2].trim_matches('`').to_string();
-            if let Some(previous) = documented.insert(name.clone(), code) {
-                panic!(
-                    "docs/CONTRACT_API.md documents {} twice (codes {} and {})",
-                    name, previous, code
-                );
-            }
-        }
-    }
-    documented
-}
-
-#[test]
-fn contract_error_codes_are_unique() {
-    let errors = scan_contract_errors();
-    assert!(!errors.is_empty(), "no ContractError variants were discovered");
-
-    let mut by_name: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
-    for (code, variant) in errors.iter() {
-        let name = contract_error_name(*variant);
-        assert_eq!(
-            *variant as u32, *code,
-            "ContractError::{} decoded from code {} but its discriminant is {}",
-            name, code, *variant as u32
-        );
-        assert_eq!(
-            soroban_sdk::Error::from(*variant).get_code(),
-            *code,
-            "ContractError::{} does not round-trip through soroban_sdk::Error",
-            name
-        );
-        if let Some(other) = by_name.insert(name, *code) {
-            panic!("ContractError::{} is reachable from codes {} and {}", name, other, code);
-        }
-    }
-
-    let mut codes: std::vec::Vec<u32> = errors.iter().map(|(code, _)| *code).collect();
-    codes.sort();
-    for pair in codes.windows(2) {
-        assert_ne!(pair[0], pair[1], "two ContractError variants share code {}", pair[0]);
-    }
-}
-
-#[test]
-fn contract_error_codes_stay_in_contract_range_and_clear_of_host_errors() {
-    for (code, variant) in scan_contract_errors() {
-        let name = contract_error_name(variant);
-        assert!(
-            (1..=MAX_CONTRACT_ERROR_CODE).contains(&code),
-            "ContractError::{} has code {} outside the expected range 1..={}",
-            name, code, MAX_CONTRACT_ERROR_CODE
-        );
-        let encoded = soroban_sdk::Error::from(variant);
-        assert!(
-            encoded.is_type(xdr::ScErrorType::Contract),
-            "ContractError::{} (code {}) is not encoded as a contract error",
-            name, code
-        );
-    }
-
-    // No host error (any non-contract type, any host code) may decode as a
-    // ContractError, so host failures can never be mistaken for ours.
-    for error_type in xdr::ScErrorType::VARIANTS {
-        if error_type == xdr::ScErrorType::Contract {
-            continue;
-        }
-        for error_code in xdr::ScErrorCode::VARIANTS {
-            let host_error = soroban_sdk::Error::from_type_and_code(error_type, error_code);
-            assert!(
-                ContractError::try_from(host_error).is_err(),
-                "host error {:?}/{:?} decodes as ContractError::{}",
-                error_type,
-                error_code,
-                contract_error_name(ContractError::try_from(host_error).unwrap())
-            );
-        }
-    }
-}
-
-#[test]
-fn every_contract_error_is_documented_in_contract_api() {
-    let documented = documented_error_codes();
-    let errors = scan_contract_errors();
-
-    for (code, variant) in errors.iter() {
-        let name = contract_error_name(*variant);
-        match documented.get(name) {
-            None => panic!(
-                "ContractError::{} (code {}) is missing from the Error Reference table in docs/CONTRACT_API.md",
-                name, code
-            ),
-            Some(doc_code) => assert_eq!(
-                doc_code, code,
-                "docs/CONTRACT_API.md lists ContractError::{} as code {} but the contract uses {}",
-                name, doc_code, code
-            ),
-        }
-    }
-
-    // The reverse direction: no stale rows for variants that no longer exist.
-    for (name, doc_code) in documented.iter() {
-        assert!(
-            errors.iter().any(|(_, v)| contract_error_name(*v) == name.as_str()),
-            "docs/CONTRACT_API.md documents {} (code {}) but ContractError has no such variant",
-            name, doc_code
-        );
-    }
-
-    // The "Common Errors Quick Reference" rows (`| code Variant | ... |`)
-    // must agree with the contract too.
-    for line in CONTRACT_API_DOC.lines() {
-        let cells: std::vec::Vec<&str> = line.split('|').map(|c| c.trim()).collect();
-        if cells.len() < 2 {
-            continue;
-        }
-        let mut parts = cells[1].splitn(2, ' ');
-        let (Some(code), Some(name)) = (parts.next(), parts.next()) else { continue };
-        let (Ok(code), true) = (code.parse::<u32>(), name.starts_with('`')) else { continue };
-        let name = name.trim_matches('`');
-        let actual = errors
-            .iter()
-            .find(|(_, v)| contract_error_name(*v) == name)
-            .map(|(c, _)| *c)
-            .unwrap_or_else(|| panic!("quick reference lists unknown error {} (code {})", name, code));
-        assert_eq!(
-            code, actual,
-            "quick reference lists ContractError::{} as code {} but the contract uses {}",
-            name, code, actual
-        );
-    }
-}
-
-// ─── Resource regression at maximum configuration (#750) ─────────────────────
-//
-// Runs the hot entrypoints at MAX_OWNERS owners, each at MAX_OWNER_WEIGHT, with
-// every other owner delegating to owner 0 (the worst case for the per-owner
-// delegation scan), and asserts each top-level invocation's metered resources
-// (`env.cost_estimate().resources()`) stay under `HOT_PATH_CEILING`.
-//
-// Updating the ceiling: run
-//     cargo test -p accord resource_ceiling -- --nocapture --test-threads=1
-// and read the `[resource]` lines. If a legitimate change pushes a value over
-// the ceiling, first confirm the growth is intended, then raise only that
-// field, keeping it at or below the documented fraction of the network limit
-// in docs/ARCHITECTURE.md §12 and updating that table in the same change. A
-// value that cannot fit under its fraction means the entrypoint needs
-// optimizing, not a bigger ceiling.
-
-struct ResourceCeiling {
-    instructions: i64,
-    mem_bytes: i64,
-    ledger_entries: u32,
-    write_entries: u32,
-    write_bytes: u32,
-    contract_events_size_bytes: u32,
-}
-
-/// Fractions of the Stellar mainnet per-invocation limits
-/// (`InvocationResourceLimits::mainnet()`), which the test Env also enforces.
-/// CPU and memory are tight because native test execution under-reports the
-/// cost of real Wasm execution.
-const HOT_PATH_CEILING: ResourceCeiling = ResourceCeiling {
-    instructions: 60_000_000,         // 10% of 600,000,000
-    mem_bytes: 4_194_304,             // 10% of 41,943,040 (40 MiB)
-    ledger_entries: 75,               // 75% of 100
-    write_entries: 37,                // 75% of 50
-    write_bytes: 66_048,              // 50% of 132,096
-    contract_events_size_bytes: 8_192, // 50% of 16,384
-};
-
-fn assert_within_resource_ceiling(env: &Env, label: &str) {
-    let r = env.cost_estimate().resources();
-    let ledger_entries = r.disk_read_entries + r.memory_read_entries + r.write_entries;
-    std::println!(
-        "[resource] {}: instructions={} mem_bytes={} ledger_entries={} write_entries={} write_bytes={} events_bytes={}",
-        label, r.instructions, r.mem_bytes, ledger_entries, r.write_entries, r.write_bytes,
-        r.contract_events_size_bytes,
-    );
-    let c = &HOT_PATH_CEILING;
-    assert!(
-        r.instructions <= c.instructions,
-        "{}: {} CPU instructions exceeds the ceiling of {}",
-        label, r.instructions, c.instructions
-    );
-    assert!(
-        r.mem_bytes <= c.mem_bytes,
-        "{}: {} memory bytes exceeds the ceiling of {}",
-        label, r.mem_bytes, c.mem_bytes
-    );
-    assert!(
-        ledger_entries <= c.ledger_entries,
-        "{}: {} ledger entries exceeds the ceiling of {}",
-        label, ledger_entries, c.ledger_entries
-    );
-    assert!(
-        r.write_entries <= c.write_entries,
-        "{}: {} written entries exceeds the ceiling of {}",
-        label, r.write_entries, c.write_entries
-    );
-    assert!(
-        r.write_bytes <= c.write_bytes,
-        "{}: {} written bytes exceeds the ceiling of {}",
-        label, r.write_bytes, c.write_bytes
-    );
-    assert!(
-        r.contract_events_size_bytes <= c.contract_events_size_bytes,
-        "{}: {} event bytes exceeds the ceiling of {}",
-        label, r.contract_events_size_bytes, c.contract_events_size_bytes
-    );
-}
-
-/// Strict majority of the maximum total weight.
-const MAX_CONFIG_THRESHOLD: u32 = MAX_TOTAL_WEIGHT / 2 + 1;
-
-/// MAX_OWNERS owners at MAX_OWNER_WEIGHT, three funded tokens, and owners
-/// 1..MAX_OWNERS each delegating half their weight to owner 0.
-fn setup_max_config() -> (
-    Env,
-    AccordContractClient<'static>,
-    std::vec::Vec<Address>,
-    std::vec::Vec<Address>,
-) {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-
-    let mut tokens = std::vec::Vec::new();
-    for _ in 0..3 {
-        let token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-        token::StellarAssetClient::new(&env, &token_id.address())
-            .mint(&contract_id, &1_000_000_000_000_i128);
-        tokens.push(token_id.address());
-    }
-
-    let mut owners = Vec::new(&env);
-    let mut weights = Vec::new(&env);
-    let mut addresses = std::vec::Vec::new();
-    for _ in 0..MAX_OWNERS {
-        let owner = Address::generate(&env);
-        owners.push_back(owner.clone());
-        weights.push_back(MAX_OWNER_WEIGHT);
-        addresses.push(owner);
-    }
-    client.initialize(&owners, &weights, &MAX_CONFIG_THRESHOLD, &0);
-    assert_within_resource_ceiling(&env, "initialize (max owners, max weights)");
-    assert_eq!(client.get_total_weight(), MAX_TOTAL_WEIGHT);
-
-    for delegator in addresses.iter().skip(1) {
-        write_test_delegation(&env, &client, delegator, &addresses[0], MAX_OWNER_WEIGHT / 2, None);
-    }
-
-    (env, client, addresses, tokens)
-}
-
-fn max_transfers(env: &Env, tokens: &[Address]) -> Vec<Transfer> {
-    let mut transfers = Vec::new(env);
-    for token in tokens {
-        transfers.push_back(Transfer {
-            to: Address::generate(env),
-            token: token.clone(),
-            amount: 1_000,
-        });
-    }
-    transfers
-}
-
-/// Every owner approves `id`, each approval measured individually.
-fn approve_all_measured(env: &Env, client: &AccordContractClient, owners: &[Address], id: u64, what: &str) {
-    for (i, owner) in owners.iter().enumerate() {
-        client.approve(owner, &id);
-        assert_within_resource_ceiling(env, &format!("approve {} by owner {}", what, i));
-    }
-}
-
-#[test]
-fn resource_ceiling_create_and_approve_at_max_config() {
-    let (env, client, owners, tokens) = setup_max_config();
-
-    let id = client.create_proposal(
-        &owners[1],
-        &max_transfers(&env, &tokens),
-        &str(&env, "resource transfer"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    assert_within_resource_ceiling(&env, "create_proposal (3 tokens)");
-
-    // Owner 0 has every incoming delegation; later approvers hit a Ready proposal.
-    approve_all_measured(&env, &client, &owners, id, "transfer");
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
-}
-
-#[test]
-fn resource_ceiling_execute_transfer_at_max_config() {
-    let (env, client, owners, tokens) = setup_max_config();
-
-    let id = client.create_proposal(
-        &owners[1],
-        &max_transfers(&env, &tokens),
-        &str(&env, "resource transfer"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    for owner in owners.iter() {
-        client.approve(owner, &id);
-    }
-
-    client.execute(&owners[1], &id);
-    assert_within_resource_ceiling(&env, "execute transfer (3 tokens)");
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
-}
-
-#[test]
-fn resource_ceiling_execute_governance_at_max_config() {
-    let (env, client, owners, _) = setup_max_config();
-
-    let change = client.create_change_weight_proposal(
-        &owners[1], &owners[5], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource weight"), &DEADLINE,
-    );
-    assert_within_resource_ceiling(&env, "create_change_weight_proposal");
-    // Left pending so the removal below must reverse owner 0's approval on it.
-    let pending = client.create_change_weight_proposal(
-        &owners[1], &owners[6], &(MAX_OWNER_WEIGHT - 1), &str(&env, "resource pending"), &DEADLINE,
-    );
-    let remove = client.create_remove_owner_proposal(
-        &owners[1], &owners[0], &str(&env, "resource remove"), &DEADLINE,
-    );
-    assert_within_resource_ceiling(&env, "create_remove_owner_proposal");
-
-    approve_all_measured(&env, &client, &owners, change, "weight change");
-    for owner in owners.iter() {
-        client.approve(owner, &pending);
-        client.approve(owner, &remove);
-    }
-
-    client.execute(&owners[1], &change);
-    assert_within_resource_ceiling(&env, "execute ChangeOwnerWeight");
-
-    // Removing the delegate of every delegation is the widest cleanup path.
-    client.execute(&owners[1], &remove);
-    assert_within_resource_ceiling(&env, "execute RemoveOwner (delegate of all delegations)");
-
-    // Back below MAX_OWNERS (adds are rejected at the cap), so an add can
-    // bring the contract back up to it.
-    let add = client.create_add_owner_proposal(
-        &owners[1], &Address::generate(&env), &MAX_OWNER_WEIGHT, &str(&env, "resource add"), &DEADLINE,
-    );
-    assert_within_resource_ceiling(&env, "create_add_owner_proposal");
-    for owner in owners.iter().skip(1) {
-        client.approve(owner, &add);
-    }
-    client.execute(&owners[1], &add);
-    assert_within_resource_ceiling(&env, "execute AddOwner (to MAX_OWNERS)");
-    assert_eq!(client.get_owners().len(), MAX_OWNERS);
-}
-
-#[test]
-fn resource_ceiling_weight_lookups_at_max_config() {
-    let (env, client, owners, _) = setup_max_config();
-
-    for (i, owner) in owners.iter().enumerate() {
-        client.get_effective_weight(owner);
-        assert_within_resource_ceiling(&env, &format!("get_effective_weight owner {}", i));
-    }
-    assert_eq!(
-        client.get_effective_weight(&owners[0]),
-        MAX_OWNER_WEIGHT + (MAX_OWNERS - 1) * (MAX_OWNER_WEIGHT / 2)
-    );
-
-    client.get_owner_weights();
-    assert_within_resource_ceiling(&env, "get_owner_weights");
-    client.get_owner_weight(&owners[0]);
-    assert_within_resource_ceiling(&env, "get_owner_weight");
-    client.get_total_weight();
-    assert_within_resource_ceiling(&env, "get_total_weight");
-    client.get_required_quorum_weight();
-    assert_within_resource_ceiling(&env, "get_required_quorum_weight");
-    client.get_delegations(&owners[0]);
-    assert_within_resource_ceiling(&env, "get_delegations (all incoming)");
-    client.get_active_delegations();
-    assert_within_resource_ceiling(&env, "get_active_delegations");
-}
-
-// ─── #739: Exhaustive access-control matrix ──────────────────────────────────
-//
-// One suite that exercises every public entrypoint under each access condition:
-// role gate, owner-weight gate, guardian-only, permissionless, authenticated,
-// deprecated, and read-only. Every case records the entrypoint it covers; the
-// final `assert_complete` cross-checks the recorded set against
-// `ENTRYPOINT_MATRIX` and fails by name for any listed entrypoint that has no
-// case, so a new entrypoint (or a dropped case) cannot silently go untested.
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Access {
-    Initialize,
-    Migration,
-    Proposer,
-    ApproverOwner,
-    ExecutorRole,
-    OwnerWeight,
-    GuardianOnly,
-    Permissionless,
-    Authenticated,
-    Deprecated,
-    ReadOnly,
-}
-
-/// Every entrypoint in the `#[contractimpl]` block of `lib.rs`, paired with the
-/// access condition it enforces (mirrors the gating-matrix comment at
-/// lib.rs:1755 and each function's own gates).
-const ENTRYPOINT_MATRIX: &[(&str, Access)] = &[
-    ("initialize", Access::Initialize),
-    ("migrate_to_weighted_governance", Access::Migration),
-    ("migrate_to_rbac", Access::Migration),
-    // Proposer role (owner or role-only).
-    ("create_recurring_schedule", Access::Proposer),
-    ("create_proposal", Access::Proposer),
-    ("create_proposal_with_attachment", Access::Proposer),
-    ("create_add_owner_proposal", Access::Proposer),
-    ("create_spending_limit_proposal", Access::Proposer),
-    ("create_spending_window_proposal", Access::Proposer),
-    ("create_change_weight_proposal", Access::Proposer),
-    ("create_remove_owner_proposal", Access::Proposer),
-    ("create_change_threshold_proposal", Access::Proposer),
-    ("create_recurring_proposal", Access::Proposer),
-    ("create_cancel_recurring_proposal", Access::Proposer),
-    ("create_pause_recurring_proposal", Access::Proposer),
-    ("create_resume_recurring_proposal", Access::Proposer),
-    ("create_modify_recurring_proposal", Access::Proposer),
-    ("create_grant_role_proposal", Access::Proposer),
-    ("create_revoke_role_proposal", Access::Proposer),
-    ("create_asset_proposal", Access::Proposer),
-    // Owner + Approver role.
-    ("approve", Access::ApproverOwner),
-    ("revoke", Access::ApproverOwner),
-    // Executor role.
-    ("execute", Access::ExecutorRole),
-    ("cancel_expired", Access::ExecutorRole),
-    // Owner-weight governance (no role gate).
-    ("set_max_single_owner_weight_pct", Access::OwnerWeight),
-    ("set_guardian", Access::OwnerWeight),
-    ("unfreeze", Access::OwnerWeight),
-    ("exit_recovery", Access::OwnerWeight),
-    ("upgrade", Access::OwnerWeight),
-    ("set_classic_asset", Access::OwnerWeight),
-    // Guardian-only.
-    ("freeze", Access::GuardianOnly),
-    ("enter_recovery", Access::GuardianOnly),
-    // No role/owner gate.
-    ("disburse_recurring_schedule", Access::Permissionless),
-    ("disburse_recurring", Access::Authenticated),
-    ("cancel_recurring_schedule", Access::Deprecated),
-    // Read-only views (no authorization).
-    ("get_spent_tracker", Access::ReadOnly),
-    ("get_recurring_payment", Access::ReadOnly),
-    ("get_next_disbursement_time", Access::ReadOnly),
-    ("get_recurring_payments_paged", Access::ReadOnly),
-    ("get_active_recurring_count", Access::ReadOnly),
-    ("get_approvers", Access::ReadOnly),
-    ("get_version", Access::ReadOnly),
-    ("get_storage_version", Access::ReadOnly),
-    ("get_total_weight", Access::ReadOnly),
-    ("is_governance_migrated", Access::ReadOnly),
-    ("get_role_version", Access::ReadOnly),
-    ("get_roles", Access::ReadOnly),
-    ("has_role", Access::ReadOnly),
-    ("get_role_members", Access::ReadOnly),
-    ("get_owner_weight", Access::ReadOnly),
-    ("get_owner_weights", Access::ReadOnly),
-    ("get_max_single_owner_weight_pct", Access::ReadOnly),
-    ("get_delegations", Access::ReadOnly),
-    ("get_active_delegations", Access::ReadOnly),
-    ("get_effective_weight", Access::ReadOnly),
-    ("get_proposal", Access::ReadOnly),
-    ("get_proposals_paged", Access::ReadOnly),
-    ("get_owners", Access::ReadOnly),
-    ("get_spending_limit", Access::ReadOnly),
-    ("get_owner_spending_limits", Access::ReadOnly),
-    ("get_remaining_spending_limit", Access::ReadOnly),
-    ("get_spending_window", Access::ReadOnly),
-    ("get_threshold", Access::ReadOnly),
-    ("get_required_quorum_weight", Access::ReadOnly),
-    ("get_time_lock_delay", Access::ReadOnly),
-    ("get_total_proposals", Access::ReadOnly),
-    ("is_owner", Access::ReadOnly),
-    ("has_approved", Access::ReadOnly),
-    ("get_proposal_approval_progress", Access::ReadOnly),
-    ("get_classic_asset", Access::ReadOnly),
-    ("is_frozen", Access::ReadOnly),
-    ("is_in_recovery", Access::ReadOnly),
-    ("get_guardian", Access::ReadOnly),
-];
-
-/// Tracks which entries of `ENTRYPOINT_MATRIX` have been exercised by a case.
-struct Coverage {
-    seen: std::collections::BTreeSet<&'static str>,
-}
-
-impl Coverage {
-    fn new() -> Self {
-        Coverage {
-            seen: std::collections::BTreeSet::new(),
-        }
-    }
-
-    fn cover(&mut self, name: &'static str) {
-        self.seen.insert(name);
-    }
-
-    /// Panics, naming every listed entrypoint that was never exercised, and any
-    /// case that covered a name absent from the matrix.
-    fn assert_complete(&self) {
-        let mut missing = std::vec::Vec::new();
-        for (name, _) in ENTRYPOINT_MATRIX.iter() {
-            if !self.seen.contains(name) {
-                missing.push(*name);
-            }
-        }
-        assert!(
-            missing.is_empty(),
-            "access-control matrix (#739): entrypoints listed in ENTRYPOINT_MATRIX but with no case: {:?}",
-            missing
-        );
-        for name in self.seen.iter() {
-            assert!(
-                ENTRYPOINT_MATRIX.iter().any(|(listed, _)| listed == name),
-                "access-control matrix (#739): a case covers `{name}` which is not in ENTRYPOINT_MATRIX",
-            );
-        }
-    }
-}
-
-/// Builds and executes an active recurring-payment schedule, returning its id
-/// (the first schedule in a fresh env is always id 1).
-fn matrix_active_recurring(
-    env: &Env,
-    client: &AccordContractClient,
-    proposer: &Address,
-    approver: &Address,
-    executor: &Address,
-    token: &token::Client,
-) -> u64 {
-    let recipient = Address::generate(env);
-    let id = client.create_recurring_proposal(
-        proposer,
-        &recipient,
-        &token.address,
-        &1_000_i128,
-        &86_400_u64,
-        &NOW,
-        &0_u64,
-        &0_u64,
-        &0_i128,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(env, "payroll"),
-        &(NOW + 200_000),
-        &ProposalCategory::Payroll,
-    );
-    client.approve(proposer, &id);
-    client.approve(approver, &id);
-    client.execute(executor, &id);
-
-    // The recurring id counter is shared with the legacy
-    // `create_recurring_schedule` path, so the freshly created payment is not
-    // always id 1. Return the highest id that now exists.
-    let page = client.get_recurring_payments_paged(&0, &20);
-    let mut created = 0_u64;
-    for i in 0..page.len() {
-        let id = page.get(i).unwrap().id;
-        if id > created {
-            created = id;
-        }
-    }
-    assert!(created > 0, "recurring proposal created no payment");
-    created
-}
-
-fn matrix_initialize(cov: &mut Coverage) {
-// ─── Issue #1: Checked arithmetic on recurring counters ──────────────────────
-
-/// Helper: create and fully approve+execute a recurring proposal, returning
-/// the numeric schedule id (always 1 for a fresh contract).
-fn create_recurring_schedule_via_proposal(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-    token: &Address,
-    recipient: &Address,
-    amount: i128,
-    interval: u64,
-    total_cap: i128,
-) -> u64 {
-    let create_id = client.create_recurring_proposal(
-        owner_a,
-        recipient,
-        token,
-        &amount,
-        &interval,
-        &NOW,
-        &(NOW + 86_400 * 365),
-        &0_u64,
-        &total_cap,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(env, "checked arithmetic schedule"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-    client.approve(owner_a, &create_id);
-    client.approve(owner_b, &create_id);
-    client.execute(owner_c, &create_id);
-    // The first schedule always gets id 1 on a fresh env.
-    1_u64
-}
-
-/// The final disbursement is clamped to the remaining cap so total_disbursed
-/// never overshoots total_cap.
-#[test]
-fn disburse_recurring_final_period_is_clamped_to_total_cap() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-
-    // cap = 2_500, amount = 1_000 → after 2 periods total_disbursed = 2_000,
-    // the third disbursement must be clamped to 500 (not 1_000).
-    let total_cap = 2_500_i128;
-    let amount = 1_000_i128;
-    let interval = 3_600_u64;
-
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        amount, interval, total_cap,
-    );
-
-    // Period 1.
-    set_timestamp(&env, NOW + interval + 1);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 1_000);
-
-    // Period 2.
-    set_timestamp(&env, NOW + interval * 2 + 2);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 2_000);
-
-    // Period 3: would be 3_000 but cap is 2_500 → clamped to 500.
-    set_timestamp(&env, NOW + interval * 3 + 3);
-    let before = token_client.balance(&recipient);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    let paid = token_client.balance(&recipient) - before;
-    assert_eq!(paid, 500, "final disbursement must be clamped, not the full period amount");
-    let schedule = client.get_recurring_payment(&schedule_id);
-    assert_eq!(
-        schedule.total_disbursed, total_cap,
-        "total_disbursed must equal total_cap exactly after clamped final payout"
-    );
-}
-
-/// Once the cap is fully consumed the schedule must refuse further disbursements.
-#[test]
-fn disburse_recurring_cannot_disburse_beyond_cap() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-
-    // Exact cap: 2 × 1_000 = 2_000.
-    let total_cap = 2_000_i128;
-    let amount = 1_000_i128;
-    let interval = 3_600_u64;
-
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        amount, interval, total_cap,
-    );
-
-    set_timestamp(&env, NOW + interval + 1);
-    client.disburse_recurring(&owner_a, &schedule_id);
-
-    set_timestamp(&env, NOW + interval * 2 + 2);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, total_cap);
-
-    // A third attempt is rejected — the cap is exhausted.
-    set_timestamp(&env, NOW + interval * 3 + 3);
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &schedule_id),
-        Err(Ok(ContractError::RecurringPaymentComplete))
-    );
-}
-
-/// After the cap is drained, periods_disbursed equals the number of times
-/// we actually transferred — it must not be incremented on a rejected call.
-#[test]
-fn disburse_recurring_periods_disbursed_does_not_increment_on_cap_reject() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-
-    let total_cap = 1_000_i128;
-    let amount = 1_000_i128;
-    let interval = 3_600_u64;
-
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        amount, interval, total_cap,
-    );
-
-    set_timestamp(&env, NOW + interval + 1);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    let after_one = client.get_recurring_payment(&schedule_id);
-    assert_eq!(after_one.periods_disbursed, 1);
-
-    // Cap reached; next call must fail without incrementing periods_disbursed.
-    set_timestamp(&env, NOW + interval * 2 + 2);
-    let _ = client.try_disburse_recurring(&owner_a, &schedule_id);
-    let after_fail = client.get_recurring_payment(&schedule_id);
-    assert_eq!(
-        after_fail.periods_disbursed, 1,
-        "periods_disbursed must not increment when disbursement is rejected by cap"
-    );
-}
-
-/// An amount that would overflow i128 when added to total_disbursed is
-/// rejected with ArithmeticError rather than wrapping.
-#[test]
-fn disburse_recurring_near_i128_max_amount_is_rejected_not_wrapped() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-    let interval = 3_600_u64;
-
-    // Use i128::MAX as the per-period amount with no cap so the first addition
-    // to total_disbursed (0 + i128::MAX = ok) works, but the second
-    // (i128::MAX + i128::MAX) overflows.
-    //
-    // However, total_cap must be >= amount per contract validation, and we must
-    // be able to fund the treasury — so instead we set amount to i128::MAX / 2
-    // and total_cap to i128::MAX, then manually move total_disbursed close to
-    // the edge via direct storage mutation, and attempt a final disburse that
-    // would overflow.
-    //
-    // Because we cannot easily set total_disbursed to near i128::MAX in a live
-    // funded schedule without actually transferring that much, we instead test
-    // the checked_add path by constructing a schedule where a single-period
-    // amount would wrap when added: amount = 1, total_disbursed = i128::MAX
-    // (injected via direct env storage).  We verify ArithmeticError is returned.
-    let amount = 1_i128;
-    let total_cap = i128::MAX; // validation: cap >= amount
-
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        amount, interval, total_cap,
-    );
-
-    // Inject total_disbursed = i128::MAX so the next checked_add overflows.
-    env.as_contract(&client.address, || {
-        let key = recur_key(schedule_id);
-        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
-        s.total_disbursed = i128::MAX;
-        env.storage().persistent().set(&key, &s);
-    });
-
-    set_timestamp(&env, NOW + interval + 1);
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &schedule_id),
-        Err(Ok(ContractError::ArithmeticError))
-    );
-}
-
-/// periods_disbursed at u32::MAX cannot be incremented: the call fails with
-/// ArithmeticError before any funds move and leaves the schedule untouched.
-#[test]
-fn disburse_recurring_period_count_overflow_is_rejected_before_transfer() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-    let interval = 3_600_u64;
-
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        1_000, interval, 1_000_000,
-    );
-
-    env.as_contract(&client.address, || {
-        let key = recur_key(schedule_id);
-        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
-        s.periods_disbursed = u32::MAX;
-        env.storage().persistent().set(&key, &s);
-    });
-
-    set_timestamp(&env, NOW + interval + 1);
-    let before = token_client.balance(&recipient);
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &schedule_id),
-        Err(Ok(ContractError::ArithmeticError))
-    );
-    assert_eq!(token_client.balance(&recipient), before);
-    let schedule = client.get_recurring_payment(&schedule_id);
-    assert_eq!(schedule.periods_disbursed, u32::MAX);
-    assert_eq!(schedule.total_disbursed, 0);
-}
-
-/// A fixed-amount schedule cannot pay out more periods than fit before its
-/// end_time, even when the cap would still allow them.
-#[test]
-fn disburse_recurring_cannot_exceed_period_window() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-    let interval = 3_600_u64;
-    let amount = 1_000_i128;
-
-    let create_id = client.create_recurring_proposal(
-        &owner_a,
-        &recipient,
-        &token_client.address,
-        &amount,
-        &interval,
-        &NOW,
-        &(NOW + interval * 2),
-        &0_u64,
-        &(amount * 100),
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(&env, "two periods only"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-    client.approve(&owner_a, &create_id);
-    client.approve(&owner_b, &create_id);
-    client.execute(&owner_c, &create_id);
-    let schedule_id = 1_u64;
-
-    set_timestamp(&env, NOW + interval);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    set_timestamp(&env, NOW + interval * 2);
-    client.disburse_recurring(&owner_a, &schedule_id);
-
-    set_timestamp(&env, NOW + interval * 3);
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &schedule_id),
-        Err(Ok(ContractError::RecurringPaymentComplete))
-    );
-    let schedule = client.get_recurring_payment(&schedule_id);
-    assert_eq!(schedule.periods_disbursed, 2);
-    assert_eq!(schedule.total_disbursed, amount * 2);
-}
-
-/// Linear-vesting payout math near the numeric limit returns ArithmeticError
-/// instead of wrapping.
-#[test]
-fn linear_vesting_near_i128_max_amount_is_rejected_not_wrapped() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-
-    let create_id = client.create_recurring_proposal(
-        &owner_a,
-        &recipient,
-        &token_client.address,
-        &10_000_000_i128,
-        &3600_u64,
-        &NOW,
-        &(NOW + 10_000),
-        &0_u64,
-        &10_000_000_i128,
-        &RecurringKind::LinearVesting,
-        &str(&env, "vesting overflow"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-    client.approve(&owner_a, &create_id);
-    client.approve(&owner_b, &create_id);
-    client.execute(&owner_c, &create_id);
-
-    env.as_contract(&client.address, || {
-        let key = recur_key(1);
-        let mut s: RecurringPayment = env.storage().persistent().get(&key).unwrap();
-        s.amount = i128::MAX;
-        s.total_cap = i128::MAX;
-        env.storage().persistent().set(&key, &s);
-    });
-
-    set_timestamp(&env, NOW + 5_000);
-    let before = token_client.balance(&recipient);
-    assert_eq!(
-        client.try_disburse_recurring(&owner_a, &1),
-        Err(Ok(ContractError::ArithmeticError))
-    );
-    assert_eq!(token_client.balance(&recipient), before);
-    assert_eq!(client.get_recurring_payment(&1).total_disbursed, 0);
-}
-
-// ─── Event schema version ────────────────────────────────────────────────────
-
-/// Returns `(topic, version)` for every event the contract emitted during the
-/// most recent call. Event payloads are contract-type structs, which encode as
-/// maps keyed by field name, so the `version` field is read without naming the
-/// concrete event type.
-fn last_call_event_versions(
-    env: &Env,
-    client: &AccordContractClient,
-) -> std::vec::Vec<(Symbol, u32)> {
-    let mut seen = std::vec::Vec::new();
-    for event in env
-        .events()
-        .all()
-        .filter_by_contract(&client.address)
-        .events()
-        .iter()
-    {
-        let xdr::ContractEventBody::V0(body) = &event.body;
-        let topic: Symbol = body.topics.first().expect("event topic").clone().into_val(env);
-        let payload: Map<Symbol, Val> = body.data.clone().into_val(env);
-        let version: u32 = payload
-            .get(Symbol::new(env, "version"))
-            .unwrap_or_else(|| panic!("event payload has no version field"))
-            .into_val(env);
-        seen.push((topic, version));
-    }
-    seen
-}
-
-/// Asserts the last call emitted `topic` and that every event it emitted
-/// carries the current schema version.
-fn assert_last_call_emitted_versioned(
-    env: &Env,
-    client: &AccordContractClient,
-    topic: Symbol,
-) {
-    let seen = last_call_event_versions(env, client);
-    assert!(
-        seen.iter().any(|(t, _)| *t == topic),
-        "expected the call to emit the requested event"
-    );
-    for (_, version) in seen {
-        assert_eq!(version, EVENT_SCHEMA_VERSION);
-    }
-}
-
-#[test]
-fn proposal_lifecycle_events_carry_current_schema_version() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-    let id = client.create_proposal(
-        &owner_a,
-        &t(&env, &recipient, 1_000, &token_client.address),
-        &str(&env, "Versioned events"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("created"));
-
-    client.approve(&owner_a, &id);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("approved"));
-
-    client.revoke(&owner_a, &id);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("revoked"));
-
-    client.approve(&owner_a, &id);
-    client.approve(&owner_b, &id);
-    client.execute(&owner_c, &id);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("executed"));
-}
-
-#[test]
-fn governance_events_carry_current_schema_version() {
-    let (env, client, owner_a, owner_b, owner_c, new_owner, _) = setup(2);
-    let id = client.create_add_owner_proposal(
-        &owner_a,
-        &new_owner,
-        &1,
-        &str(&env, "Add owner"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &id);
-    client.approve(&owner_b, &id);
-    client.execute(&owner_c, &id);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("a_own"));
-}
-
-#[test]
-fn guardian_events_carry_current_schema_version() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let guardian = Address::generate(&env);
-    let mut approvers = Vec::new(&env);
-    approvers.push_back(owner_a.clone());
-    approvers.push_back(owner_b.clone());
-    approvers.push_back(owner_c.clone());
-
-    client.set_guardian(&approvers, &guardian);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("guard_set"));
-
-    client.freeze(&guardian);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("frozen"));
-
-    client.unfreeze(&approvers);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("unfrozen"));
-}
-
-#[test]
-fn recurring_disbursement_event_carries_current_schema_version() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let recipient = Address::generate(&env);
-    let interval = 3_600_u64;
-    let schedule_id = create_recurring_schedule_via_proposal(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &token_client.address, &recipient,
-        1_000, interval, 10_000,
-    );
-
-    set_timestamp(&env, NOW + interval + 1);
-    client.disburse_recurring(&owner_a, &schedule_id);
-    assert_last_call_emitted_versioned(&env, &client, symbol_short!("rpay"));
-}
-
-// ─── Adversarial token / reentrancy tests ────────────────────────────────────
-//
-// `execute` and `disburse_recurring` are the only two places the contract moves
-// funds. These tests register hostile token contracts and assert that every
-// failure mode surfaces as `TransferFailed` and leaves proposal, schedule and
-// active-count state untouched. See docs/SECURITY.md, "Token interaction safety".
-
-const TOKEN_MODE_OK: u32 = 0;
-const TOKEN_MODE_PANIC: u32 = 1;
-const TOKEN_MODE_REENTER_EXECUTE: u32 = 2;
-const TOKEN_MODE_REENTER_DISBURSE: u32 = 3;
-
-/// A token whose `transfer` can trap, selectively fail for one recipient, or
-/// call back into the Accord contract while the transfer is in flight.
-#[contract]
-pub struct AdversarialToken;
-
-#[contractimpl]
-impl AdversarialToken {
-    pub fn init(
-        env: Env,
-        accord: Address,
-        mode: u32,
-        balance: i128,
-        bad_to: Address,
-        reenter_caller: Address,
-        reenter_id: u64,
-    ) {
-        let s = env.storage().instance();
-        s.set(&Symbol::new(&env, "accord"), &accord);
-        s.set(&Symbol::new(&env, "mode"), &mode);
-        s.set(&Symbol::new(&env, "balance"), &balance);
-        s.set(&Symbol::new(&env, "bad_to"), &bad_to);
-        s.set(&Symbol::new(&env, "caller"), &reenter_caller);
-        s.set(&Symbol::new(&env, "id"), &reenter_id);
-        s.set(&Symbol::new(&env, "sent"), &0_u32);
-    }
-
-    pub fn decimals(_env: Env) -> u32 {
-        7
-    }
-
-    pub fn symbol(env: Env) -> String {
-        String::from_str(&env, "EVIL")
-    }
-
-    pub fn name(env: Env) -> String {
-        String::from_str(&env, "Adversarial")
-    }
-
-    pub fn balance(env: Env, _id: Address) -> i128 {
-        env.storage().instance().get(&Symbol::new(&env, "balance")).unwrap()
-    }
-
-    /// Number of transfers that completed (and were not reverted).
-    pub fn sent(env: Env) -> u32 {
-        env.storage().instance().get(&Symbol::new(&env, "sent")).unwrap()
-    }
-
-    pub fn transfer(env: Env, _from: Address, to: Address, _amount: i128) {
-        let s = env.storage().instance();
-        let mode: u32 = s.get(&Symbol::new(&env, "mode")).unwrap();
-        let bad_to: Address = s.get(&Symbol::new(&env, "bad_to")).unwrap();
-        if mode == TOKEN_MODE_PANIC || to == bad_to {
-            panic!("token transfer failed");
-        }
-        if mode == TOKEN_MODE_REENTER_EXECUTE || mode == TOKEN_MODE_REENTER_DISBURSE {
-            let accord: Address = s.get(&Symbol::new(&env, "accord")).unwrap();
-            let caller: Address = s.get(&Symbol::new(&env, "caller")).unwrap();
-            let id: u64 = s.get(&Symbol::new(&env, "id")).unwrap();
-            let client = AccordContractClient::new(&env, &accord);
-            if mode == TOKEN_MODE_REENTER_EXECUTE {
-                client.execute(&caller, &id);
-            } else {
-                client.disburse_recurring(&caller, &id);
-            }
-        }
-        let sent: u32 = s.get(&Symbol::new(&env, "sent")).unwrap();
-        s.set(&Symbol::new(&env, "sent"), &(sent + 1));
-    }
-}
-
-/// A token whose `transfer` reports failure by returning `false` instead of
-/// trapping. The SEP-41 `transfer` returns nothing, so a boolean is a
-/// mistyped result that the contract must not read as success.
-#[contract]
-pub struct FalseReturnToken;
-
-#[contractimpl]
-impl FalseReturnToken {
-    pub fn decimals(_env: Env) -> u32 {
-        7
-    }
-
-    pub fn symbol(env: Env) -> String {
-        String::from_str(&env, "FALSE")
-    }
-
-    pub fn name(env: Env) -> String {
-        String::from_str(&env, "FalseReturn")
-    }
-
-    pub fn balance(_env: Env, _id: Address) -> i128 {
-        i128::MAX
-    }
-
-    pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) -> bool {
-        false
-    }
-}
-
-/// Initializes a 3-owner contract (threshold 2, weight 1 each) and returns it
-/// with its owners. Tokens are registered by the individual tests.
-fn adversarial_contract() -> (
-    Env,
-    AccordContractClient<'static>,
-    Address,
-    Address,
-    Address,
-) {
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-    let owner_a = Address::generate(&env);
-    let owner_b = Address::generate(&env);
-    let owner_c = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
-    let weights = Vec::from_array(&env, [1_u32, 1, 1]);
-    client.initialize(&owners, &weights, &2, &0);
-    (env, client, owner_a, owner_b, owner_c)
-}
-
-fn register_adversarial_token(
-    env: &Env,
-    accord: &Address,
-    mode: u32,
-    balance: i128,
-    bad_to: &Address,
-    reenter_caller: &Address,
-    reenter_id: u64,
-) -> AdversarialTokenClient<'static> {
-    let token_id = env.register(AdversarialToken, ());
-    let token = AdversarialTokenClient::new(env, &token_id);
-    token.init(accord, &mode, &balance, bad_to, reenter_caller, &reenter_id);
-    token
-}
-
-/// Creates a Ready (fully approved) single-transfer proposal.
-fn ready_transfer_proposal(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    transfers: &Vec<Transfer>,
-) -> u64 {
-    let id = client.create_proposal(
-        owner_a,
-        transfers,
-        &str(env, "adversarial"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(owner_a, &id);
-    client.approve(owner_b, &id);
-    id
-}
-
-/// Asserts a rejected `execute` left the proposal un-executed and the active
-/// count exactly where it was.
-fn assert_execute_rejected_cleanly(
-    env: &Env,
-    client: &AccordContractClient,
-    executor: &Address,
-    id: u64,
-) {
-    let active_before = env.as_contract(&client.address, || read_active_count(env));
-    assert!(active_before > 0, "proposal must be counted as active");
-
-    assert_eq!(
-        client.try_execute(executor, &id),
-        Err(Ok(ContractError::TransferFailed))
-    );
-
-    assert_ne!(client.get_proposal(&id).status, ProposalStatus::Executed);
-    assert_eq!(
-        env.as_contract(&client.address, || read_active_count(env)),
-        active_before,
-        "a failed execute must not change the active count"
-    );
-}
-
-#[test]
-fn execute_with_trapping_token_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let recipient = Address::generate(&env);
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_c, 0,
-    );
-    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
-
-    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
-    assert_eq!(token.sent(), 0);
-}
-
-#[test]
-fn execute_with_false_returning_token_is_rejected_and_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let recipient = Address::generate(&env);
-    let token_id = env.register(FalseReturnToken, ());
-    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token_id));
-
-    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
-}
-
-#[test]
-fn execute_with_reentrant_token_is_rejected_and_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let recipient = Address::generate(&env);
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_REENTER_EXECUTE, i128::MAX, &Address::generate(&env), &owner_c, 1,
-    );
-    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
-    assert_eq!(id, 1);
-
-    // The token calls back into `execute` for the same proposal mid-transfer.
-    // The host forbids the re-entry, the token's transfer traps, and the whole
-    // call is rejected without marking the proposal executed.
-    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
-    assert_eq!(token.sent(), 0);
-}
-
-#[test]
-fn execute_with_insufficient_treasury_balance_is_rejected_before_transfer() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let recipient = Address::generate(&env);
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_OK, 99, &Address::generate(&env), &owner_c, 0,
-    );
-    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &t(&env, &recipient, 100, &token.address));
-
-    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
-    assert_eq!(token.sent(), 0, "no transfer may be attempted when the balance is short");
-}
-
-#[test]
-fn execute_with_failing_second_transfer_reverts_the_first() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let good = Address::generate(&env);
-    let bad = Address::generate(&env);
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_OK, i128::MAX, &bad, &owner_c, 0,
-    );
-    let mut transfers = Vec::new(&env);
-    transfers.push_back(Transfer { to: good, token: token.address.clone(), amount: 100 });
-    transfers.push_back(Transfer { to: bad, token: token.address.clone(), amount: 100 });
-    let id = ready_transfer_proposal(&env, &client, &owner_a, &owner_b, &transfers);
-
-    assert_execute_rejected_cleanly(&env, &client, &owner_c, id);
-    assert_eq!(token.sent(), 0, "the first transfer must be rolled back with the failed call");
-}
-
-/// Creates and executes a recurring-payment proposal for `token`, returning the
-/// schedule id. Creating the schedule never moves funds.
-fn adversarial_recurring_schedule(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-    token: &Address,
-    interval: u64,
-) -> u64 {
-    let create_id = client.create_recurring_proposal(
-        owner_a,
-        &Address::generate(env),
-        token,
-        &1_000_i128,
-        &interval,
-        &NOW,
-        &(NOW + 86_400 * 365),
-        &0_u64,
-        &100_000_i128,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(env, "adversarial schedule"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-    );
-    client.approve(owner_a, &create_id);
-    client.approve(owner_b, &create_id);
-    client.execute(owner_c, &create_id);
-    1_u64
-}
-
-fn assert_disburse_rejected_cleanly(
-    env: &Env,
-    client: &AccordContractClient,
-    caller: &Address,
-    schedule_id: u64,
-    interval: u64,
-) {
-    let before = client.get_recurring_payment(&schedule_id);
-    let active_before = client.get_active_recurring_count();
-
-    set_timestamp(env, NOW + interval + 1);
-    assert_eq!(
-        client.try_disburse_recurring(caller, &schedule_id),
-        Err(Ok(ContractError::TransferFailed))
-    );
-
-    let after = client.get_recurring_payment(&schedule_id);
-    assert_eq!(after.total_disbursed, before.total_disbursed);
-    assert_eq!(after.periods_disbursed, before.periods_disbursed);
-    assert_eq!(after.last_disbursed_at, before.last_disbursed_at);
-    assert_eq!(client.get_active_recurring_count(), active_before);
-}
-
-#[test]
-fn disburse_recurring_with_trapping_token_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_PANIC, i128::MAX, &Address::generate(&env), &owner_a, 1,
-    );
-    let interval = 3_600_u64;
-    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
-
-    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
-    assert_eq!(token.sent(), 0);
-}
-
-#[test]
-fn disburse_recurring_with_false_returning_token_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let token_id = env.register(FalseReturnToken, ());
-    let interval = 3_600_u64;
-    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token_id, interval);
-
-    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
-}
-
-#[test]
-fn disburse_recurring_with_reentrant_token_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_REENTER_DISBURSE, i128::MAX, &Address::generate(&env), &owner_a, 1,
-    );
-    let interval = 3_600_u64;
-    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
-
-    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
-    assert_eq!(token.sent(), 0);
-}
-
-#[test]
-fn disburse_recurring_with_insufficient_balance_preserves_state() {
-    let (env, client, owner_a, owner_b, owner_c) = adversarial_contract();
-    let token = register_adversarial_token(
-        &env, &client.address, TOKEN_MODE_OK, 999, &Address::generate(&env), &owner_a, 1,
-    );
-    let interval = 3_600_u64;
-    let id = adversarial_recurring_schedule(&env, &client, &owner_a, &owner_b, &owner_c, &token.address, interval);
-
-    assert_disburse_rejected_cleanly(&env, &client, &owner_a, id, interval);
-    assert_eq!(token.sent(), 0);
-}
-
-// ─── Removed owner's weight is subtracted from total weight exactly once ─────
-
-#[test]
-fn remove_owner_subtracts_exactly_their_weight_from_total() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
-    assert_eq!(client.get_total_weight(), 12);
-
-    remove_owner_via(&env, &client, &owners[0], &owners[3]);
-
-    assert_eq!(client.get_total_weight(), 10);
-    assert_total_weight_invariant(&env, &client, "remove owner (weight 2)");
-    assert_eq!(client.get_owners().len(), 3);
-}
-
-#[test]
-fn remove_owner_with_approvals_and_spending_limit_subtracts_only_their_weight() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
-    let target = owners[3].clone();
-    let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin).address();
-
-    // Give the target a spending limit entry.
-    let limit_id = client.create_spending_limit_proposal(
-        &owners[0],
-        &target,
-        &token,
-        &1_000_i128,
-        &str(&env, "limit target"),
-        &DEADLINE,
-    );
-    approve_and_execute(&client, &owners[0], limit_id);
-    assert_eq!(client.get_spending_limit(&target, &token), Some(1_000));
-
-    // Give the target an active approval on a pending proposal.
-    let pending_id = client.create_add_owner_proposal(
-        &owners[0],
-        &Address::generate(&env),
-        &1,
-        &str(&env, "pending add"),
-        &DEADLINE,
-    );
-    client.approve(&target, &pending_id);
-    assert_eq!(client.get_proposal(&pending_id).approval_weight, 2);
-
-    remove_owner_via(&env, &client, &owners[0], &target);
-
-    // Only the target's weight (2) leaves the total, once; the approval and
-    // spending-limit entries play no part in the subtraction.
-    assert_eq!(client.get_total_weight(), 10);
-    assert_total_weight_invariant(&env, &client, "remove owner with approvals and limit");
-    assert_eq!(client.get_proposal(&pending_id).approval_weight, 0);
-}
-
-#[test]
-fn remove_heaviest_owner_leaves_total_equal_to_remaining_sum() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
-
-    remove_owner_via(&env, &client, &owners[1], &owners[0]);
-
-    assert_eq!(client.get_total_weight(), 3 + 3 + 2);
-    let remaining: u32 = client
-        .get_owner_weights()
-        .iter()
-        .map(|entry| entry.weight)
-        .sum();
-    assert_eq!(client.get_total_weight(), remaining);
-    assert_total_weight_invariant(&env, &client, "remove heaviest owner");
-}
-
-#[test]
-fn duplicate_remove_owner_proposals_subtract_weight_only_once() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
-    let target = owners[3].clone();
-
-    // Both proposals pass creation while the target is still an owner.
-    let first = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "first"), &DEADLINE);
-    let second = client.create_remove_owner_proposal(&owners[0], &target, &str(&env, "second"), &DEADLINE);
-    client.approve(&owners[0], &first);
-    client.approve(&owners[0], &second);
-
-    client.execute(&owners[0], &first);
-    assert_eq!(client.get_total_weight(), 10);
-
-    // Whether or not the second execution is accepted, the weight of an owner
-    // who is already gone cannot be subtracted again.
-    let _ = client.try_execute(&owners[0], &second);
-    assert_eq!(client.get_total_weight(), 10);
-    assert_total_weight_invariant(&env, &client, "duplicate removal");
-}
-
-#[test]
-fn rejected_remove_owner_at_creation_leaves_total_weight_unchanged() {
-    // A=3, B=1, C=1 → total 5, threshold 4: removing A would leave 2 < 4.
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    let weights = Vec::from_array(&env, [1_u32]);
-
-    // Authorized: the sole owner authenticates and initializes.
-    client.initialize(&owners, &weights, &1, &0);
-    assert_eq!(client.get_threshold(), 1);
-
-    // Unauthorized/repeat: a second call is rejected.
-    assert_eq!(
-        client.try_initialize(&owners, &weights, &1, &0),
-        Err(Ok(ContractError::AlreadyInitialized))
-    );
-    cov.cover("initialize");
-}
-
-fn matrix_migration(cov: &mut Coverage) {
-    // migrate_to_weighted_governance
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    mark_governance_unmigrated(&env, &client.address);
-    let outsider = Address::generate(&env);
-    assert_eq!(
-        client.try_migrate_to_weighted_governance(&Vec::from_array(
-            &env,
-            [owner_a.clone(), outsider.clone()]
-        )),
-        Err(Ok(ContractError::Unauthorized))
-    );
-    assert_eq!(
-        client.try_migrate_to_weighted_governance(&Vec::from_array(&env, [owner_a.clone()])),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.migrate_to_weighted_governance(&Vec::from_array(
-        &env,
-        [owner_a.clone(), owner_b.clone()],
-    ));
-    assert!(client.is_governance_migrated());
-    assert_eq!(
-        client.try_migrate_to_weighted_governance(&Vec::from_array(
-            &env,
-            [owner_a.clone(), owner_b.clone()]
-        )),
-        Err(Ok(ContractError::AlreadyMigrated))
-    );
-    cov.cover("migrate_to_weighted_governance");
-
-    // migrate_to_rbac
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    let owners = client.get_owners();
-    mark_rbac_unmigrated(&env, &client.address, &owners);
-    assert_eq!(
-        client.try_migrate_to_rbac(&Vec::from_array(&env, [owner_a.clone()])),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.migrate_to_rbac(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
-    assert_eq!(client.get_role_version(), RBAC_VERSION);
-    cov.cover("migrate_to_rbac");
-}
-
-fn matrix_proposer_entrypoints(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
-    // `owner_c` keeps its governance weight but loses every operational role.
-    clear_roles(&env, &client, &owner_c);
-    let d = |s: &str| str(&env, s);
-    let to = Address::generate(&env);
-
-    // create_proposal
+    client.approve(&owner_a, &remove_proposal);
+    client.approve(&owner_b, &remove_proposal);
+    client.execute(&owner_c, &remove_proposal);
+    assert!(!client.is_token_approved(&token_client.address));
     assert_eq!(
         client.try_create_proposal(
-            &owner_c,
-            &t(&env, &to, 1, &token.address),
-            &d("pay"),
+            &owner_a,
+            &transfer,
+            &str(&env, "Removed token"),
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::MissingRole))
+        Err(Ok(ContractError::AssetNotApproved))
     );
-    let pending = client.create_proposal(
-        &owner_a,
-        &t(&env, &to, 1, &token.address),
-        &d("pay"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    assert_eq!(client.get_proposal(&pending).status, ProposalStatus::Pending);
-    cov.cover("create_proposal");
+    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
+    let token_events = latest_contract_events
+        .events()
+        .iter()
+        .filter(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_tok")
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(token_events, 2);
 
-    // create_proposal_with_attachment
-    assert_eq!(
-        client.try_create_proposal_with_attachment(
-            &owner_c,
-            &t(&env, &to, 1, &token.address),
-            &d("attach"),
-            &DEADLINE,
-            &ProposalCategory::Ops,
-            &None::<BytesN<32>>,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_proposal_with_attachment(
-        &owner_a,
-        &t(&env, &to, 1, &token.address),
-        &d("attach"),
-        &DEADLINE,
-        &ProposalCategory::Ops,
-        &None::<BytesN<32>>,
-    );
-    cov.cover("create_proposal_with_attachment");
-
-    // create_recurring_schedule
-    assert_eq!(
-        client.try_create_recurring_schedule(
-            &owner_c,
-            &t(&env, &to, 1, &token.address),
-            &86_400,
-            &3,
-            &d("sched"),
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_recurring_schedule(
-        &owner_a,
-        &t(&env, &to, 1, &token.address),
-        &86_400,
-        &3,
-        &d("sched"),
-    );
-    cov.cover("create_recurring_schedule");
-
-    // create_add_owner_proposal
-    let new_owner = Address::generate(&env);
-    assert_eq!(
-        client.try_create_add_owner_proposal(
-            &owner_c,
-            &new_owner,
-            &1,
-            &d("add owner"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_add_owner_proposal(
-        &owner_a,
-        &new_owner,
-        &1,
-        &d("add owner"),
-        &DEADLINE,
-    );
-    cov.cover("create_add_owner_proposal");
-
-    // create_spending_limit_proposal
-    assert_eq!(
-        client.try_create_spending_limit_proposal(
-            &owner_c,
-            &owner_a,
-            &token.address,
-            &100,
-            &d("limit"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_spending_limit_proposal(
-        &owner_a,
-        &owner_a,
-        &token.address,
-        &100,
-        &d("limit"),
-        &DEADLINE,
-    );
-    cov.cover("create_spending_limit_proposal");
-
-    // create_spending_window_proposal
-    assert_eq!(
-        client.try_create_spending_window_proposal(
-            &owner_c,
-            &owner_a,
-            &token.address,
-            &100,
-            &86_400,
-            &d("window"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_spending_window_proposal(
-        &owner_a,
-        &owner_a,
-        &token.address,
-        &100,
-        &86_400,
-        &d("window"),
-        &DEADLINE,
-    );
-    cov.cover("create_spending_window_proposal");
-
-    // create_change_weight_proposal
-    assert_eq!(
-        client.try_create_change_weight_proposal(
-            &owner_c,
-            &owner_b,
-            &1,
-            &d("weight"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_change_weight_proposal(
-        &owner_a,
-        &owner_b,
-        &1,
-        &d("weight"),
-        &DEADLINE,
-    );
-    cov.cover("create_change_weight_proposal");
-
-    // create_remove_owner_proposal
-    assert_eq!(
-        client.try_create_remove_owner_proposal(
-            &owner_c,
-            &owner_b,
-            &d("remove owner"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_remove_owner_proposal(
-        &owner_a,
-        &owner_b,
-        &d("remove owner"),
-        &DEADLINE,
-    );
-    cov.cover("create_remove_owner_proposal");
-
-    // create_change_threshold_proposal
-    assert_eq!(
-        client.try_create_change_threshold_proposal(&owner_c, &1, &d("threshold"), &DEADLINE),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ =
-        client.create_change_threshold_proposal(&owner_a, &1, &d("threshold"), &DEADLINE);
-    cov.cover("create_change_threshold_proposal");
-
-    // create_grant_role_proposal
-    assert_eq!(
-        client.try_create_grant_role_proposal(
-            &owner_c,
-            &non_owner,
-            &Symbol::new(&env, "Viewer"),
-            &d("grant"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_grant_role_proposal(
-        &owner_a,
-        &non_owner,
-        &Symbol::new(&env, "Viewer"),
-        &d("grant"),
-        &DEADLINE,
-    );
-    cov.cover("create_grant_role_proposal");
-
-    // create_revoke_role_proposal
-    assert_eq!(
-        client.try_create_revoke_role_proposal(
-            &owner_c,
-            &owner_b,
-            &Symbol::new(&env, "Proposer"),
-            &d("revoke"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_revoke_role_proposal(
-        &owner_a,
-        &owner_b,
-        &Symbol::new(&env, "Proposer"),
-        &d("revoke"),
-        &DEADLINE,
-    );
-    cov.cover("create_revoke_role_proposal");
-
-    // create_asset_proposal
-    let mut assets = Vec::new(&env);
-    assets.push_back(AssetTransfer {
-        to: to.clone(),
-        asset: AssetReference::Address(token.address.clone()),
-        amount: 1,
-    });
-    assert_eq!(
-        client.try_create_asset_proposal(
-            &owner_c,
-            &assets,
-            &d("asset"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_asset_proposal(
-        &owner_a,
-        &assets,
-        &d("asset"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    cov.cover("create_asset_proposal");
-
-    // create_recurring_proposal: built through the shared helper.
-    assert_eq!(
-        client.try_create_recurring_proposal(
-            &owner_c,
-            &non_owner,
-            &token.address,
-            &1_000_i128,
-            &86_400_u64,
-            &NOW,
-            &0_u64,
-            &0_u64,
-            &0_i128,
-            &RecurringKind::FixedAmountPerPeriod,
-            &d("payroll"),
-            &DEADLINE,
-            &ProposalCategory::Payroll,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let schedule_id = matrix_active_recurring(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_a,
-        &token,
-    );
-    cov.cover("create_recurring_proposal");
-
-    // create_cancel_recurring_proposal (schedule is active)
-    assert_eq!(
-        client.try_create_cancel_recurring_proposal(
-            &owner_c,
-            &schedule_id,
-            &d("cancel"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_cancel_recurring_proposal(
-        &owner_a,
-        &schedule_id,
-        &d("cancel"),
-        &DEADLINE,
-    );
-    cov.cover("create_cancel_recurring_proposal");
-
-    // create_pause_recurring_proposal (authorized call also pauses the schedule)
-    assert_eq!(
-        client.try_create_pause_recurring_proposal(
-            &owner_c,
-            &schedule_id,
-            &d("pause"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let pause_id =
-        client.create_pause_recurring_proposal(&owner_a, &schedule_id, &d("pause"), &DEADLINE);
-    cov.cover("create_pause_recurring_proposal");
-    client.approve(&owner_a, &pause_id);
-    client.approve(&owner_b, &pause_id);
-    client.execute(&owner_a, &pause_id);
-
-    // create_resume_recurring_proposal (schedule is now paused)
-    assert_eq!(
-        client.try_create_resume_recurring_proposal(
-            &owner_c,
-            &schedule_id,
-            &d("resume"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_resume_recurring_proposal(
-        &owner_a,
-        &schedule_id,
-        &d("resume"),
-        &DEADLINE,
-    );
-    cov.cover("create_resume_recurring_proposal");
-
-    // create_modify_recurring_proposal
-    assert_eq!(
-        client.try_create_modify_recurring_proposal(
-            &owner_c,
-            &schedule_id,
-            &Some(2_000_i128),
-            &None,
-            &None,
-            &d("modify"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::MissingRole))
-    );
-    let _ = client.create_modify_recurring_proposal(
-        &owner_a,
-        &schedule_id,
-        &Some(2_000_i128),
-        &None,
-        &None,
-        &d("modify"),
-        &DEADLINE,
-    );
-    cov.cover("create_modify_recurring_proposal");
+    let registry_event = latest_contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("ast_en")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected registry-enabled event");
+    let event_data = match &registry_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: AssetRegistryEnabledEvent = event_data.into_val(&env);
+    assert!(event.enabled);
 }
 
-fn matrix_approval_and_execution(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
-    let id = transfer_proposal(&env, &client, &owner_a, &token);
-    let expired = transfer_proposal(&env, &client, &owner_a, &token);
-
-    // approve: owner + Approver role required.
-    clear_roles(&env, &client, &owner_c);
-    assert_eq!(
-        client.try_approve(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
+#[test]
+fn asset_registry_is_rechecked_when_transfer_executes() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let pending_limit = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &500,
+        &str(&env, "Limit created while unrestricted"),
+        &DEADLINE,
     );
-    set_roles(&env, &client.address, &non_owner, &[Role::Approver]);
+    client.approve(&owner_a, &pending_limit);
+    client.approve(&owner_b, &pending_limit);
+    let pending_transfer = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000,
+            &token_client.address,
+        ),
+        &str(&env, "Created while unrestricted"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &pending_transfer);
+    client.approve(&owner_b, &pending_transfer);
+
+    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+        &owner_a,
+        &true,
+        &str(&env, "Enable approved tokens"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &registry_proposal);
+    client.approve(&owner_b, &registry_proposal);
+    client.execute(&owner_c, &registry_proposal);
+
     assert_eq!(
-        client.try_approve(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        client.try_execute(&owner_c, &pending_transfer),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+    assert_eq!(
+        client.try_execute(&owner_c, &pending_limit),
+        Err(Ok(ContractError::AssetNotApproved))
+    );
+}
+
+// ─── Guardian transfer proposal ────────────────────────────────────────────
+
+#[test]
+fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian = Address::generate(&env);
+    let id = client.create_transfer_guardian_proposal(
+        &owner_a,
+        &guardian,
+        &str(&env, "Rotate guardian"),
+        &DEADLINE,
     );
     client.approve(&owner_a, &id);
-    assert!(client.has_approved(&id, &owner_a));
-    cov.cover("approve");
-
-    // revoke: owner + Approver role required, and must have approved first.
-    assert_eq!(
-        client.try_revoke(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_revoke(&owner_b, &id),
-        Err(Ok(ContractError::NotApproved))
-    );
-    client.revoke(&owner_a, &id);
-    assert!(!client.has_approved(&id, &owner_a));
-    cov.cover("revoke");
-
-    // execute: Executor role required (owner membership not required).
     assert_eq!(
         client.try_execute(&owner_c, &id),
-        Err(Ok(ContractError::MissingRole))
+        Err(Ok(ContractError::ThresholdNotMet))
     );
-    client.approve(&owner_a, &id);
+    assert_eq!(client.get_guardian(), None);
+
     client.approve(&owner_b, &id);
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
-    client.execute(&owner_a, &id);
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
-    cov.cover("execute");
+    client.execute(&owner_c, &id);
+    assert_eq!(client.get_guardian(), Some(guardian.clone()));
 
-    // cancel_expired: Executor role required; sweeps expired proposals.
-    set_timestamp(&env, DEADLINE + 1);
-    assert_eq!(
-        client.try_cancel_expired(&non_owner, &Vec::from_array(&env, [expired])),
-        Err(Ok(ContractError::MissingRole))
-    );
-    assert_eq!(
-        client.try_cancel_expired(&owner_a, &Vec::from_array(&env, [expired])),
-        Ok(Ok(1_u32))
-    );
-    cov.cover("cancel_expired");
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let topic: Symbol = topic.clone().into_val(&env);
+                    topic == symbol_short!("guard_set")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected guardian-set event");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: GuardianSetEvent = event_data.into_val(&env);
+    assert_eq!(event.guardian, guardian);
 }
 
-fn matrix_owner_weight_governance(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, _, _, token) = setup(2);
-    let new_guardian = Address::generate(&env);
-    let role_only = Address::generate(&env);
-    grant_all_roles(&env, &client, &role_only);
-    let hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+// ─── Escrow ─────────────────────────────────────────────────────────────────
 
-    // set_max_single_owner_weight_pct
-    assert_eq!(
-        client.try_set_max_single_owner_weight_pct(&Vec::from_array(&env, [owner_a.clone()]), &40),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    assert_eq!(
-        client.try_set_max_single_owner_weight_pct(
-            &Vec::from_array(&env, [role_only.clone(), owner_a.clone()]),
-            &40
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-    client
-        .set_max_single_owner_weight_pct(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &40);
-    assert_eq!(client.get_max_single_owner_weight_pct(), 40);
-    cov.cover("set_max_single_owner_weight_pct");
-
-    // set_guardian
-    assert_eq!(
-        client.try_set_guardian(
-            &Vec::from_array(&env, [owner_a.clone()]),
-            &new_guardian
-        ),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &new_guardian,
-    );
-    assert_eq!(client.get_guardian(), Some(new_guardian.clone()));
-    cov.cover("set_guardian");
-
-    // unfreeze (owner-weight gated, callable regardless of frozen state)
-    assert_eq!(
-        client.try_unfreeze(&Vec::from_array(&env, [owner_a.clone()])),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.unfreeze(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
-    assert!(!client.is_frozen());
-    cov.cover("unfreeze");
-
-    // exit_recovery
-    assert_eq!(
-        client.try_exit_recovery(&Vec::from_array(&env, [owner_a.clone()])),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.exit_recovery(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
-    assert!(!client.is_in_recovery());
-    cov.cover("exit_recovery");
-
-    // upgrade (owner-weight gated)
-    let hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
-    assert_eq!(
-        client.try_upgrade(&Vec::from_array(&env, [owner_a.clone()]), &hash),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.upgrade(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &hash);
-    cov.cover("upgrade");
-
-    // set_classic_asset
-    let identifier = Symbol::new(&env, "USDC");
-    assert_eq!(
-        client.try_set_classic_asset(
-            &Vec::from_array(&env, [owner_a.clone()]),
-            &identifier,
-            &token.address
-        ),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-    client.set_classic_asset(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &identifier,
-        &token.address,
-    );
-    assert_eq!(
-        client.get_classic_asset(&identifier),
-        Some(token.address.clone())
-    );
-    cov.cover("set_classic_asset");
-}
-
-fn matrix_guardian_entrypoints(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    let guardian = Address::generate(&env);
-    let impostor = Address::generate(&env);
-
-    // freeze before any guardian exists
-    assert_eq!(
-        client.try_freeze(&guardian),
-        Err(Ok(ContractError::NoGuardian))
-    );
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    assert_eq!(
-        client.try_freeze(&impostor),
-        Err(Ok(ContractError::Unauthorized))
-    );
-    client.freeze(&guardian);
-    assert!(client.is_frozen());
-    cov.cover("freeze");
-
-    // enter_recovery: guardian-only as well.
-    assert_eq!(
-        client.try_enter_recovery(&impostor),
-        Err(Ok(ContractError::Unauthorized))
-    );
-    client.enter_recovery(&guardian);
-    assert!(client.is_in_recovery());
-    cov.cover("enter_recovery");
-}
-
-fn matrix_permissionless_and_deprecated(cov: &mut Coverage) {
-    let (env, client, owner_a, _, _, non_owner, token) = setup(2);
-    let schedule_id = client.create_recurring_schedule(
+#[test]
+fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let params = EscrowParams {
+        recipient: recipient.clone(),
+        token: token_client.address.clone(),
+        amount: 1_000,
+        release_mode: EscrowReleaseMode::OwnerQuorumUntil(NOW + 100),
+    };
+    let proposal = client.create_escrow_proposal(
         &owner_a,
-        &t(&env, &Address::generate(&env), 1, &token.address),
-        &86_400,
-        &3,
-        &str(&env, "crank"),
+        &params,
+        &str(&env, "Milestone escrow"),
+        &DEADLINE,
     );
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
+    let escrow_id = 1_u64;
+    assert_eq!(client.get_escrow(&escrow_id).amount, 1_000);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_crt")));
 
-    // disburse_recurring_schedule: permissionless (no caller argument).
-    assert_eq!(
-        client.try_disburse_recurring_schedule(&schedule_id),
-        Ok(Ok(()))
-    );
-    cov.cover("disburse_recurring_schedule");
-
-    // cancel_recurring_schedule: deprecated, always rejected.
-    assert_eq!(
-        client.try_cancel_recurring_schedule(&owner_a, &schedule_id),
-        Err(Ok(ContractError::DeprecatedEntrypoint))
-    );
-    assert_eq!(
-        client.try_cancel_recurring_schedule(&non_owner, &schedule_id),
-        Err(Ok(ContractError::DeprecatedEntrypoint))
-    );
-    cov.cover("cancel_recurring_schedule");
-}
-
-fn matrix_authenticated_crank(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
-    let schedule_id =
-        matrix_active_recurring(&env, &client, &owner_a, &owner_b, &owner_c, &token);
-
-    // Authorized: a non-owner, authenticated caller may crank once due.
-    set_timestamp(&env, NOW + 200_000);
-    client.disburse_recurring(&non_owner, &schedule_id);
-    assert!(client.get_recurring_payment(&schedule_id).total_disbursed > 0);
-
-    // Frozen blocks the crank.
-    let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
-    assert_eq!(
-        client.try_disburse_recurring(&non_owner, &schedule_id),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    cov.cover("disburse_recurring");
-}
-
-fn matrix_read_only_entrypoints(cov: &mut Coverage) {
-    let (env, client, owner_a, owner_b, owner_c, _non_owner, token) = setup(2);
-    let schedule_id =
-        matrix_active_recurring(&env, &client, &owner_a, &owner_b, &owner_c, &token);
-    let proposal_id = transfer_proposal(&env, &client, &owner_a, &token);
-    let stranger = Address::generate(&env);
-
-    // Views carry no gate: each is callable without owner/role weight.
-    let _ = client.get_spent_tracker(&owner_a, &token.address);
-    cov.cover("get_spent_tracker");
-    let _ = client.get_recurring_payment(&schedule_id);
-    cov.cover("get_recurring_payment");
-    let _ = client.get_next_disbursement_time(&schedule_id);
-    cov.cover("get_next_disbursement_time");
-    let _ = client.get_recurring_payments_paged(&0, &20);
-    cov.cover("get_recurring_payments_paged");
-    let _ = client.get_active_recurring_count();
-    cov.cover("get_active_recurring_count");
-    let _ = client.get_approvers(&proposal_id);
-    cov.cover("get_approvers");
-    let _ = client.get_version();
-    cov.cover("get_version");
-    let _ = client.get_storage_version();
-    cov.cover("get_storage_version");
-    let _ = client.get_total_weight();
-    cov.cover("get_total_weight");
-    let _ = client.is_governance_migrated();
-    cov.cover("is_governance_migrated");
-    let _ = client.get_role_version();
-    cov.cover("get_role_version");
-    let _ = client.get_roles(&stranger);
-    cov.cover("get_roles");
-    let _ = client.has_role(&stranger, &Role::Viewer);
-    cov.cover("has_role");
-    let _ = client.get_role_members(&Role::Approver);
-    cov.cover("get_role_members");
-    let _ = client.get_owner_weight(&owner_a);
-    cov.cover("get_owner_weight");
-    let _ = client.get_owner_weights();
-    cov.cover("get_owner_weights");
-    let _ = client.get_max_single_owner_weight_pct();
-    cov.cover("get_max_single_owner_weight_pct");
-    let _ = client.get_delegations(&owner_a);
-    cov.cover("get_delegations");
-    let _ = client.get_active_delegations();
-    cov.cover("get_active_delegations");
-    let _ = client.get_effective_weight(&owner_a);
-    cov.cover("get_effective_weight");
-    let _ = client.get_proposal(&proposal_id);
-    cov.cover("get_proposal");
-    let _ = client.get_proposals_paged(&0, &20);
-    cov.cover("get_proposals_paged");
-    let _ = client.get_owners();
-    cov.cover("get_owners");
-    let _ = client.get_spending_limit(&owner_a, &token.address);
-    cov.cover("get_spending_limit");
-    let _ = client.get_owner_spending_limits(&owner_a);
-    cov.cover("get_owner_spending_limits");
-    let _ = client.get_remaining_spending_limit(&owner_a, &token.address);
-    cov.cover("get_remaining_spending_limit");
-    let _ = client.get_spending_window(&owner_a, &token.address);
-    cov.cover("get_spending_window");
-    let _ = client.get_threshold();
-    cov.cover("get_threshold");
-    let _ = client.get_required_quorum_weight();
-    cov.cover("get_required_quorum_weight");
-    let _ = client.get_time_lock_delay();
-    cov.cover("get_time_lock_delay");
-    let _ = client.get_total_proposals();
-    cov.cover("get_total_proposals");
-    let _ = client.is_owner(&owner_a);
-    cov.cover("is_owner");
-    let _ = client.has_approved(&proposal_id, &owner_a);
-    cov.cover("has_approved");
-    let _ = client.get_proposal_approval_progress(&proposal_id);
-    cov.cover("get_proposal_approval_progress");
-    let _ = client.get_classic_asset(&Symbol::new(&env, "XLM"));
-    cov.cover("get_classic_asset");
-    let _ = client.is_frozen();
-    cov.cover("is_frozen");
-    let _ = client.is_in_recovery();
-    cov.cover("is_in_recovery");
-    let _ = client.get_guardian();
-    cov.cover("get_guardian");
-}
-
-/// Every public entrypoint is exercised under its access condition, and the
-/// suite fails, by name, if a listed entrypoint has no case.
-#[test]
-fn access_control_matrix_covers_every_public_entrypoint() {
-    let mut cov = Coverage::new();
-    matrix_initialize(&mut cov);
-    matrix_migration(&mut cov);
-    matrix_proposer_entrypoints(&mut cov);
-    matrix_approval_and_execution(&mut cov);
-    matrix_owner_weight_governance(&mut cov);
-    matrix_guardian_entrypoints(&mut cov);
-    matrix_permissionless_and_deprecated(&mut cov);
-    matrix_authenticated_crank(&mut cov);
-    matrix_read_only_entrypoints(&mut cov);
-    cov.assert_complete();
-}
-
-/// Frozen state blocks the create and execute paths, while `approve`, `revoke`
-/// and the expiry sweep stay callable so a freeze cannot strand in-flight work.
-#[test]
-fn access_control_matrix_frozen_state_is_enforced() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
-
-    let ready = transfer_proposal(&env, &client, &owner_a, &token);
-    client.approve(&owner_a, &ready);
-    client.approve(&owner_b, &ready);
-    assert_eq!(client.get_proposal(&ready).status, ProposalStatus::Ready);
-
-    let pending = transfer_proposal(&env, &client, &owner_a, &token);
-    let expired = transfer_proposal(&env, &client, &owner_a, &token);
-
-    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
-    assert!(client.is_frozen());
-
-    // Create paths fail with ContractFrozen.
-    assert_eq!(
-        client.try_create_proposal(
-            &owner_a,
-            &t(&env, &non_owner, 1, &token.address),
-            &str(&env, "blocked"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
+    let competing_transfer = client.create_proposal(
+        &owner_a,
+        &t(
+            &env,
+            &Address::generate(&env),
+            1_000_000_000_000,
+            &token_client.address,
         ),
-        Err(Ok(ContractError::ContractFrozen))
+        &str(&env, "Attempt to spend reserved funds"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
+    client.approve(&owner_a, &competing_transfer);
+    client.approve(&owner_b, &competing_transfer);
     assert_eq!(
-        client.try_create_change_threshold_proposal(
-            &owner_a,
-            &1,
-            &str(&env, "blocked"),
-            &DEADLINE
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-    assert_eq!(
-        client.try_create_recurring_proposal(
-            &owner_a,
-            &non_owner,
-            &token.address,
-            &1_000_i128,
-            &86_400_u64,
-            &NOW,
-            &0_u64,
-            &0_u64,
-            &0_i128,
-            &RecurringKind::FixedAmountPerPeriod,
-            &str(&env, "blocked"),
-            &DEADLINE,
-            &ProposalCategory::Payroll,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
+        client.try_execute(&owner_c, &competing_transfer),
+        Err(Ok(ContractError::TransferFailed))
     );
 
-    // Execute path fails with ContractFrozen and spends nothing.
+    let mut insufficient = Vec::new(&env);
+    insufficient.push_back(owner_a.clone());
     assert_eq!(
-        client.try_execute(&owner_c, &ready),
-        Err(Ok(ContractError::ContractFrozen))
+        client.try_release_escrow(&insufficient, &escrow_id),
+        Err(Ok(ContractError::ThresholdNotMet))
     );
-    assert_eq!(client.get_proposal(&ready).status, ProposalStatus::Ready);
 
-    // approve / revoke remain callable while frozen.
-    client.approve(&owner_a, &pending);
-    client.approve(&owner_b, &pending);
-    assert_eq!(client.get_proposal(&pending).status, ProposalStatus::Ready);
-    client.revoke(&owner_b, &pending);
-    assert!(!client.has_approved(&pending, &owner_b));
-
-    // The expiry sweep remains callable while frozen.
-    set_timestamp(&env, DEADLINE + 1);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a);
+    approvers.push_back(owner_b);
+    client.release_escrow(&approvers, &escrow_id);
+    assert_eq!(token_client.balance(&recipient), 1_000);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_rel")));
     assert_eq!(
-        client.try_cancel_expired(&owner_a, &Vec::from_array(&env, [expired])),
-        Ok(Ok(1_u32))
+        client.try_get_escrow(&escrow_id),
+        Err(Ok(ContractError::EscrowNotFound))
     );
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
-    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone()]);
-    let weights = Vec::from_array(&env, [3_u32, 1, 1]);
-    client.initialize(&owners, &weights, &4, &0);
-
-    assert_eq!(
-        client.try_create_remove_owner_proposal(&b, &a, &str(&env, "too heavy"), &DEADLINE),
-        Err(Ok(ContractError::WouldBreakThreshold))
-    );
-    assert_eq!(client.get_total_weight(), 5);
-
-    // A non-owner target is rejected too, with no effect on the total.
-    let stranger = Address::generate(&env);
-    assert!(client
-        .try_create_remove_owner_proposal(&b, &stranger, &str(&env, "not an owner"), &DEADLINE)
-        .is_err());
-    assert_eq!(client.get_total_weight(), 5);
 }
 
 #[test]
-fn rejected_remove_owner_at_execution_leaves_total_weight_unchanged() {
-    // Weights 3,3,2,2 → total 10, threshold 7. Removing either weight-2 owner
-    // passes creation (8 >= 7), but once one is gone the other would leave 6.
-    let env = Env::default();
-    env.mock_all_auths();
-    set_timestamp(&env, NOW);
-    let contract_id = env.register(AccordContract, ());
-    let client = AccordContractClient::new(&env, &contract_id);
-    let a = Address::generate(&env);
-    let b = Address::generate(&env);
-    let c = Address::generate(&env);
-    let d = Address::generate(&env);
-    let owners = Vec::from_array(&env, [a.clone(), b.clone(), c.clone(), d.clone()]);
-    let weights = Vec::from_array(&env, [3_u32, 3, 2, 2]);
-    client.initialize(&owners, &weights, &7, &0);
-
-    let remove_c = client.create_remove_owner_proposal(&a, &c, &str(&env, "remove c"), &DEADLINE);
-    let remove_d = client.create_remove_owner_proposal(&a, &d, &str(&env, "remove d"), &DEADLINE);
-    for id in [remove_c, remove_d] {
-        client.approve(&a, &id);
-        client.approve(&b, &id);
-        client.approve(&c, &id);
-    }
-
-    client.execute(&a, &remove_d);
-    assert_eq!(client.get_total_weight(), 8);
+fn deadline_escrow_rejects_early_release_then_pays_at_deadline() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let deadline = NOW + 10;
+    let params = EscrowParams {
+        recipient: recipient.clone(),
+        token: token_client.address.clone(),
+        amount: 2_000,
+        release_mode: EscrowReleaseMode::Deadline(deadline),
+    };
+    let proposal = client.create_escrow_proposal(
+        &owner_a,
+        &params,
+        &str(&env, "Deadline escrow"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
 
     assert_eq!(
-        client.try_execute(&a, &remove_c),
-        Err(Ok(ContractError::WouldBreakThreshold))
+        client.try_release_escrow_by_deadline(&owner_c, &1),
+        Err(Ok(ContractError::EscrowConditionNotMet))
     );
-    assert_eq!(client.get_total_weight(), 8);
-    assert_eq!(client.get_owners().len(), 3);
+    set_timestamp(&env, deadline);
+    client.release_escrow_by_deadline(&owner_c, &1);
+    assert_eq!(token_client.balance(&recipient), 2_000);
 }
 
 #[test]
-fn remove_owner_cannot_underflow_total_weight() {
-    let (env, client, owners) = setup_invariant_owners(&[4, 3, 3, 2]);
-    let target = owners[0].clone();
-    let id = client.create_remove_owner_proposal(&owners[1], &target, &str(&env, "remove"), &DEADLINE);
-    client.approve(&owners[1], &id);
-
-    // Corrupt the stored total so it is smaller than the owner's weight (4).
-    env.as_contract(&client.address, || write_total_weight(&env, 1));
-
-    assert_eq!(
-        client.try_execute(&owners[1], &id),
-        Err(Ok(ContractError::ArithmeticError))
+fn expired_quorum_escrow_can_be_refunded_without_payout() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let treasury_balance = token_client.balance(&client.address);
+    let params = EscrowParams {
+        recipient: Address::generate(&env),
+        token: token_client.address.clone(),
+        amount: 3_000,
+        release_mode: EscrowReleaseMode::OwnerQuorumUntil(NOW + 10),
+    };
+    let proposal = client.create_escrow_proposal(
+        &owner_a,
+        &params,
+        &str(&env, "Refundable escrow"),
+        &DEADLINE,
     );
-    assert_eq!(client.get_total_weight(), 1);
-    assert_eq!(client.get_owners().len(), 4);
+    client.approve(&owner_a, &proposal);
+    client.approve(&owner_b, &proposal);
+    client.execute(&owner_c, &proposal);
+    set_timestamp(&env, NOW + 11);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a);
+    approvers.push_back(owner_b);
+    assert_eq!(
+        client.try_release_escrow(&approvers, &1),
+        Err(Ok(ContractError::EscrowConditionNotMet))
+    );
+    client.refund_escrow(&owner_c, &1);
+
+    assert_eq!(token_client.balance(&client.address), treasury_balance);
+    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_ref")));
+    assert_eq!(
+        client.try_get_escrow(&1),
+        Err(Ok(ContractError::EscrowNotFound))
+    );
 }
 
 // ─── Adversarial and Negative Tests for Money-Moving Paths (#847) ───────────

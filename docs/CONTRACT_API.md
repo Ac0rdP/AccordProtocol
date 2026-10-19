@@ -46,7 +46,15 @@ The examples below use `@stellar/stellar-sdk`. Read-only functions are called by
 Shared setup used by the examples:
 
 ```js
-import { Contract, rpc, TransactionBuilder, Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  rpc,
+  TransactionBuilder,
+  Keypair,
+  nativeToScVal,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 
 const RPC_URL = process.env.STELLAR_RPC_URL;
 const CONTRACT_ID = process.env.ACCORD_CONTRACT_ID;
@@ -80,11 +88,11 @@ For state-changing examples, `signer` below represents the owner's `Keypair`. In
 
 All `amount` fields in function parameters and event data use the token's smallest unit. The table below lists the conventions for common tokens:
 
-| Token | Decimals | Smallest Unit | Conversion Formula |
-|-------|----------|--------------|-------------------|
-| **XLM** | 7 | stroop | `human_amount × 10⁷ = on_chain_amount` |
-| **USDC** | 7 | micro-dollar | `human_amount × 10⁷ = on_chain_amount` |
-| **EURC** | 7 | micro-euro | `human_amount × 10⁷ = on_chain_amount` |
+| Token    | Decimals | Smallest Unit | Conversion Formula                     |
+| -------- | -------- | ------------- | -------------------------------------- |
+| **XLM**  | 7        | stroop        | `human_amount × 10⁷ = on_chain_amount` |
+| **USDC** | 7        | micro-dollar  | `human_amount × 10⁷ = on_chain_amount` |
+| **EURC** | 7        | micro-euro    | `human_amount × 10⁷ = on_chain_amount` |
 
 To convert a human-readable amount to the value passed to the contract: multiply by `10^decimals`. Every `amount` field — both in function parameters and event data — uses this smallest-unit representation (see the [Event Payloads](#event-payloads) section for per-field annotations).
 
@@ -94,46 +102,51 @@ To convert a human-readable amount to the value passed to the contract: multiply
 
 Scan this table when you hit an error code and need a fast answer. Errors developers hit most often during normal development are listed first. For full cause descriptions and remediation detail, see the [Error Reference](#error-reference) section below.
 
-| Code / Variant | Most common root cause | One-line resolution |
-|----------------|------------------------|---------------------|
-| 3 `Unauthorized` | Signer is not a registered owner (or wrong Freighter account). | Switch to a registered owner address and retry. |
-| 6 `ProposalNotFound` | Wrong `proposal_id`, network, or contract address. | Confirm the ID with `get_total_proposals` on the correct contract. |
-| 12 `InvalidAmount` | Amount is less than 1, empty transfer list, or more than 3 transfers. | Pass 1–3 transfers with each amount ≥ 1 in the token's smallest unit. |
-| 13 `InvalidDeadline` | Deadline is not strictly after the current ledger timestamp. | Set a future Unix deadline with a few minutes of buffer. |
-| 7 `ProposalNotActive` | Proposal is already `Executed`, `Expired`, or `Revoked`. | Check status via `get_proposal`; create a new proposal if needed. |
-| 8 `AlreadyApproved` | This owner already approved the proposal. | Call `revoke` before approving again, or skip. |
-| 10 `ThresholdNotMet` | Not enough approvals (or too few co-signers on guardian/upgrade). | Gather threshold approvals / approvers, then retry. |
-| 11 `ProposalExpired` | Deadline passed before `execute`. | Create a new proposal; sweep the expired ID if needed. |
-| 15 `TransferFailed` | Contract treasury lacks sufficient token balance. | Fund the contract, then retry `execute`. |
-| 14 `InvalidToken` | Token address does not implement the Soroban token interface. | Use a verified SEP-41 token (e.g. canonical XLM/USDC). |
-| 16 `EmptyDescription` | Description string is empty. | Provide a non-empty description. |
-| 17 `DescriptionTooLong` | Description exceeds 300 characters. | Trim the description to ≤ 300 characters. |
-| 9 `NotApproved` | `revoke` called without a prior approval from this owner. | Only revoke after a successful `approve`. |
-| 18 `TooManyActiveProposals` | Active (`Pending`/`Ready`) proposals hit the cap of 50. | Execute or sweep expired proposals, then retry. |
-| 21 `InvalidDuration` | Deadline is more than 90 days from now. | Cap the deadline at ≤ 90 days ahead. |
-| 22 `InvalidRecipient` | Transfer recipient is the contract's own address. | Use an external recipient address. |
-| 31 `SpendingLimitExceeded` | Proposal amount exceeds the proposer's per-token spending limit. | Lower the amount or raise/remove the spending limit. |
-| 44 `InvalidWeight` | An owner weight is above the maximum allowed value. | Use a weight within the `[MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT]` range. |
-| 43 `WeightBelowMinimum` | An owner weight is below the minimum allowed value (zero is never valid). | Use a positive weight; use `RemoveOwner` rather than setting weight to zero. |
-| 46 `SingleOwnerWeightCapExceeded` | A weight change would give one owner more than the configured share of total voting weight. | Choose a lower weight or adjust the quorum-authorized cap deliberately. |
-| 23 `TimeLockActive` | Time-lock delay after reaching `Ready` has not elapsed. | Wait until `ready_at + time_lock_delay`, then execute. |
-| 26 `ContractFrozen` | Contract is frozen; create/execute paths are blocked. | Co-sign `unfreeze` with threshold owners. |
-| 27 `NoGuardian` | `freeze` called before a guardian was registered. | Call `set_guardian` first, then freeze. |
-| 1 `AlreadyInitialized` | `initialize` called twice on the same instance. | Deploy a fresh contract; do not re-initialize. |
-| 2 `NotInitialized` | Contract used before `initialize` completed. | Call `initialize` and wait for finality first. |
-| 4 `InvalidThreshold` | Threshold is 0 or greater than the owner count. | Use a threshold in `[1, owners.len()]`. |
-| 5 `InvalidOwners` | Owner list empty, or adding an owner would exceed 20. | Provide 1–20 owners; remove one before adding at cap. |
-| 19 `DuplicateOwner` | Duplicate address in owners/approvers or add-owner list. | Deduplicate addresses before submitting. |
-| 24 `WouldBreakThreshold` | Removing an owner would leave fewer owners than threshold (flat count checks). | Lower threshold first, then remove the owner. |
-| 48 `WouldBreakQuorum` | Weight change or owner removal would leave total weight below threshold or leave an active proposal un-quorumable. | Lower threshold first or wait for active proposals to finish before modifying weights. |
-| 25 `OwnerNotFound` | Address to remove or change weight for is not in the current owner list. | Verify with `is_owner` / `get_owners` first. |
-| 20 `ArithmeticError` | Integer overflow/underflow guard tripped (rare). | Contact maintainers; should not occur in normal use. |
-| 47 `TargetOwnerNoLongerExists` | The target of a `ChangeOwnerWeight` proposal is no longer an owner at execution time. | This is an edge case; create a new proposal. |
-| 45 `AlreadyMigrated` | `migrate_to_weighted_governance` was called on a contract that already has weighted governance. | Do not re-migrate; the contract is already up-to-date. |
-| 52 `MissingRole` | Caller lacks the role required by a role-gated entrypoint. | Grant the needed role (`Proposer` / `Approver` / `Executor`) via governance, then retry. |
-| 53 `RoleAlreadyGranted` | Granting a role the address already holds. | Skip the grant, or revoke first if you intended a no-op refresh. |
-| 54 `RoleNotGranted` | Revoking a role the address does not hold. | Confirm roles with `get_roles` / `has_role` before revoking. |
-| 55 `InvalidRole` | Role value is not a known `Role` enum variant. | Pass one of `Proposer`, `Approver`, `Executor`, or `Viewer`. |
+| Code / Variant                    | Most common root cause                                                                                             | One-line resolution                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| 3 `Unauthorized`                  | Signer is not a registered owner (or wrong Freighter account).                                                     | Switch to a registered owner address and retry.                                          |
+| 6 `ProposalNotFound`              | Wrong `proposal_id`, network, or contract address.                                                                 | Confirm the ID with `get_total_proposals` on the correct contract.                       |
+| 12 `InvalidAmount`                | Amount is less than 1, empty transfer list, or more than 3 transfers.                                              | Pass 1–3 transfers with each amount ≥ 1 in the token's smallest unit.                    |
+| 13 `InvalidDeadline`              | Deadline is not strictly after the current ledger timestamp.                                                       | Set a future Unix deadline with a few minutes of buffer.                                 |
+| 7 `ProposalNotActive`             | Proposal is already `Executed`, `Expired`, or `Revoked`.                                                           | Check status via `get_proposal`; create a new proposal if needed.                        |
+| 8 `AlreadyApproved`               | This owner already approved the proposal.                                                                          | Call `revoke` before approving again, or skip.                                           |
+| 10 `ThresholdNotMet`              | Not enough approvals (or too few co-signers on guardian/upgrade).                                                  | Gather threshold approvals / approvers, then retry.                                      |
+| 11 `ProposalExpired`              | Deadline passed before `execute`.                                                                                  | Create a new proposal; sweep the expired ID if needed.                                   |
+| 15 `TransferFailed`               | Contract treasury lacks sufficient token balance.                                                                  | Fund the contract, then retry `execute`.                                                 |
+| 14 `InvalidToken`                 | Token address does not implement the Soroban token interface.                                                      | Use a verified SEP-41 token (e.g. canonical XLM/USDC).                                   |
+| 16 `EmptyDescription`             | Description string is empty.                                                                                       | Provide a non-empty description.                                                         |
+| 17 `DescriptionTooLong`           | Description exceeds 300 characters.                                                                                | Trim the description to ≤ 300 characters.                                                |
+| 9 `NotApproved`                   | `revoke` called without a prior approval from this owner.                                                          | Only revoke after a successful `approve`.                                                |
+| 18 `TooManyActiveProposals`       | Active (`Pending`/`Ready`) proposals hit the cap of 50.                                                            | Execute or sweep expired proposals, then retry.                                          |
+| 21 `InvalidDuration`              | Deadline is more than 90 days from now.                                                                            | Cap the deadline at ≤ 90 days ahead.                                                     |
+| 22 `InvalidRecipient`             | Transfer recipient is the contract's own address.                                                                  | Use an external recipient address.                                                       |
+| 28 `SpendingLimitExceeded`        | Proposal amount exceeds the proposer's per-token spending limit.                                                   | Lower the amount or raise/remove the spending limit.                                     |
+| 29 `InvalidWeight`                | An owner weight is above the maximum allowed value.                                                                | Use a weight within the `[MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT]` range.                    |
+| 30 `WeightBelowMinimum`           | An owner weight is below the minimum allowed value (zero is never valid).                                          | Use a positive weight; use `RemoveOwner` rather than setting weight to zero.             |
+| 31 `SingleOwnerWeightCapExceeded` | A weight change would give one owner more than the configured share of total voting weight.                        | Choose a lower weight or adjust the quorum-authorized cap deliberately.                  |
+| 23 `TimeLockActive`               | Time-lock delay after reaching `Ready` has not elapsed.                                                            | Wait until `ready_at + time_lock_delay`, then execute.                                   |
+| 26 `ContractFrozen`               | Contract is frozen; create/execute paths are blocked.                                                              | Co-sign `unfreeze` with threshold owners.                                                |
+| 27 `NoGuardian`                   | `freeze` called before a guardian was registered.                                                                  | Call `set_guardian` first, then freeze.                                                  |
+| 1 `AlreadyInitialized`            | `initialize` called twice on the same instance.                                                                    | Deploy a fresh contract; do not re-initialize.                                           |
+| 2 `NotInitialized`                | Contract used before `initialize` completed.                                                                       | Call `initialize` and wait for finality first.                                           |
+| 4 `InvalidThreshold`              | Threshold is 0 or greater than the owner count.                                                                    | Use a threshold in `[1, owners.len()]`.                                                  |
+| 5 `InvalidOwners`                 | Owner list empty, or adding an owner would exceed 20.                                                              | Provide 1–20 owners; remove one before adding at cap.                                    |
+| 19 `DuplicateOwner`               | Duplicate address in owners/approvers or add-owner list.                                                           | Deduplicate addresses before submitting.                                                 |
+| 24 `WouldBreakThreshold`          | Removing an owner would leave fewer owners than threshold (flat count checks).                                     | Lower threshold first, then remove the owner.                                            |
+| 34 `WouldBreakQuorum`             | Weight change or owner removal would leave total weight below threshold or leave an active proposal un-quorumable. | Lower threshold first or wait for active proposals to finish before modifying weights.   |
+| 25 `OwnerNotFound`                | Address to remove or change weight for is not in the current owner list.                                           | Verify with `is_owner` / `get_owners` first.                                             |
+| 20 `ArithmeticError`              | Integer overflow/underflow guard tripped (rare).                                                                   | Contact maintainers; should not occur in normal use.                                     |
+| 32 `TargetOwnerNoLongerExists`    | The target of a `ChangeOwnerWeight` proposal is no longer an owner at execution time.                              | This is an edge case; create a new proposal.                                             |
+| 33 `AlreadyMigrated`              | `migrate_to_weighted_governance` was called on a contract that already has weighted governance.                    | Do not re-migrate; the contract is already up-to-date.                                   |
+| 52 `MissingRole`                  | Caller lacks the role required by a role-gated entrypoint.                                                         | Grant the needed role (`Proposer` / `Approver` / `Executor`) via governance, then retry. |
+| 53 `RoleAlreadyGranted`           | Granting a role the address already holds.                                                                         | Skip the grant, or revoke first if you intended a no-op refresh.                         |
+| 54 `RoleNotGranted`               | Revoking a role the address does not hold.                                                                         | Confirm roles with `get_roles` / `has_role` before revoking.                             |
+| 55 `InvalidRole`                  | Role value is not a known `Role` enum variant.                                                                     | Pass one of `Proposer`, `Approver`, `Executor`, or `Viewer`.                             |
+| 56 `AssetNotApproved`             | Registry enforcement is enabled and a proposal references an unapproved token.                                     | Approve the token through governance or disable registry enforcement through governance. |
+| 57 `AssetRegistryState`           | A token is already in the requested registry state.                                                                | Check `is_token_approved` and avoid duplicate add/remove proposals.                      |
+| 58 `EscrowNotFound`               | Escrow was settled already or the supplied ID is invalid.                                                          | Query `get_escrow` and use an active escrow ID.                                          |
+| 59 `EscrowConditionNotMet`        | Escrow is being settled before its configured condition.                                                           | Meet owner quorum or wait until the deadline.                                            |
+| 60 `EscrowFundsUnavailable`       | Treasury has insufficient unreserved tokens to create the escrow.                                                  | Fund the treasury or reduce the escrow amount.                                           |
 
 ---
 
@@ -158,12 +171,13 @@ fn initialize(env: Env, owners: Vec<Address>, threshold: u32) -> Result<(), Cont
 
 One-shot initializer. Must be called before any other function. All owners must authorize this call.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `owners` | `Vec<Address>` | 1–20 unique addresses |
-| `threshold` | `u32` | 1 ≤ threshold ≤ owners.len() |
+| Parameter   | Type           | Constraints                  |
+| ----------- | -------------- | ---------------------------- |
+| `owners`    | `Vec<Address>` | 1–20 unique addresses        |
+| `threshold` | `u32`          | 1 ≤ threshold ≤ owners.len() |
 
 **Errors:** `AlreadyInitialized`, `InvalidOwners`, `InvalidThreshold`, `DuplicateOwner`
+
 ### JavaScript SDK example
 
 ```js
@@ -176,16 +190,21 @@ const tx = new TransactionBuilder(account, {
   fee: "100000",
   networkPassphrase: NETWORK_PASSPHRASE,
 })
-  .addOperation(contract.call(
-    "initialize",
-    xdr.ScVal.scvVec(owners.map((owner) => nativeToScVal(owner, { type: "address" }))),
-    nativeToScVal(threshold, { type: "u32" }),
-  ))
+  .addOperation(
+    contract.call(
+      "initialize",
+      xdr.ScVal.scvVec(
+        owners.map((owner) => nativeToScVal(owner, { type: "address" })),
+      ),
+      nativeToScVal(threshold, { type: "u32" }),
+    ),
+  )
   .setTimeout(30)
   .build();
 
 const simulation = await server.simulateTransaction(tx);
-if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+if (!rpc.Api.isSimulationSuccess(simulation))
+  throw new Error(simulation.error ?? "Simulation failed");
 
 const assembled = rpc.assembleTransaction(tx, simulation).build();
 assembled.sign(signer);
@@ -193,6 +212,58 @@ const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
 
+### Gas-sponsored relayer flow
+
+`approve_sponsored(approver, proposal_id)` is the documented relayer entrypoint.
+It executes the same owner, Approver-role, proposal-status, and duplicate-vote
+checks as `approve`; the `approver` must authorize the exact contract invocation
+and proposal ID. The relayer builds and submits the transaction with its own
+account as transaction source / fee payer, while the owner signs the Soroban
+authorization entry produced for `approve_sponsored`. The sponsor does not need
+to be an owner and receives no contract authority from paying the fee.
+
+Soroban authorization is scoped to the contract, function, arguments, nonce,
+and expiration. A signature for one proposal cannot authorize another proposal
+or a different contract call. The contract also stores one approval per
+`(proposal_id, approver)`, so resubmitting a consumed approval fails with
+`AlreadyApproved`. A relayer may withhold or submit the authorized vote before
+its authorization expires, so owners should only sign approvals they intend to
+cast; they can still revoke the approval before proposal execution.
+
+Relayers should simulate the `approve_sponsored` call, pass the resulting
+authorization entry to the owner's wallet for signing, assemble the signed
+entry into the transaction, and have the sponsor sign and submit the fee-paying
+envelope. Do not ask the owner to sign the fee-paying transaction when the
+relayer is intended to cover its network fee.
+
+## Approved-token registry
+
+The registry is disabled by default. Governance can enable it with
+`create_set_asset_registry_enabled_proposal`, then add or remove token contracts
+with `create_add_approved_token_proposal` and
+`create_remove_approved_token_proposal`. All changes require normal proposal
+approval and execution. When enabled, transfer, recurring-payment, and escrow
+proposals reject tokens not in the registry; execution and recurring
+disbursement recheck the registry so a later removal takes effect. Registry
+changes emit `AssetRegistryEnabledEvent` or `ApprovedTokenChangedEvent`.
+
+## Escrow
+
+`create_escrow_proposal` accepts an `EscrowParams` value containing recipient,
+token, amount, and one of `OwnerQuorumUntil(deadline)` or `Deadline(timestamp)`.
+The amount is reserved from the treasury's available balance when the proposal
+executes. Other proposal transfers and recurring payouts cannot spend reserved
+funds. `release_escrow(approvers, id)` releases a quorum-conditioned escrow;
+`release_escrow_by_deadline(caller, id)` releases a deadline-conditioned one
+after its timestamp. An unused quorum escrow can be unlocked with
+`refund_escrow(caller, id)` after its deadline. Release and refund consume the
+escrow record, preventing settlement more than once, and emit dedicated events.
+
+## Guardian rotation
+
+`create_transfer_guardian_proposal(proposer, new_guardian, description, deadline)`
+uses the normal proposal lifecycle and weighted quorum. Executing it emits the
+same `GuardianSetEvent` as the direct `set_guardian` path.
 
 ---
 
@@ -212,18 +283,19 @@ fn create_proposal(
 
 Creates a transfer proposal. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `to` | `Address` | Recipient address |
-| `amount` | `i128` | ≥ 1 |
-| `token` | `Address` | Must implement Soroban token interface (`decimals()` + `symbol()`) |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| Parameter     | Type      | Constraints                                                        |
+| ------------- | --------- | ------------------------------------------------------------------ |
+| `proposer`    | `Address` | Must be an owner. Must authorize.                                  |
+| `to`          | `Address` | Recipient address                                                  |
+| `amount`      | `i128`    | ≥ 1                                                                |
+| `token`       | `Address` | Must implement Soroban token interface (`decimals()` + `symbol()`) |
+| `description` | `String`  | 1–300 characters                                                   |
+| `deadline`    | `u64`     | > current ledger timestamp, ≤ now + 90 days                        |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
 **Errors:** `Unauthorized`, `InvalidAmount`, `EmptyDescription`, `DescriptionTooLong`, `InvalidDeadline`, `InvalidDuration`, `InvalidToken`, `TooManyActiveProposals`
+
 ### JavaScript SDK example
 
 ```js
@@ -239,27 +311,29 @@ const tx = new TransactionBuilder(account, {
   fee: "100000",
   networkPassphrase: NETWORK_PASSPHRASE,
 })
-  .addOperation(contract.call(
-    "create_proposal",
-    nativeToScVal(signer.publicKey(), { type: "address" }),
-    nativeToScVal(to, { type: "address" }),
-    nativeToScVal(amount, { type: "i128" }),
-    nativeToScVal(token, { type: "address" }),
-    nativeToScVal(description, { type: "string" }),
-    xdr.ScVal.scvU64(deadline),
-  ))
+  .addOperation(
+    contract.call(
+      "create_proposal",
+      nativeToScVal(signer.publicKey(), { type: "address" }),
+      nativeToScVal(to, { type: "address" }),
+      nativeToScVal(amount, { type: "i128" }),
+      nativeToScVal(token, { type: "address" }),
+      nativeToScVal(description, { type: "string" }),
+      xdr.ScVal.scvU64(deadline),
+    ),
+  )
   .setTimeout(30)
   .build();
 
 const simulation = await server.simulateTransaction(tx);
-if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+if (!rpc.Api.isSimulationSuccess(simulation))
+  throw new Error(simulation.error ?? "Simulation failed");
 
 const assembled = rpc.assembleTransaction(tx, simulation).build();
 assembled.sign(signer);
 const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
-
 
 ---
 
@@ -271,36 +345,42 @@ fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), Contract
 
 Records an approval for `proposal_id` from `approver`. Transitions status to `Ready` when threshold is reached.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `approver` | `Address` | Must be an owner. Must authorize. |
-| `proposal_id` | `u64` | Must refer to an existing Pending or Ready proposal |
+| Parameter     | Type      | Constraints                                         |
+| ------------- | --------- | --------------------------------------------------- |
+| `approver`    | `Address` | Must be an owner. Must authorize.                   |
+| `proposal_id` | `u64`     | Must refer to an existing Pending or Ready proposal |
 
 **Emits:** `("approved",)` → `ProposalApprovedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `AlreadyApproved`
+
 ### JavaScript SDK example
 
 ```js
 const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
 const proposalId = 1n;
 const account = await server.getAccount(signer.publicKey());
-const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
-  .addOperation(contract.call(
-    "approve",
-    nativeToScVal(signer.publicKey(), { type: "address" }),
-    xdr.ScVal.scvU64(proposalId),
-  ))
+const tx = new TransactionBuilder(account, {
+  fee: "100000",
+  networkPassphrase: NETWORK_PASSPHRASE,
+})
+  .addOperation(
+    contract.call(
+      "approve",
+      nativeToScVal(signer.publicKey(), { type: "address" }),
+      xdr.ScVal.scvU64(proposalId),
+    ),
+  )
   .setTimeout(30)
   .build();
 const simulation = await server.simulateTransaction(tx);
-if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+if (!rpc.Api.isSimulationSuccess(simulation))
+  throw new Error(simulation.error ?? "Simulation failed");
 const assembled = rpc.assembleTransaction(tx, simulation).build();
 assembled.sign(signer);
 const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
-
 
 ---
 
@@ -312,36 +392,42 @@ fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractE
 
 Withdraws the caller's approval. Transitions status back to `Pending` if approvals drop below threshold.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `approver` | `Address` | Must be an owner with an existing approval. Must authorize. |
-| `proposal_id` | `u64` | Must refer to an existing Pending or Ready proposal |
+| Parameter     | Type      | Constraints                                                 |
+| ------------- | --------- | ----------------------------------------------------------- |
+| `approver`    | `Address` | Must be an owner with an existing approval. Must authorize. |
+| `proposal_id` | `u64`     | Must refer to an existing Pending or Ready proposal         |
 
 **Emits:** `("revoked",)` → `ProposalRevokedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `NotApproved`
+
 ### JavaScript SDK example
 
 ```js
 const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
 const proposalId = 1n;
 const account = await server.getAccount(signer.publicKey());
-const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
-  .addOperation(contract.call(
-    "revoke",
-    nativeToScVal(signer.publicKey(), { type: "address" }),
-    xdr.ScVal.scvU64(proposalId),
-  ))
+const tx = new TransactionBuilder(account, {
+  fee: "100000",
+  networkPassphrase: NETWORK_PASSPHRASE,
+})
+  .addOperation(
+    contract.call(
+      "revoke",
+      nativeToScVal(signer.publicKey(), { type: "address" }),
+      xdr.ScVal.scvU64(proposalId),
+    ),
+  )
   .setTimeout(30)
   .build();
 const simulation = await server.simulateTransaction(tx);
-if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+if (!rpc.Api.isSimulationSuccess(simulation))
+  throw new Error(simulation.error ?? "Simulation failed");
 const assembled = rpc.assembleTransaction(tx, simulation).build();
 assembled.sign(signer);
 const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
-
 
 ---
 
@@ -353,36 +439,42 @@ fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), Contract
 
 Executes a `Ready` proposal. Transfers `amount` of `token` from the contract to `proposal.to`. The contract must hold sufficient token balance.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `executor` | `Address` | Must be an owner. Must authorize. |
-| `proposal_id` | `u64` | Must refer to a Ready proposal whose deadline has not passed |
+| Parameter     | Type      | Constraints                                                  |
+| ------------- | --------- | ------------------------------------------------------------ |
+| `executor`    | `Address` | Must be an owner. Must authorize.                            |
+| `proposal_id` | `u64`     | Must refer to a Ready proposal whose deadline has not passed |
 
 **Emits:** `("executed",)` → `ProposalExecutedEvent`
 
 **Errors:** `Unauthorized`, `ProposalNotFound`, `ProposalNotActive`, `ThresholdNotMet`, `ProposalExpired`, `TransferFailed`
+
 ### JavaScript SDK example
 
 ```js
 const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
 const proposalId = 1n;
 const account = await server.getAccount(signer.publicKey());
-const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
-  .addOperation(contract.call(
-    "execute",
-    nativeToScVal(signer.publicKey(), { type: "address" }),
-    xdr.ScVal.scvU64(proposalId),
-  ))
+const tx = new TransactionBuilder(account, {
+  fee: "100000",
+  networkPassphrase: NETWORK_PASSPHRASE,
+})
+  .addOperation(
+    contract.call(
+      "execute",
+      nativeToScVal(signer.publicKey(), { type: "address" }),
+      xdr.ScVal.scvU64(proposalId),
+    ),
+  )
   .setTimeout(30)
   .build();
 const simulation = await server.simulateTransaction(tx);
-if (!rpc.Api.isSimulationSuccess(simulation)) throw new Error(simulation.error ?? "Simulation failed");
+if (!rpc.Api.isSimulationSuccess(simulation))
+  throw new Error(simulation.error ?? "Simulation failed");
 const assembled = rpc.assembleTransaction(tx, simulation).build();
 assembled.sign(signer);
 const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
-
 
 ---
 
@@ -395,15 +487,17 @@ fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, ContractError>
 Returns the current proposal state with a freshly derived status (Expired status is derived from the current ledger timestamp without requiring a write).
 
 **Errors:** `NotInitialized`, `ProposalNotFound`
+
 ### JavaScript SDK example
 
 ```js
 const proposalId = 1n;
-const retval = await simulateView("get_proposal", [xdr.ScVal.scvU64(proposalId)]);
+const retval = await simulateView("get_proposal", [
+  xdr.ScVal.scvU64(proposalId),
+]);
 const proposal = scValToNative(retval);
 console.log(proposal);
 ```
-
 
 ---
 
@@ -415,16 +509,19 @@ fn get_proposal_approval_progress(env: Env, proposal_id: u64) -> Result<(u32, u3
 
 Returns proposal progress values needed for frontend rendering.
 
-| Return position | Meaning |
-|-----------------|---------|
-| `0` | Current approval weight (`approvals`) |
-| `1` | Required quorum weight (`threshold`) |
-| `2` | Current total owner weight (`total_weight`) |
+| Return position | Meaning                                     |
+| --------------- | ------------------------------------------- |
+| `0`             | Current approval weight (`approvals`)       |
+| `1`             | Required quorum weight (`threshold`)        |
+| `2`             | Current total owner weight (`total_weight`) |
 
 **Errors:** `NotInitialized`, `ProposalNotFound`
 
 ```js
-const [approvals, quorum, totalWeight] = await contract.call("get_proposal_approval_progress", nativeToScVal(BigInt(proposalId), { type: "u64" }));
+const [approvals, quorum, totalWeight] = await contract.call(
+  "get_proposal_approval_progress",
+  nativeToScVal(BigInt(proposalId), { type: "u64" }),
+);
 // approvals: Number, quorum: Number, totalWeight: Number
 ```
 
@@ -437,6 +534,7 @@ fn get_proposals_paged(env: Env, offset: u64, limit: u32) -> Vec<Proposal>
 ```
 
 Returns a page of proposals. `offset` is 0-based (first proposal is at offset 0). `limit` is capped at 20. Proposals are returned in creation order.
+
 ### JavaScript SDK example
 
 ```js
@@ -450,7 +548,6 @@ const proposals = scValToNative(retval);
 console.log(proposals);
 ```
 
-
 ---
 
 ## `get_owners`
@@ -460,6 +557,7 @@ fn get_owners(env: Env) -> Result<Vec<Address>, ContractError>
 ```
 
 Returns the current owner list.
+
 ### JavaScript SDK example
 
 ```js
@@ -467,7 +565,6 @@ const retval = await simulateView("get_owners");
 const owners = scValToNative(retval);
 console.log(owners);
 ```
-
 
 ---
 
@@ -478,6 +575,7 @@ fn get_threshold(env: Env) -> Result<u32, ContractError>
 ```
 
 Returns the approval threshold.
+
 ### JavaScript SDK example
 
 ```js
@@ -485,7 +583,6 @@ const retval = await simulateView("get_threshold");
 const threshold = scValToNative(retval);
 console.log(threshold);
 ```
-
 
 ---
 
@@ -528,6 +625,7 @@ fn get_total_proposals(env: Env) -> u64
 ```
 
 Returns the total number of proposals ever created (including expired and executed).
+
 ### JavaScript SDK example
 
 ```js
@@ -535,7 +633,6 @@ const retval = await simulateView("get_total_proposals");
 const totalProposals = scValToNative(retval);
 console.log(totalProposals);
 ```
-
 
 ---
 
@@ -546,6 +643,7 @@ fn is_owner(env: Env, address: Address) -> bool
 ```
 
 Returns `true` if `address` is a current owner.
+
 ### JavaScript SDK example
 
 ```js
@@ -556,7 +654,6 @@ const retval = await simulateView("is_owner", [
 const isOwner = scValToNative(retval);
 console.log(isOwner);
 ```
-
 
 ---
 
@@ -571,7 +668,10 @@ Returns the current voting weight for `owner`. The weight reflects the owner's i
 **Errors:** `NotInitialized`, `OwnerNotFound` (if `owner` is not a current owner)
 
 ```js
-const weight = await contract.call("get_owner_weight", nativeToScVal(owner, { type: "address" })); // Number
+const weight = await contract.call(
+  "get_owner_weight",
+  nativeToScVal(owner, { type: "address" }),
+); // Number
 ```
 
 ---
@@ -584,10 +684,10 @@ fn get_owner_weights(env: Env) -> Result<Vec<OwnerWeight>, ContractError>
 
 Returns every current owner's address paired with their voting weight, in a single call. The returned list is a `Vec<OwnerWeight>` where each entry contains an `owner` field (the address) and a `weight` field (the owner's individual voting weight). The sum of all returned weights equals the current total-weight counter. This avoids the need for N separate `get_owner_weight` calls when rendering a full governance overview. Read-only; no authorization required.
 
-| Return field | Type | Description |
-|---|---|---|
-| `owner` | `Address` | A current owner's address |
-| `weight` | `u32` | That owner's individual voting weight |
+| Return field | Type      | Description                           |
+| ------------ | --------- | ------------------------------------- |
+| `owner`      | `Address` | A current owner's address             |
+| `weight`     | `u32`     | That owner's individual voting weight |
 
 **Errors:** `NotInitialized`
 
@@ -620,7 +720,12 @@ These four functions create **governance proposals**. Like `create_proposal`, ea
 The JavaScript examples below assume `server` (an `rpc.Server`), `CONTRACT_ID`, and `networkPassphrase` are already defined, and reuse this helper to build, prepare, sign, and submit an owner-authorized write:
 
 ```js
-import { Contract, TransactionBuilder, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  TransactionBuilder,
+  nativeToScVal,
+  xdr,
+} from "@stellar/stellar-sdk";
 
 const contract = new Contract(CONTRACT_ID);
 
@@ -651,12 +756,12 @@ fn create_add_owner_proposal(
 
 Proposes adding `new_owner` to the multisig. On execution the new owner is stored with the minimum voting weight of `1`. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `new_owner` | `Address` | Must not already be an owner. Current owner count must be `< 20` (`MAX_OWNERS`). |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| Parameter     | Type      | Constraints                                                                      |
+| ------------- | --------- | -------------------------------------------------------------------------------- |
+| `proposer`    | `Address` | Must be an owner. Must authorize.                                                |
+| `new_owner`   | `Address` | Must not already be an owner. Current owner count must be `< 20` (`MAX_OWNERS`). |
+| `description` | `String`  | 1–300 characters                                                                 |
+| `deadline`    | `u64`     | > current ledger timestamp, ≤ now + 90 days                                      |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
@@ -689,12 +794,12 @@ fn create_remove_owner_proposal(
 
 Proposes removing `owner_to_remove` from the multisig. Rejected at creation if the removal would drop the remaining total owner weight below the current threshold. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
+| Parameter         | Type      | Constraints                                                                          |
+| ----------------- | --------- | ------------------------------------------------------------------------------------ |
+| `proposer`        | `Address` | Must be an owner. Must authorize.                                                    |
 | `owner_to_remove` | `Address` | Must be a current owner. Remaining total weight after removal must stay ≥ threshold. |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| `description`     | `String`  | 1–300 characters                                                                     |
+| `deadline`        | `u64`     | > current ledger timestamp, ≤ now + 90 days                                          |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
@@ -727,12 +832,12 @@ fn create_change_threshold_proposal(
 
 Proposes changing the approval threshold. The threshold is an **absolute weight value**, so it is validated against the current total owner weight rather than the owner count. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `new_threshold` | `u32` | ≥ 1 and ≤ current total owner weight |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| Parameter       | Type      | Constraints                                 |
+| --------------- | --------- | ------------------------------------------- |
+| `proposer`      | `Address` | Must be an owner. Must authorize.           |
+| `new_threshold` | `u32`     | ≥ 1 and ≤ current total owner weight        |
+| `description`   | `String`  | 1–300 characters                            |
+| `deadline`      | `u64`     | > current ledger timestamp, ≤ now + 90 days |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
@@ -766,13 +871,13 @@ fn create_change_weight_proposal(
 
 Proposes changing an existing owner's voting weight. The new weight must be within `[MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT]` and must not exceed the configured single-owner weight cap (default 50% of the resulting total weight). Zero is never a valid weight — use `create_remove_owner_proposal` instead. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `target_owner` | `Address` | Must be a current owner. |
-| `new_weight` | `u32` | `MIN_OWNER_WEIGHT` ≤ `new_weight` ≤ `MAX_OWNER_WEIGHT` |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| Parameter      | Type      | Constraints                                            |
+| -------------- | --------- | ------------------------------------------------------ |
+| `proposer`     | `Address` | Must be an owner. Must authorize.                      |
+| `target_owner` | `Address` | Must be a current owner.                               |
+| `new_weight`   | `u32`     | `MIN_OWNER_WEIGHT` ≤ `new_weight` ≤ `MAX_OWNER_WEIGHT` |
+| `description`  | `String`  | 1–300 characters                                       |
+| `deadline`     | `u64`     | > current ledger timestamp, ≤ now + 90 days            |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent` (proposal creation); on execution `("c_wgt",)` → `OwnerWeightChangedEvent`.
 
@@ -808,14 +913,14 @@ fn create_spending_limit_proposal(
 
 Proposes setting (or changing) a per-owner, per-token spending limit. Once executed, the limit caps the cumulative amount `owner` may propose for `token` within a fixed 30-day window; it is enforced in `create_proposal`. A `limit` of `0` blocks that token entirely for that owner. Returns the new proposal ID.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `owner` | `Address` | The owner the limit applies to |
-| `token` | `Address` | The token the limit applies to |
-| `limit` | `i128` | ≥ 0 (`0` blocks the token for that owner) |
-| `description` | `String` | 1–300 characters |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| Parameter     | Type      | Constraints                                 |
+| ------------- | --------- | ------------------------------------------- |
+| `proposer`    | `Address` | Must be an owner. Must authorize.           |
+| `owner`       | `Address` | The owner the limit applies to              |
+| `token`       | `Address` | The token the limit applies to              |
+| `limit`       | `i128`    | ≥ 0 (`0` blocks the token for that owner)   |
+| `description` | `String`  | 1–300 characters                            |
+| `deadline`    | `u64`     | > current ledger timestamp, ≤ now + 90 days |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
@@ -844,26 +949,34 @@ fn get_owner_spending_limits(env: Env, owner: Address) -> Vec<SpendingLimitEntry
 
 Returns every currently configured spending-limit entry for `owner` as a list of `(token, limit)` pairs. Owners with no configured limits return an empty list. Updating an existing limit for the same token replaces the prior entry instead of creating a duplicate.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `owner` | `Address` | The owner whose configured spending limits should be returned |
+| Parameter | Type      | Constraints                                                   |
+| --------- | --------- | ------------------------------------------------------------- |
+| `owner`   | `Address` | The owner whose configured spending limits should be returned |
 
 **Returns:** `Vec<SpendingLimitEntry>`
 
 ```js
-await contract.call("get_owner_spending_limits", nativeToScVal(owner, { type: "address" }));
+await contract.call(
+  "get_owner_spending_limits",
+  nativeToScVal(owner, { type: "address" }),
+);
 ```
 
 ---
 
 ## Guardian & Emergency Pause
 
-The guardian mechanism provides an emergency pause. **Unlike the create → approve → execute proposal flow used everywhere else in the contract, `set_guardian` and `unfreeze` are single-transaction, multi-owner calls.** They each take a `Vec<Address>` of *distinct* owners who must **all sign the same transaction**, and whose combined voting weight must reach the current threshold — there is no separate approval step and no stored proposal, so authorization and effect happen atomically in one call. `freeze`, by contrast, is authorized by the single registered guardian.
+The guardian mechanism provides an emergency pause. **Unlike the create → approve → execute proposal flow used everywhere else in the contract, `set_guardian` and `unfreeze` are single-transaction, multi-owner calls.** They each take a `Vec<Address>` of _distinct_ owners who must **all sign the same transaction**, and whose combined voting weight must reach the current threshold — there is no separate approval step and no stored proposal, so authorization and effect happen atomically in one call. `freeze`, by contrast, is authorized by the single registered guardian.
 
 Because `set_guardian` and `unfreeze` require several signatures on one transaction, each co-signing owner must add their signature to the **same** transaction envelope before it is submitted:
 
 ```js
-import { Contract, TransactionBuilder, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  TransactionBuilder,
+  nativeToScVal,
+  xdr,
+} from "@stellar/stellar-sdk";
 
 const contract = new Contract(CONTRACT_ID);
 
@@ -895,10 +1008,10 @@ fn set_guardian(env: Env, approvers: Vec<Address>, new_guardian: Address) -> Res
 
 Assigns or replaces the guardian address. Requires distinct owner `approvers` whose combined weight reaches the threshold, all signing the same transaction.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `approvers` | `Vec<Address>` | Distinct current owners; each must authorize; combined weight ≥ threshold |
-| `new_guardian` | `Address` | The address to register as guardian |
+| Parameter      | Type           | Constraints                                                               |
+| -------------- | -------------- | ------------------------------------------------------------------------- |
+| `approvers`    | `Vec<Address>` | Distinct current owners; each must authorize; combined weight ≥ threshold |
+| `new_guardian` | `Address`      | The address to register as guardian                                       |
 
 **Emits:** `("guard_set",)` → `GuardianSetEvent`
 
@@ -924,8 +1037,8 @@ fn freeze(env: Env, guardian: Address) -> Result<(), ContractError>
 
 Immediately freezes the contract, blocking new proposal creation and all execution. **Only the currently registered guardian may call this**, and only after a guardian has been set.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
+| Parameter  | Type      | Constraints                                         |
+| ---------- | --------- | --------------------------------------------------- |
 | `guardian` | `Address` | Must equal the registered guardian. Must authorize. |
 
 **Emits:** `("frozen",)` → `FrozenEvent`
@@ -935,7 +1048,9 @@ Immediately freezes the contract, blocking new proposal creation and all executi
 ```js
 const account = await server.getAccount(guardianKeypair.publicKey());
 const tx = new TransactionBuilder(account, { fee: "100", networkPassphrase })
-  .addOperation(contract.call("freeze", nativeToScVal(guardian, { type: "address" })))
+  .addOperation(
+    contract.call("freeze", nativeToScVal(guardian, { type: "address" })),
+  )
   .setTimeout(30)
   .build();
 const prepared = await server.prepareTransaction(tx);
@@ -951,8 +1066,8 @@ fn unfreeze(env: Env, approvers: Vec<Address>) -> Result<(), ContractError>
 
 Resumes normal operation after a freeze. Like `set_guardian`, requires distinct owner `approvers` whose combined weight reaches the threshold, all signing the same transaction.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
+| Parameter   | Type           | Constraints                                                               |
+| ----------- | -------------- | ------------------------------------------------------------------------- |
 | `approvers` | `Vec<Address>` | Distinct current owners; each must authorize; combined weight ≥ threshold |
 
 **Emits:** `("unfrozen",)` → `UnfrozenEvent`
@@ -1034,21 +1149,21 @@ fn create_recurring_proposal(
 
 Creates a governance proposal to start a recurring-payment schedule. Like the other governance proposals (`create_add_owner_proposal` etc., `CONTRACT_API.md:334`), it does **not** create the schedule directly — it returns a proposal ID that must be approved and executed; execution creates the `RecurringPayment` (`status = Active`) and emits `r_crt` `RecurringPaymentCreatedEvent`.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `recipient` | `Address` | Must not be the contract address (`InvalidRecipient`). |
-| `token` | `Address` | Must implement Soroban token interface. |
-| `amount` | `i128` | ≥ 1 (`MIN_AMOUNT`, `lib.rs:555`). Per-period amount for `FixedAmountPerPeriod`; ignored (set `0`) for `LinearVesting` where `total_cap` drives the schedule. |
-| `interval_secs` | `u64` | `60` ≤ value ≤ `31536000` (`MIN_INTERVAL_SECS`/`MAX_INTERVAL_SECS`, `lib.rs:589`). |
-| `start_time` | `u64` | Ledger timestamp when disbursements may begin. |
-| `end_time` | `u64` | Ledger timestamp when schedule ends (`0` = no end; for `LinearVesting` must be `> start_time`). |
-| `cliff_time` | `u64` | Earliest disbursement time (`0` = no cliff; if set must be ≥ `start_time`). |
-| `total_cap` | `i128` | Total cap for the schedule (`0` = uncapped for `FixedAmountPerPeriod`; for `LinearVesting` must be `> 0`). |
-| `kind` | `RecurringKind` | `FixedAmountPerPeriod` or `LinearVesting` (`lib.rs:42`). |
-| `description` | `String` | 1–300 characters. |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days (`MAX_PROPOSAL_DURATION`). |
-| `category` | `ProposalCategory` | `Payroll`, `Grant`, `Ops`, etc. Stored in `RecurringPayment.category`. |
+| Parameter       | Type               | Constraints                                                                                                                                                  |
+| --------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `proposer`      | `Address`          | Must be an owner. Must authorize.                                                                                                                            |
+| `recipient`     | `Address`          | Must not be the contract address (`InvalidRecipient`).                                                                                                       |
+| `token`         | `Address`          | Must implement Soroban token interface.                                                                                                                      |
+| `amount`        | `i128`             | ≥ 1 (`MIN_AMOUNT`, `lib.rs:555`). Per-period amount for `FixedAmountPerPeriod`; ignored (set `0`) for `LinearVesting` where `total_cap` drives the schedule. |
+| `interval_secs` | `u64`              | `60` ≤ value ≤ `31536000` (`MIN_INTERVAL_SECS`/`MAX_INTERVAL_SECS`, `lib.rs:589`).                                                                           |
+| `start_time`    | `u64`              | Ledger timestamp when disbursements may begin.                                                                                                               |
+| `end_time`      | `u64`              | Ledger timestamp when schedule ends (`0` = no end; for `LinearVesting` must be `> start_time`).                                                              |
+| `cliff_time`    | `u64`              | Earliest disbursement time (`0` = no cliff; if set must be ≥ `start_time`).                                                                                  |
+| `total_cap`     | `i128`             | Total cap for the schedule (`0` = uncapped for `FixedAmountPerPeriod`; for `LinearVesting` must be `> 0`).                                                   |
+| `kind`          | `RecurringKind`    | `FixedAmountPerPeriod` or `LinearVesting` (`lib.rs:42`).                                                                                                     |
+| `description`   | `String`           | 1–300 characters.                                                                                                                                            |
+| `deadline`      | `u64`              | > current ledger timestamp, ≤ now + 90 days (`MAX_PROPOSAL_DURATION`).                                                                                       |
+| `category`      | `ProposalCategory` | `Payroll`, `Grant`, `Ops`, etc. Stored in `RecurringPayment.category`.                                                                                       |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent` (proposal creation); on execution `("r_crt",)` → `RecurringPaymentCreatedEvent`.
 
@@ -1091,12 +1206,12 @@ fn create_cancel_recurring_proposal(
 
 Creates a governance proposal to cancel an existing recurring schedule. The schedule remains `Active` until the cancel proposal is approved and executed, at which point its `status` becomes `Cancelled` and `ACTREC` is decremented, emitting `r_cncl` `RecurringPaymentCancelledEvent`. `pause / resume / modify` are not separate entrypoints — modify is “cancel + new create”, pause/resume uses the `Paused` status variant reserved for future use.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
-| `proposer` | `Address` | Must be an owner. Must authorize. |
-| `schedule_id` | `u64` | Must refer to an existing schedule (`RecurringPaymentNotFound` otherwise). Must not already be `Cancelled`. |
-| `description` | `String` | 1–300 characters. |
-| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days. |
+| Parameter     | Type      | Constraints                                                                                                 |
+| ------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `proposer`    | `Address` | Must be an owner. Must authorize.                                                                           |
+| `schedule_id` | `u64`     | Must refer to an existing schedule (`RecurringPaymentNotFound` otherwise). Must not already be `Cancelled`. |
+| `description` | `String`  | 1–300 characters.                                                                                           |
+| `deadline`    | `u64`     | > current ledger timestamp, ≤ now + 90 days.                                                                |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`.
 
@@ -1125,8 +1240,8 @@ Transfers the currently claimable amount from the contract treasury to the sched
 
 Claimable amount logic (`lib.rs:2688`): `FixedAmountPerPeriod` = `amount` (capped by remaining `total_cap`) if `now >= last_disbursed_at + interval_secs`; `LinearVesting` = `vested = total_cap * elapsed / duration - total_disbursed` where `elapsed = min(now - start_time, end_time - start_time)`. On final disbursement or when `now >= end_time`, schedule transitions to `Completed`.
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
+| Parameter     | Type  | Constraints                         |
+| ------------- | ----- | ----------------------------------- |
 | `schedule_id` | `u64` | Must refer to an `Active` schedule. |
 
 **Emits:** `("r_disb",)` → `RecurringPaymentDisbursedEvent` on success.
@@ -1135,12 +1250,21 @@ Claimable amount logic (`lib.rs:2688`): `FixedAmountPerPeriod` = `amount` (cappe
 
 ```js
 // Permissionless — any funded account can disburse; no owner auth required.
-import { Contract, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import {
+  Contract,
+  TransactionBuilder,
+  nativeToScVal,
+} from "@stellar/stellar-sdk";
 const contract = new Contract(CONTRACT_ID);
 // Keeper pattern (see scripts/keeper-recurring.js):
 const account = await server.getAccount(keeperKeypair.publicKey());
 const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase })
-  .addOperation(contract.call("disburse_recurring", nativeToScVal(BigInt(schedule_id), { type: "u64" })))
+  .addOperation(
+    contract.call(
+      "disburse_recurring",
+      nativeToScVal(BigInt(schedule_id), { type: "u64" }),
+    ),
+  )
   .setTimeout(30)
   .build();
 const prepared = await server.prepareTransaction(tx);
@@ -1149,7 +1273,10 @@ await server.sendTransaction(prepared);
 
 // Or as an owner-authorized call via submitOwnerCall:
 await submitOwnerCall(
-  contract.call("disburse_recurring", nativeToScVal(BigInt(schedule_id), { type: "u64" })),
+  contract.call(
+    "disburse_recurring",
+    nativeToScVal(BigInt(schedule_id), { type: "u64" }),
+  ),
   anyKeypair,
 );
 ```
@@ -1162,8 +1289,8 @@ fn get_claimable_amount(env: Env, schedule_id: u64) -> Result<i128, ContractErro
 
 Read-only view. Returns the amount that would be transferred by `disburse_recurring` at the current ledger timestamp, or `0` if not yet due, not `Active`, or cap exhausted. Mirrors `disburse_recurring` logic without performing the transfer (`lib.rs:2777`).
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
+| Parameter     | Type  | Constraints                         |
+| ------------- | ----- | ----------------------------------- |
 | `schedule_id` | `u64` | Must refer to an existing schedule. |
 
 **Returns:** `i128` claimable amount in token smallest units.
@@ -1172,7 +1299,10 @@ Read-only view. Returns the amount that would be transferred by `disburse_recurr
 
 ```js
 // Reuses the read-only simulateView helper defined for get_guardian above.
-const claimable = await simulateView("get_claimable_amount", nativeToScVal(BigInt(schedule_id), { type: "u64" })); // BigInt
+const claimable = await simulateView(
+  "get_claimable_amount",
+  nativeToScVal(BigInt(schedule_id), { type: "u64" }),
+); // BigInt
 ```
 
 ### `get_recurring_payment`
@@ -1183,8 +1313,8 @@ fn get_recurring_payment(env: Env, schedule_id: u64) -> Result<RecurringPayment,
 
 Read-only view. Returns the full `RecurringPayment` struct for a schedule (`lib.rs:2831`).
 
-| Parameter | Type | Constraints |
-|-----------|------|-------------|
+| Parameter     | Type  | Constraints                         |
+| ------------- | ----- | ----------------------------------- |
 | `schedule_id` | `u64` | Must refer to an existing schedule. |
 
 **Returns:** `RecurringPayment` (`id, proposer, recipient, token, amount, interval_secs, start_time, end_time, cliff_time, total_cap, total_disbursed, last_disbursed_at, status, kind, category, description`).
@@ -1192,7 +1322,10 @@ Read-only view. Returns the full `RecurringPayment` struct for a schedule (`lib.
 **Errors:** `RecurringPaymentNotFound` (39).
 
 ```js
-const schedule = await simulateView("get_recurring_payment", nativeToScVal(BigInt(schedule_id), { type: "u64" }));
+const schedule = await simulateView(
+  "get_recurring_payment",
+  nativeToScVal(BigInt(schedule_id), { type: "u64" }),
+);
 // { id, proposer, recipient, token, amount, interval_secs, start_time, end_time, cliff_time, total_cap, total_disbursed, last_disbursed_at, status, kind, category, description }
 ```
 
@@ -1214,64 +1347,53 @@ const activeCount = await simulateView("get_active_recurring_count"); // Number
 
 The table below maps every `ContractError` discriminant to its cause and the recommended remediation. All codes are `u32` values encoded as `ScVal::Error` in XDR responses.
 
-| Code | Variant Name | Cause / Description | Recommended Action |
-|------|--------------|--------------------|--------------------|
-| 1 | `AlreadyInitialized` | `initialize` was called on a contract instance that has already been set up. The `INIT` storage flag is already `true`. | Deploy a fresh contract instance; do not call `initialize` twice on the same address. |
-| 2 | `NotInitialized` | A function that requires contract state (threshold, owners) was invoked before `initialize` completed successfully. | Call `initialize` first and confirm the transaction is finalized on-chain before calling any other function. |
-| 3 | `Unauthorized` | The caller's address is not present in the current owner list, or the guardian address did not match when calling `freeze`. | Ensure the signing address is a registered owner. For `freeze`, ensure the address matches the stored guardian. |
-| 4 | `InvalidThreshold` | The proposed threshold is either `0` or exceeds the current owner count (`threshold > owners.len()`). Thrown by `initialize` and `create_change_threshold_proposal`. | Supply a threshold in the range `[1, owners.len()]`. |
-| 5 | `InvalidOwners` | The owner list passed to `initialize` is empty, or `create_add_owner_proposal` was called when the owner count is already at the maximum of **20** (`MAX_OWNERS = 20`). | Provide 1–20 unique owner addresses. If the cap is reached, remove an owner before adding another. |
-| 6 | `ProposalNotFound` | No proposal record exists in persistent storage for the given `proposal_id`. | Verify the ID with `get_total_proposals` and confirm the proposal was created on the correct network/contract. |
-| 7 | `ProposalNotActive` | The proposal's derived status is `Executed`, `Expired`, or `Revoked` — any terminal state that blocks further `approve`, `revoke`, or `execute` calls. | Check the proposal status via `get_proposal` before acting. Expired proposals can only be swept via `cancel_expired`. |
-| 8 | `AlreadyApproved` | The calling owner has already cast an approval for this proposal (the approval flag in persistent storage is `true`). | Use `revoke` first to withdraw the prior approval, then re-approve if needed. |
-| 9 | `NotApproved` | `revoke` was called by an owner who has not yet approved the proposal (approval flag is `false` or absent). | Only call `revoke` after successfully calling `approve` for the same proposal. |
-| 10 | `ThresholdNotMet` | `execute` was called before the required approval weight was reached. Also raised by `set_guardian`, `unfreeze`, and `upgrade` when distinct approvers' combined weight is below the current threshold. | Gather enough owner voting weight, then retry. Check the current threshold via `get_threshold`. |
-| 11 | `ProposalExpired` | The ledger timestamp has surpassed the proposal's `deadline`. Raised by `execute` when it detects expiry; the proposal status is persisted as `Expired` and the active-proposal counter is decremented. | Create a new proposal with a fresh deadline. Use `cancel_expired` to sweep stale IDs and free the active-proposal slot. |
-| 12 | `InvalidAmount` | The `amount` field in `create_proposal` is less than **1** stroop (`MIN_AMOUNT = 1`). Negative and zero values are both rejected. | Pass a positive integer ≥ 1 in the token's smallest unit. For XLM this is stroops (1 XLM = 10,000,000 stroops). |
-| 13 | `InvalidDeadline` | The `deadline` timestamp is ≤ the current ledger timestamp at the time the proposal creation transaction is processed. | Set a deadline strictly in the future. Account for block-time variance by adding a buffer of at least a few minutes. |
-| 14 | `InvalidToken` | The address passed as `token` does not implement the Soroban token interface — specifically, at least one of `decimals()`, `symbol()`, or `name()` failed when probed. | Use a verified SEP-41 token address. On Testnet, use the canonical XLM, USDC, or EURC addresses listed in the frontend constants. |
-| 15 | `TransferFailed` | The on-chain `token.transfer(contract_address, recipient, amount)` call failed, typically because the contract does not hold sufficient token balance. | Fund the contract with the required token balance before executing the proposal, then retry `execute`. |
-| 16 | `EmptyDescription` | The `description` field is an empty string (length = 0). Checked in all four proposal-creation functions. | Provide a non-empty, human-readable description of the proposal's intent. |
-| 17 | `DescriptionTooLong` | The `description` field exceeds **300 characters** (`MAX_DESCRIPTION_LEN = 300`). Checked in all four proposal-creation functions. | Trim the description to 300 characters or fewer before submitting. |
-| 18 | `TooManyActiveProposals` | The number of proposals currently in `Pending` or `Ready` status has reached the cap of **50** (`MAX_ACTIVE_PROPOSALS = 50`). New proposals cannot be created until existing ones are executed or expired. | Execute or sweep at least one active proposal using `execute` or `cancel_expired`, then retry creation. |
-| 19 | `DuplicateOwner` | Two or more identical addresses appear in the owner list during `initialize`, or an address being added via `create_add_owner_proposal` already exists in the current owner list. Also checked in `set_guardian`, `unfreeze`, and `upgrade` for duplicate approver addresses. | Deduplicate all address lists before submitting. |
-| 20 | `ArithmeticError` | An integer overflow occurred — for example, the internal proposal ID counter wrapped when incrementing past `u64::MAX`, or an `approvals` counter underflowed during `checked_sub`. This is a safety guard that should never trigger in normal operation. | If encountered, contact the contract maintainers; this indicates an edge case at extreme scale. |
-| 21 | `InvalidDuration` | The gap between the current ledger timestamp and the `deadline` exceeds **7,776,000 seconds** (90 days, `MAX_PROPOSAL_DURATION`). Checked in all four proposal-creation functions. | Set a deadline no more than 90 days in the future from the current time. |
-| 22 | `InvalidRecipient` | The `to` address in `create_proposal` is the contract's own address (`env.current_contract_address()`). Self-transfers are explicitly rejected to prevent accidental fund loops. | Supply an external recipient address. The contract cannot transfer tokens to itself. |
-| 23 | `TimeLockActive` | `execute` was called before the time-lock delay has elapsed since the proposal first reached `Ready` status (`now < ready_at + time_lock_delay`). Only raised when a non-zero `time_lock_delay` was set during `initialize`. | Wait until `ready_at + time_lock_delay` has passed. Query `get_time_lock_delay` to determine the required wait period. |
-| 24 | `WouldBreakThreshold` | `create_remove_owner_proposal` was rejected because executing the removal would leave fewer owners than the current threshold (`owners.len() <= threshold`) in flat-threshold configurations. Note that weight-based quorum violations return `WouldBreakQuorum` (48). | Lower the threshold first via `create_change_threshold_proposal`, then remove the owner, or ensure the owner count exceeds the threshold before attempting removal. |
-| 25 | `OwnerNotFound` | The address supplied to `create_remove_owner_proposal` as `owner_to_remove` is not present in the current owner list. | Verify the address is a registered owner with `is_owner` or `get_owners` before submitting a removal proposal. |
-| 26 | `ContractFrozen` | The contract's frozen flag is `true`. `create_proposal`, `create_add_owner_proposal`, `create_remove_owner_proposal`, `create_change_threshold_proposal`, and `execute` are all blocked while frozen. | The guardian must call `freeze` (already done if this error appears). Only `unfreeze` (requiring threshold co-signers) can restore normal operation. |
-| 27 | `NoGuardian` | `freeze` was called but no guardian address has been stored in the contract (the `GUARD` storage key is absent). | Call `set_guardian` with distinct owner co-signers whose combined weight reaches threshold. |
-| 28 | `InvalidInterval` | The `interval_secs` supplied to `create_recurring_proposal` or `create_modify_recurring_proposal` is outside `[MIN_RECURRING_INTERVAL, MAX_RECURRING_INTERVAL]`. Re-checked when the proposal executes. | Pass an interval within the supported range (1 minute to 1 year). |
-| 29 | `InvalidSchedule` | A recurring schedule's `end_time` is not after its `start_time`, or its `cliff_time` is after its `end_time`. | Supply `start < end` and, if a cliff is set, `cliff <= end`. |
-| 30 | `InvalidCap` | A recurring schedule's `total_cap` is smaller than its per-period `amount`. | Set `total_cap` to at least one period's amount, or omit the cap. |
-| 31 | `SpendingLimitExceeded` | The proposer's aggregate amount for a token in `create_proposal` or `create_recurring_proposal` exceeds the per-owner spending limit stored for that `(owner, token)` pair. Raised only when a limit has been set; unrestricted owners are unaffected. | Lower the amount so it fits under the limit, or raise/clear the limit via a `SetSpendingLimit` proposal before retrying. |
-| 32 | `RecurringPaymentNotFound` | No recurring-payment schedule exists for the given `schedule_id`. Thrown by `get_recurring_payment`, `disburse_recurring`, and the cancel/pause/resume/modify recurring proposal paths. | Verify the ID with `get_recurring_payments_paged` and confirm the schedule was created on the correct contract/network. |
-| 33 | `RecurringPaymentNotDue` | Reserved. Not currently returned by any entrypoint; early disbursements return `RecurringIntervalNotElapsed` (36). | No action needed. Kept so the numeric code is never reassigned. |
-| 34 | `RecurringPaymentComplete` | `disburse_recurring` was called for a schedule past its `end_time`, with nothing newly vested, or whose `total_cap` is fully disbursed. | The schedule has finished paying out. Create a new recurring-payment proposal if payments should continue. |
-| 35 | `RecurringPaymentInactive` | `disburse_recurring` was called for a schedule whose status is `Paused`, `Cancelled`, or `Completed`. | Check `get_recurring_payment(...).status` is `Active`; resume a paused schedule through a `ResumeRecurringPayment` proposal first. |
-| 36 | `RecurringIntervalNotElapsed` | `disburse_recurring` was called before the schedule is due: before `start_time`/`cliff_time`, or before `interval_secs` has passed since the last disbursement. | Wait until `get_next_disbursement_time(schedule_id)` has passed, then retry. |
-| 37 | `TooManyActiveRecurring` | Creating or executing a `CreateRecurringPayment` proposal would exceed `MAX_ACTIVE_RECURRING`. Checked at creation and again at execution. | Cancel an existing schedule or let one complete to free a slot, then retry. |
-| 38 | `ScheduleAlreadyCancelled` | A cancel-recurring proposal targets a schedule that is already `Cancelled`. Checked at creation and execution. | No second cancel is needed. Verify with `get_recurring_payment`. |
-| 39 | `ScheduleAlreadyPaused` | A pause-recurring proposal targets a schedule that is already `Paused`. Checked at creation and execution. | No action needed, or resume the schedule first if the intent was to toggle it. |
-| 40 | `ScheduleNotPaused` | A resume-recurring proposal targets a schedule that is not `Paused`. Checked at creation and execution. | Only resume schedules whose status is `Paused`. |
-| 41 | `ScheduleTerminal` | A cancel, pause, resume, or modify proposal targets a schedule that is `Completed` or `Cancelled`, which cannot transition further. | Create a new recurring-payment proposal instead of modifying a finished schedule. |
-| 42 | `InvalidWeightsLength` | The `weights` vector passed to `initialize` does not have one entry per owner. | Pass exactly one weight for each address in `owners`, in the same order. |
-| 43 | `WeightBelowMinimum` | An owner weight supplied to `initialize`, `create_change_weight_proposal`, or a `ChangeOwnerWeight` execution is below `MIN_OWNER_WEIGHT`. Zero is never a valid weight. | Use a positive weight. To revoke voting rights, use `create_remove_owner_proposal` instead of setting weight to zero. |
-| 44 | `InvalidWeight` | An owner weight supplied to `initialize`, `create_add_owner_proposal`, or `create_change_weight_proposal` is above `MAX_OWNER_WEIGHT`, or `set_max_single_owner_weight_pct` was given a value outside `1..=50`. | Use a weight (or percentage) within the allowed range. |
-| 45 | `AlreadyMigrated` | `migrate_to_weighted_governance` or `migrate_to_rbac` was called on a contract that has already been migrated (or was initialized on the newer model). | Do not call the migration again; the contract already uses the current model. |
-| 46 | `SingleOwnerWeightCapExceeded` | An add-owner or weight-change proposal would give one owner a share of the resulting total weight above the configured maximum (default 50%). Checked at creation and execution. | Choose a lower weight that respects the cap, or have a quorum of owners tighten/adjust the cap via `set_max_single_owner_weight_pct`. |
-| 47 | `TargetOwnerNoLongerExists` | A `ChangeOwnerWeight` proposal was executed, but the `target_owner` had been removed between proposal creation and execution. | Expected guard for an edge case; the proposal has no effect. Create a new proposal targeting a current owner. |
-| 48 | `WouldBreakQuorum` | Executing a weight change would leave an active (`Pending` or `Ready`) proposal's `quorum_weight` above the new total weight, or revoking an `Approver` role would leave less approver weight than the threshold. | Lower the threshold first, wait for active proposals to complete or expire, or keep enough approver weight in place. |
-| 49 | `CannotRemoveLastOwner` | `create_remove_owner_proposal` targets the only remaining owner. | Add another owner before removing this one. |
-| 50 | `ThresholdExceedsOwnerCount` | Reserved. Not currently returned by any entrypoint; threshold bounds are reported as `InvalidThreshold` (4) or `WouldBreakThreshold` (24). | No action needed. Kept so the numeric code is never reassigned. |
-| 51 | `ScheduleNotActive` | Reserved. Not currently returned by any entrypoint; inactive schedules are reported as `RecurringPaymentInactive` (35). | No action needed. Kept so the numeric code is never reassigned. |
-| 52 | `MissingRole` | A role-gated entrypoint was called by an owner that does not hold the required role. Thrown by `require_role` from proposal-creation paths (`Proposer`), `approve` / `revoke` (`Approver`), and `execute` / `cancel_expired` (`Executor`). Non-owners are rejected earlier with `Unauthorized` (3). | Grant the missing role through a `create_grant_role_proposal`, wait for it to execute, then retry — or use an address that already holds the role (`has_role` / `get_roles`). |
-| 53 | `RoleAlreadyGranted` | A `GrantRole` proposal tried to add a role the target already holds. Checked at creation and execution. | Do not re-grant the same role. Inspect current roles with `get_roles(address)` or `get_role_members(role)`. |
-| 54 | `RoleNotGranted` | A `RevokeRole` proposal tried to remove a role the target does not hold. Checked at creation and execution. | Confirm the address still holds the role with `has_role`; recreate the proposal if state drifted. |
-| 55 | `InvalidRole` | A role argument did not decode to one of the four supported `Role` variants (`Proposer`, `Approver`, `Executor`, `Viewer`). | Pass a valid `Role` value; only the four contract variants are accepted. |
-| 56 | `DeprecatedEntrypoint` | `create_recurring_schedule` or `cancel_recurring_schedule` was called. These direct entrypoints are retained only for ABI compatibility and always fail without touching state. | Use the proposal flow instead: `create_recurring_proposal` / `create_cancel_recurring_proposal`, then approve and execute. |
+| Code | Variant Name                   | Cause / Description                                                                                                                                                                                                                                                                                      | Recommended Action                                                                                                                                                                                                               |
+| ---- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `AlreadyInitialized`           | `initialize` was called on a contract instance that has already been set up. The `INIT` storage flag is already `true`.                                                                                                                                                                                  | Deploy a fresh contract instance; do not call `initialize` twice on the same address.                                                                                                                                            |
+| 2    | `NotInitialized`               | A function that requires contract state (threshold, owners) was invoked before `initialize` completed successfully.                                                                                                                                                                                      | Call `initialize` first and confirm the transaction is finalized on-chain before calling any other function.                                                                                                                     |
+| 3    | `Unauthorized`                 | The caller's address is not present in the current owner list, or the guardian address did not match when calling `freeze`.                                                                                                                                                                              | Ensure the signing address is a registered owner. For `freeze`, ensure the address matches the stored guardian.                                                                                                                  |
+| 4    | `InvalidThreshold`             | The proposed threshold is either `0` or exceeds the current owner count (`threshold > owners.len()`). Thrown by `initialize` and `create_change_threshold_proposal`.                                                                                                                                     | Supply a threshold in the range `[1, owners.len()]`.                                                                                                                                                                             |
+| 5    | `InvalidOwners`                | The owner list passed to `initialize` is empty, or `create_add_owner_proposal` was called when the owner count is already at the maximum of **20** (`MAX_OWNERS = 20`).                                                                                                                                  | Provide 1–20 unique owner addresses. If the cap is reached, remove an owner before adding another.                                                                                                                               |
+| 6    | `ProposalNotFound`             | No proposal record exists in persistent storage for the given `proposal_id`.                                                                                                                                                                                                                             | Verify the ID with `get_total_proposals` and confirm the proposal was created on the correct network/contract.                                                                                                                   |
+| 7    | `ProposalNotActive`            | The proposal's derived status is `Executed`, `Expired`, or `Revoked` — any terminal state that blocks further `approve`, `revoke`, or `execute` calls.                                                                                                                                                   | Check the proposal status via `get_proposal` before acting. Expired proposals can only be swept via `cancel_expired`.                                                                                                            |
+| 8    | `AlreadyApproved`              | The calling owner has already cast an approval for this proposal (the approval flag in persistent storage is `true`).                                                                                                                                                                                    | Use `revoke` first to withdraw the prior approval, then re-approve if needed.                                                                                                                                                    |
+| 9    | `NotApproved`                  | `revoke` was called by an owner who has not yet approved the proposal (approval flag is `false` or absent).                                                                                                                                                                                              | Only call `revoke` after successfully calling `approve` for the same proposal.                                                                                                                                                   |
+| 10   | `ThresholdNotMet`              | `execute` was called before the required approval weight was reached. Also raised by `set_guardian`, `unfreeze`, and `upgrade` when distinct approvers' combined weight is below the current threshold.                                                                                                  | Gather enough owner voting weight, then retry. Check the current threshold via `get_threshold`.                                                                                                                                  |
+| 11   | `ProposalExpired`              | The ledger timestamp has surpassed the proposal's `deadline`. Raised by `execute` when it detects expiry; the proposal status is persisted as `Expired` and the active-proposal counter is decremented.                                                                                                  | Create a new proposal with a fresh deadline. Use `cancel_expired` to sweep stale IDs and free the active-proposal slot.                                                                                                          |
+| 12   | `InvalidAmount`                | The `amount` field in `create_proposal` is less than **1** stroop (`MIN_AMOUNT = 1`). Negative and zero values are both rejected.                                                                                                                                                                        | Pass a positive integer ≥ 1 in the token's smallest unit. For XLM this is stroops (1 XLM = 10,000,000 stroops).                                                                                                                  |
+| 13   | `InvalidDeadline`              | The `deadline` timestamp is ≤ the current ledger timestamp at the time the proposal creation transaction is processed.                                                                                                                                                                                   | Set a deadline strictly in the future. Account for block-time variance by adding a buffer of at least a few minutes.                                                                                                             |
+| 14   | `InvalidToken`                 | The address passed as `token` does not implement the Soroban token interface — specifically, at least one of `decimals()`, `symbol()`, or `name()` failed when probed.                                                                                                                                   | Use a verified SEP-41 token address. On Testnet, use the canonical XLM, USDC, or EURC addresses listed in the frontend constants.                                                                                                |
+| 15   | `TransferFailed`               | The on-chain `token.transfer(contract_address, recipient, amount)` call failed, typically because the contract does not hold sufficient token balance.                                                                                                                                                   | Fund the contract with the required token balance before executing the proposal, then retry `execute`.                                                                                                                           |
+| 16   | `EmptyDescription`             | The `description` field is an empty string (length = 0). Checked in all four proposal-creation functions.                                                                                                                                                                                                | Provide a non-empty, human-readable description of the proposal's intent.                                                                                                                                                        |
+| 17   | `DescriptionTooLong`           | The `description` field exceeds **300 characters** (`MAX_DESCRIPTION_LEN = 300`). Checked in all four proposal-creation functions.                                                                                                                                                                       | Trim the description to 300 characters or fewer before submitting.                                                                                                                                                               |
+| 18   | `TooManyActiveProposals`       | The number of proposals currently in `Pending` or `Ready` status has reached the cap of **50** (`MAX_ACTIVE_PROPOSALS = 50`). New proposals cannot be created until existing ones are executed or expired.                                                                                               | Execute or sweep at least one active proposal using `execute` or `cancel_expired`, then retry creation.                                                                                                                          |
+| 19   | `DuplicateOwner`               | Two or more identical addresses appear in the owner list during `initialize`, or an address being added via `create_add_owner_proposal` already exists in the current owner list. Also checked in `set_guardian`, `unfreeze`, and `upgrade` for duplicate approver addresses.                            | Deduplicate all address lists before submitting.                                                                                                                                                                                 |
+| 20   | `ArithmeticError`              | An integer overflow occurred — for example, the internal proposal ID counter wrapped when incrementing past `u64::MAX`, or an `approvals` counter underflowed during `checked_sub`. This is a safety guard that should never trigger in normal operation.                                                | If encountered, contact the contract maintainers; this indicates an edge case at extreme scale.                                                                                                                                  |
+| 21   | `InvalidDuration`              | The gap between the current ledger timestamp and the `deadline` exceeds **7,776,000 seconds** (90 days, `MAX_PROPOSAL_DURATION`). Checked in all four proposal-creation functions.                                                                                                                       | Set a deadline no more than 90 days in the future from the current time.                                                                                                                                                         |
+| 22   | `InvalidRecipient`             | The `to` address in `create_proposal` is the contract's own address (`env.current_contract_address()`). Self-transfers are explicitly rejected to prevent accidental fund loops.                                                                                                                         | Supply an external recipient address. The contract cannot transfer tokens to itself.                                                                                                                                             |
+| 23   | `TimeLockActive`               | `execute` was called before the time-lock delay has elapsed since the proposal first reached `Ready` status (`now < ready_at + time_lock_delay`). Only raised when a non-zero `time_lock_delay` was set during `initialize`.                                                                             | Wait until `ready_at + time_lock_delay` has passed. Query `get_time_lock_delay` to determine the required wait period.                                                                                                           |
+| 24   | `WouldBreakThreshold`          | `create_remove_owner_proposal` was rejected because executing the removal would leave fewer owners than the current threshold (`owners.len() <= threshold`) in flat-threshold configurations. Note that weight-based quorum violations return `WouldBreakQuorum` (34).                                   | Lower the threshold first via `create_change_threshold_proposal`, then remove the owner, or ensure the owner count exceeds the threshold before attempting removal.                                                              |
+| 25   | `OwnerNotFound`                | The address supplied to `create_remove_owner_proposal` as `owner_to_remove` is not present in the current owner list.                                                                                                                                                                                    | Verify the address is a registered owner with `is_owner` or `get_owners` before submitting a removal proposal.                                                                                                                   |
+| 26   | `ContractFrozen`               | The contract's frozen flag is `true`. `create_proposal`, `create_add_owner_proposal`, `create_remove_owner_proposal`, `create_change_threshold_proposal`, and `execute` are all blocked while frozen.                                                                                                    | The guardian must call `freeze` (already done if this error appears). Only `unfreeze` (requiring threshold co-signers) can restore normal operation.                                                                             |
+| 27   | `NoGuardian`                   | `freeze` was called but no guardian address has been stored in the contract (the `GUARD` storage key is absent).                                                                                                                                                                                         | Call `set_guardian` with distinct owner co-signers whose combined weight reaches threshold.                                                                                                                                      |
+| 28   | `SpendingLimitExceeded`        | The proposer's aggregate amount for a token in `create_proposal` exceeds the per-owner spending limit stored for that `(owner, token)` pair. Raised only when a limit has been set; unrestricted owners are unaffected.                                                                                  | Lower the proposal amount so it fits under the limit, or raise/clear the limit via the spending-limit governance path before retrying.                                                                                           |
+| 29   | `InvalidWeight`                | An owner weight supplied to `initialize` or `create_change_weight_proposal` is above the maximum allowed value (`MAX_OWNER_WEIGHT`).                                                                                                                                                                     | Use a weight within the allowed range.                                                                                                                                                                                           |
+| 30   | `WeightBelowMinimum`           | An owner weight supplied to `initialize` or `create_change_weight_proposal` is below the minimum allowed value (`MIN_OWNER_WEIGHT`). Zero is never a valid weight.                                                                                                                                       | Use a positive weight. To revoke voting rights, use `create_remove_owner_proposal` instead of setting weight to zero.                                                                                                            |
+| 31   | `SingleOwnerWeightCapExceeded` | A `ChangeOwnerWeight` proposal was rejected because the `new_weight` would give the `target_owner` a share of the resulting total weight greater than the configured maximum (default 50%).                                                                                                              | Choose a lower `new_weight` that respects the cap, or have a quorum of owners deliberately raise the cap via `set_max_single_owner_weight_pct`.                                                                                  |
+| 32   | `TargetOwnerNoLongerExists`    | A `ChangeOwnerWeight` proposal was executed, but the `target_owner` had been removed from the multisig between proposal creation and execution.                                                                                                                                                          | This is an expected guard for an edge case. The proposal has no effect. A new proposal would be needed to change the weight of a current owner.                                                                                  |
+| 33   | `AlreadyMigrated`              | `migrate_to_weighted_governance` was called on a contract that already has per-owner weights, either from initialization or a prior migration. The call is rejected to prevent accidental state changes.                                                                                                 | Do not call `migrate_to_weighted_governance` again. The contract is already using the weighted governance model.                                                                                                                 |
+| 34   | `WouldBreakQuorum`             | A proposal creation or owner weight modification was rejected because total remaining weight would fall below threshold, or executing the weight change would leave an active (`Pending` or `Ready`) proposal's required quorum weight unreachable (`active_proposal.quorum_weight > new_total_weight`). | Lower the threshold first via `create_change_threshold_proposal`, wait for active proposals to complete or expire, or ensure remaining total weight is sufficient to satisfy all active proposal quorums.                        |
+| 39   | `RecurringPaymentNotFound`     | No recurring-payment schedule exists for the given `schedule_id` (`RECUR` persistent key missing, `lib.rs:608`). Thrown by `get_recurring_payment`, `get_claimable_amount`, `disburse_recurring`, and `create_cancel_recurring_proposal`.                                                                | Verify the ID with `get_active_recurring_count` and `get_recurring_payment`; confirm the schedule was created on the correct contract/network and has not been pruned.                                                           |
+| 40   | `InvalidInterval`              | The `interval_secs` supplied to `create_recurring_proposal` is outside `[60, 31536000]` (`MIN_INTERVAL_SECS=60` / `MAX_INTERVAL_SECS=31536000`, `lib.rs:589`).                                                                                                                                           | Pass an interval between 1 minute (60s) and 1 year (31536000s).                                                                                                                                                                  |
+| 41   | `ScheduleNotActive`            | `disburse_recurring` was called for a schedule whose `status != Active` (`lib.rs:2664` — `Paused`, `Completed`, or `Cancelled`). Also returned when trying to disburse after cancellation.                                                                                                               | Check `get_recurring_payment(...).status` is `Active` before calling `disburse_recurring`; only `Active` schedules are disbursable.                                                                                              |
+| 42   | `DisbursementTooEarly`         | The current ledger timestamp is before `start_time`/`cliff_time`, or for `FixedAmountPerPeriod` the interval since `last_disbursed_at` has not elapsed (`lib.rs:2690`), or for `LinearVesting` the vested amount does not exceed `total_disbursed` (`lib.rs:2777`).                                      | Wait until `start_time`/`cliff_time` and `last_disbursed_at + interval_secs` have passed; poll `get_claimable_amount(schedule_id)` until it returns `> 0` before calling `disburse_recurring`.                                   |
+| 43   | `ScheduleEnded`                | The schedule has reached `end_time` or its `total_cap` has been fully disbursed (`lib.rs:2678`, `lib.rs:2748`). `disburse_recurring` marks the schedule `Completed` and decrements `ACTREC`.                                                                                                             | The schedule is `Completed`; no further disbursements will succeed. Create a new recurring-payment proposal if continued payments are needed.                                                                                    |
+| 44   | `TooManyActiveRecurring`       | Creating or executing a `CreateRecurringPayment` proposal would exceed `MAX_ACTIVE_RECURRING=20` (`lib.rs:594`, checked at `lib.rs:2546` and at execution).                                                                                                                                              | Cancel an existing schedule via `create_cancel_recurring_proposal` or let a schedule complete/expire to free a slot, then retry.                                                                                                 |
+| 45   | `ScheduleAlreadyCancelled`     | `create_cancel_recurring_proposal` was called for a schedule whose `status == Cancelled` (`lib.rs:2613`).                                                                                                                                                                                                | The schedule is already `Cancelled`; no second cancel is needed. Verify with `get_recurring_payment`.                                                                                                                            |
+| 52   | `MissingRole`                  | A role-gated entrypoint was called by an address that does not hold the required role. Thrown by `require_role` when used from proposal-creation paths (`Proposer`), `approve` / `revoke` (`Approver`, in addition to owner membership), and `execute` / `cancel_expired` (`Executor`).                  | Grant the missing role through a `GrantRole` proposal (`create_grant_role_proposal`), wait for it to execute, then retry with the same address — or switch to an address that already holds the role (`has_role` / `get_roles`). |
+| 53   | `RoleAlreadyGranted`           | A `GrantRole` proposal (or grant helper) tried to add a role that the target address already holds. Raised at proposal creation and/or execute-time re-validation for `create_grant_role_proposal` / `GrantRole` execution.                                                                              | Do not re-grant the same role. Inspect current roles with `get_roles(address)` or `get_role_members(role)`. If you need a no-op, cancel the proposal instead of executing it.                                                    |
+| 54   | `RoleNotGranted`               | A `RevokeRole` proposal (or revoke helper) tried to remove a role that the target address does not currently hold. Raised at proposal creation and/or execute-time re-validation for `create_revoke_role_proposal` / `RevokeRole` execution.                                                             | Confirm the address still holds the role with `has_role` before creating or executing the revoke. Roles can change between proposal creation and execution — recreate the proposal if state drifted.                             |
+| 55   | `InvalidRole`                  | A role argument was not one of the four supported `Role` variants (`Proposer`, `Approver`, `Executor`, `Viewer`). Can be raised by role views, grant/revoke proposal creation, and execute arms that decode a `Role` payload.                                                                            | Pass a valid `Role` enum value. Do not invent custom role strings; only the four contract variants are accepted.                                                                                                                 |
 
 ---
 
@@ -1281,30 +1403,30 @@ When calling contract functions from JavaScript, each parameter must be converte
 
 > **Important:** `u64` and `i128` values exceed JavaScript's safe integer range (`Number.MAX_SAFE_INTEGER` = 2⁵³ − 1). They **must** be passed as JavaScript `BigInt` — not `Number`. Using `Number` silently truncates the value.
 
-| Rust Type | SCVal Variant | Build with `nativeToScVal` | Decode with `scValToNative` |
-|-----------|---------------|----------------------------|-----------------------------|
-| `Address` | `ScVal::Address` | `nativeToScVal(address, { type: 'address' })` | `scValToNative(scval)` → `"G…"` string |
-| `Vec<T>` | `ScVal::Vec` | `nativeToScVal(array, { type: 'vec' })` | `scValToNative(scval)` → JavaScript `Array` |
-| `u32` | `ScVal::U32` | `nativeToScVal(n, { type: 'u32' })` | `scValToNative(scval)` → JavaScript `Number` |
-| `u64` | `ScVal::U64` | `nativeToScVal(BigInt(n), { type: 'u64' })` | `scValToNative(scval)` → JavaScript `BigInt` |
-| `i128` | `ScVal::I128` | `nativeToScVal(BigInt(n), { type: 'i128' })` | `scValToNative(scval)` → JavaScript `BigInt` |
-| `String` | `ScVal::String` | `nativeToScVal(s, { type: 'string' })` | `scValToNative(scval)` → JavaScript `String` |
-| `bool` | `ScVal::Bool` | `nativeToScVal(b, { type: 'bool' })` | `scValToNative(scval)` → JavaScript `Boolean` |
-| `Proposal` | `ScVal::Map` | N/A (output only) | `scValToNative(scval)` → object with the fields below (see also [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-storage-layout-soroban)) |
-| `OwnerWeight` | `ScVal::Map` | N/A (output only) | `{ owner: "G…", weight: number }` |
-| `ProposalKind` | `ScVal::Vec` / enum | Built by the SDK when forming governance calls | Discriminated union — variants listed below |
-| `()` (unit) | `ScVal::Void` | N/A (no input) | `scValToNative(scval)` → `undefined` |
+| Rust Type      | SCVal Variant       | Build with `nativeToScVal`                     | Decode with `scValToNative`                                                                                                       |
+| -------------- | ------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `Address`      | `ScVal::Address`    | `nativeToScVal(address, { type: 'address' })`  | `scValToNative(scval)` → `"G…"` string                                                                                            |
+| `Vec<T>`       | `ScVal::Vec`        | `nativeToScVal(array, { type: 'vec' })`        | `scValToNative(scval)` → JavaScript `Array`                                                                                       |
+| `u32`          | `ScVal::U32`        | `nativeToScVal(n, { type: 'u32' })`            | `scValToNative(scval)` → JavaScript `Number`                                                                                      |
+| `u64`          | `ScVal::U64`        | `nativeToScVal(BigInt(n), { type: 'u64' })`    | `scValToNative(scval)` → JavaScript `BigInt`                                                                                      |
+| `i128`         | `ScVal::I128`       | `nativeToScVal(BigInt(n), { type: 'i128' })`   | `scValToNative(scval)` → JavaScript `BigInt`                                                                                      |
+| `String`       | `ScVal::String`     | `nativeToScVal(s, { type: 'string' })`         | `scValToNative(scval)` → JavaScript `String`                                                                                      |
+| `bool`         | `ScVal::Bool`       | `nativeToScVal(b, { type: 'bool' })`           | `scValToNative(scval)` → JavaScript `Boolean`                                                                                     |
+| `Proposal`     | `ScVal::Map`        | N/A (output only)                              | `scValToNative(scval)` → object with the fields below (see also [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-storage-layout-soroban)) |
+| `OwnerWeight`  | `ScVal::Map`        | N/A (output only)                              | `{ owner: "G…", weight: number }`                                                                                                 |
+| `ProposalKind` | `ScVal::Vec` / enum | Built by the SDK when forming governance calls | Discriminated union — variants listed below                                                                                       |
+| `()` (unit)    | `ScVal::Void`       | N/A (no input)                                 | `scValToNative(scval)` → `undefined`                                                                                              |
 
 ### `Proposal` fields (weighted governance)
 
 Decoded `Proposal` maps include these weight-related fields alongside the rest of the proposal state:
 
-| Field | Rust Type | XDR SCVal Type | Description |
-|-------|-----------|----------------|-------------|
-| `quorum_weight` | `u32` | `ScVal::U32` | Absolute weight this proposal must accumulate to become `Ready`. Snapshotted from `THRESH` / `get_required_quorum_weight()` at creation. |
-| `approval_weight` | `u32` | `ScVal::U32` | Cumulative effective weight from owners who have approved so far. |
-| `approvals` | `u32` | `ScVal::U32` | Same running total as `approval_weight` (legacy field name retained for compatibility; both are updated together in `approve` / `revoke`). |
-| `kind` | `ProposalKind` | enum / nested vals | Action this proposal will perform when executed (see variants below). |
+| Field             | Rust Type      | XDR SCVal Type     | Description                                                                                                                                |
+| ----------------- | -------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `quorum_weight`   | `u32`          | `ScVal::U32`       | Absolute weight this proposal must accumulate to become `Ready`. Snapshotted from `THRESH` / `get_required_quorum_weight()` at creation.   |
+| `approval_weight` | `u32`          | `ScVal::U32`       | Cumulative effective weight from owners who have approved so far.                                                                          |
+| `approvals`       | `u32`          | `ScVal::U32`       | Same running total as `approval_weight` (legacy field name retained for compatibility; both are updated together in `approve` / `revoke`). |
+| `kind`            | `ProposalKind` | enum / nested vals | Action this proposal will perform when executed (see variants below).                                                                      |
 
 ```rust
 struct Proposal {
@@ -1324,19 +1446,19 @@ struct Proposal {
 
 ### `ProposalKind` variants
 
-| Variant | Payload | Purpose |
-|---------|---------|---------|
-| `Transfer` | `Vec<Transfer>` | Multi-asset treasury transfer |
-| `AddOwner` | `(Address, u32)` | Add owner with initial weight |
-| `RemoveOwner` | `Address` | Remove an owner |
-| `ChangeThreshold` | `u32` | Change the quorum threshold (absolute weight) |
-| `SetSpendingLimit` | `(Address, Address, i128)` | Per-owner per-token spending limit |
-| `ChangeOwnerWeight` | `(Address /* target_owner */, u32 /* new_weight */)` | Update an existing owner's voting weight (must be ≥ 1; use `RemoveOwner` instead of zeroing) |
-| `CreateRecurringPayment` | `CreateRecurringParams` | Create a recurring payment schedule |
-| `CancelRecurringPayment` | `u64` | Cancel schedule by id |
-| `PauseRecurringPayment` | `u64` | Pause schedule by id |
-| `ResumeRecurringPayment` | `u64` | Resume a paused schedule |
-| `ModifyRecurringPayment` | `ModifyRecurringParams` | Adjust schedule parameters |
+| Variant                  | Payload                                              | Purpose                                                                                      |
+| ------------------------ | ---------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `Transfer`               | `Vec<Transfer>`                                      | Multi-asset treasury transfer                                                                |
+| `AddOwner`               | `(Address, u32)`                                     | Add owner with initial weight                                                                |
+| `RemoveOwner`            | `Address`                                            | Remove an owner                                                                              |
+| `ChangeThreshold`        | `u32`                                                | Change the quorum threshold (absolute weight)                                                |
+| `SetSpendingLimit`       | `(Address, Address, i128)`                           | Per-owner per-token spending limit                                                           |
+| `ChangeOwnerWeight`      | `(Address /* target_owner */, u32 /* new_weight */)` | Update an existing owner's voting weight (must be ≥ 1; use `RemoveOwner` instead of zeroing) |
+| `CreateRecurringPayment` | `CreateRecurringParams`                              | Create a recurring payment schedule                                                          |
+| `CancelRecurringPayment` | `u64`                                                | Cancel schedule by id                                                                        |
+| `PauseRecurringPayment`  | `u64`                                                | Pause schedule by id                                                                         |
+| `ResumeRecurringPayment` | `u64`                                                | Resume a paused schedule                                                                     |
+| `ModifyRecurringPayment` | `ModifyRecurringParams`                              | Adjust schedule parameters                                                                   |
 
 ```rust
 enum ProposalKind {
@@ -1591,6 +1713,7 @@ struct RecurringPaymentCancelledEvent {
     caller: Address,
 }
 ```
+
 ### JavaScript SDK example
 
 ```js
@@ -1603,4 +1726,3 @@ const retval = await simulateView("has_approved", [
 const hasApproved = scValToNative(retval);
 console.log(hasApproved);
 ```
-
