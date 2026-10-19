@@ -10075,8 +10075,22 @@ fn creation_path_reports_missing_role_before_contract_frozen() {
     let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
     // `owner_c` keeps its governance weight but loses every operational role.
     clear_roles(&env, &client, &owner_c);
+    let recurring_schedule = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &non_owner, 1_000, &token_client.address),
+        &86_400,
+        &3,
+        &str(&env, "Schedule"),
+    );
     freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
     assert!(client.is_frozen());
+
+    macro_rules! assert_role_precedes_freeze {
+        ($without_role:expr, $with_role:expr) => {{
+            assert_eq!($without_role, Err(Ok(ContractError::MissingRole)));
+            assert_eq!($with_role, Err(Ok(ContractError::ContractFrozen)));
+        }};
+    }
 
     // Doubly-failing call: the contract is frozen and the caller has no role.
     assert_eq!(
@@ -10138,6 +10152,232 @@ fn creation_path_reports_missing_role_before_contract_frozen() {
             &DEADLINE,
         ),
         Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_proposal_with_attachment(
+            &owner_c,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Attached payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+            &None::<BytesN<32>>,
+        ),
+        client.try_create_proposal_with_attachment(
+            &owner_a,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Attached payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+            &None::<BytesN<32>>,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_add_owner_proposal(
+            &owner_c,
+            &Address::generate(&env),
+            &1,
+            &str(&env, "Add owner"),
+            &DEADLINE,
+        ),
+        client.try_create_add_owner_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &1,
+            &str(&env, "Add owner"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_spending_limit_proposal(
+            &owner_c,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &str(&env, "Set spending limit"),
+            &DEADLINE,
+        ),
+        client.try_create_spending_limit_proposal(
+            &owner_a,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &str(&env, "Set spending limit"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_spending_window_proposal(
+            &owner_c,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &86_400,
+            &str(&env, "Set spending window"),
+            &DEADLINE,
+        ),
+        client.try_create_spending_window_proposal(
+            &owner_a,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &86_400,
+            &str(&env, "Set spending window"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_change_weight_proposal(
+            &owner_c,
+            &owner_b,
+            &2,
+            &str(&env, "Change weight"),
+            &DEADLINE,
+        ),
+        client.try_create_change_weight_proposal(
+            &owner_a,
+            &owner_b,
+            &2,
+            &str(&env, "Change weight"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_remove_owner_proposal(
+            &owner_c,
+            &owner_b,
+            &str(&env, "Remove owner"),
+            &DEADLINE,
+        ),
+        client.try_create_remove_owner_proposal(
+            &owner_a,
+            &owner_b,
+            &str(&env, "Remove owner"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_recurring_schedule(
+            &owner_c,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &86_400,
+            &3,
+            &str(&env, "Recurring schedule"),
+        ),
+        client.try_create_recurring_schedule(
+            &owner_a,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &86_400,
+            &3,
+            &str(&env, "Recurring schedule"),
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_asset_proposal(
+            &owner_c,
+            &Vec::from_array(
+                &env,
+                [AssetTransfer {
+                    to: non_owner.clone(),
+                    asset: AssetReference::Address(token_client.address.clone()),
+                    amount: 1_000,
+                }],
+            ),
+            &str(&env, "Asset payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        client.try_create_asset_proposal(
+            &owner_a,
+            &Vec::from_array(
+                &env,
+                [AssetTransfer {
+                    to: non_owner.clone(),
+                    asset: AssetReference::Address(token_client.address.clone()),
+                    amount: 1_000,
+                }],
+            ),
+            &str(&env, "Asset payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Cancel schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_cancel_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Cancel schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_pause_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Pause schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_pause_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Pause schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_resume_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Resume schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_resume_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Resume schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_modify_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &Some(2_000_i128),
+            &None,
+            &None,
+            &str(&env, "Modify schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_modify_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &Some(2_000_i128),
+            &None,
+            &None,
+            &str(&env, "Modify schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_revoke_role_proposal(
+            &owner_c,
+            &owner_b,
+            &Symbol::new(&env, "Proposer"),
+            &str(&env, "Revoke role"),
+            &DEADLINE,
+        ),
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_b,
+            &Symbol::new(&env, "Proposer"),
+            &str(&env, "Revoke role"),
+            &DEADLINE,
+        )
     );
 }
 
