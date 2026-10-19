@@ -407,6 +407,12 @@ The target accepts a corpus directory as an additional argument; for example:
 cargo +nightly fuzz run --fuzz-dir contracts/fuzz weight_arithmetic -- contracts/fuzz/corpus/weight_arithmetic
 ```
 
+To fuzz proposal IDs and active-proposal bookkeeping across create, approve, revoke, execute, and expiry-sweep operations, run:
+
+```bash
+cargo +nightly fuzz run --fuzz-dir contracts/fuzz proposal_bookkeeping
+```
+
 ---
 
 ## Debugging tips
