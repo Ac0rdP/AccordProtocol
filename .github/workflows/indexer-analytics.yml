@@ -1,0 +1,154 @@
+name: Indexer & Analytics CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'indexer/**'
+      - 'analytics/**'
+      - 'analytics-api/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docker-compose.yml'
+      - 'scripts/**'
+      - 'ops/**'
+      - 'docs/OPERATIONS.md'
+      - 'docs/ANALYTICS_API.md'
+      - 'docs/analytics-api.openapi.json'
+      - 'docs/RUNBOOK.md'
+      - 'frontend/src/lib/analytics*'
+      - 'frontend/src/lib/__tests__/analytics*'
+      - 'frontend/src/components/*Chart*'
+      - 'frontend/src/components/StatCard*'
+      - 'frontend/src/components/Analytics*'
+      - 'frontend/src/pages/Analytics*'
+      - 'frontend/package.json'
+      - '.github/workflows/indexer-analytics.yml'
+
+# Cancel superseded pull-request runs on the same branch; never cancel main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analytics-test-suite:
+    name: Indexer & Analytics Test Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix frontend ci
+
+      - name: Type-check frontend and analytics modules
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Run indexer & analytics test suites
+        run: npm --prefix frontend run test:analytics
+
+      - name: Verify analytics query CLI script
+        run: |
+          node scripts/query-analytics.js --help
+
+  indexer:
+    name: Indexer Tests (SQLite + Postgres)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_indexer_test
+          POSTGRES_USER: accord
+          POSTGRES_PASSWORD: accord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord -d accord_indexer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: indexer/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix indexer ci
+
+      - name: Run indexer tests against both storage backends
+        working-directory: indexer
+        env:
+          TEST_POSTGRES_URL: postgres://accord:accord@localhost:5432/accord_indexer_test
+        run: npm test
+
+  analytics-api:
+    name: Analytics API Rust Checks
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_analytics_test
+          POSTGRES_USER: accord
+          POSTGRES_PASSWORD: accord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord -d accord_analytics_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt -p accord-analytics-api -- --check
+
+      - name: Run Clippy
+        run: cargo clippy -p accord-analytics-api --all-targets -- -D warnings
+
+      - name: Run API tests
+        env:
+          TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
+        run: cargo test -p accord-analytics-api
+
+      - name: Verify the OpenAPI spec is valid JSON
+        run: node -e "const s = JSON.parse(require('fs').readFileSync('docs/analytics-api.openapi.json', 'utf8')); if (s.openapi !== '3.0.3' || !Object.keys(s.paths).length) process.exit(1)"
+
+      - name: Verify the OpenAPI spec is in sync with the API
+        # Also part of the full run above; kept as its own step so a drifted
+        # spec is reported by name rather than buried in the test output.
+        env:
+          TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
+        run: cargo test -p accord-analytics-api openapi

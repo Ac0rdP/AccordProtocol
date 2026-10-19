@@ -1,11 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
 import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
-import type { DashboardStat, Owner, Proposal } from "../types/accord";
+import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
-import { canCreate, missingRoleTooltip } from "../lib/soroban";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
+import { PageState } from "../components/PageState";
+import {
+  getDueRecurring,
+  getOwnerWeightChangeEvents,
+} from "../lib/contract";
+import {
+  canCreate,
+  missingRoleTooltip,
+  shortenAddr,
+} from "../lib/soroban";
+import type {
+  DashboardStat,
+  Owner,
+  OwnerWeightChangeEvent,
+  Proposal,
+  RecurringSchedule,
+} from "../types/accord";
+
+const RECENT_WEIGHT_CHANGES = 5;
 
 type DashboardPageProps = {
   activeProposals: Proposal[];
@@ -21,6 +41,8 @@ type DashboardPageProps = {
   roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
+  /** Retry handler surfaced in the error state. */
+  onRetry?: () => void;
 };
 
 export function DashboardPage({
@@ -33,16 +55,20 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
-  walletRoles,
+  walletRoles = [],
   roleBanner,
   loading,
   error,
+  onRetry,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
+  const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
+  const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
   const displayedProposals = [...activeProposals].sort((left, right) => {
@@ -50,24 +76,8 @@ export function DashboardPage({
     return left.deadlineTs - right.deadlineTs;
   });
 
-  // Compute owner weights and quorum weight for weight-based UI
-  const ownerAddresses = owners.map((o) => o.address);
+  const ownerAddresses = owners.map((owner) => owner.address);
   const { weights, totalWeight } = useOwnerWeights(ownerAddresses);
-  const [quorumWeight, setQuorumWeight] = useState<number>(0);
-
-  useEffect(() => {
-    let active = true;
-    getRequiredQuorumWeight()
-      .then((w) => {
-        if (active) setQuorumWeight(w);
-      })
-      .catch(() => {
-        /* noop */
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -83,7 +93,6 @@ export function DashboardPage({
     };
   }, []);
 
-  // Recent owner voting-weight changes, newest first.
   useEffect(() => {
     let active = true;
     getOwnerWeightChangeEvents(RECENT_WEIGHT_CHANGES)
@@ -113,17 +122,21 @@ export function DashboardPage({
   }, [error]);
 
   const showRoleBanner = Boolean(
-    roleBanner && dismissedRoleBannerKey !== roleBanner.key
+    roleBanner && dismissedRoleBannerKey !== roleBanner.key,
   );
 
-  const roleBannerStyles = roleBanner?.variant === "unrecognized"
-    ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
-    : "border-sky-500/20 bg-sky-500/10 text-sky-100";
+  const roleBannerStyles =
+    roleBanner?.variant === "unrecognized"
+      ? "border-amber-500/20 bg-amber-500/10 text-amber-100"
+      : "border-sky-500/20 bg-sky-500/10 text-sky-100";
 
-  const createDisabledReason = walletAddress && !canCreate(walletRoles)
-    ? missingRoleTooltip("create")
-    : undefined;
+  const createDisabledReason =
+    walletAddress && !canCreate(walletRoles)
+      ? missingRoleTooltip("create")
+      : undefined;
   const createDisabled = Boolean(createDisabledReason);
+
+  const showError = Boolean(error) && dismissedError !== error;
 
   return (
     <>
@@ -132,6 +145,28 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
+
+      {showError && error && (
+        <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3">
+          <PageState
+            status="error"
+            title="Could not load dashboard data"
+            description={error}
+            onRetry={onRetry}
+            retryLabel="Retry"
+          />
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setDismissedError(error)}
+              aria-label="Dismiss dashboard error"
+              className="text-xs text-red-300 underline hover:text-red-200 focus:outline-none focus:ring-2 focus:ring-red-400 rounded"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <GovernanceHealthWidget
         weights={weights}
@@ -177,7 +212,9 @@ export function DashboardPage({
               </div>
             ))}
           </div>
-        )}
+        </div>
+      )}
+
       {showRoleBanner && roleBanner && (
         <div
           role="status"
@@ -216,6 +253,7 @@ export function DashboardPage({
           </button>
         </div>
       )}
+
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold">Active Proposals</h2>
         <div className="flex items-center gap-3">
@@ -239,7 +277,6 @@ export function DashboardPage({
             New
           </button>
           <button
-            ref={recurringButtonRef}
             type="button"
             onClick={onCreateRecurringPayment}
             disabled={createDisabled}
@@ -255,12 +292,17 @@ export function DashboardPage({
       <div className="space-y-3">
         {loading ? (
           <>
+            <p role="status" className="sr-only">
+              Loading proposals…
+            </p>
             <ProposalCardSkeleton />
             <ProposalCardSkeleton />
           </>
         ) : activeProposals.length === 0 ? (
-          <div className="text-center py-20">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
+          <EmptyState
+            title="No active proposals"
+            description="Proposals let signers vote on transactions before they execute."
+            icon={
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 width="32"
@@ -271,29 +313,25 @@ export function DashboardPage({
                 strokeWidth="1.5"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className="text-zinc-500"
+                aria-hidden="true"
               >
                 <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
                 <polyline points="14 2 14 8 20 8" />
                 <line x1="12" y1="18" x2="12" y2="12" />
                 <line x1="9" y1="15" x2="15" y2="15" />
               </svg>
-            </div>
-            <h3 className="text-sm font-semibold text-zinc-300 mb-1">
-              No active proposals
-            </h3>
-            <p className="text-sm text-zinc-500 mb-5">
-              Proposals let signers vote on transactions before they execute.
-            </p>
-            <button
-              type="button"
-              onClick={onCreateProposal}
-              className="inline-flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg transition-colors font-medium"
-            >
-              <Plus size={14} />
-              Create proposal
-            </button>
-          </div>
+            }
+            action={
+              <button
+                type="button"
+                onClick={onCreateProposal}
+                className="inline-flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg transition-colors font-medium"
+              >
+                <Plus size={14} />
+                Create proposal
+              </button>
+            }
+          />
         ) : (
           displayedProposals.map((proposal) => (
             <ProposalCard
@@ -313,13 +351,15 @@ export function DashboardPage({
         <h2 className="font-semibold mb-4">Recent Weight Changes</h2>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
           {weightChangesLoading ? (
-            <div className="px-4 py-6 text-center text-sm text-zinc-500">
-              Loading recent weight changes…
-            </div>
+            <LoadingState
+              message="Loading recent weight changes…"
+              variant="section"
+            />
           ) : weightChanges.length === 0 ? (
-            <div className="px-4 py-6 text-center text-sm text-zinc-500">
-              No voting-weight changes recorded yet.
-            </div>
+            <EmptyState
+              variant="section"
+              title="No voting-weight changes recorded yet."
+            />
           ) : (
             weightChanges.map((change, index) => (
               <div
@@ -353,29 +393,37 @@ export function DashboardPage({
       <div className="mt-8">
         <h2 className="font-semibold mb-4">Signers</h2>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800">
-          {owners.map((owner) => (
-            <div
-              key={owner.address}
-              className="flex items-center justify-between px-4 py-3"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
-                  {owner.label[0]}
-                </div>
-                <span className="font-mono text-sm text-zinc-300 truncate max-w-[180px] sm:max-w-xs">
-                  {owner.address}
-                </span>
-              </div>
-              {walletAddress &&
-                owner.address
-                  .replace("…", "...")
-                  .startsWith(walletAddress.slice(0, 6)) && (
-                  <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                    you
+          {owners.length === 0 ? (
+            <EmptyState
+              variant="section"
+              title="No signers yet"
+              description="Owners will appear here once the multisig is initialized."
+            />
+          ) : (
+            owners.map((owner) => (
+              <div
+                key={owner.address}
+                className="flex items-center justify-between px-4 py-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-7 h-7 shrink-0 rounded-full bg-zinc-700 flex items-center justify-center text-xs text-zinc-400">
+                    {owner.label[0]}
+                  </div>
+                  <span className="font-mono text-sm text-zinc-300 truncate max-w-[180px] sm:max-w-xs">
+                    {owner.address}
                   </span>
-                )}
-            </div>
-          ))}
+                </div>
+                {walletAddress &&
+                  owner.address
+                    .replace("…", "...")
+                    .startsWith(walletAddress.slice(0, 6)) && (
+                    <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                      you
+                    </span>
+                  )}
+              </div>
+            ))
+          )}
         </div>
       </div>
     </>

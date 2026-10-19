@@ -36,7 +36,15 @@ export function useTreasuryAnalytics(query: AnalyticsQuery = {}, intervalMs = 30
         const outcomes = await Promise.allSettled(requests);
         const failure = outcomes.find((outcome) => outcome.status === "rejected");
         if (failure?.status === "rejected") throw failure.reason;
-        const [summary, balance, spendByCategory, spendByOwner, flow] = await Promise.all(requests);
+        const [summary, balance, spendByCategory, spendByOwner, flow] = outcomes.map(
+          (outcome) => (outcome as PromiseFulfilledResult<unknown>).value,
+        ) as [
+          TreasuryAnalytics["summary"],
+          TreasuryAnalytics["balance"],
+          TreasuryAnalytics["spendByCategory"],
+          TreasuryAnalytics["spendByOwner"],
+          TreasuryAnalytics["flow"],
+        ];
         if (!signal.aborted) {
           setData({ summary, balance, spendByCategory, spendByOwner, flow });
           setError(null);

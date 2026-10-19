@@ -1,0 +1,181 @@
+name: Frontend Preview
+
+# Builds a live, seeded preview of the frontend for every pull request that
+# touches it, publishes it under `pr-<number>/` on the `gh-pages` branch, and
+# comments the URL on the pull request. Previews are torn down when the pull
+# request closes.
+#
+# Safety / data handling:
+#   * Previews are built from a deterministic, committed sample dataset via
+#     `scripts/seed-preview.mjs`; no repository secrets are passed to the build.
+#   * Only pull requests whose branch lives in this repository are deployed, so
+#     `GITHUB_TOKEN` (and therefore the push to `gh-pages`) is never exposed to
+#     untrusted fork code.
+#
+# Enable GitHub Pages for this repository (Settings → Pages → Deploy from a
+# branch → `gh-pages` / root) for the URLs to resolve. Override the base URL with
+# the repository variable `PREVIEW_BASE_URL` when using a custom domain.
+#
+# See docs/CI.md for details.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "frontend/**"
+      - "scripts/seed-preview.mjs"
+      - ".github/workflows/preview.yml"
+
+# One preview per pull request; a newer push supersedes an in-flight build.
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    name: Deploy preview
+    # Skip fork PRs (read-only token) and the closed event (handled by teardown).
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Generate seeded preview data
+        run: node scripts/seed-preview.mjs
+
+      - name: Build seeded preview
+        working-directory: frontend
+        env:
+          # Same-origin requests so the preview seed interceptor can serve the
+          # analytics endpoints. Only public/testnet values are baked in.
+          VITE_API_BASE_URL: ""
+          VITE_PREVIEW_SEED: "true"
+          VITE_SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+          VITE_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+          VITE_CONTRACT_ADDRESS: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+          VITE_SIM_SOURCE: "GDJSB22NWBU7IV44SHHG6WO6AJTUED2KNKWL2DYNJJ5X7M5SG7UVC7JD"
+        run: |
+          npm run build -- --base="/pr-${{ github.event.pull_request.number }}/"
+          # SPA deep-link fallback for GitHub Pages.
+          cp dist/index.html dist/404.html
+
+      - name: Publish preview to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./frontend/dist
+          destination_dir: pr-${{ github.event.pull_request.number }}
+          keep_files: true
+          commit_message: "preview: PR #${{ github.event.pull_request.number }} @ ${{ github.sha }}"
+
+      - name: Compute preview URL
+        id: url
+        working-directory: .
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          base="${{ vars.PREVIEW_BASE_URL }}"
+          if [ -z "$base" ]; then
+            owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+            base="https://${owner}.github.io/${{ github.event.repository.name }}"
+          fi
+          echo "value=${base%/}/pr-${PR_NUMBER}/" >> "$GITHUB_OUTPUT"
+
+      - name: Comment the preview URL on the pull request
+        uses: actions/github-script@v9
+        env:
+          PREVIEW_URL: ${{ steps.url.outputs.value }}
+        with:
+          script: |
+            const marker = '<!-- accord-preview -->';
+            const body = [
+              marker,
+              `### Frontend preview`,
+              '',
+              `A seeded preview for this pull request is live at:`,
+              '',
+              `**${process.env.PREVIEW_URL}**`,
+              '',
+              `Built from commit \`${context.sha.slice(0, 7)}\` using the committed sample dataset (no live backend).`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  teardown:
+    name: Tear down preview
+    # Only same-repo PRs ever deployed a preview; fork PRs get a read-only token
+    # and have nothing to clean up.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Remove preview from gh-pages
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          worktree="$(mktemp -d)"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages
+            git worktree add "$worktree" origin/gh-pages
+            if [ -d "$worktree/pr-${PR_NUMBER}" ]; then
+              rm -rf "$worktree/pr-${PR_NUMBER}"
+              git -C "$worktree" config user.name "github-actions[bot]"
+              git -C "$worktree" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git -C "$worktree" add -A
+              if git -C "$worktree" diff --cached --quiet; then
+                echo "Nothing to remove for PR #${PR_NUMBER}."
+              else
+                git -C "$worktree" commit -m "chore(preview): tear down PR #${PR_NUMBER}"
+                git -C "$worktree" push origin HEAD:gh-pages
+                echo "Removed pr-${PR_NUMBER} from gh-pages."
+              fi
+            else
+              echo "No preview directory for PR #${PR_NUMBER}."
+            fi
+          else
+            echo "gh-pages branch does not exist; nothing to tear down."
+          fi
+
+      - name: Remove the preview comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const marker = '<!-- accord-preview -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            for (const comment of comments) {
+              if (comment.body && comment.body.startsWith(marker)) {
+                await github.rest.issues.deleteComment({ owner, repo, comment_id: comment.id });
+              }
+            }

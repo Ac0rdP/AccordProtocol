@@ -19,3 +19,4 @@ Closes #
 - [ ] New tests added to cover this change (where applicable)
 - [ ] Manually verified the change works as expected
 - [ ] Lint / type checks pass
+- [ ] Architecture decision record added or updated (if applicable)

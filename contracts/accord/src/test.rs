@@ -8,8 +8,9 @@ extern crate std;
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
 use proptest::prelude::*;
-use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
+use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
 use std::format;
+use std::string::ToString;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,127 @@ fn set_timestamp(env: &Env, ts: u64) {
     let mut l = env.ledger().get();
     l.timestamp = ts;
     env.ledger().set(l);
+}
+
+/// Builds an Env that does not write a test snapshot when it is dropped.
+///
+/// Property tests generate new random inputs on every run, so any snapshots
+/// they produced would differ from run to run and could never be verified in
+/// CI. Deterministic tests keep the default capture behaviour.
+fn non_snapshot_env() -> Env {
+    Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
+#[test]
+fn recovery_blocks_value_but_allows_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
+    client.enter_recovery(&guardian);
+    assert!(client.is_in_recovery());
+
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "blocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &transfer_id);
+    client.approve(&owner_b, &transfer_id);
+    assert_eq!(
+        client.try_execute(&owner_c, &transfer_id),
+        Err(Ok(ContractError::RecoveryActive))
+    );
+
+    let governance_id = client.create_change_threshold_proposal(
+        &owner_a,
+        &1,
+        &str(&env, "remediate"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &governance_id);
+    client.approve(&owner_b, &governance_id);
+    client.execute(&owner_c, &governance_id);
+    assert_eq!(client.get_threshold(), 1);
+}
+
+#[test]
+fn attachment_and_classic_asset_references_are_stored_and_resolved() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let digest = BytesN::from_array(&env, &[7; 32]);
+    let id = client.create_proposal_with_attachment(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "invoice"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+        &Some(digest.clone()),
+    );
+    assert_eq!(client.get_proposal(&id).attachment_hash, Some(digest));
+
+    let identifier = Symbol::new(&env, "USDC");
+    client.set_classic_asset(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
+        &identifier,
+        &token_client.address,
+    );
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(AssetTransfer {
+        to: Address::generate(&env),
+        asset: AssetReference::Classic(identifier),
+        amount: 10,
+    });
+    let asset_id = client.create_asset_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "classic asset"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(client.get_proposal(&asset_id).kind, ProposalKind::Transfer(t(&env, &transfers.get(0).unwrap().to, 10, &token_client.address)));
+}
+
+#[test]
+fn configurable_spending_window_rejects_split_overspend() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit_id = client.create_spending_window_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &10,
+        &86_400,
+        &str(&env, "daily limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_id);
+    client.approve(&owner_b, &limit_id);
+    client.execute(&owner_c, &limit_id);
+    assert_eq!(client.get_spending_window(&owner_a, &token_client.address), 86_400);
+
+    let first = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 6, &token_client.address),
+        &str(&env, "first"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &first);
+    client.approve(&owner_b, &first);
+    client.execute(&owner_c, &first);
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 5, &token_client.address),
+            &str(&env, "split overspend"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
 }
 
 fn str(env: &Env, s: &str) -> String {
@@ -673,7 +795,7 @@ fn remove_heaviest_owner_keeps_other_pending_proposals_reachable() {
 #[test]
 fn change_threshold_proposal_validates_against_total_weight() {
     // 3 owners each weight 1 → total_weight = 3, threshold = 2.
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
 
     // Proposing a threshold of 4 > total_weight 3 must fail.
     assert_eq!(
@@ -1524,6 +1646,10 @@ fn approve_rejects_non_owner_with_approver_role() {
         client.try_approve(&non_owner, &id),
         Err(Ok(ContractError::Unauthorized))
     );
+    assert_eq!(
+        client.try_revoke(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
     assert!(!client.has_approved(&id, &non_owner));
     assert_eq!(client.get_proposal(&id).approvals, 0);
 }
@@ -2212,6 +2338,43 @@ fn expired_status_takes_priority_over_ready() {
 fn get_version_returns_current_version() {
     let (_, client, _, _, _, _, _) = setup(2);
     assert_eq!(client.get_version(), 1);
+}
+
+// ─── Storage-schema version (#737) ────────────────────────────────────────────
+
+#[test]
+fn storage_version_is_set_on_initialize_and_returned_by_view() {
+    let (_, client, _, _, _, _, _) = setup(2);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
+}
+
+/// A legacy deployment has no version key, so the view must report `0` rather
+/// than inventing the current version.
+#[test]
+fn storage_version_defaults_to_zero_when_absent() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&storage_version_key());
+    });
+    assert_eq!(client.get_storage_version(), 0);
+}
+
+/// Both one-time migrations bring a legacy layout up to the current schema and
+/// therefore stamp the current storage-schema version.
+#[test]
+fn storage_version_is_stamped_by_migrations() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+
+    // Simulate a pre-versioning deployment, then migrate it.
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&storage_version_key());
+    });
+    mark_governance_unmigrated(&env, &client.address);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_weighted_governance(&approvers);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
 }
 
 // ─── get_required_quorum_weight ───────────────────────────────────────────────
@@ -4848,7 +5011,7 @@ proptest! {
         // Derive a threshold in 1..=owner_count from the independent seed.
         let threshold = (threshold_seed - 1) % owner_count + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -4902,7 +5065,7 @@ proptest! {
     fn total_weight_matches_all_current_owner_weights(
         operations in proptest::collection::vec((0u8..=2, 1u32..=10), 1..=20)
     ) {
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
         let contract_id = env.register(AccordContract, ());
@@ -4985,7 +5148,7 @@ proptest! {
     ) {
         let threshold = (threshold_seed - 1) % owner_count + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -5042,7 +5205,7 @@ proptest! {
         let owner_count = owner_weights.len() as u32;
         let threshold = ((threshold_seed - 1) % owner_count) + 1;
 
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
 
@@ -7257,6 +7420,300 @@ fn test_quorum_matrix_change_threshold_and_change_threshold_blocked() {
     assert_eq!(client.get_threshold(), 3);
 }
 
+// 7. GrantRole & AddOwner
+
+#[test]
+fn test_quorum_matrix_grant_role_before_add_owner_role_overwritten_by_defaults() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 3, 2);
+
+    let new_owner = Address::generate(&env);
+
+    // A role proposal can target any address, owner or not — grant Viewer to
+    // the same address a concurrent AddOwner proposal will add as an owner.
+    let grant_id = client.create_grant_role_proposal(
+        &owners.get(0).unwrap(),
+        &new_owner,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant viewer to future owner"),
+        &DEADLINE,
+    );
+    let add_id = client.create_add_owner_proposal(
+        &owners.get(0).unwrap(),
+        &new_owner,
+        &1,
+        &str(&env, "Add new owner"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &grant_id);
+    client.approve(&owners.get(1).unwrap(), &grant_id);
+    client.execute(&owners.get(0).unwrap(), &grant_id);
+    assert!(client.has_role(&new_owner, &Role::Viewer));
+
+    client.approve(&owners.get(0).unwrap(), &add_id);
+    client.approve(&owners.get(1).unwrap(), &add_id);
+    client.execute(&owners.get(0).unwrap(), &add_id);
+
+    // AddOwner assigns the default owner role set wholesale, so a Viewer
+    // grant that landed before the owner existed does not survive.
+    assert_eq!(client.get_roles(&new_owner).len(), 3);
+    assert!(!client.has_role(&new_owner, &Role::Viewer));
+    assert!(client.has_role(&new_owner, &Role::Proposer));
+    assert!(client.has_role(&new_owner, &Role::Approver));
+    assert!(client.has_role(&new_owner, &Role::Executor));
+}
+
+#[test]
+fn test_quorum_matrix_add_owner_before_grant_role_role_appended_to_defaults() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 3, 2);
+
+    let new_owner = Address::generate(&env);
+
+    let grant_id = client.create_grant_role_proposal(
+        &owners.get(0).unwrap(),
+        &new_owner,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant viewer to future owner"),
+        &DEADLINE,
+    );
+    let add_id = client.create_add_owner_proposal(
+        &owners.get(0).unwrap(),
+        &new_owner,
+        &1,
+        &str(&env, "Add new owner"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &add_id);
+    client.approve(&owners.get(1).unwrap(), &add_id);
+    client.execute(&owners.get(0).unwrap(), &add_id);
+    assert_eq!(client.get_roles(&new_owner).len(), 3);
+
+    client.approve(&owners.get(0).unwrap(), &grant_id);
+    client.approve(&owners.get(1).unwrap(), &grant_id);
+    client.execute(&owners.get(0).unwrap(), &grant_id);
+
+    // Executed after the owner already exists, the grant is additive to
+    // the default roles instead of being clobbered by them — the opposite
+    // order above loses the grant, so final role state depends on order.
+    assert_eq!(client.get_roles(&new_owner).len(), 4);
+    assert!(client.has_role(&new_owner, &Role::Viewer));
+    assert!(client.has_role(&new_owner, &Role::Proposer));
+    assert!(client.has_role(&new_owner, &Role::Approver));
+    assert!(client.has_role(&new_owner, &Role::Executor));
+}
+
+// 8. GrantRole & RemoveOwner (same target)
+
+#[test]
+fn test_quorum_matrix_grant_role_then_remove_owner_clears_granted_role() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 4, 2);
+    let target = owners.get(1).unwrap();
+
+    let grant_id = client.create_grant_role_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant viewer"),
+        &DEADLINE,
+    );
+    let remove_id = client.create_remove_owner_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &str(&env, "Remove target"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &grant_id);
+    client.approve(&owners.get(2).unwrap(), &grant_id);
+    client.execute(&owners.get(0).unwrap(), &grant_id);
+    assert!(client.has_role(&target, &Role::Viewer));
+
+    client.approve(&owners.get(0).unwrap(), &remove_id);
+    client.approve(&owners.get(2).unwrap(), &remove_id);
+    client.execute(&owners.get(0).unwrap(), &remove_id);
+
+    // RemoveOwner unconditionally strips all roles, including the one just
+    // granted — the removed owner holds no roles.
+    assert!(!client.get_owners().contains(&target));
+    assert_eq!(client.get_roles(&target).len(), 0);
+    assert!(!client.get_role_members(&Role::Viewer).contains(&target));
+}
+
+#[test]
+fn test_quorum_matrix_remove_owner_then_grant_role_succeeds_for_non_owner_target() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 4, 2);
+    let target = owners.get(1).unwrap();
+
+    let grant_id = client.create_grant_role_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &Symbol::new(&env, "Viewer"),
+        &str(&env, "Grant viewer"),
+        &DEADLINE,
+    );
+    let remove_id = client.create_remove_owner_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &str(&env, "Remove target"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &remove_id);
+    client.approve(&owners.get(2).unwrap(), &remove_id);
+    client.execute(&owners.get(0).unwrap(), &remove_id);
+    assert!(!client.get_owners().contains(&target));
+    assert_eq!(client.get_roles(&target).len(), 0);
+
+    client.approve(&owners.get(0).unwrap(), &grant_id);
+    client.approve(&owners.get(2).unwrap(), &grant_id);
+    client.execute(&owners.get(0).unwrap(), &grant_id);
+
+    // Role grants are not owner-gated (Viewer is explicitly grantable to
+    // non-owners), so this still succeeds — leaving a non-owner holding a
+    // role, with no dangling/orphaned bookkeeping: the reverse role->members
+    // index is consistent with the forward index in both orders.
+    assert!(client.has_role(&target, &Role::Viewer));
+    assert!(client.get_role_members(&Role::Viewer).contains(&target));
+    assert!(!client.get_owners().contains(&target));
+}
+
+// 9. RevokeRole & RemoveOwner (same target)
+
+#[test]
+fn test_quorum_matrix_revoke_role_then_remove_owner_succeeds() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 4, 2);
+    let target = owners.get(1).unwrap();
+    assert!(client.has_role(&target, &Role::Executor));
+
+    let revoke_id = client.create_revoke_role_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &Symbol::new(&env, "Executor"),
+        &str(&env, "Revoke executor"),
+        &DEADLINE,
+    );
+    let remove_id = client.create_remove_owner_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &str(&env, "Remove target"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &revoke_id);
+    client.approve(&owners.get(2).unwrap(), &revoke_id);
+    client.execute(&owners.get(0).unwrap(), &revoke_id);
+    assert!(!client.has_role(&target, &Role::Executor));
+
+    client.approve(&owners.get(0).unwrap(), &remove_id);
+    client.approve(&owners.get(2).unwrap(), &remove_id);
+    client.execute(&owners.get(0).unwrap(), &remove_id);
+
+    assert!(!client.get_owners().contains(&target));
+    assert_eq!(client.get_roles(&target).len(), 0);
+}
+
+#[test]
+fn test_quorum_matrix_remove_owner_then_revoke_role_fails_role_not_granted() {
+    let env = Env::default();
+    env.budget().reset_unlimited();
+    let (client, owners) = setup_matrix(&env, 4, 2);
+    let target = owners.get(1).unwrap();
+
+    let revoke_id = client.create_revoke_role_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &Symbol::new(&env, "Executor"),
+        &str(&env, "Revoke executor"),
+        &DEADLINE,
+    );
+    let remove_id = client.create_remove_owner_proposal(
+        &owners.get(0).unwrap(),
+        &target,
+        &str(&env, "Remove target"),
+        &DEADLINE,
+    );
+
+    client.approve(&owners.get(0).unwrap(), &remove_id);
+    client.approve(&owners.get(2).unwrap(), &remove_id);
+    client.execute(&owners.get(0).unwrap(), &remove_id);
+    assert_eq!(client.get_roles(&target).len(), 0);
+
+    client.approve(&owners.get(0).unwrap(), &revoke_id);
+    client.approve(&owners.get(2).unwrap(), &revoke_id);
+
+    // RemoveOwner already stripped the role this proposal was approved to
+    // revoke. Execution fails cleanly (RoleNotGranted) rather than
+    // corrupting state — mirrors TargetOwnerNoLongerExists for
+    // ChangeOwnerWeight against a concurrently removed target.
+    let res = client.try_execute(&owners.get(0).unwrap(), &revoke_id);
+    assert_eq!(res, Err(Ok(ContractError::RoleNotGranted)));
+    assert_eq!(client.get_proposal(&revoke_id).status, ProposalStatus::Ready);
+    assert!(!client.get_owners().contains(&target));
+    assert_eq!(client.get_roles(&target).len(), 0);
+}
+
+// 10. RevokeRole & AddOwner (independent targets)
+
+#[test]
+fn test_quorum_matrix_revoke_role_and_add_owner_succeed_in_either_order() {
+    let run_order = |revoke_first: bool| {
+        let env = Env::default();
+        env.budget().reset_unlimited();
+        let (client, owners) = setup_matrix(&env, 4, 2);
+        let revoke_target = owners.get(1).unwrap();
+        let new_owner = Address::generate(&env);
+
+        let revoke_id = client.create_revoke_role_proposal(
+            &owners.get(0).unwrap(),
+            &revoke_target,
+            &Symbol::new(&env, "Executor"),
+            &str(&env, "Revoke executor"),
+            &DEADLINE,
+        );
+        let add_id = client.create_add_owner_proposal(
+            &owners.get(0).unwrap(),
+            &new_owner,
+            &1,
+            &str(&env, "Add owner"),
+            &DEADLINE,
+        );
+
+        client.approve(&owners.get(0).unwrap(), &revoke_id);
+        client.approve(&owners.get(2).unwrap(), &revoke_id);
+        client.approve(&owners.get(0).unwrap(), &add_id);
+        client.approve(&owners.get(2).unwrap(), &add_id);
+
+        if revoke_first {
+            client.execute(&owners.get(0).unwrap(), &revoke_id);
+            client.execute(&owners.get(0).unwrap(), &add_id);
+        } else {
+            client.execute(&owners.get(0).unwrap(), &add_id);
+            client.execute(&owners.get(0).unwrap(), &revoke_id);
+        }
+
+        // Unrelated targets: the two proposals don't interact, so the final
+        // state is identical regardless of execution order.
+        assert!(!client.has_role(&revoke_target, &Role::Executor));
+        assert!(client.get_owners().contains(&new_owner));
+        assert_eq!(client.get_roles(&new_owner).len(), 3);
+        assert_eq!(client.get_total_weight(), 5);
+    };
+
+    run_order(true);
+    run_order(false);
+}
+
 // ─── Weighted-Governance Migration (#290) ────────────────────────────────────
 //
 // `setup()` always initializes through the weighted `initialize`, which sets
@@ -7313,12 +7770,45 @@ fn migrate_to_rbac_grants_default_roles_and_is_single_run() {
 }
 
 #[test]
+fn migrate_to_rbac_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let rbac_event = contract_events.events().iter().find(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == symbol_short!("rbac_mig")
+    });
+    let event = rbac_event.expect("expected an 'rbac_mig' event to be emitted");
+    let event_data = match &event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RbacMigratedEvent = event_data.into_val(&env);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+    assert_eq!(event.owners_count, 3);
+    assert_eq!(event.migrated_at, NOW);
+}
+
+#[test]
 fn owner_lifecycle_updates_rbac_roles_and_reverse_index() {
     let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
     let new_owner = Address::generate(&env);
     let add_id = client.create_add_owner_proposal(
         &owner_a,
         &new_owner,
+        &1,
         &str(&env, "Add owner"),
         &DEADLINE,
     );
@@ -7555,8 +8045,125 @@ fn migrate_rejects_before_initialize() {
     );
 }
 
-// ─── Migration Regression: weighted vs. flat-count equivalence (#291) ───────
+// ─── Migration Idempotency Matrix (#736) ─────────────────────────────────────
+//
+// `migrate_to_weighted_governance` and `migrate_to_rbac` are one-time
+// operations. A regression in either guard would let a second call re-run
+// against an already-migrated multisig and corrupt owner weights or role
+// assignments. The cases below (together with the pre-existing
+// `migrate_rejects_second_call_and_leaves_weights_unchanged` and
+// `migrate_to_rbac_grants_default_roles_and_is_single_run`) cover the full
+// repeat-call / born-current / uninitialized matrix for both entrypoints.
 
+/// A contract initialized through the weighted `initialize` path already has
+/// real per-owner weights, so it can never be migrated.
+#[test]
+fn migration_matrix_weighted_born_weighted_rejects_migration() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert!(client.is_governance_migrated());
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+}
+
+/// The rejected second weighted migration must not modify any weight state:
+/// the guard runs before any weight is written.
+#[test]
+fn migration_matrix_weighted_rejected_second_call_leaves_weights_unchanged() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    mark_governance_unmigrated(&env, &client.address);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_weighted_governance(&approvers);
+
+    let wa = client.get_owner_weight(&owner_a);
+    let wb = client.get_owner_weight(&owner_b);
+    let wc = client.get_owner_weight(&owner_c);
+    let total = client.get_total_weight();
+
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+
+    assert_eq!(client.get_owner_weight(&owner_a), wa);
+    assert_eq!(client.get_owner_weight(&owner_b), wb);
+    assert_eq!(client.get_owner_weight(&owner_c), wc);
+    assert_eq!(client.get_total_weight(), total);
+}
+
+/// A successful RBAC migration is single-run: the second call fails with
+/// `AlreadyMigrated` and leaves every role assignment and member index intact.
+#[test]
+fn migration_matrix_rbac_second_call_rejected_and_roles_unchanged() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.migrate_to_rbac(&approvers);
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+
+    let roles_a = client.get_roles(&owner_a);
+    let members_approver = client.get_role_members(&Role::Approver);
+    let members_executor = client.get_role_members(&Role::Executor);
+
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+
+    assert_eq!(client.get_roles(&owner_a), roles_a);
+    assert_eq!(client.get_role_members(&Role::Approver), members_approver);
+    assert_eq!(client.get_role_members(&Role::Executor), members_executor);
+}
+
+/// A freshly initialized contract is already RBAC-enabled (`role_version` is
+/// stamped by `initialize`), so RBAC migration must be rejected outright.
+#[test]
+fn migration_matrix_rbac_born_rbac_enabled_rejects_migration() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+
+    let roles_before = client.get_roles(&owner_a);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_roles(&owner_a), roles_before);
+}
+
+/// Both migration entrypoints must refuse to run on an uninitialized contract.
+#[test]
+fn migration_matrix_uninitialized_rejects_both_entrypoints() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let approvers = Vec::new(&env);
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&approvers),
+        Err(Ok(ContractError::NotInitialized))
+    );
+    assert_eq!(
+        client.try_migrate_to_rbac(&approvers),
+        Err(Ok(ContractError::NotInitialized))
+    );
+}
+
+// ─── Migration Regression: weighted vs. flat-count equivalence (#291) ───────
 /// Proves that a freshly-migrated contract with all-equal weights produces
 /// identical approval outcomes to a pre-migration flat-count contract for the
 /// same sequence of approve/revoke calls. Two independent, otherwise-identical
@@ -7737,19 +8344,74 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
 
 #[test]
 fn cancelled_recurring_schedule_cannot_disburse() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    // #738: cancellation is governance-gated. A schedule is cancelled through
+    // `create_cancel_recurring_proposal` and then a disburse attempt must fail.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
 
-    let id = client.create_recurring_schedule(
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
-        &60,
-        &5,
-        &str(&env, "Cancelled schedule"),
+        &recipient,
+        &token_client.address,
+        &1_000_000_i128,
+        &3_600_u64,
+        &NOW,
+        &(NOW + 86_400),
+        &0_u64,
+        &10_000_000_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Schedule for cancel test"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+
+    let schedule_id = 1_u64;
+    let cancel_id = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &str(&env, "Cancel schedule 1"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
+    assert_eq!(
+        client.get_recurring_payment(&schedule_id).status,
+        RecurringStatus::Cancelled
     );
 
-    client.cancel_recurring_schedule(&owner_a, &id);
+    assert_eq!(
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
+    );
+}
 
-    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
+#[test]
+fn cancel_recurring_schedule_is_deprecated_and_redirects_to_proposal_path() {
+    // #738: the legacy direct owner cancel is deprecated. It must return a
+    // clear, dedicated error rather than silently mutating schedule state.
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+
+    assert_eq!(
+        client.try_cancel_recurring_schedule(&owner_a, &1_u64),
+        Err(Ok(ContractError::DeprecatedEntrypoint))
+    );
+
+    // The canonical path still exists and is the one removal path: cancelling a
+    // schedule that does not exist is rejected by the ordinary not-found guard
+    // (not by deprecation), proving the proposal entrypoint remains active.
+    assert_eq!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_a,
+            &999_u64,
+            &str(&env, "Cancel missing"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::RecurringPaymentNotFound))
+    );
 }
 
 #[test]
@@ -7765,10 +8427,10 @@ fn completed_recurring_schedule_cannot_disburse() {
     );
 
     // First disburse should succeed and mark Completed (occurrences == 1)
-    client.disburse_recurring(&id);
+    client.disburse_recurring(&owner_a, &id);
 
     // A subsequent disburse must be rejected.
-    assert_eq!(client.try_disburse_recurring(&id), Err(Ok(ContractError::ProposalNotActive)));
+    assert_eq!(client.try_disburse_recurring(&owner_a, &id), Err(Ok(ContractError::ProposalNotActive)));
 }
 
 
@@ -9051,7 +9713,7 @@ proptest! {
     fn role_members_index_matches_per_address_roles(
         operations in proptest::collection::vec((0u8..=3, 0u32..=1_000, 0u8..=2), 1..=30)
     ) {
-        let env = Env::default();
+        let env = non_snapshot_env();
         env.mock_all_auths();
         set_timestamp(&env, NOW);
         let contract_id = env.register(AccordContract, ());
@@ -9291,7 +9953,11 @@ fn removed_owner_with_stale_roles_cannot_cosign_governance() {
     // Even if role storage were left populated for the removed owner, it has
     // no owner weight and cannot co-sign.
     grant_all_roles(&env, &client, &owner_c);
-    freeze_with_new_guardian(&env, &client, &Vec::from_array(&env, [owner_a.clone(), owner_b]));
+    freeze_with_new_guardian(
+        &env,
+        &client,
+        &Vec::from_array(&env, [owner_a.clone(), owner_b]),
+    );
 
     let approvers = Vec::from_array(&env, [owner_a, owner_c]);
     assert_governance_rejects(&env, &client, &approvers, ContractError::Unauthorized);
@@ -9336,9 +10002,10 @@ fn approve_rejects_non_owner_holding_approver_role() {
 }
 
 #[test]
-fn approve_rejects_owner_without_approver_role() {
+fn revoke_rejects_owner_without_approver_role() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
     let id = transfer_proposal(&env, &client, &owner_a, &token_client);
+    client.approve(&owner_b, &id);
 
     let mut without_approve = Vec::new(&env);
     without_approve.push_back(Role::Proposer);
@@ -9346,34 +10013,13 @@ fn approve_rejects_owner_without_approver_role() {
     env.as_contract(&client.address, || {
         update_owner_roles(&env, &owner_b, &without_approve);
     });
-    assert!(client.is_owner(&owner_b));
-    assert!(!client.has_role(&owner_b, &Role::Approver));
-    assert!(!client.get_role_members(&Role::Approver).contains(&owner_b));
 
     assert_eq!(
-        client.try_approve(&owner_b, &id),
-        Err(Ok(ContractError::Unauthorized))
+        client.try_revoke(&owner_b, &id),
+        Err(Ok(ContractError::MissingRole))
     );
-    assert!(!client.has_approved(&id, &owner_b));
-    assert_eq!(client.get_proposal(&id).approvals, 0);
-}
-
-#[test]
-fn approve_succeeds_for_owner_with_approver_role() {
-    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
-    let id = transfer_proposal(&env, &client, &owner_a, &token_client);
-
-    assert!(client.is_owner(&owner_b));
-    assert!(client.has_role(&owner_b, &Role::Approver));
-
-    client.approve(&owner_b, &id);
     assert!(client.has_approved(&id, &owner_b));
     assert_eq!(client.get_proposal(&id).approvals, 1);
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
-
-    client.approve(&owner_a, &id);
-    assert_eq!(client.get_proposal(&id).approvals, 2);
-    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
 }
 
 // ─── Issue #605: Role Lifecycle ──────────────────────────────────────────────
@@ -9396,18 +10042,17 @@ fn grant_and_revoke_role_lifecycle() {
     assert!(client.has_role(&non_owner, &Role::Viewer));
     assert!(client.get_role_members(&Role::Viewer).contains(&non_owner));
     
-    let mut role_granted_found = false;
-    for event in env.events().all().iter() {
-        let (_contract_id, topics, _data) = event;
-        if topics.len() > 0 {
-            let topic: Val = topics.get(0).unwrap();
-            if let Ok(sym) = Symbol::try_from_val(&env, &topic) {
-                if sym == Symbol::new(&env, "role_granted") {
-                    role_granted_found = true;
-                }
-            }
-        }
-    }
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let role_granted_found = contract_events.events().iter().any(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == Symbol::new(&env, "role_granted")
+    });
     assert!(role_granted_found);
 
     let revoke_id = client.create_revoke_role_proposal(
@@ -9424,18 +10069,17 @@ fn grant_and_revoke_role_lifecycle() {
     assert!(!client.has_role(&non_owner, &Role::Viewer));
     assert!(!client.get_role_members(&Role::Viewer).contains(&non_owner));
 
-    let mut role_revoked_found = false;
-    for event in env.events().all().iter() {
-        let (_contract_id, topics, _data) = event;
-        if topics.len() > 0 {
-            let topic: Val = topics.get(0).unwrap();
-            if let Ok(sym) = Symbol::try_from_val(&env, &topic) {
-                if sym == Symbol::new(&env, "role_revoked") {
-                    role_revoked_found = true;
-                }
-            }
-        }
-    }
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let role_revoked_found = contract_events.events().iter().any(|event| {
+        let event_topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        let Some(topic) = event_topics.first() else {
+            return false;
+        };
+        let topic: Symbol = topic.clone().into_val(&env);
+        topic == Symbol::new(&env, "role_revoked")
+    });
     assert!(role_revoked_found);
 }
 
@@ -9468,7 +10112,7 @@ fn revoke_approver_role_blocks_subsequent_approval() {
     
     assert_eq!(
         client.try_approve(&owner_b, &prop_id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -9537,7 +10181,7 @@ fn concurrent_role_proposals_execute_deterministically() {
     let res1 = client1.try_execute(&owner_c1, &grant_id2);
     assert_eq!(res1, Err(Ok(ContractError::RoleAlreadyGranted))); 
 
-    let roles1 = client1.get_owner_roles(&non_owner1);
+    let roles1 = client1.get_roles(&non_owner1);
 
 
     let (env2, client2, owner_a2, owner_b2, owner_c2, non_owner2, _) = setup(2);
@@ -9566,7 +10210,7 @@ fn concurrent_role_proposals_execute_deterministically() {
     let res2 = client2.try_execute(&owner_c2, &grant_id1_env2);
     assert_eq!(res2, Err(Ok(ContractError::RoleAlreadyGranted)));
 
-    let roles2 = client2.get_owner_roles(&non_owner2);
+    let roles2 = client2.get_roles(&non_owner2);
     assert_eq!(roles1, roles2);
     
     let mut count = 0;

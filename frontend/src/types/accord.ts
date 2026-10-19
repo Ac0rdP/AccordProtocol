@@ -1,8 +1,31 @@
-export type ProposalStatus = "pending" | "ready" | "executed" | "expired" | "revoked";
+// Contract-derived enums come from the generated file so the frontend can never
+// drift from contracts/accord/src/lib.rs. Run
+// `python3 scripts/generate-contract-types.py` after changing the contract.
+import type {
+  ContractProposalCategory,
+  ContractProposalStatus,
+  ContractRecurringStatus,
+  ContractRole,
+} from "./contract.generated";
 
-export type Role = "Proposer" | "Approver" | "Executor" | "Viewer";
+export { ContractError } from "./contract.generated";
 
-export type ProposalCategory = "Transfer" | "Payroll" | "Grant" | "Ops" | "Other";
+/** Lower-cased view of the on-chain status enum used by the UI. */
+export type ProposalStatus = Lowercase<ContractProposalStatus>;
+
+/**
+ * UI roles are a superset of the contract's capability roles: the contract
+ * stores Proposer/Approver/Executor/Viewer, while the UI also models the
+ * legacy Owner/Guardian/SpendingLimit labels used in navigation and banners.
+ */
+export type Role =
+  | "Owner"
+  | "Guardian"
+  | "SpendingLimit"
+  | ContractRole;
+
+/** Matches the contract's ProposalCategory enum exactly. */
+export type ProposalCategory = ContractProposalCategory;
 
 export type ProposalKind =
   | "transfer"
@@ -11,6 +34,8 @@ export type ProposalKind =
   | "change_threshold"
   | "set_spending_limit"
   | "change_owner_weight"
+  | "grant_role"
+  | "revoke_role"
   | "recurring";
 
 export type Proposal = {
@@ -18,6 +43,8 @@ export type Proposal = {
   kind: ProposalKind;
   to: string;
   amount: string;
+  /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
+  rawAmount?: string;
   token: string;
   description: string;
   approvals: number;
@@ -86,8 +113,14 @@ export type OwnerWeightChangeEvent = {
   timestamp: string;
 };
 
-export type RecurringStatus = "active" | "paused" | "completed" | "cancelled";
+/** Lower-cased view of the on-chain RecurringStatus enum used by the UI. */
+export type RecurringStatus = Lowercase<ContractRecurringStatus>;
 
+/**
+ * UI-facing snake_case form of the contract's RecurringKind enum. The mapping
+ * is asserted against the generated contract type by
+ * `src/types/contract.generated.test.ts`.
+ */
 export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
 
 export type RecurringPayment = {
@@ -109,7 +142,8 @@ export type RecurringPayment = {
   description: string;
 };
 
-export type RecurringScheduleStatus = "active" | "paused" | "completed" | "cancelled";
+/** Recurring schedules share the same lifecycle states as recurring payments. */
+export type RecurringScheduleStatus = RecurringStatus;
 
 export type RecurringSchedule = {
   id: number;
@@ -213,6 +247,7 @@ export type TreasuryFlowBucket = {
 
 export type TreasurySummary = {
   totalDisbursed: Record<string, AnalyticsAmount>;
+  totalInflows: Record<string, AnalyticsAmount>;
   activeProposals: number;
   ownerCount: number;
   largestOutflow: { token: string; amount: AnalyticsAmount } | null;
@@ -273,4 +308,3 @@ export type ParsedAnalyticsQuery = {
   granularity?: AnalyticsGranularity;
   timeSeries?: boolean;
 };
-

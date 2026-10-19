@@ -5,17 +5,28 @@ target
 .soroban
 .stellar
 .env
+node_modules/
+indexer/data/
 # Private runbooks — keep local only
 UPGRADE.md
 fix.md
 
 # Property-test snapshots are non-deterministic (random inputs each run), so they
-# churn on every run and should not be committed.
+# churn on every run and should not be committed. The suites themselves use
+# `non_snapshot_env()` and do not write these files; the patterns keep stale
+# local snapshots from an older checkout out of version control.
 contracts/accord/test_snapshots/test/approval_count_never_exceeds_owner_count.*.json
+contracts/accord/test_snapshots/test/approval_weight_always_equals_sum_of_approved_weights.*.json
+contracts/accord/test_snapshots/test/active_count_never_exceeds_max.*.json
+contracts/accord/test_snapshots/test/total_weight_matches_all_current_owner_weights.*.json
+contracts/accord/test_snapshots/test/role_members_index_matches_per_address_roles.*.json
 
 # Issue tracking (local only, not for the repo)
 current-issue.md
 issue-tracker.md
 issues.md
+
+# Documentation build output
+docs-site/
 
 fix.md

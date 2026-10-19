@@ -1,0 +1,6 @@
+{
+  "$comment": "Rolling baseline used to report size deltas on pull requests. Refresh with `npm run check:bundle -- --update-baseline` after an intentional size change lands on main. Null means no baseline has been recorded yet.",
+  "totalJsGzipBytes": null,
+  "totalCssGzipBytes": null,
+  "largestChunkGzipBytes": null
+}

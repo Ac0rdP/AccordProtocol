@@ -2,10 +2,11 @@
 resolver = "2"
 members = [
   "contracts/*",
+  "analytics-api",
 ]
 
 [workspace.dependencies]
-soroban-sdk = "=25.3.1"
+soroban-sdk = "=29.0.1"
 
 [profile.release]
 opt-level = "z"

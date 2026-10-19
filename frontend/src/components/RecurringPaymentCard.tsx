@@ -103,7 +103,7 @@ function VestingProgressBar({
   const [claimable, setClaimable] = useState<string>("0");
 
   useEffect(() => {
-    let cancelled = true;
+    let cancelled = false;
     (async () => {
       try {
         const raw = await getClaimableAmount(scheduleId);

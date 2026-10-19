@@ -1,6 +1,8 @@
 # Accord Protocol — Architecture
 
 ## 1. System Overview
+
+> Architectural decisions: [ADR-0001: Soroban Platform and Rust SDK](adr/0001-soroban-platform-and-rust-sdk.md) &bull; [ADR-0009: Frontend Stack and Wallet Integration](adr/0009-frontend-stack-and-wallet-integration.md). For all records, see [Architecture Decision Records](adr/README.md).
  
 ```text
 ┌──────────────────────────────┐
@@ -49,7 +51,12 @@
 | `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
 | `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
 
+See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
+
 ## 3. Storage Layout (Soroban)
+
+> Architectural decisions: [ADR-0002: Storage Layout and TTL Strategy](adr/0002-storage-layout-and-ttl-strategy.md) &bull; [ADR-0007: Contract Upgradeability and Schema Migration](adr/0007-contract-upgradeability-and-migration.md).
+> **Complete Storage Reference**: For a comprehensive, key-by-key inventory covering every storage key, granularity, TTL behavior, and rent cost model, see [Storage Data-Model Reference](./STORAGE_MODEL.md).
 
 ### Instance Storage (low-cost, short TTL)
 
@@ -63,8 +70,9 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `ACTCNT` | `u32`  | Active proposal count (budget guard)      | 518,400 / 17,280                 |
 | `TWGT`   | `u32`  | Cached total owner weight                  | 518,400 / 17,280                 |
 | `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
+| `STOVER` | `u32`  | Storage-schema version (see [Storage Schema Versioning](#storage-schema-versioning)) | 518,400 / 17,280                 |
 
-**Instance entry cost**: all five keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
+**Instance entry cost**: all instance keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
 
 ### Persistent Storage (long TTL, bumped on access)
 
@@ -109,6 +117,7 @@ Accord uses two patterns:
 | `ACTCNT` | Count of currently active proposals |
 | `TLOCK`  | Time-lock delay in seconds          |
 | `TWGT`   | Cached total owner weight           |
+| `STOVER` | Storage-schema version              |
 | `OWNERS` | Owner address → weight map          |
 
 **Tuple keys** — two- or three-part tuples for per-entity records, where the first element is a short symbol namespace:
@@ -119,6 +128,25 @@ Accord uses two patterns:
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
+
+### Storage Schema Versioning
+
+The contract records an explicit **storage-schema version** in instance storage under the `STOVER` key, written during `initialize` and by the one-time migrations, and read back through the `get_storage_version` view. It answers the operator question "which on-chain storage layout is this deployed contract using?", independently of the code version (`get_version`) and the RBAC version (`get_role_version`).
+
+**Rule:** any release that adds, removes, or changes the type of a storage key increments `STORAGE_SCHEMA_VERSION` in `contracts/accord/src/lib.rs` and adds a row for the new version below. Behavioral changes that leave the storage layout untouched do not bump it.
+
+| Version | Written by | Keys introduced in this version |
+| ------- | ---------- | ------------------------------- |
+| `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
+| `1` (current) | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+
+**Upgrade path between versions:**
+
+- **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
+- **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
+- **`1` → `2` (future):** the release that bumps the version must list the keys it adds in the table above and ship a migration that re-stamps `STOVER`. Until such a migration exists, do not assume a contract reporting an older version is compatible with a newer WASM.
+
+Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
 ### Lifecycle of Per-Owner Persistent Storage Entries
 
@@ -296,6 +324,8 @@ For long-lived multisigs, ensure at least one on-chain call touches the contract
 
 ## Weighted Governance Model
 
+> Architectural decision: [ADR-0005: Stakeholder-Weighted Governance Model](adr/0005-weighted-governance-model.md).
+
 Accord Protocol evolved from a flat M-of-N approval count into **weighted governance**: each owner carries an individual voting weight, proposals become `Ready` when accumulated approval weight meets a snapshotted quorum, and the contract maintains a total-weight counter that must always equal the sum of current owner weights.
 
 ### Weighted data model
@@ -343,6 +373,8 @@ Invariant operators must preserve: **sum(`get_owner_weights`) == `get_total_weig
 **Equal weights reduce to the old model.** A 2-of-3 multisig with weights `[1, 1, 1]` and threshold `2` still needs any two owners. Skewed weights (for example `[5, 3, 2]` with threshold `6`) let larger stakeholders carry more influence while still requiring coalition approvals when no single owner meets quorum alone. Legacy deployments that predate weights can call `migrate_to_weighted_governance` once (after upgrading WASM) to assign weight `1` to every existing owner.
 
 ## RBAC & Access Control
+
+> Architectural decision: [ADR-0006: Operational Role-Based Access Control](adr/0006-role-based-access-control.md).
 
 Role-based access control (RBAC) layers **least-privilege operational roles** on top of owner-weighted governance. Ownership still decides *how much weight* a vote carries; roles decide *who is allowed* to draft proposals, cast votes, push execute, or only observe. High-privilege security posture changes stay on the owner-weight path so a role grant alone cannot freeze, upgrade, or reconfigure guardianship.
 
@@ -411,6 +443,8 @@ Legacy deployments have no role data. After upgrading to RBAC-capable WASM:
 See also: [Roles & Permissions guide](./guides/roles-and-permissions.md), [CONTRACT_API error reference](./CONTRACT_API.md#error-reference) (`MissingRole`, `RoleAlreadyGranted`, `RoleNotGranted`, `InvalidRole`).
 
 ## 4. Proposal Lifecycle
+
+> Architectural decision: [ADR-0003: Proposal Lifecycle and Quorum Threshold Enforcement](adr/0003-proposal-lifecycle-and-threshold.md).
 
 ```
 create_proposal()
@@ -739,6 +773,8 @@ The sequence diagram below illustrates the full lifecycle of a recurring payment
 
 ## 7. Event Schema
 
+> Architectural decision: [ADR-0008: Strongly-Typed Errors and Event Architecture](adr/0008-typed-errors-and-event-architecture.md).
+
 The contract emits events using `env.events().publish()`. Each Soroban event has two components that external consumers must understand:
 
 **Event envelope structure:**
@@ -757,6 +793,12 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("executed",)` | `ProposalExecutedEvent { id, executor, transfers }`             | Execution history   |
 
 These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
+
+### Event Schema Versioning
+
+Every event payload carries a `version: u32` field set to `EVENT_SCHEMA_VERSION`, defined once in `contracts/accord/src/lib.rs`. The constant is bumped whenever any event struct gains, loses, renames, or retypes a field, so off-chain consumers can detect a schema change instead of silently mis-decoding. It is independent of the storage-schema version (`STOVER`) and the RBAC version (`get_role_version`): bumping one does not bump the others.
+
+Within one version, topic names, field names, and field types are stable; across versions they may change. The full policy, the version history, and the guarantees consumers can rely on are in [EVENTS.md](EVENTS.md#event-versioning-policy).
 
 ### Indexing Accord Events
 
@@ -794,7 +836,25 @@ For long-term event history, use one of the following:
 
 See issue #103 and the TTL documentation in Section 3 for context on how on-chain data persistence works more broadly.
 
-## 8. Frontend Polling Strategy
+### Treasury Ledger and Reconciliation
+
+The standalone Node indexer in `indexer/` polls Soroban RPC token-contract events for the configured XLM and USDC contracts. It records successful token `transfer` events where the Accord contract is the sender or recipient. These token events are the source of truth for both deposits and executed outflows; the Accord `executed` event is not counted separately, so the same transfer is never recorded twice.
+
+Each SQLite ledger row stores the token, direction, positive amount in the token's smallest unit, event ledger and timestamp, transaction hash, endpoints, and resulting running balance. RPC event IDs are unique keys, making replay after a restart idempotent. The database also stores its event cursor, latest per-token reconciliation results, and current implied balances.
+
+Configure the indexer with `ACCORD_CONTRACT_ID`, `XLM_TOKEN_ADDRESS`, `USDC_TOKEN_ADDRESS`, `SIM_SOURCE`, and `INDEXER_START_LEDGER`. The start ledger must be the beginning of the history to account for. Since standard RPC nodes retain events only for a limited window, a historical start ledger requires an archival RPC endpoint; the indexer requires this setting rather than silently treating an incomplete history as complete. Copy the root `.env.example` to `.env`, fill in these values, then run `npm install` and `npm start` from `indexer/`. Node.js 22.13 or newer is required.
+
+Indexing polls every 5 seconds by default. A separate reconciliation task runs every 60 seconds, reads each token's on-chain `balance(ACCORD_CONTRACT_ID)` through RPC simulation, compares it with the ledger balance, logs non-zero drift, and stores the latest result without pausing event polling. Both intervals can be changed with `INDEX_INTERVAL_MS` and `RECONCILE_INTERVAL_MS`.
+
+The local HTTP API listens on `127.0.0.1:8787` by default:
+
+- `GET /ledger?token=USDC&from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z` returns ledger rows for an optional token and inclusive time window. `limit` and `offset` support pagination.
+- `GET /reconciliation` returns the latest stored actual/implied balances and drift for each token, as strings in smallest units.
+- `GET /health` returns the current indexing checkpoint.
+
+`DATABASE_PATH`, `HOST`, and `PORT` can override the SQLite path and API bind settings. Set `STORE_BACKEND=postgres` and `DATABASE_URL` to use Postgres instead (versioned migrations in `indexer/migrations/postgres/`; see [the indexer README](../indexer/README.md#storage)). Keep the API bound to localhost unless it is placed behind an authenticated service.
+
+## 7. Frontend Polling Strategy
 
 1. Load current proposals on mount, then poll every 15-30s for active proposals.
 2. After a confirmed transaction (approve, execute), re-fetch the affected proposal immediately for optimistic UI.
@@ -861,8 +921,11 @@ The same panel also serves as a diagnostic tool: if an execute call fails with `
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
 | [ANALYTICS_API.md](ANALYTICS_API.md)                                      | Analytics HTTP API and indexed event schema reference          |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
+| [docs/adr/README.md](adr/README.md)                                      | Architecture Decision Records (ADRs) and index table           |
 
 ## 12. Owner-Authorization Check Resource Cost
+
+> Architectural decisions: [ADR-0004: Owner Multi-Signature and Guardian Pause Authorization](adr/0004-owner-and-guardian-authorization.md) &bull; [ADR-0010: Testing Strategy, Coverage Gates, and Metered Benchmark Baselines](adr/0010-testing-strategy-and-quality-gates.md).
 
 Every authorized call into the contract (`approve`, `revoke`, `execute`, and each governance proposal creation) loads the entire `OWNERS` persistent entry (an `Address → u32` weight map) and looks up the caller's weight. This section measures the CPU instruction and memory cost of that check at the maximum owner count (`MAX_OWNERS = 20`) compared to a single-owner baseline.
 
@@ -931,6 +994,52 @@ MemAlloc                           88299          46535
 No follow-up action is required. The owner-map lookup does not pose a resource-limit risk, and the headroom is sufficient for the rest of each entrypoint's business logic.
 
 > **Note**: These measurements were obtained running Rust natively in test mode (not compiled to WASM). Soroban SDK's own documentation notes that CPU and memory costs are *likely to be underestimated* when running natively compared to actual WASM execution. The true WASM costs may be higher, but given the large headroom (less than 1% of limits), this margin of error does not change the conclusion.
+
+### Worst-Case Resource Profile and Regression Ceiling
+
+The `resource_ceiling_*` tests in `contracts/accord/src/test.rs` pin the cost of the hottest entrypoints at the maximum supported configuration, so a change that drifts toward the network budget fails CI instead of failing on-chain.
+
+**Configuration under test (`setup_max_config`):**
+
+- `MAX_OWNERS` (20) owners, each at `MAX_OWNER_WEIGHT` (100,000), so total weight is `MAX_TOTAL_WEIGHT` (2,000,000); threshold is a strict weight majority (1,000,001).
+- Owners 1–19 each delegate half their weight to owner 0. This is the worst case for `compute_effective_weight`, which reads one delegation entry per owner on every `approve` and weight lookup.
+- Transfer proposals carry the maximum of 3 transfers, each in a different token, so every token is validated.
+
+**Entrypoints measured** (each top-level invocation separately, via `env.cost_estimate().resources()`):
+
+| Path | Worst case exercised |
+|---|---|
+| `initialize` | 20 owners, writes owner map, 20 role sets, 3 role-member indexes |
+| `create_proposal` | 3 transfers across 3 tokens |
+| `approve` | Every one of the 20 owners, including owner 0 with 19 incoming delegations and approvals after the proposal is `Ready` |
+| `execute` (Transfer) | 3 token transfers |
+| `create_change_weight_proposal`, `execute` (ChangeOwnerWeight) | Active-proposal quorum scan at 20 owners |
+| `create_remove_owner_proposal`, `execute` (RemoveOwner) | Removing the delegate of all 19 delegations (widest cleanup), reversing approvals on another `Ready` proposal |
+| `create_add_owner_proposal`, `execute` (AddOwner) | Add back up to `MAX_OWNERS` |
+| `get_effective_weight`, `get_owner_weight(s)`, `get_total_weight`, `get_required_quorum_weight`, `get_delegations`, `get_active_delegations` | Full delegation fan-in |
+
+**Ceiling (`HOT_PATH_CEILING`)**, applied to every measured invocation, as a fraction of the Stellar mainnet per-invocation limits (`InvocationResourceLimits::mainnet()`, which the test `Env` also enforces outright):
+
+| Resource | Mainnet limit | Ceiling | Fraction |
+|---|---|---|---|
+| CPU instructions | 600,000,000 | 60,000,000 | 10% |
+| Memory bytes | 41,943,040 | 4,194,304 | 10% |
+| Ledger entries (read + written) | 100 | 75 | 75% |
+| Written entries | 50 | 37 | 75% |
+| Written bytes | 132,096 | 66,048 | 50% |
+| Contract event bytes | 16,384 | 8,192 | 50% |
+
+CPU and memory are held to 10% because the tests run natively, which under-reports real Wasm execution cost; the remaining 90% is headroom for that gap. Ledger-entry counts are not affected by native execution, so they can sit closer to the limit. The highest entry counts come from `execute` (RemoveOwner), which touches every delegation entry, and from `initialize`, which writes one role entry per owner.
+
+**Known unbounded-by-owners path:** `execute` for `RemoveOwner` also scans every proposal ID ever created (`1..next_id`) to re-check quorum and reverse approvals. Its cost grows with total proposal history, not just owner count, and the max-config tests deliberately keep proposal history small. Treat that loop as the first candidate for optimization if proposal volume grows.
+
+**Measured values and updating the ceiling:** run
+
+```
+cargo test -p accord resource_ceiling -- --nocapture --test-threads=1
+```
+
+Each measured invocation prints a `[resource] <label>: instructions=… mem_bytes=… ledger_entries=… write_entries=… write_bytes=… events_bytes=…` line. If a legitimate change pushes a value over the ceiling, confirm the growth is intended, then raise only that field in `HOT_PATH_CEILING` and update the table above in the same change, staying within the fractions listed. A value that cannot fit under its fraction means the entrypoint needs optimizing, not a bigger ceiling.
 
 ## 13. Indexer & Analytics Architecture
 

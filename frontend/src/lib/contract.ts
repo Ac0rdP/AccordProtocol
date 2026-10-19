@@ -6,7 +6,21 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { Proposal, ProposalStatus, Role } from "../types/accord";
+import type {
+  Delegation,
+  OwnerDelegations,
+  OwnerWeightChangeEvent,
+  Proposal,
+  ProposalCategory,
+  ProposalEvent,
+  ProposalEventType,
+  ProposalStatus,
+  RecurringKind,
+  RecurringPayment,
+  RecurringSchedule,
+  RecurringStatus,
+  Role,
+} from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
@@ -92,7 +106,7 @@ function safeBigInt(value: unknown): bigint {
 
 function mapKindDetails(
   kind: unknown,
-): Pick<Proposal, "kind" | "to" | "amount" | "token"> {
+): Pick<Proposal, "kind" | "to" | "amount" | "token"> & { rawAmount?: string } {
   if (!kind || typeof kind !== "object") {
     return {
       kind: "transfer",
@@ -108,13 +122,16 @@ function mapKindDetails(
   const values = Array.isArray(payload) ? payload : [payload];
 
   switch (normalizedVariant) {
-    case "transfer":
+    case "transfer": {
+      const rawStroops = safeBigInt(values[1]);
       return {
         kind: "transfer",
         to: shortenAddr(String(values[0] ?? "Unknown")),
-        amount: stroopsToDisplay(safeBigInt(values[1])),
+        amount: stroopsToDisplay(rawStroops),
+        rawAmount: String(rawStroops),
         token: shortenAddr(String(values[2] ?? "Unknown")),
       };
+    }
     case "addowner":
       return {
         kind: "add_owner",
@@ -184,6 +201,7 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     kind: details.kind,
     to: details.to,
     amount: details.amount,
+    rawAmount: details.rawAmount,
     token: details.token,
     description: String(raw.description),
     approvals: Number(raw.approvals),
@@ -249,39 +267,41 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
 }
 
 const ROLE_ALIASES: Record<string, Role> = {
-  owner: "owner",
-  admin: "admin",
-  guardian: "guardian",
-  manager: "manager",
-  operator: "operator",
-  viewer: "viewer",
-  maintainer: "manager",
-  administrator: "admin",
+  owner: "Owner",
+  admin: "Owner",
+  guardian: "Guardian",
+  manager: "SpendingLimit",
+  operator: "SpendingLimit",
+  viewer: "Viewer",
+  maintainer: "SpendingLimit",
+  administrator: "Owner",
+  proposer: "Proposer",
+  approver: "Approver",
+  executor: "Executor",
+  spendinglimit: "SpendingLimit",
+  spending_limit: "SpendingLimit",
 };
 
-function normalizeRole(value: unknown): Role | null {
-  if (typeof value === "string") {
-    const key = value.trim();
-    if (!key) return null;
-    const normalized = key.toLowerCase();
-    return ROLE_ALIASES[normalized] ?? null;
+function mapAccessRole(raw: unknown): Role | null {
+  let key: string;
+  if (typeof raw === "string") {
+    key = raw;
+  } else if (raw && typeof raw === "object") {
+    key = Object.keys(raw as object)[0] ?? "";
+  } else {
+    return null;
   }
 
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (!entries.length) return null;
-    const variant = String(entries[0][0]);
-    return normalizeRole(variant);
-  }
-
-  return null;
+  // Single source of truth for role-name aliases so the "list all roles" and
+  // "roles for this address" paths can never drift apart.
+  return normalizeRole(key);
 }
 
 function mapRoleList(raw: unknown): Role[] {
   if (!Array.isArray(raw)) return [];
   const roles: Role[] = [];
   for (const entry of raw) {
-    const role = normalizeRole(entry);
+    const role = mapAccessRole(entry);
     if (role && !roles.includes(role)) {
       roles.push(role);
     }
@@ -298,24 +318,40 @@ export async function getRoleVersion(): Promise<number> {
   }
 }
 
-export async function getRoles(): Promise<Role[]> {
+export async function getRoles(
+  address?: string,
+  ownerAddresses: string[] = [],
+): Promise<Role[]> {
+  if (!address) {
+    try {
+      const val = await simulateView("get_roles");
+      return mapRoleList(scValToNative(val));
+    } catch {
+      return [];
+    }
+  }
+
   try {
-    const val = await simulateView("get_roles");
-    return mapRoleList(scValToNative(val));
+    const val = await simulateView("get_roles", [
+      nativeToScVal(address, { type: "address" }),
+    ]);
+    return mapRoles(scValToNative(val));
   } catch {
+    if (ownerAddresses.includes(address)) {
+      return ["Owner"];
+    }
     return [];
   }
 }
 
 export async function hasRole(
   walletAddress: string,
-  role: Role | string,
+  role: Role,
 ): Promise<boolean> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("has_role", [
       nativeToScVal(walletAddress, { type: "address" }),
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     return Boolean(scValToNative(val));
   } catch {
@@ -323,11 +359,10 @@ export async function hasRole(
   }
 }
 
-export async function getRoleMembers(role: Role | string): Promise<string[]> {
+export async function getRoleMembers(role: Role): Promise<string[]> {
   try {
-    const normalized = normalizeRole(role) ?? String(role).trim();
     const val = await simulateView("get_role_members", [
-      nativeToScVal(normalized, { type: "symbol" }),
+      nativeToScVal(role, { type: "symbol" }),
     ]);
     const raw = scValToNative(val);
     return Array.isArray(raw) ? raw.map(String) : [];
@@ -336,12 +371,20 @@ export async function getRoleMembers(role: Role | string): Promise<string[]> {
   }
 }
 
-export async function getApproverWeight(owner: string): Promise<number> {
+export async function getOwnerWeight(owner: string): Promise<bigint> {
   try {
     const val = await simulateView("get_owner_weight", [
       nativeToScVal(owner, { type: "address" }),
     ]);
-    return Number(scValToNative(val));
+    return safeBigInt(scValToNative(val));
+  } catch {
+    return 0n;
+  }
+}
+
+export async function getApproverWeight(owner: string): Promise<number> {
+  try {
+    return Number(await getOwnerWeight(owner));
   } catch {
     return 0; // Safe fallback when address is not a current owner
   }
@@ -350,6 +393,63 @@ export async function getApproverWeight(owner: string): Promise<number> {
 export async function getOwners(): Promise<string[]> {
   const val = await simulateView("get_owners");
   return scValToNative(val) as string[];
+}
+
+export async function getOwnerWeights(): Promise<Array<{ address: string; weight: number }>> {
+  try {
+    const val = await simulateView("get_owner_weights");
+    const raw = scValToNative(val);
+    if (!Array.isArray(raw)) return [];
+
+    return raw.map((entry) => {
+      const owner =
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).address ??
+            (entry as Record<string, unknown>).owner ??
+            ""
+          : "";
+      const weightValue =
+        entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).weight ??
+            (entry as Record<string, unknown>).value ??
+            0
+          : 0;
+
+      return {
+        address: String(owner),
+        weight: Number(weightValue ?? 0),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function getTotalWeight(): Promise<number> {
+  try {
+    const val = await simulateView("get_total_weight");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getRequiredQuorumWeight(): Promise<number> {
+  try {
+    const val = await simulateView("get_required_quorum_weight");
+    return Number(scValToNative(val) ?? 0);
+  } catch {
+    return getThreshold();
+  }
+}
+
+export async function getWeightCapPct(): Promise<number> {
+  try {
+    const val = await simulateView("get_weight_cap_pct");
+    return Number(scValToNative(val) ?? 50);
+  } catch {
+    return 50;
+  }
 }
 
 function mapRole(raw: unknown): Role | null {
@@ -370,6 +470,12 @@ function mapRole(raw: unknown): Role | null {
     case "spending_limit":
     case "spending-limit":
       return "SpendingLimit";
+    case "proposer":
+      return "Proposer";
+    case "approver":
+      return "Approver";
+    case "executor":
+      return "Executor";
     default:
       return null;
   }
@@ -380,23 +486,6 @@ function mapRoles(raw: unknown): Role[] {
   return Array.from(
     new Set(values.map(mapRole).filter((role): role is Role => role !== null))
   );
-}
-
-export async function getRoles(
-  address: string,
-  ownerAddresses: string[] = []
-): Promise<Role[]> {
-  try {
-    const val = await simulateView("get_roles", [
-      nativeToScVal(address, { type: "address" }),
-    ]);
-    return mapRoles(scValToNative(val));
-  } catch (error) {
-    if (ownerAddresses.includes(address)) {
-      return ["Owner"];
-    }
-    return [];
-  }
 }
 
 export async function getThreshold(): Promise<number> {
@@ -624,9 +713,20 @@ async function simulateContractView(
 }
 
 export async function getContractXlmBalance(): Promise<string> {
-  const entry = await server.getAccountEntry(CONTRACT_ID);
-  const stroops = BigInt(entry.balance().toString());
-  return stroopsToDisplay(stroops);
+  const xlmToken = import.meta.env.VITE_XLM_TOKEN_ADDRESS as string;
+  if (!xlmToken) return "N/A";
+  try {
+    const val = await simulateContractView(xlmToken, "balance", [
+      nativeToScVal(CONTRACT_ID, { type: "address" }),
+    ]);
+    const raw = scValToNative(val);
+    if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+      return stroopsToDisplay(BigInt(raw));
+    }
+    return "0";
+  } catch {
+    return "—";
+  }
 }
 
 export async function getContractUsdcBalance(): Promise<string> {
@@ -721,6 +821,47 @@ function formatEventTimestamp(
     return `Ledger #${ledger}`;
   }
   return "Just now";
+}
+
+export function canonicalEventKey(event: {
+  ledger?: number | string;
+  txHash?: string;
+  tx_hash?: string;
+  eventIndex?: number | string | bigint;
+  event_index?: number | string | bigint;
+}): string {
+  const ledger = Number(event?.ledger ?? 0);
+  const txHash = String(event?.txHash ?? event?.tx_hash ?? "");
+  const eventIndex = Number(event?.eventIndex ?? event?.event_index ?? 0);
+  return `${ledger}:${txHash}:${eventIndex}`;
+}
+
+export function dedupeContractEvents<T extends {
+  ledger?: number | string;
+  txHash?: string;
+  tx_hash?: string;
+  eventIndex?: number | string | bigint;
+  event_index?: number | string | bigint;
+}>(events: T[]): T[] {
+  const seen = new Set<string>();
+  return [...events]
+    .filter((event) => {
+      const key = canonicalEventKey(event);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => {
+      const ledgerDelta = Number(a.ledger ?? 0) - Number(b.ledger ?? 0);
+      if (ledgerDelta !== 0) return ledgerDelta;
+      const eventDelta =
+        Number(a.eventIndex ?? a.event_index ?? 0) -
+        Number(b.eventIndex ?? b.event_index ?? 0);
+      if (eventDelta !== 0) return eventDelta;
+      return String(a.txHash ?? a.tx_hash ?? "").localeCompare(
+        String(b.txHash ?? b.tx_hash ?? ""),
+      );
+    });
 }
 
 function resolveEventType(
@@ -845,9 +986,10 @@ export async function getProposalEvents(
     });
 
     const events: ProposalEvent[] = [];
+    const rawEvents = dedupeContractEvents(res.events ?? []);
 
-    if (res.events && Array.isArray(res.events)) {
-      for (const rawEv of res.events) {
+    if (rawEvents.length > 0) {
+      for (const rawEv of rawEvents) {
         try {
           const rawTopic = Array.isArray(rawEv.topic)
             ? rawEv.topic
@@ -910,7 +1052,12 @@ export async function getProposalEvents(
               eventPropId = Number(topics[1]);
             }
 
-            if (eventPropId === proposalId) {
+            // Owner-weight-change events carry no proposal id (OwnerWeightChangedEvent
+            // is { owner, old_weight, new_weight, new_total_weight }) yet they are
+            // part of a proposal's governance history, so include them in every
+            // proposal timeline interleaved chronologically with approve/revoke/execute.
+            const isWeightChange = eventType === "owner_weight_changed";
+            if (eventPropId === proposalId || isWeightChange) {
               const rawActor = String(
                 nativeValue.approver ??
                   nativeValue.executor ??
@@ -920,6 +1067,8 @@ export async function getProposalEvents(
                   nativeValue.sender ??
                   nativeValue.admin ??
                   nativeValue.owner ??
+                  nativeValue.target ??
+                  nativeValue.target_owner ??
                   "",
               );
               const actor = rawActor ? shortenAddr(rawActor) : "Unknown";
@@ -1023,11 +1172,25 @@ export async function getProposalEvents(
                 if (reason) parts.push(reason);
                 if (parts.length > 0) details = parts.join(" · ");
               } else if (eventType === "owner_weight_changed") {
-                if (
-                  nativeValue.old_weight !== undefined &&
-                  nativeValue.new_weight !== undefined
-                ) {
-                  details = `Weight: ${nativeValue.old_weight} → ${nativeValue.new_weight}`;
+                const oldW =
+                  nativeValue.old_weight ??
+                  nativeValue.oldWeight ??
+                  nativeValue.previous_weight ??
+                  nativeValue.previousWeight;
+                const newW =
+                  nativeValue.new_weight ??
+                  nativeValue.newWeight ??
+                  nativeValue.weight;
+                if (oldW !== undefined && newW !== undefined) {
+                  const ownerLabel =
+                    nativeValue.owner ??
+                    nativeValue.target ??
+                    nativeValue.target_owner ??
+                    rawActor;
+                  const shortOwner = ownerLabel
+                    ? shortenAddr(String(ownerLabel))
+                    : actor;
+                  details = `${shortOwner} Weight: ${String(oldW)} → ${String(newW)}`;
                 }
               }
 

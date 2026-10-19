@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { shortenAddr } from "../lib/soroban";
 import { X, ShieldCheck, UserCheck } from "lucide-react";
 

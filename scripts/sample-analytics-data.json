@@ -1,0 +1,47 @@
+[
+  {
+    "id": 1,
+    "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+    "status": "executed",
+    "category": "Payroll",
+    "amount": "2500.00",
+    "token": "USDC",
+    "executedAt": "2026-09-02T10:00:00Z"
+  },
+  {
+    "id": 2,
+    "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+    "status": "executed",
+    "category": "Ops",
+    "amount": "450.00",
+    "token": "USDC",
+    "executedAt": "2026-09-05T14:30:00Z"
+  },
+  {
+    "id": 3,
+    "proposer": "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+    "status": "executed",
+    "category": "Grant",
+    "amount": "5000.00",
+    "token": "XLM",
+    "executedAt": "2026-09-12T09:15:00Z"
+  },
+  {
+    "id": 4,
+    "proposer": "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+    "status": "executed",
+    "category": "Payroll",
+    "amount": "2500.00",
+    "token": "USDC",
+    "executedAt": "2026-09-16T11:00:00Z"
+  },
+  {
+    "id": 5,
+    "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+    "status": "executed",
+    "category": "Transfer",
+    "amount": "1200.00",
+    "token": "XLM",
+    "executedAt": "2026-09-22T16:45:00Z"
+  }
+]

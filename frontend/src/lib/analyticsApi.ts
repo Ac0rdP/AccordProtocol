@@ -5,7 +5,6 @@ import type {
   AnalyticsApiErrorDetail,
   AnalyticsApiErrorResponse,
   AnalyticsGranularity,
-  AnalyticsQuery,
   CategorySpendBucket,
   OwnerSpendBucket,
   ParsedAnalyticsQuery,
@@ -116,7 +115,7 @@ export function parseAndValidateAnalyticsQuery(
   const details: AnalyticsApiErrorDetail[] = [];
 
   // Parse limit
-  let limit = QUERY_DEFAULTS.LIMIT;
+  let limit: number = QUERY_DEFAULTS.LIMIT;
   const rawLimit = getParam("limit");
   if (rawLimit !== undefined) {
     const parsed = Number(rawLimit);
@@ -132,7 +131,7 @@ export function parseAndValidateAnalyticsQuery(
   }
 
   // Parse offset
-  let offset = QUERY_DEFAULTS.OFFSET;
+  let offset: number = QUERY_DEFAULTS.OFFSET;
   const rawOffset = getParam("offset");
   if (rawOffset !== undefined) {
     const parsed = Number(rawOffset);
@@ -357,7 +356,7 @@ export function handleGetStatsSummary(
   }
 
   const query = validation.data;
-  const { proposals, ownerCount } = context;
+  const { proposals, ownerCount, deposits = [] } = context;
 
   // Active proposals are independent of the transfer date range
   const activeProposals = proposals.filter((p) =>
@@ -409,11 +408,26 @@ export function handleGetStatsSummary(
   for (const [token, total] of totalsByToken.entries()) {
     totalDisbursed[token] = String(total);
   }
+  const inflowsByToken = new Map<string, number>();
+  for (const deposit of deposits) {
+    const token = deposit.token || "XLM";
+    if (query.token && token !== query.token) continue;
+    if (!inDateRange(deposit.timestamp, query)) continue;
+    inflowsByToken.set(
+      token,
+      (inflowsByToken.get(token) ?? 0) + (parseFloat(deposit.amount) || 0),
+    );
+  }
+  const totalInflows: Record<string, AnalyticsAmount> = {};
+  for (const [token, total] of inflowsByToken.entries()) {
+    totalInflows[token] = formatAmount(total);
+  }
 
   return {
     status: 200,
     data: {
       totalDisbursed,
+      totalInflows,
       activeProposals,
       ownerCount,
       largestOutflow,
@@ -463,6 +477,64 @@ function proposalMatchesFilters(p: Proposal, query: ParsedAnalyticsQuery): boole
     return false;
   }
   return inDateRange(p.deadlineTs, query);
+}
+
+/**
+ * Route handler for GET /spend/by-category
+ *
+ * Executed transfer spend grouped by proposal category and token, with an
+ * optional date range (startDate, endDate) plus token/category/owner filters.
+ * `share` is the category's percentage of total spend for the same token
+ * within the filtered range (0-100).
+ */
+export function handleGetSpendByCategory(
+  params: URLSearchParams | Record<string, unknown> | undefined,
+  context: AnalyticsContext,
+): AnalyticsApiResponse<CategorySpendBucket[]> {
+  const validation = parseAndValidateAnalyticsQuery(params);
+  if (!validation.success) {
+    return { status: validation.status, error: validation.error };
+  }
+  const query = validation.data;
+
+  const totals = new Map<
+    string,
+    { category: ProposalCategory; token: string; total: number; count: number }
+  >();
+  for (const p of context.proposals) {
+    if (p.status !== "executed" || p.kind !== "transfer") continue;
+    if (!proposalMatchesFilters(p, query)) continue;
+    const category = p.category ?? "Other";
+    const token = p.token || "XLM";
+    const key = `${category}\u0000${token}`;
+    const entry = totals.get(key) ?? { category, token, total: 0, count: 0 };
+    entry.total += parseFloat(p.amount) || 0;
+    entry.count += 1;
+    totals.set(key, entry);
+  }
+
+  const totalByToken = new Map<string, number>();
+  for (const { token, total } of totals.values()) {
+    totalByToken.set(token, (totalByToken.get(token) ?? 0) + total);
+  }
+
+  const rows = [...totals.values()].sort(
+    (a, b) => b.total - a.total || a.category.localeCompare(b.category),
+  );
+
+  return {
+    status: 200,
+    data: rows.map((r) => {
+      const tokenTotal = totalByToken.get(r.token) ?? 0;
+      return {
+        category: r.category,
+        token: r.token,
+        total: formatAmount(r.total),
+        count: r.count,
+        share: tokenTotal > 0 ? Number(((r.total / tokenTotal) * 100).toFixed(2)) : 0,
+      };
+    }),
+  };
 }
 
 /**
@@ -663,6 +735,9 @@ export function handleAnalyticsRoute(
   switch (normalizedPath) {
     case "/stats/summary":
       return handleGetStatsSummary(rawParams, context);
+
+    case "/spend/by-category":
+      return handleGetSpendByCategory(rawParams, context);
 
     case "/spend/by-owner":
       return handleGetSpendByOwner(rawParams, context);

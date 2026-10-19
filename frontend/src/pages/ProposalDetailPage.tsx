@@ -1,9 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApprovalBar } from "../components/ApprovalBar";
+import { EmptyState } from "../components/EmptyState";
+import { ErrorState } from "../components/ErrorState";
+import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
+import { PageState } from "../components/PageState";
 import type { Proposal, ProposalEvent } from "../types/accord";
-import { getProposalEvents, getOwners, getRequiredQuorumWeight } from "../lib/contract";
+import {
+  getHistoricalWeightChangeEvents,
+  getOwners,
+  getProposalEvents,
+  getRequiredQuorumWeight,
+} from "../lib/contract";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 
 type ProposalDetailPageProps = {
@@ -11,6 +20,11 @@ type ProposalDetailPageProps = {
   walletAddress: string | null;
   onApprove: (id: number) => void;
   onExecute: (id: number) => void;
+  /** Forces the loading state (used by the page-state matrix tests). */
+  loading?: boolean;
+  /** Forces the error state (used by the page-state matrix tests). */
+  error?: string | null;
+  onRetry?: () => void;
 };
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
@@ -27,6 +41,9 @@ export function ProposalDetailPage({
   walletAddress,
   onApprove,
   onExecute,
+  loading = false,
+  error = null,
+  onRetry,
 }: ProposalDetailPageProps) {
   const { id } = useParams();
   const proposalId = Number(id);
@@ -77,12 +94,45 @@ export function ProposalDetailPage({
     setLoadingEvents(true);
     setEventsError(null);
 
-    getProposalEvents(proposal.id)
-      .then((data) => {
-        if (active) {
-          setEvents(data);
-          setLoadingEvents(false);
+    Promise.all([
+      getProposalEvents(proposal.id).catch(() => [] as ProposalEvent[]),
+      // Weight-change (c_wgt) events carry no proposal id, so load the
+      // global history and interleave it chronologically with the
+      // proposal-scoped approve/revoke/execute entries.
+      getHistoricalWeightChangeEvents().catch(() => []),
+    ])
+      .then(([proposalEvents, weightChanges]) => {
+        if (!active) return;
+        const weightEvents: ProposalEvent[] = weightChanges.map((change) => ({
+          type: "owner_weight_changed",
+          actor: change.owner,
+          timestamp: change.timestamp,
+          ledger: change.ledger,
+          details: `${change.owner} Weight: ${change.oldWeight} → ${change.newWeight}`,
+        }));
+        // De-duplicate in case the proposal event feed already contains the
+        // same weight-change entries (same ledger + owner + weights).
+        const seen = new Set(
+          proposalEvents.map(
+            (e) => `${e.type}|${e.ledger}|${e.actor}|${e.details}`,
+          ),
+        );
+        const merged = [...proposalEvents];
+        for (const e of weightEvents) {
+          const key = `${e.type}|${e.ledger}|${e.actor}|${e.details}`;
+          // Also match shortened-actor variants produced by getProposalEvents.
+          const shortKey = `${e.type}|${e.ledger}`;
+          const already = [...seen].some(
+            (k) => k === key || k.startsWith(shortKey),
+          );
+          if (!already) {
+            merged.push(e);
+            seen.add(key);
+          }
         }
+        merged.sort((a, b) => (a.ledger ?? 0) - (b.ledger ?? 0));
+        setEvents(merged);
+        setLoadingEvents(false);
       })
       .catch((err) => {
         if (active) {
@@ -99,20 +149,35 @@ export function ProposalDetailPage({
     };
   }, [proposal?.id, proposal?.status]);
 
+  if (loading) {
+    return <PageState status="loading" title="Loading proposal…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load proposal"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
+
   if (!proposal) {
     return (
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-8 text-center">
-        <p className="text-lg font-semibold text-white">Proposal not found</p>
-        <p className="mt-2 text-sm text-zinc-500">
-          No proposal matches this URL.
-        </p>
-        <Link
-          to="/app"
-          className="mt-6 inline-flex rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
-        >
-          Back to dashboard
-        </Link>
-      </div>
+      <EmptyState
+        title="Proposal not found"
+        description="No proposal matches this URL."
+        action={
+          <Link
+            to="/app"
+            className="inline-flex rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          >
+            Back to dashboard
+          </Link>
+        }
+      />
     );
   }
 
@@ -190,20 +255,18 @@ export function ProposalDetailPage({
             Activity Timeline
           </p>
           {loadingEvents && (
-            <span className="text-xs text-zinc-500 animate-pulse">
-              Loading events...
-            </span>
+            <LoadingState message="Loading events…" variant="inline" />
           )}
         </div>
 
         {eventsError && (
-          <div className="mt-4 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
-            {eventsError}
+          <div className="mt-4">
+            <ErrorState message={eventsError} variant="section" />
           </div>
         )}
 
         {!loadingEvents && !eventsError && events.length === 0 && (
-          <p className="mt-4 text-sm text-zinc-500">No activity yet</p>
+          <EmptyState variant="section" title="No activity yet" />
         )}
 
         {!loadingEvents && !eventsError && events.length > 0 && (
@@ -264,21 +327,27 @@ export function ProposalDetailPage({
                 label = "Recurring Payment Cancelled";
               }
 
+              const isWeightChange =
+                norm === "ownerweightchanged" ||
+                norm === "cwgt" ||
+                norm === "ownerweightchange";
               const details =
                 event.details ||
-                (event.scheduleId !== undefined || event.amount
-                  ? [
-                      event.scheduleId !== undefined ? `Schedule #${event.scheduleId}` : null,
-                      event.amount
-                        ? event.token
-                          ? `${event.amount} ${event.token}`
-                          : event.amount
-                        : null,
-                      event.recipient ? `to ${event.recipient}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")
-                  : null);
+                (isWeightChange
+                  ? `${event.actor} Weight changed`
+                  : event.scheduleId !== undefined || event.amount
+                    ? [
+                        event.scheduleId !== undefined ? `Schedule #${event.scheduleId}` : null,
+                        event.amount
+                          ? event.token
+                            ? `${event.amount} ${event.token}`
+                            : event.amount
+                          : null,
+                        event.recipient ? `to ${event.recipient}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : null);
 
               return (
                 <div

@@ -31,7 +31,7 @@ describe("OwnersPage", () => {
       />
     );
 
-    expect(screen.getByText("GOWNER...1111")).toBeTruthy();
+    expect(screen.getAllByText("GOWNER...1111").length).toBeGreaterThan(0);
     expect(screen.getByText("Weight 2")).toBeTruthy();
     expect(screen.getByText("Owner")).toBeTruthy();
     expect(screen.getByText("Guardian")).toBeTruthy();
@@ -53,4 +53,52 @@ describe("OwnersPage", () => {
 
     expect(onManageRoles).toHaveBeenCalledWith(owners[1].fullAddress);
   });
+
+  test("renders governance-health score and plain-language explanation", () => {
+    render(
+      <OwnersPage
+        owners={owners}
+        threshold={1}
+        totalOwners={2}
+        onManageRoles={vi.fn()}
+      />
+    );
+
+    // Widget header & score badge
+    expect(screen.getByRole("region", { name: "Governance Health" }) || screen.getByLabelText("Governance Health")).toBeTruthy();
+    expect(screen.getByTestId("governance-health-score")).toBeTruthy();
+    expect(screen.getByTestId("governance-explanation")).toBeTruthy();
+  });
+
+  test("flags risks when dominant owner controls majority weight", () => {
+    const skewedOwners: Owner[] = [
+      {
+        address: "GWHALE...1111",
+        fullAddress: "GWHALE1111111111111111111111111111111111111111111111111111",
+        label: "Whale Signer",
+        roles: ["Owner"],
+        weight: 9,
+      },
+      {
+        address: "GMINOW...2222",
+        fullAddress: "GMINOW2222222222222222222222222222222222222222222222222222",
+        label: "Small Signer",
+        roles: ["Owner"],
+        weight: 1,
+      },
+    ];
+
+    render(
+      <OwnersPage
+        owners={skewedOwners}
+        threshold={6}
+        totalOwners={2}
+        onManageRoles={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("governance-risks")).toBeTruthy();
+    expect(screen.getByText(/Dominant owner controls/)).toBeTruthy();
+  });
 });
+

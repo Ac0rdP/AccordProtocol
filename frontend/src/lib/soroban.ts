@@ -26,35 +26,37 @@ export function displayToStroops(value: number): bigint {
 
 export type PermissionAction = "create" | "approve" | "execute";
 
-const OWNER_ROLE = "Owner";
-
 const ACTION_LABELS: Record<PermissionAction, string> = {
   create: "Creating proposals",
   approve: "Approving proposals",
   execute: "Executing proposals",
 };
 
-function hasOwnerRole(roles: readonly string[]): boolean {
-  return roles.includes(OWNER_ROLE);
-}
-
+// The multisig owners are the wallets that fund, approve, and execute
+// proposals, so the Owner role grants every action. Fine-grained Proposer /
+// Approver / Executor roles let the contract delegate individual actions to
+// non-owner wallets without loosening owner access.
 export function canCreate(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Proposer") || roles.includes("Owner");
 }
 
 export function canApprove(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Approver") || roles.includes("Owner");
 }
 
 export function canExecute(roles: readonly string[]): boolean {
-  return hasOwnerRole(roles);
+  return roles.includes("Executor") || roles.includes("Owner");
 }
 
 export function missingRoleTooltip(action: PermissionAction): string {
-  return `${ACTION_LABELS[action]} requires the ${OWNER_ROLE} role.`;
+  const roleReq = 
+    action === "create" ? "Proposer" :
+    action === "approve" ? "Approver" :
+    action === "execute" ? "Executor" : "required";
+  return `${ACTION_LABELS[action]} requires the ${roleReq} role.`;
 }
 
-const CONTRACT_ERRORS: Record<string, string> = {
+export const CONTRACT_ERRORS: Record<string, string> = {
   "1": "Contract is already initialized.",
   "2": "Contract has not been initialized.",
   "3": "Unauthorized. Make sure you are using the correct account.",
@@ -89,6 +91,29 @@ const CONTRACT_ERRORS: Record<string, string> = {
   "32": "Recurring payment not found.",
   "33": "Recurring payment is not due yet.",
   "34": "Recurring payment has completed or reached its cap.",
+  "35": "Recurring payment is inactive.",
+  "36": "Recurring payment interval has not elapsed yet.",
+  "37": "Too many active recurring payments. Try again later.",
+  "38": "Recurring schedule is already cancelled.",
+  "39": "Recurring schedule is already paused.",
+  "40": "Recurring schedule is not paused.",
+  "41": "Recurring schedule has reached a terminal state and cannot be modified.",
+  "42": "Invalid weights list length.",
+  "43": "Owner weight is below the minimum required.",
+  "44": "Invalid owner weight.",
+  "45": "Contract has already been migrated to weighted governance.",
+  "46": "Single owner weight exceeds the allowed cap.",
+  "47": "Target owner no longer exists.",
+  "48": "Action would break the required quorum.",
+  "49": "Cannot remove the last remaining owner.",
+  "50": "Threshold exceeds the total number of owners.",
+  "51": "Recurring schedule is not active.",
+  "52": "Action requires a role that this account does not hold.",
+  "53": "Role is already granted to this account.",
+  "54": "Role is not granted to this account.",
+  "55": "Specified role is not valid for this context.",
+  "56": "This entrypoint is deprecated and can no longer be called directly.",
+  "57": "Account recovery is currently active.",
 };
 
 export function contractErrorMessage(error: string): string {
@@ -180,6 +205,17 @@ export function formatPercent(value: number, fractionDigits = 1): string {
   if (!Number.isFinite(value) || !Number.isInteger(fractionDigits) || fractionDigits < 0 || fractionDigits > 100) return "—";
   const rounded = value.toFixed(fractionDigits);
   return `${Number(rounded) === 0 ? (0).toFixed(fractionDigits) : rounded}%`;
+}
+
+export function weightToPercent(weight: number, totalWeight: number): number {
+  if (!Number.isFinite(weight) || !Number.isFinite(totalWeight) || totalWeight <= 0) {
+    return 0;
+  }
+  return (weight / totalWeight) * 100;
+}
+
+export function formatWeightPercent(weight: number, totalWeight: number, fractionDigits = 1): string {
+  return formatPercent(weightToPercent(weight, totalWeight), fractionDigits);
 }
 
 /** Numeric timestamps are Unix seconds; strings are ISO dates. Always render UTC. */

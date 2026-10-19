@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [ main ]
 
+# Cancel superseded pull-request runs on the same branch; never cancel a push to
+# main or a tag run (those feed releases and the testnet gates below).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci:
     name: Contract CI
@@ -14,13 +20,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           # Soroban builds require wasm32v1-none (setup-rust-toolchain uses singular `target`).
           target: wasm32v1-none
+          # Cache the cargo registry/git and target dir between runs.
+          cache: true
 
       - name: Install cargo-audit and cargo-deny
         run: |
@@ -36,7 +44,7 @@ jobs:
           cargo deny check
 
       - name: Install stellar-cli
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Build smart contracts
         run: |
@@ -116,7 +124,7 @@ jobs:
 
       - name: Upload compiled WASM artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: accord-contract-wasm
           path: |
@@ -138,6 +146,231 @@ jobs:
                   size_kb = size_bytes / 1024.0
                   print(f"Contract: {os.path.basename(f)} | Size: {size_kb:.2f} KB ({size_bytes} bytes)")
           '
+
+  # Snapshot verification (#815). Runs the deterministic contract tests and
+  # reports when the working tree's snapshots differ from the committed ones.
+  # The report is advisory so an existing stale baseline cannot block every
+  # pull request; the full patch is uploaded as an artifact. Property tests opt
+  # out of snapshot capture because their random inputs would churn the
+  # directory on every run.
+  snapshots:
+    name: Contract Snapshot Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+
+      - name: Run tests and report snapshot drift
+        env:
+          SNAPSHOT_VERIFY_WARN_ONLY: '1'
+        run: bash scripts/verify-snapshots.sh
+
+      - name: Upload snapshot verification report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-snapshot-verification
+          path: target/snapshot-verification
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # Coverage gate (#813). Separate from `ci` so a failing test there is reported
+  # once, there; --ignore-run-fail lets this job still measure coverage and
+  # enforce the threshold. The threshold lives in contracts/accord/Cargo.toml.
+  coverage:
+    name: Contract Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          components: llvm-tools-preview
+          cache: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Read coverage threshold
+        id: threshold
+        run: |
+          threshold=$(sed -n 's/^min-line-coverage *= *\([0-9][0-9.]*\).*/\1/p' contracts/accord/Cargo.toml)
+          if [ -z "$threshold" ]; then
+            echo "min-line-coverage is missing from contracts/accord/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "value=$threshold" >> "$GITHUB_OUTPUT"
+
+      - name: Measure contract coverage
+        run: |
+          cargo llvm-cov -p accord --lib --no-report --ignore-run-fail \
+            --ignore-filename-regex '(test|bench)\.rs$'
+
+      - name: Write coverage reports
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --html --output-dir target/coverage
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --lcov --output-path target/coverage/lcov.info
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' --summary-only | tee target/coverage/summary.txt
+          {
+            echo "### Contract coverage"
+            echo
+            echo "Minimum line coverage: ${{ steps.threshold.outputs.value }}%"
+            echo
+            echo '```'
+            cat target/coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-coverage
+          path: target/coverage
+          retention-days: 30
+
+      - name: Enforce coverage threshold
+        run: |
+          cargo llvm-cov report --ignore-filename-regex '(test|bench)\.rs$' \
+            --fail-under-lines "${{ steps.threshold.outputs.value }}"
+
+  # Resource/CPU regression gate (#814). Compares the metered cost of the hot
+  # entrypoints with contracts/accord/bench-baseline.txt and fails when any
+  # figure grows past the threshold (default 5%). See CONTRIBUTING.md.
+  benchmarks:
+    name: Contract Benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: true
+
+      - name: Run resource benchmarks
+        run: cargo test -p accord --lib bench_hot_entrypoints -- --nocapture
+
+      - name: Report benchmark deltas
+        if: always()
+        run: |
+          if [ -f target/bench/report.md ]; then
+            cat target/bench/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-benchmarks
+          path: target/bench
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # Fork pull requests get a read-only token, so commenting is best effort;
+      # the deltas are always in the job summary and the artifact above.
+      - name: Comment deltas on the pull request
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('target/bench/report.md')) return;
+            const marker = '<!-- accord-contract-benchmarks -->';
+            const body = `${marker}\n${fs.readFileSync('target/bench/report.md', 'utf8')}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  # Detect whether a PR touches contract/build paths so the testnet upgrade
+  # simulation (#816) only runs when it can actually catch a regression.
+  testnet-upgrade-changes:
+    name: Detect testnet upgrade paths
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect relevant changes
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          printf 'Changed files:\n%s\n' "$changed"
+          if grep -Eq '^(contracts/accord/|Cargo\.toml$|Cargo\.lock$|scripts/testnet-upgrade-simulation\.sh$|\.github/workflows/contract\.yml$)' <<< "$changed"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Testnet upgrade simulation (#816). Deploys a legacy-shaped fixture,
+  # upgrades it to the PR build, migrates governance, and verifies state.
+  # Only runs for relevant PRs; the regular Contract CI job covers builds and
+  # unit tests, so this job is intentionally independent of it.
+  testnet-upgrade-simulation:
+    name: Testnet Upgrade Simulation
+    runs-on: ubuntu-latest
+    needs: testnet-upgrade-changes
+    if: github.event_name == 'pull_request' && needs.testnet-upgrade-changes.outputs.relevant == 'true'
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32v1-none
+          cache: true
+
+      - name: Install Stellar CLI
+        uses: stellar/stellar-cli@v28.1.0
+
+      - name: Run deploy, upgrade, migrate, verify simulation
+        env:
+          NETWORK: testnet
+          IDENTITY: accord-upgrade-sim-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/testnet-upgrade-simulation.sh
+
+      - name: Upload simulation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-upgrade-simulation
+          path: target/testnet-upgrade-simulation
+          retention-days: 30
+          if-no-files-found: ignore
 
   # Runs only on push to main — never on pull requests.
   # Requires TESTNET_CONTRACT_ID to be set as a repository variable under
@@ -163,7 +396,7 @@ jobs:
 
       - name: Install Stellar CLI
         if: steps.guard.outputs.skip != 'true'
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Simulate get_total_proposals on deployed testnet contract
         if: steps.guard.outputs.skip != 'true'
@@ -203,7 +436,7 @@ jobs:
 
       - name: Install Stellar CLI
         if: steps.guard.outputs.skip != 'true'
-        uses: stellar/stellar-cli@v25.0.0
+        uses: stellar/stellar-cli@v28.1.0
 
       - name: Verify total-weight invariant on testnet
         if: steps.guard.outputs.skip != 'true'

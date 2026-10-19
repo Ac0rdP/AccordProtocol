@@ -1,0 +1,38 @@
+{
+  "name": "Accord Protocol",
+  "short_name": "Accord",
+  "description": "Smart multisig governance protocol on Stellar Soroban",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "/brands-solid.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/brands-solid.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "url": "/app",
+      "description": "Multisig Dashboard"
+    },
+    {
+      "name": "Proposals",
+      "url": "/app/history",
+      "description": "View Proposals"
+    }
+  ]
+}

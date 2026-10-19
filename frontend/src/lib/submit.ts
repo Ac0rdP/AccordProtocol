@@ -7,7 +7,12 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { Proposal, ProposalCategory, ProposalStatus, Role } from "../types/accord";
-import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
+import {
+  contractErrorMessage,
+  stroopsToDisplay,
+  formatDeadline,
+  shortenAddr,
+} from "./soroban";
 import { signTx } from "./wallet";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
@@ -18,7 +23,7 @@ const SIM_SOURCE = import.meta.env.VITE_SIM_SOURCE as string;
 
 const server = new rpc.Server(RPC_URL);
 
-async function buildAndSubmit(
+async function submitTransaction(
   callerAddress: string,
   fn: string,
   args: xdr.ScVal[]
@@ -63,6 +68,71 @@ async function buildAndSubmit(
     }
   }
   throw new Error("Transaction not confirmed within 30s");
+}
+
+const FALLBACK_SUBMISSION_ERROR =
+  "Something went wrong while processing the transaction. Please try again.";
+const NETWORK_SUBMISSION_ERROR =
+  "Unable to connect to the network. Check your connection and try again.";
+const REJECTION_SUBMISSION_ERROR =
+  "Transaction was rejected in your wallet.";
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "";
+}
+
+function isWalletRejection(error: unknown): boolean {
+  return /reject|denied|cancelled|canceled|declined/i.test(errorText(error));
+}
+
+function isNetworkSubmissionError(error: unknown): boolean {
+  return /network|offline|fetch|timeout|timed out|connection|socket|503|502|504/i.test(
+    errorText(error),
+  );
+}
+
+export function mapSubmissionError(error: unknown): string {
+  if (isWalletRejection(error)) return REJECTION_SUBMISSION_ERROR;
+
+  const raw = errorText(error);
+  const contractMessage = contractErrorMessage(raw);
+  if (contractMessage !== FALLBACK_SUBMISSION_ERROR) return contractMessage;
+  if (isNetworkSubmissionError(error)) return NETWORK_SUBMISSION_ERROR;
+  if (/transaction failed on-chain/i.test(raw)) {
+    return "The transaction failed on-chain. Please review the proposal and try again.";
+  }
+  return FALLBACK_SUBMISSION_ERROR;
+}
+
+export async function withSubmissionRetry<T>(
+  operation: () => Promise<T>,
+  options: { maxAttempts?: number; delayMs?: number } = {},
+): Promise<T> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const delayMs = Math.max(0, options.delayMs ?? 1000);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isNetworkSubmissionError(error) || attempt === maxAttempts) {
+        throw new Error(mapSubmissionError(error));
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs * 2 ** (attempt - 1)));
+    }
+  }
+
+  throw new Error(FALLBACK_SUBMISSION_ERROR);
+}
+
+async function buildAndSubmit(
+  callerAddress: string,
+  fn: string,
+  args: xdr.ScVal[]
+): Promise<void> {
+  return withSubmissionRetry(() => submitTransaction(callerAddress, fn, args));
 }
 
 async function simulateOnly(
@@ -546,12 +616,6 @@ export async function estimateCreateProposalFee(
   ]);
 }
 
-function assertSupportedRole(role: Role): void {
-  if (role !== "Owner") {
-    throw new Error(`Unsupported role: ${role}`);
-  }
-}
-
 export async function createGrantRoleProposal(
   callerAddress: string,
   targetAddress: string,
@@ -559,11 +623,10 @@ export async function createGrantRoleProposal(
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_add_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_grant_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
@@ -576,11 +639,10 @@ export async function createRevokeRoleProposal(
   description: string,
   deadlineTs: bigint
 ): Promise<void> {
-  assertSupportedRole(role);
-
-  await buildAndSubmit(callerAddress, "create_remove_owner_proposal", [
+  await buildAndSubmit(callerAddress, "create_revoke_role_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(targetAddress, { type: "address" }),
+    nativeToScVal(role, { type: "symbol" }),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
@@ -623,6 +685,10 @@ export async function disburseRecurringPayment(
   ]);
 }
 
+// Canonical recurring-schedule cancellation path (#738). Cancellation is
+// governance-gated: it must go through the create → approve → execute proposal
+// lifecycle. The legacy direct on-chain `cancel_recurring_schedule` entrypoint
+// is deprecated and always returns a `DeprecatedEntrypoint` error.
 export async function createCancelRecurringProposal(
   callerAddress: string,
   scheduleId: number,

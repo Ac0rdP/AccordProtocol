@@ -1,6 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
 import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
+import { PageState } from "../components/PageState";
 import {
   getRecurringPaymentsPaged,
   getTotalRecurringPayments,
@@ -103,8 +106,16 @@ function DisbursementTimeline({ schedules }: { schedules: RecurringSchedule[] })
 
 export function RecurringPage({
   walletAddress,
+  loading: forcedLoading = false,
+  error = null,
+  onRetry,
 }: {
   walletAddress?: string | null;
+  /** Forces the loading state (used by the page-state matrix tests). */
+  loading?: boolean;
+  /** Forces the error state (used by the page-state matrix tests). */
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<StatusFilter>("all");
   const [schedules, setSchedules] = useState<RecurringSchedule[]>([]);
@@ -114,7 +125,7 @@ export function RecurringPage({
   const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
-    let cancelled = true;
+    let cancelled = false;
     setLoading(true);
 
     (async () => {
@@ -162,6 +173,21 @@ export function RecurringPage({
 
   const activeSchedules = schedules.filter((s) => s.status === "active");
 
+  if (forcedLoading) {
+    return <PageState status="loading" title="Loading recurring schedules…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load recurring schedules"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
+  }
+
   return (
     <>
       <div className="flex items-center justify-between mb-4">
@@ -186,25 +212,24 @@ export function RecurringPage({
         </div>
       </div>
 
+      <RecurringForecastChart schedules={schedules} loading={loading} />
+
       {!loading && activeSchedules.length > 0 && (
         <DisbursementTimeline schedules={activeSchedules} />
       )}
 
       <div className="space-y-3">
         {loading ? (
-          <>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 animate-pulse h-32" />
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 animate-pulse h-32" />
-          </>
+          <LoadingState message="Loading schedules…" variant="section" />
         ) : filtered.length === 0 ? (
-          <div className="text-center py-16 text-zinc-500 text-sm">
-            <p className="font-semibold mb-2">No schedules found</p>
-            <p>
-              {activeTab === "all"
+          <EmptyState
+            title="No schedules found"
+            description={
+              activeTab === "all"
                 ? "No recurring schedules have been created yet."
-                : `No ${activeTab} schedules found.`}
-            </p>
-          </div>
+                : `No ${activeTab} schedules found.`
+            }
+          />
         ) : (
           filtered.map((schedule) => (
             <RecurringPaymentCard
