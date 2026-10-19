@@ -1,0 +1,20 @@
+[package]
+name = "accord-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+accord = { path = "../accord" }
+libfuzzer-sys = "0.4"
+soroban-sdk = { workspace = true, features = ["testutils"] }
+
+[[bin]]
+name = "weight_arithmetic"
+path = "fuzz_targets/weight_arithmetic.rs"
+test = false
+doc = false
+bench = false
