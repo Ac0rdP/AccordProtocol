@@ -85,6 +85,7 @@ export type ProposalEventType =
   | "owner_weight_changed"
   | "recurring_payment_created"
   | "recurring_payment_disbursed"
+  | "recurring_stream_claimed"
   | "recurring_payment_paused"
   | "recurring_payment_cancelled"
   | (string & {});
@@ -121,7 +122,7 @@ export type RecurringStatus = Lowercase<ContractRecurringStatus>;
  * is asserted against the generated contract type by
  * `src/types/contract.generated.test.ts`.
  */
-export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
+export type RecurringKind = "fixed_amount_per_period" | "linear_vesting" | "continuous_stream";
 
 export type RecurringPayment = {
   id: number;

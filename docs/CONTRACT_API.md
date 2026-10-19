@@ -106,9 +106,9 @@ Scan this table when you hit an error code and need a fast answer. Errors develo
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
 | 3 `Unauthorized`                  | Signer is not a registered owner (or wrong Freighter account).                                                     | Switch to a registered owner address and retry.                                          |
 | 6 `ProposalNotFound`              | Wrong `proposal_id`, network, or contract address.                                                                 | Confirm the ID with `get_total_proposals` on the correct contract.                       |
-| 12 `InvalidAmount`                | Amount is less than 1, empty transfer list, or more than 3 transfers.                                              | Pass 1–3 transfers with each amount ≥ 1 in the token's smallest unit.                    |
+| 12 `InvalidAmount`                | Amount is less than 1, or the transfer list is empty or contains more than 50 transfers.                           | Pass 1–50 transfers with each amount ≥ 1 in the token's smallest unit.                   |
 | 13 `InvalidDeadline`              | Deadline is not strictly after the current ledger timestamp.                                                       | Set a future Unix deadline with a few minutes of buffer.                                 |
-| 7 `ProposalNotActive`             | Proposal is already `Executed`, `Expired`, or `Revoked`.                                                           | Check status via `get_proposal`; create a new proposal if needed.                        |
+| 7 `ProposalNotActive`             | Proposal is terminal or a ready proposal was passed to `cancel_proposal`.                                          | Check status via `get_proposal`; create a new proposal if needed.                        |
 | 8 `AlreadyApproved`               | This owner already approved the proposal.                                                                          | Call `revoke` before approving again, or skip.                                           |
 | 10 `ThresholdNotMet`              | Not enough approvals (or too few co-signers on guardian/upgrade).                                                  | Gather threshold approvals / approvers, then retry.                                      |
 | 11 `ProposalExpired`              | Deadline passed before `execute`.                                                                                  | Create a new proposal; sweep the expired ID if needed.                                   |
@@ -117,7 +117,7 @@ Scan this table when you hit an error code and need a fast answer. Errors develo
 | 16 `EmptyDescription`             | Description string is empty.                                                                                       | Provide a non-empty description.                                                         |
 | 17 `DescriptionTooLong`           | Description exceeds 300 characters.                                                                                | Trim the description to ≤ 300 characters.                                                |
 | 9 `NotApproved`                   | `revoke` called without a prior approval from this owner.                                                          | Only revoke after a successful `approve`.                                                |
-| 18 `TooManyActiveProposals`       | Active (`Pending`/`Ready`) proposals hit the cap of 50.                                                            | Execute or sweep expired proposals, then retry.                                          |
+| 18 `TooManyActiveProposals`       | Active (`Pending`/`Ready`) proposals hit the cap of 50.                                                            | Execute, cancel, or sweep expired proposals, then retry.                                |
 | 21 `InvalidDuration`              | Deadline is more than 90 days from now.                                                                            | Cap the deadline at ≤ 90 days ahead.                                                     |
 | 22 `InvalidRecipient`             | Transfer recipient is the contract's own address.                                                                  | Use an external recipient address.                                                       |
 | 28 `SpendingLimitExceeded`        | Proposal amount exceeds the proposer's per-token spending limit.                                                   | Lower the amount or raise/remove the spending limit.                                     |
@@ -273,24 +273,22 @@ same `GuardianSetEvent` as the direct `set_guardian` path.
 fn create_proposal(
     env: Env,
     proposer: Address,
-    to: Address,
-    amount: i128,
-    token: Address,
+    transfers: Vec<Transfer>,
     description: String,
     deadline: u64,
+    category: ProposalCategory,
 ) -> Result<u64, ContractError>
 ```
 
-Creates a transfer proposal. Returns the new proposal ID.
+Creates a transfer proposal with 1–50 recipient/token/amount entries. Each entry is validated at creation; an invalid token, amount, or recipient rejects the entire proposal. All transfers execute in the same Soroban transaction, so a failed transfer rolls back the complete batch. Spending limits are checked against the aggregate amount per token.
 
-| Parameter     | Type      | Constraints                                                        |
-| ------------- | --------- | ------------------------------------------------------------------ |
-| `proposer`    | `Address` | Must be an owner. Must authorize.                                  |
-| `to`          | `Address` | Recipient address                                                  |
-| `amount`      | `i128`    | ≥ 1                                                                |
-| `token`       | `Address` | Must implement Soroban token interface (`decimals()` + `symbol()`) |
-| `description` | `String`  | 1–300 characters                                                   |
-| `deadline`    | `u64`     | > current ledger timestamp, ≤ now + 90 days                        |
+| Parameter | Type | Constraints |
+|-----------|------|-------------|
+| `proposer` | `Address` | Must hold the Proposer role and authorize. |
+| `transfers` | `Vec<Transfer>` | 1–50 entries. Each amount ≥ 1, token must implement the Soroban token interface, and recipient cannot be the contract. |
+| `description` | `String` | 1–300 characters |
+| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days |
+| `category` | `ProposalCategory` | Proposal category for indexing and reporting. |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent`
 
@@ -303,6 +301,21 @@ const signer = Keypair.fromSecret(process.env.STELLAR_SECRET_KEY);
 const to = "G...RECIPIENT";
 const amount = 1_000_000n; // token's smallest unit
 const token = "G...TOKEN";
+const transfer = xdr.ScVal.scvMap([
+  new xdr.ScMapEntry({
+    key: xdr.ScVal.scvSymbol("amount"),
+    val: nativeToScVal(amount, { type: "i128" }),
+  }),
+  new xdr.ScMapEntry({
+    key: xdr.ScVal.scvSymbol("to"),
+    val: nativeToScVal(to, { type: "address" }),
+  }),
+  new xdr.ScMapEntry({
+    key: xdr.ScVal.scvSymbol("token"),
+    val: nativeToScVal(token, { type: "address" }),
+  }),
+]);
+const transfers = xdr.ScVal.scvVec([transfer]);
 const description = "Monthly vendor payment";
 const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
@@ -311,17 +324,14 @@ const tx = new TransactionBuilder(account, {
   fee: "100000",
   networkPassphrase: NETWORK_PASSPHRASE,
 })
-  .addOperation(
-    contract.call(
-      "create_proposal",
-      nativeToScVal(signer.publicKey(), { type: "address" }),
-      nativeToScVal(to, { type: "address" }),
-      nativeToScVal(amount, { type: "i128" }),
-      nativeToScVal(token, { type: "address" }),
-      nativeToScVal(description, { type: "string" }),
-      xdr.ScVal.scvU64(deadline),
-    ),
-  )
+  .addOperation(contract.call(
+    "create_proposal",
+    nativeToScVal(signer.publicKey(), { type: "address" }),
+    transfers,
+    nativeToScVal(description, { type: "string" }),
+    xdr.ScVal.scvU64(deadline),
+    xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Transfer")]),
+  ))
   .setTimeout(30)
   .build();
 
@@ -429,6 +439,14 @@ const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
 
+## `cancel_proposal`
+
+```rust
+fn cancel_proposal(env: Env, proposer: Address, proposal_id: u64) -> Result<(), ContractError>
+```
+
+The proposal's original proposer may cancel it only while its derived status is `Pending`. Ready, expired, executed, revoked, and already-cancelled proposals are rejected. Cancellation sets the terminal `Cancelled` status, removes the active proposal slot, and emits `ProposalCancelledEvent`.
+
 ---
 
 ## `execute`
@@ -475,6 +493,15 @@ assembled.sign(signer);
 const submitted = await server.sendTransaction(assembled);
 console.log(submitted.hash);
 ```
+
+## `sweep_expired`
+
+```rust
+fn sweep_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError>
+```
+
+Any caller may sweep supplied expired proposal IDs without holding the Executor role. Missing IDs, duplicate IDs, and proposals that are not expired are ignored. The entrypoint remains available while frozen and emits `ExpiredProposalsSweptEvent` with the number swept, including zero on repeat calls.
+
 
 ---
 
@@ -1149,21 +1176,21 @@ fn create_recurring_proposal(
 
 Creates a governance proposal to start a recurring-payment schedule. Like the other governance proposals (`create_add_owner_proposal` etc., `CONTRACT_API.md:334`), it does **not** create the schedule directly — it returns a proposal ID that must be approved and executed; execution creates the `RecurringPayment` (`status = Active`) and emits `r_crt` `RecurringPaymentCreatedEvent`.
 
-| Parameter       | Type               | Constraints                                                                                                                                                  |
-| --------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `proposer`      | `Address`          | Must be an owner. Must authorize.                                                                                                                            |
-| `recipient`     | `Address`          | Must not be the contract address (`InvalidRecipient`).                                                                                                       |
-| `token`         | `Address`          | Must implement Soroban token interface.                                                                                                                      |
-| `amount`        | `i128`             | ≥ 1 (`MIN_AMOUNT`, `lib.rs:555`). Per-period amount for `FixedAmountPerPeriod`; ignored (set `0`) for `LinearVesting` where `total_cap` drives the schedule. |
-| `interval_secs` | `u64`              | `60` ≤ value ≤ `31536000` (`MIN_INTERVAL_SECS`/`MAX_INTERVAL_SECS`, `lib.rs:589`).                                                                           |
-| `start_time`    | `u64`              | Ledger timestamp when disbursements may begin.                                                                                                               |
-| `end_time`      | `u64`              | Ledger timestamp when schedule ends (`0` = no end; for `LinearVesting` must be `> start_time`).                                                              |
-| `cliff_time`    | `u64`              | Earliest disbursement time (`0` = no cliff; if set must be ≥ `start_time`).                                                                                  |
-| `total_cap`     | `i128`             | Total cap for the schedule (`0` = uncapped for `FixedAmountPerPeriod`; for `LinearVesting` must be `> 0`).                                                   |
-| `kind`          | `RecurringKind`    | `FixedAmountPerPeriod` or `LinearVesting` (`lib.rs:42`).                                                                                                     |
-| `description`   | `String`           | 1–300 characters.                                                                                                                                            |
-| `deadline`      | `u64`              | > current ledger timestamp, ≤ now + 90 days (`MAX_PROPOSAL_DURATION`).                                                                                       |
-| `category`      | `ProposalCategory` | `Payroll`, `Grant`, `Ops`, etc. Stored in `RecurringPayment.category`.                                                                                       |
+| Parameter | Type | Constraints |
+|-----------|------|-------------|
+| `proposer` | `Address` | Must be an owner. Must authorize. |
+| `recipient` | `Address` | Must not be the contract address (`InvalidRecipient`). |
+| `token` | `Address` | Must implement Soroban token interface. |
+| `amount` | `i128` | ≥ 1 (`MIN_AMOUNT`). Per-period amount for `FixedAmountPerPeriod`, per-second rate for `ContinuousStream`, and total vesting amount for `LinearVesting`. |
+| `interval_secs` | `u64` | `60` ≤ value ≤ `31536000` (`MIN_INTERVAL_SECS`/`MAX_INTERVAL_SECS`). Retained for API compatibility; ignored by continuous streams. |
+| `start_time` | `u64` | Ledger timestamp when disbursements may begin. |
+| `end_time` | `u64` | Ledger timestamp when schedule ends (`0` = no end for fixed payments; must be `> start_time` for linear vesting and continuous streams). |
+| `cliff_time` | `u64` | Earliest disbursement time (`0` = no cliff; if set must be ≥ `start_time`). |
+| `total_cap` | `i128` | Total cap (`0` = uncapped for fixed payments and streams; a positive value caps stream accrual and vesting). |
+| `kind` | `RecurringKind` | `FixedAmountPerPeriod`, `LinearVesting`, or `ContinuousStream`. |
+| `description` | `String` | 1–300 characters. |
+| `deadline` | `u64` | > current ledger timestamp, ≤ now + 90 days (`MAX_PROPOSAL_DURATION`). |
+| `category` | `ProposalCategory` | `Payroll`, `Grant`, `Ops`, etc. Stored in `RecurringPayment.category`. |
 
 **Emits:** `("created",)` → `ProposalCreatedEvent` (proposal creation); on execution `("r_crt",)` → `RecurringPaymentCreatedEvent`.
 
@@ -1182,8 +1209,8 @@ await submitOwnerCall(
     nativeToScVal(BigInt(end_time), { type: "u64" }),
     nativeToScVal(BigInt(cliff_time), { type: "u64" }),
     nativeToScVal(BigInt(total_cap), { type: "i128" }),
-    // RecurringKind is a Soroban enum: { FixedAmountPerPeriod: void } or { LinearVesting: void }
-    xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(kind)]), // kind = "FixedAmountPerPeriod" | "LinearVesting"
+    // RecurringKind is a Soroban enum: { FixedAmountPerPeriod: void }, { LinearVesting: void }, or { ContinuousStream: void }
+    xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(kind)]), // kind = "FixedAmountPerPeriod" | "LinearVesting" | "ContinuousStream"
     xdr.ScVal.scvString(description),
     nativeToScVal(BigInt(deadline), { type: "u64" }),
     xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(category)]), // category = "Payroll" | "Grant" | ...
@@ -1280,6 +1307,16 @@ await submitOwnerCall(
   anyKeypair,
 );
 ```
+
+### `claim_stream`
+
+```rust
+fn claim_stream(env: Env, recipient: Address, schedule_id: u64) -> Result<(), ContractError>
+```
+
+Transfers the accrued, unclaimed balance of a `ContinuousStream` to its recipient. The recipient must authorize the call. `amount` is the stream rate in token units per second; accrual begins at `start_time`, is claimable after the cliff, stops at `end_time`, and is capped by a positive `total_cap`. The call is blocked while the contract is frozen.
+
+**Emits:** `("str_clm",)` → `RecurringStreamClaimedEvent`, including the claim amount and running `total_disbursed`.
 
 ### `get_claimable_amount`
 
@@ -1592,6 +1629,23 @@ struct ProposalExecutedEvent {
 }
 ```
 
+### `ProposalCancelledEvent`
+
+Emitted when the proposer cancels a still-pending proposal (`p_canc`).
+
+| Field | Rust Type | Description |
+|-------|-----------|-------------|
+| `id` | `u64` | Cancelled proposal ID |
+| `proposer` | `Address` | Original proposer who cancelled it |
+
+### `ExpiredProposalsSweptEvent`
+
+Emitted by each `sweep_expired` call (`exp_sw`), including repeat calls that sweep zero proposals.
+
+| Field | Rust Type | Description |
+|-------|-----------|-------------|
+| `swept` | `u32` | Number of distinct expired proposals removed from the active set |
+
 ### `OwnerWeightChangedEvent`
 
 Emitted when a `ChangeOwnerWeight` proposal is **executed** and the target owner's voting weight is updated (`lib.rs:2448` topic `c_wgt`).
@@ -1636,13 +1690,13 @@ Emitted when a `CreateRecurringPayment` proposal is **executed** and a new sched
 | `proposer` | `Address` | `ScVal::Address` | Owner who proposed the schedule (from `Proposal.proposer`) |
 | `recipient` | `Address` | `ScVal::Address` | Recipient of recurring transfers |
 | `token` | `Address` | `ScVal::Address` | Token contract address |
-| `amount` | `i128` | `ScVal::I128` | Per-period amount (for `FixedAmountPerPeriod`; `0` for `LinearVesting`) |
+| `amount` | `i128` | `ScVal::I128` | Per-period amount (`FixedAmountPerPeriod`), total vesting amount (`LinearVesting`), or per-second rate (`ContinuousStream`) |
 | `interval_secs` | `u64` | `ScVal::U64` | Interval between disbursements (60–31536000) |
 | `start_time` | `u64` | `ScVal::U64` | First eligible disbursement timestamp |
 | `end_time` | `u64` | `ScVal::U64` | Schedule end timestamp (`0` = no end) |
 | `cliff_time` | `u64` | `ScVal::U64` | Cliff timestamp (`0` = no cliff) |
 | `total_cap` | `i128` | `ScVal::I128` | Total cap (`0` = uncapped for fixed) |
-| `kind` | `RecurringKind` | `ScVal::Vec` (enum) | `FixedAmountPerPeriod` or `LinearVesting` |
+| `kind` | `RecurringKind` | `ScVal::Vec` (enum) | `FixedAmountPerPeriod`, `LinearVesting`, or `ContinuousStream` |
 
 ```rust
 struct RecurringPaymentCreatedEvent {
@@ -1690,6 +1744,18 @@ struct RecurringPaymentDisbursedEvent {
     periods_disbursed: u32,
 }
 ```
+
+### `RecurringStreamClaimedEvent`
+
+Emitted on each successful `claim_stream` call (`str_clm`).
+
+| Field | Rust Type | Description |
+|-------|-----------|-------------|
+| `schedule_id` | `u64` | Stream schedule ID |
+| `recipient` | `Address` | Recipient that claimed |
+| `token` | `Address` | Token contract address |
+| `amount` | `i128` | Amount transferred in this claim |
+| `total_disbursed` | `i128` | Running total transferred by the stream |
 
 ### `RecurringPaymentCancelledEvent`
 

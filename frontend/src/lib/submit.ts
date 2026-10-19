@@ -328,6 +328,23 @@ function proposalCategoryScVal(category: ProposalCategory): xdr.ScVal {
   return xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(category)]);
 }
 
+function transferScVal(to: string, tokenAddress: string, amount: bigint): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("amount"),
+      val: nativeToScVal(amount, { type: "i128" }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("to"),
+      val: nativeToScVal(to, { type: "address" }),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("token"),
+      val: nativeToScVal(tokenAddress, { type: "address" }),
+    }),
+  ]);
+}
+
 function optionalU64ScVal(value: bigint | null): xdr.ScVal {
   return value === null ? xdr.ScVal.scvVoid() : nativeToScVal(value, { type: "u64" });
 }
@@ -504,12 +521,29 @@ export async function createProposal(
   deadlineTs: bigint,
   category: ProposalCategory = "Transfer"
 ): Promise<void> {
-  // Contract signature: create_proposal(proposer, to, amount, token, description, deadline, category)
+  await createBatchProposal(
+    callerAddress,
+    [{ to, tokenAddress, amount }],
+    description,
+    deadlineTs,
+    category,
+  );
+}
+
+export async function createBatchProposal(
+  callerAddress: string,
+  transfers: Array<{ to: string; tokenAddress: string; amount: bigint }>,
+  description: string,
+  deadlineTs: bigint,
+  category: ProposalCategory = "Transfer"
+): Promise<void> {
   await buildAndSubmit(callerAddress, "create_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
-    nativeToScVal(to, { type: "address" }),
-    nativeToScVal(amount, { type: "i128" }),
-    nativeToScVal(tokenAddress, { type: "address" }),
+    xdr.ScVal.scvVec(
+      transfers.map(({ to, tokenAddress, amount }) =>
+        transferScVal(to, tokenAddress, amount),
+      ),
+    ),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
     proposalCategoryScVal(category),
@@ -652,9 +686,7 @@ export async function estimateCreateProposalFee(
 ): Promise<number> {
   return await simulateOnly(callerAddress, "create_proposal", [
     nativeToScVal(callerAddress, { type: "address" }),
-    nativeToScVal(to, { type: "address" }),
-    nativeToScVal(amount, { type: "i128" }),
-    nativeToScVal(tokenAddress, { type: "address" }),
+    xdr.ScVal.scvVec([transferScVal(to, tokenAddress, amount)]),
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
     proposalCategoryScVal(category),
@@ -734,6 +766,17 @@ export async function disburseRecurringPayment(
 // governance-gated: it must go through the create → approve → execute proposal
 // lifecycle. The legacy direct on-chain `cancel_recurring_schedule` entrypoint
 // is deprecated and always returns a `DeprecatedEntrypoint` error.
+
+export async function claimStream(
+  recipientAddress: string,
+  scheduleId: number
+): Promise<void> {
+  await buildAndSubmit(recipientAddress, "claim_stream", [
+    nativeToScVal(recipientAddress, { type: "address" }),
+    nativeToScVal(BigInt(scheduleId), { type: "u64" }),
+  ]);
+}
+
 export async function createCancelRecurringProposal(
   callerAddress: string,
   scheduleId: number,
@@ -853,4 +896,3 @@ export async function createChangeOwnerWeightProposal(
     nativeToScVal(deadlineTs, { type: "u64" }),
   ]);
 }
-

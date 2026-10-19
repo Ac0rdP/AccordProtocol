@@ -544,9 +544,14 @@ function mapRecurringKind(raw: unknown): RecurringKind {
   } else {
     key = "FixedAmountPerPeriod";
   }
-  return key.toLowerCase() === "linearvesting"
-    ? "linear_vesting"
-    : "fixed_amount_per_period";
+  switch (key.toLowerCase()) {
+    case "linearvesting":
+      return "linear_vesting";
+    case "continuousstream":
+      return "continuous_stream";
+    default:
+      return "fixed_amount_per_period";
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -926,6 +931,13 @@ function resolveEventType(
     return "recurring_payment_disbursed";
   }
   if (
+    normFirst === "strclm" ||
+    normFirst === "streamclaim" ||
+    normFirst === "recurringstreamclaimed"
+  ) {
+    return "recurring_stream_claimed";
+  }
+  if (
     normFirst === "recurringpaymentpaused" ||
     normFirst === "recurringpaused" ||
     normFirst === "recpause" ||
@@ -1152,7 +1164,10 @@ export async function getProposalEvents(
                 if (amount) parts.push(token ? `${amount} ${token}` : amount);
                 if (recipient) parts.push(`to ${recipient}`);
                 if (parts.length > 0) details = parts.join(" · ");
-              } else if (eventType === "recurring_payment_disbursed") {
+              } else if (
+                eventType === "recurring_payment_disbursed" ||
+                eventType === "recurring_stream_claimed"
+              ) {
                 const parts: string[] = [];
                 if (scheduleId !== undefined)
                   parts.push(`Schedule #${scheduleId}`);

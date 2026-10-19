@@ -23,7 +23,7 @@ Make sure the following are in place before setting up a recurring payment:
 
 ## Vesting vs. Fixed Interval Schedules
 
-Accord Protocol supports two types of recurring schedules via the `RecurringKind` parameter:
+Accord Protocol supports three types of recurring schedules via the `RecurringKind` parameter:
 
 ### 1. Fixed Amount Per Period (`FixedAmountPerPeriod`)
 This kind is ideal for standard ongoing payroll (e.g., salary paid monthly or bi-weekly).
@@ -36,6 +36,13 @@ This kind is ideal for token vesting, equity-like compensation, or grant schedul
 - **Start Time (`start_time`) & End Time (`end_time`):** Define the vesting window.
 - **Total Cap (`total_cap`):** The total amount that will vest linearly over the duration.
 - **No Intervals:** The claimable amount is calculated on-the-fly based on how much time has elapsed since the start time.
+
+### 3. Continuous Stream (`ContinuousStream`)
+This kind is suitable for salaries or grants that should accrue by the second and be claimed directly by the recipient.
+- **Amount (`amount`):** The number of token units accrued each second.
+- **Start and End (`start_time`, `end_time`):** Define the streaming window; the end must be later than the start.
+- **Claiming:** The recipient calls `claim_stream` to withdraw newly accrued, unclaimed value at any time after the start and cliff.
+- **Total Cap (`total_cap`):** A positive value limits the total stream; `0` means the end time alone bounds accrual.
 
 ### Optional Cliff (`cliff_time`)
 Both schedule types support an optional **Cliff Time**. 
@@ -54,13 +61,13 @@ To start a schedule, an owner must first propose it. Since creating a recurring 
 |-----------|------|-------------|
 | `recipient` | Address | The contributor's Stellar address receiving the funds. |
 | `token` | Address | The token contract address (e.g. USDC). |
-| `amount` | i128 | Payout amount per interval (used for `FixedAmountPerPeriod`, ignored/set to `0` for `LinearVesting`). |
-| `interval_secs` | u64 | Seconds between payments (used for `FixedAmountPerPeriod`, set to `0` for `LinearVesting`). |
+| `amount` | i128 | Payout amount per interval (`FixedAmountPerPeriod`), total vesting amount (`LinearVesting`), or per-second rate (`ContinuousStream`). |
+| `interval_secs` | u64 | Seconds between payments for `FixedAmountPerPeriod`; required by the shared API but unused for continuous streams. |
 | `start_time` | u64 | Unix timestamp when the schedule begins. |
-| `end_time` | u64 | Unix timestamp when the schedule stops (optional for `FixedAmountPerPeriod`, required for `LinearVesting`). |
+| `end_time` | u64 | Unix timestamp when the schedule stops (optional for `FixedAmountPerPeriod`, required for linear vesting and continuous streams). |
 | `cliff_time` | u64 | Optional Unix timestamp before which no funds can be released. |
-| `total_cap` | i128 | Maximum total amount to be disbursed (optional for `FixedAmountPerPeriod`, required for `LinearVesting`). |
-| `kind` | RecurringKind | Either `FixedAmountPerPeriod` or `LinearVesting`. |
+| `total_cap` | i128 | Maximum total amount (optional for fixed payments and continuous streams; positive values cap accrual). |
+| `kind` | RecurringKind | `FixedAmountPerPeriod`, `LinearVesting`, or `ContinuousStream`. |
 | `description` | String | A clear label (e.g., "Engineering Lead Vesting - Alice"). Max 300 characters. |
 | `deadline` | u64 | Proposal voting deadline. |
 
