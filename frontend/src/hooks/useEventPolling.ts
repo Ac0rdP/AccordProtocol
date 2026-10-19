@@ -24,11 +24,19 @@ export function useEventPolling(
         if (pushActive) return;
 
         if (lastSeenLedger === null) {
-          lastSeenLedger = await getLatestLedger();
+          const initial = await getLatestLedger();
+          if (typeof initial === "number" && Number.isSafeInteger(initial) && initial > 0) {
+            lastSeenLedger = initial;
+          }
           return;
         }
         const latest = await getContractEvents(lastSeenLedger, { throwOnError: true });
-        if (latest > lastSeenLedger && !signal.aborted) {
+        if (
+          typeof latest === "number" &&
+          Number.isSafeInteger(latest) &&
+          latest > lastSeenLedger &&
+          !signal.aborted
+        ) {
           await refresh();
           if (!signal.aborted) lastSeenLedger = latest;
         }

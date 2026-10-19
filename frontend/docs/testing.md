@@ -13,6 +13,13 @@ coverage is measured and enforced.
 | `npm run test:watch` | Watch mode for local iteration. |
 | `npm run test:visual` | Storybook-driven visual regression snapshots. |
 | `npm run test:e2e` | Playwright end-to-end tests. |
+| `npm run e2e:matrix` | Playwright cross-browser matrix across Chromium, Firefox, and WebKit. |
+| `npm run e2e:chromium` | Run E2E tests specifically against Chromium engine. |
+| `npm run e2e:firefox` | Run E2E tests specifically against Firefox engine. |
+| `npm run e2e:webkit` | Run E2E tests specifically against WebKit engine. |
+
+### Cross-Browser End-to-End Matrix
+The E2E test runner is configured with projects for **Chromium** (`Desktop Chrome`), **Firefox** (`Desktop Firefox`), and **WebKit** (`Desktop Safari`) in `frontend/playwright.config.ts`. Tests run with `fullyParallel: true` to optimize test execution time. CI executes `npm run e2e:matrix` and generates per-engine HTML and JSON reports under `frontend/playwright-report/`.
 
 Responsive screenshots run with `npx playwright test --project=responsive-375
 --project=responsive-768 --project=responsive-1440`. They cover the landing,
