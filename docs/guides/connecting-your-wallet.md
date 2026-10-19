@@ -2,6 +2,11 @@
 
 This guide walks you through everything you need to do before you can interact with Accord Protocol — from installing the Freighter browser extension to funding your test account. No blockchain experience is required.
 
+![Wallet Connection Walkthrough](../assets/walkthroughs/01-wallet-connection-onboarding.svg)
+
+> **Visual Summary**: Install Freighter → Select Testnet → Fund via Friendbot → Connect to Accord.  
+> See the complete visual catalog in [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md).
+
 ---
 
 ## Step 1 — Install the Freighter browser extension

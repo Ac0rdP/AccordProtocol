@@ -1,6 +1,6 @@
 # Accord Protocol Indexer
 
-The indexer is a standalone Node.js service that polls the Soroban RPC for events emitted by the Accord Protocol contract and its configured tokens.
+The indexer is a standalone Node.js service that polls the Soroban RPC for events emitted by Accord Protocol contracts and their configured tokens. One process can track several contracts across several networks.
 
 ## Features
 
@@ -116,6 +116,60 @@ Both commands persist a checkpoint (`<command>_cursor`, `<command>_from`,
 `<command>_to`, `<command>_done`) after every page, so a long run can be stopped
 and re-run without repeating work. Progress is reported per page and throttled
 to at most one line every two seconds; `--json` emits the same data as JSON.
+
+### Replay
+
+Re-runs a ledger range **in isolation** to debug a bad ingest. Events are
+decoded and applied to a private SQLite store (in memory by default) and every
+one is printed; the live store is never written.
+
+```bash
+# An explicit range.
+node src/index.js replay --from 1000 --to 1100
+
+# The 50 ledgers already indexed (before the live checkpoint)…
+node src/index.js replay --before-checkpoint 50
+# …or the 50 ledgers the indexer has yet to cover (from the checkpoint on).
+node src/index.js replay --after-checkpoint 50
+
+# Keep the isolated store to inspect it afterwards; machine-readable output.
+node src/index.js replay --from 1000 --to 1100 --replay-store ./data/replay.sqlite --json
+```
+
+- `--before-checkpoint` / `--after-checkpoint` are relative to the live
+  `next_ledger` checkpoint, which is read without writing (SQLite is opened
+  read-only; Postgres runs no migrations). `--checkpoint <ledger>` supplies one
+  explicitly. They cannot be combined with `--from`/`--to`.
+- The end is clamped to the final ledger, exactly like `backfill`.
+- `--replay-store` may never be the live `DATABASE_PATH`; replay always uses
+  SQLite, even when the live store is Postgres.
+- Output is one line per event (`ledger`, event id, transaction, decoded transfer
+  or Accord event, `(duplicate)` / `ignored` markers) followed by a summary with
+  the balances the range produces. See the runbook in
+  [docs/RUNBOOK.md](../docs/RUNBOOK.md).
+
+## Idempotent ingestion (event dedupe)
+
+Every event is identified by its position on chain: the **dedupe key**
+`ledger:transaction:eventIndex` (for example `42:ab12…:3`). The key is built in
+`src/events.js` (`eventDedupeKey`) from the event's ledger, its transaction
+hash, and its event index — the RPC's `eventIndex`/`index` when present,
+otherwise the numeric suffix of the Soroban event id (`<toid>-<eventIndex>`).
+It does not depend on paging tokens or cursors, so re-fetching the same event
+always produces the same key.
+
+Both stores keep the key in a `dedupe_key` column with a unique index, on
+`ledger_entries` and `accord_events`. A record whose key (or legacy `event_id`)
+is already present is skipped and reported as not recorded, so a retry, a
+re-read of a ledger, a `backfill` overlap or a `reindex` never inflates counts
+or balances. The live indexer, `backfill`, `reindex` and `replay` all parse events
+through the same functions, so they share the one key.
+
+Rows indexed before the column existed keep a `NULL` key and stay protected by
+the `event_id` constraint; run `reindex` once to give them keys. Postgres gets
+the column from migration `0004_event_dedupe_key`; SQLite adds it on open.
+`test/dedupe.test.js` re-runs ingestion, backfill and reindex on both backends
+and asserts no duplicates.
 
 ## Ledger finality and reorg policy
 
@@ -307,4 +361,4 @@ npm test                                   # SQLite
 TEST_POSTGRES_URL=postgres://… npm test    # SQLite and Postgres
 ```
 
-The suite covers the store contract on every backend, Postgres migrations, the finality and rollback policy, backfill/reindex on a small ledger range, webhook signing/retries/dead-lettering, and the metrics and health endpoints.
+The suite covers the store contract on every backend, Postgres migrations, the finality and rollback policy, backfill/reindex/replay on a small ledger range, webhook signing/retries/dead-lettering, and the metrics and health endpoints.

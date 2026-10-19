@@ -11,6 +11,28 @@ export default defineConfig({
     baseURL: "http://localhost:5173",
     headless: true,
   },
+  projects: [
+    {
+      name: "e2e",
+      testIgnore: /responsive-screenshots\.spec\.ts/,
+      use: { viewport: { width: 1280, height: 720 } },
+    },
+    {
+      name: "responsive-375",
+      testMatch: /responsive-screenshots\.spec\.ts/,
+      use: { viewport: { width: 375, height: 900 } },
+    },
+    {
+      name: "responsive-768",
+      testMatch: /responsive-screenshots\.spec\.ts/,
+      use: { viewport: { width: 768, height: 900 } },
+    },
+    {
+      name: "responsive-1440",
+      testMatch: /responsive-screenshots\.spec\.ts/,
+      use: { viewport: { width: 1440, height: 900 } },
+    },
+  ],
   webServer: {
     command: "npm run dev",
     url: "http://localhost:5173",

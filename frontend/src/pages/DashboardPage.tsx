@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Repeat2 } from "lucide-react";
 import type { RoleAccessBanner, WalletRole } from "../hooks/useRoles";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
-import { EmptyState } from "../components/EmptyState";
-import { ErrorState } from "../components/ErrorState";
-import { LoadingState } from "../components/LoadingState";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
+import { PageState } from "../components/PageState";
 import {
   getDueRecurring,
   getOwnerWeightChangeEvents,
@@ -43,6 +41,8 @@ type DashboardPageProps = {
   roleBanner: RoleAccessBanner | null;
   loading: boolean;
   error: string | null;
+  /** Retry handler surfaced in the error state. */
+  onRetry?: () => void;
 };
 
 export function DashboardPage({
@@ -55,22 +55,19 @@ export function DashboardPage({
   onRevoke,
   onCreateProposal,
   onCreateRecurringPayment,
-  walletRoles,
+  walletRoles = [],
   roleBanner,
   loading,
   error,
+  onRetry,
 }: DashboardPageProps) {
   const readyCount = activeProposals.filter((p) => p.status === "ready").length;
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [sortByDeadline, setSortByDeadline] = useState(false);
   const [dismissedError, setDismissedError] = useState<string | null>(null);
-  const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<
-    string | null
-  >(null);
+  const [dismissedRoleBannerKey, setDismissedRoleBannerKey] = useState<string | null>(null);
   const [dueSchedules, setDueSchedules] = useState<RecurringSchedule[]>([]);
-  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>(
-    [],
-  );
+  const [weightChanges, setWeightChanges] = useState<OwnerWeightChangeEvent[]>([]);
   const [weightChangesLoading, setWeightChangesLoading] = useState(true);
   const prevReadyCount = useRef(readyCount);
 
@@ -139,6 +136,8 @@ export function DashboardPage({
       : undefined;
   const createDisabled = Boolean(createDisabledReason);
 
+  const showError = Boolean(error) && dismissedError !== error;
+
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
@@ -146,6 +145,28 @@ export function DashboardPage({
           <StatCard key={s.label} label={s.label} value={s.value} sub={s.sub} />
         ))}
       </div>
+
+      {showError && error && (
+        <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3">
+          <PageState
+            status="error"
+            title="Could not load dashboard data"
+            description={error}
+            onRetry={onRetry}
+            retryLabel="Retry"
+          />
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setDismissedError(error)}
+              aria-label="Dismiss dashboard error"
+              className="text-xs text-red-300 underline hover:text-red-200 focus:outline-none focus:ring-2 focus:ring-red-400 rounded"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <GovernanceHealthWidget
         weights={weights}
@@ -192,14 +213,6 @@ export function DashboardPage({
             ))}
           </div>
         </div>
-      )}
-
-      {error && !loading && dismissedError !== error && (
-        <ErrorState
-          message={error}
-          variant="banner"
-          onDismiss={() => setDismissedError(error)}
-        />
       )}
 
       {showRoleBanner && roleBanner && (
@@ -279,6 +292,9 @@ export function DashboardPage({
       <div className="space-y-3">
         {loading ? (
           <>
+            <p role="status" className="sr-only">
+              Loading proposals…
+            </p>
             <ProposalCardSkeleton />
             <ProposalCardSkeleton />
           </>

@@ -1,5 +1,8 @@
 import "@testing-library/jest-dom";
+import "vitest-axe/extend-expect";
 import { vi } from "vitest";
+
+HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as unknown as HTMLCanvasElement["getContext"];
 
 // Provide Soroban env defaults so modules that construct rpc.Server at import
 // time do not crash during unit tests that pull in contract/submit.

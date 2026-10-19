@@ -1,0 +1,16 @@
+# Scrape configuration for the Accord Indexer & API dashboard
+# (ops/grafana/accord-indexer-api.json). Job names must match the dashboard's
+# `indexer_job` and `api_job` variables; a test enforces this.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: accord-indexer
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8787"]   # indexer HOST:PORT
+
+  - job_name: accord-analytics-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8080"]   # analytics API LISTEN_HOST:LISTEN_PORT

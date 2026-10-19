@@ -15,3 +15,28 @@ Beginner-friendly guides for using Accord Protocol.
 | [Treasury Analytics](treasury-analytics.md) | Read the analytics page's stat cards and charts, use filters, and export CSV/PDF |
 | [Monitoring Your Multisig](monitoring-your-multisig.md) | Query Horizon events, spot missed executions, and verify state after an upgrade |
 | [Troubleshooting](troubleshooting.md) | Diagnose wallet, transaction, and network errors |
+
+---
+
+## Localized Guides (i18n)
+
+Translations of these guides into other languages are organized in [`docs/i18n/`](../i18n/README.md). See the [Internationalized Documentation Guide](../i18n/README.md) for available locales, translation guidelines, and how to contribute new translations.
+
+---
+
+## Security & External Audit
+
+Documentation and preparation materials for third-party security audits:
+- [Audit Scope & Specifications](../audit/SCOPE.md): Formal scope, objectives, and code metrics.
+- [Auditor Selection & RFQ Template](../audit/AUDITOR_SELECTION.md): Firm criteria, RFQ template, and candidate directory.
+- [Audit Remediation & Tracking](../audit/REMEDIATION.md): Post-report triage, private remediation, and public tracking.
+- [Security Policy & Threat Model](../SECURITY.md): Threat model, invariant arguments, and safe harbor terms.
+## Visual Walkthroughs & Core Flows
+
+For visual guides and animated walkthroughs of core operations, see [`docs/WALKTHROUGHS.md`](../WALKTHROUGHS.md):
+
+- [Onboarding & Wallet Connection](../WALKTHROUGHS.md#flow-1-onboarding--wallet-connection)
+- [Creating a Multisig Proposal](../WALKTHROUGHS.md#flow-2-creating-a-multisig-proposal)
+- [Reviewing, Approving & Executing Proposals](../WALKTHROUGHS.md#flow-3-reviewing-approving--executing-proposals)
+- [Recurring Payments & Contributor Payroll](../WALKTHROUGHS.md#flow-4-recurring-payments--contributor-payroll)
+- [Treasury Analytics & Activity Monitoring](../WALKTHROUGHS.md#flow-5-treasury-analytics--activity-monitoring)

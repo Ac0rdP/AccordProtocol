@@ -1,0 +1,7 @@
+{
+  "$comment": "Production bundle budgets, in gzip-compressed bytes. Changing these values is a deliberate, reviewed decision: see frontend/docs/performance-budgets.md. Run `npm run check:bundle` locally after a production build.",
+  "totalJsGzipBytes": 750000,
+  "totalCssGzipBytes": 80000,
+  "largestChunkGzipBytes": 400000,
+  "maxChunks": 60
+}

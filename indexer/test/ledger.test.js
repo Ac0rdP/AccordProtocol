@@ -59,6 +59,7 @@ describeEachBackend("treasury ledger", () => {
       impliedBalance: "100",
       actualBalance: "125",
       drift: "25",
+      status: "drift",
     });
     await store.recordReconciliation({
       token: "XLM",
@@ -67,6 +68,7 @@ describeEachBackend("treasury ledger", () => {
       impliedBalance: "125",
       actualBalance: "125",
       drift: "0",
+      status: "ok",
     });
 
     assert.equal((await store.getLatestReconciliations()).length, 1);
@@ -118,6 +120,22 @@ describeEachBackend("treasury ledger", () => {
     );
     assert.equal(await store.getState("next_ledger"), "44");
     assert.equal(await store.getState("event_cursor"), "");
+    await store.close();
+  });
+
+  it("records the event-schema version and keeps unversioned events as null", async () => {
+    const store = await createStore();
+    await store.recordAccordEvent({
+      eventId: "v1", topic: "created", schemaVersion: 1, payload: { version: 1 },
+      ledger: 50, transactionHash: "hash", occurredAt: "2026-09-27T12:00:00Z",
+    });
+    await store.recordAccordEvent({
+      eventId: "legacy", topic: "created", payload: {},
+      ledger: 51, transactionHash: "hash", occurredAt: "2026-09-27T12:00:01Z",
+    });
+
+    const events = await store.getAccordEvents({ limit: 10, offset: 0 });
+    assert.deepEqual(events.map(({ eventId, schemaVersion }) => [eventId, schemaVersion]), [["v1", 1], ["legacy", null]]);
     await store.close();
   });
 

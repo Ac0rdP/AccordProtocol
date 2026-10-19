@@ -14,6 +14,7 @@ import {
   createUnfreezeProposal,
 } from "../lib/submit";
 import { StrKey } from "@stellar/stellar-sdk";
+import { PageState } from "../components/PageState";
 import type { DashboardStat } from "../types/accord";
 
 const MAX_DESCRIPTION_LEN = 300;
@@ -23,9 +24,22 @@ type SettingsPageProps = {
   walletAddress: string | null;
   ownerAddresses: string[];
   onProposalSubmitted: () => void;
+  /** Forces the loading state (used by the page-state matrix tests). */
+  loading?: boolean;
+  /** Forces the error state (used by the page-state matrix tests). */
+  error?: string | null;
+  onRetry?: () => void;
 };
 
-export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalSubmitted }: SettingsPageProps) {
+export function SettingsPage({
+  stats,
+  walletAddress,
+  ownerAddresses,
+  onProposalSubmitted,
+  loading = false,
+  error = null,
+  onRetry,
+}: SettingsPageProps) {
   const contractId = import.meta.env.VITE_CONTRACT_ADDRESS ?? "Unknown";
   const network = import.meta.env.VITE_NETWORK_PASSPHRASE ?? "Unknown";
   const threshold = stats.find((stat) => stat.label === "Threshold")?.value ?? "Unknown";
@@ -211,6 +225,21 @@ export function SettingsPage({ stats, walletAddress, ownerAddresses, onProposalS
     } finally {
       setUfSubmitting(false);
     }
+  }
+
+  if (loading) {
+    return <PageState status="loading" title="Loading settings…" />;
+  }
+
+  if (error) {
+    return (
+      <PageState
+        status="error"
+        title="Could not load settings"
+        description={error}
+        onRetry={onRetry}
+      />
+    );
   }
 
   return (

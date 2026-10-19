@@ -142,6 +142,56 @@ describe("event polling recovery", () => {
     expect(contract.callCount("getLatestLedger")).toBeGreaterThanOrEqual(2);
   });
 
+  test("grows the retry delay exponentially and recovers after RPC failures", async () => {
+    contract
+      .read("getLatestLedger")
+      .mockRejectedValueOnce(new Error("rpc unavailable"))
+      .mockRejectedValueOnce(new Error("rpc unavailable"))
+      .mockRejectedValueOnce(new Error("rpc unavailable"))
+      .mockResolvedValueOnce(100);
+    contract.set("getContractEvents", 105);
+    const refresh = vi.fn();
+
+    renderHook(() => useEventPolling(refresh, 1000, { disablePush: true }));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contract.callCount("getLatestLedger")).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(contract.callCount("getLatestLedger")).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(contract.callCount("getLatestLedger")).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(contract.callCount("getLatestLedger")).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(contract.callCount("getLatestLedger")).toBe(3);
+
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(contract.callCount("getLatestLedger")).toBe(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(contract.callCount("getLatestLedger")).toBe(4);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  test("cancels backoff timers on unmount without unhandled rejections", async () => {
+    contract.setMode("failure");
+    const refresh = vi.fn();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+
+    const { unmount } = renderHook(() => useEventPolling(refresh, 1000, { disablePush: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    unmount();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(contract.callCount("getLatestLedger")).toBe(1);
+    expect(unhandled).not.toHaveBeenCalled();
+    process.off("unhandledRejection", unhandled);
+  });
+
   test("ignores results that resolve after unmount", async () => {
     contract.set("getLatestLedger", 100);
     // Hold the response open so it lands after the hook has unmounted.
@@ -214,7 +264,7 @@ describe("push channel with polling fallback", () => {
 
   test("receives live events via push and triggers refresh without waiting for polling", async () => {
     const refresh = vi.fn();
-    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
+    contract.read("getLatestLedger").mockResolvedValue(100);
 
     renderHook(() =>
       useEventPolling(refresh, 10000, {
@@ -236,13 +286,13 @@ describe("push channel with polling fallback", () => {
     });
 
     // Verify polling was not the source (contract.getContractEvents was not invoked yet)
-    expect(contract.getContractEvents).not.toHaveBeenCalled();
+    expect(contract.callCount("getContractEvents")).toBe(0);
   });
 
   test("falls back to polling when push channel connection fails", async () => {
     const refresh = vi.fn();
-    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
-    vi.mocked(contract.getContractEvents).mockResolvedValue(105);
+    contract.read("getLatestLedger").mockResolvedValue(100);
+    contract.read("getContractEvents").mockResolvedValue(105);
 
     renderHook(() =>
       useEventPolling(refresh, 2000, {
@@ -258,20 +308,20 @@ describe("push channel with polling fallback", () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     await vi.waitFor(() => {
-      expect(contract.getLatestLedger).toHaveBeenCalled();
+      expect(contract.callCount("getLatestLedger")).toBeGreaterThan(0);
     });
 
     await vi.advanceTimersByTimeAsync(2000);
 
     await vi.waitFor(() => {
-      expect(contract.getContractEvents).toHaveBeenCalled();
+      expect(contract.callCount("getContractEvents")).toBeGreaterThan(0);
       expect(refresh).toHaveBeenCalled();
     });
   });
 
   test("reconnects push channel after disconnection and resumes push updates", async () => {
     const refresh = vi.fn();
-    vi.mocked(contract.getLatestLedger).mockResolvedValue(100);
+    contract.read("getLatestLedger").mockResolvedValue(100);
 
     renderHook(() =>
       useEventPolling(refresh, 10000, {

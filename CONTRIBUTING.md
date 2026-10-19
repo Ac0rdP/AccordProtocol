@@ -19,10 +19,11 @@ Please read the [README](./README.md) first for product context, architecture, a
 9. [Testing and quality gates](#testing-and-quality-gates)
 10. [Debugging tips](#debugging-tips)
 11. [Documentation](#documentation)
-12. [Release process](#release-process)
-13. [Security and responsible disclosure](#security-and-responsible-disclosure)
-14. [Licensing](#licensing)
-15. [Questions and maintainer contact](#questions-and-maintainer-contact)
+12. [Dependency updates](#dependency-updates)
+13. [Release process](#release-process)
+14. [Security and responsible disclosure](#security-and-responsible-disclosure)
+15. [Licensing](#licensing)
+16. [Questions and maintainer contact](#questions-and-maintainer-contact)
 
 ---
 
@@ -212,7 +213,28 @@ Check [`ROADMAP.md`](./ROADMAP.md) for an overview of upcoming milestones, targe
 ### GitHub issues
 
 - Use **open issues** as the primary source of scoped work.
-- Prefer issues that have a **clear acceptance criteria** (what “done” means, which files or behaviors are in scope).
+- Prefer issues that have **clear acceptance criteria** (what “done” means, which files or behaviors are in scope).
+
+### Choosing your first issue
+
+If you are new to Accord Protocol, we recommend starting with issues scoped specifically for onboarding:
+
+1. **Look for beginner-friendly tags**:
+   - `good first issue`: Scoped to be self-contained and achievable without deep architectural knowledge.
+   - `documentation`: Clarifying guides, updating diagrams, writing tutorials, fixing typos.
+   - `testing`: Adding edge-case unit tests in Rust or UI tests for frontend components.
+   - `frontend-good-first-issue`: UI tweaks, accessibility (a11y) improvements, or styling fixes.
+2. **Assess technical scope**:
+   - **Frontend / React**: Best if you know TypeScript and Tailwind CSS; starts in `frontend/`.
+   - **Soroban Contracts**: Best if you know Rust; starts in `contracts/accord/src/`.
+   - **Docs & DevRel**: Best for first-time open-source contributors; located in `docs/`.
+3. **Claiming an issue**:
+   - Check that the issue is not already assigned to someone else.
+   - Leave a comment stating that you want to work on it with a brief 1-2 sentence outline of your proposed approach.
+   - Wait for a maintainer to assign the issue to you before submitting code, preventing overlapping work.
+4. **Avoid common pitfalls**:
+   - Do not bundle unrequested refactorings into a first issue.
+   - Keep the scope tightly bounded to the issue's acceptance criteria.
 
 ### Stellar Drips Wave
 
@@ -242,7 +264,45 @@ If you discover that an issue is **wrongly scoped** or **blocked**, comment on t
 
 ### What happens after you open a PR
 
-Once your pull request is open, a maintainer will review it. Expect a first review within a few days; complex changes may take longer. Review comments appear directly on the PR in GitHub — on specific lines of code, on the overall diff, or as general discussion. Subscribe to email notifications for the PR so you do not miss feedback.
+Once your pull request is open, automated CI workflows trigger immediately to test and lint your code. Review comments appear directly on the PR in GitHub — on specific lines of code, on the overall diff, or as general discussion. Subscribe to email notifications for the PR so you do not miss feedback.
+
+### Review process and SLAs
+
+We value your time and aim to keep review cycles predictable and transparent. Our maintainer team commits to the following Service Level Agreements (SLAs):
+
+| Review Stage | Expected Turnaround | Description |
+|---|---|---|
+| **Initial Triage** | **Within 24–48 hours** | PR is acknowledged, labeled, and assigned a reviewer. Basic CI status is verified. |
+| **First In-Depth Review** | **Within 3 business days (72 hours)** | Detailed line-by-line feedback, architecture review, and test validation. |
+| **Follow-up Reviews** | **Within 2 business days (48 hours)** | Re-review after contributor pushes requested changes or answers questions. |
+| **Final Merge** | **Within 24 hours of approval** | Once all reviews are approved and CI passes, a maintainer squashes or merges the PR. |
+
+**Review stages:**
+1. **Automated CI**: GitHub Actions runs contract tests, lints, and builds automatically. PRs with failing CI will not be reviewed until green.
+2. **Peer Review**: Verification of code style, component modularity, and test coverage.
+3. **Architecture & Security**: For contract changes (`contracts/accord`), security invariants and storage costs are reviewed by a core maintainer.
+4. **Approval & Merge**: The PR is merged into `main` and credited in the changelog.
+
+**Escalation**: If you have addressed all comments and have not received a response within the SLA window, feel free to politely ping the assigned reviewer in the PR comments or reach out on the project's discussion channel.
+
+### Definition of Done (DoD)
+
+Before a pull request can be approved and merged, it must meet our Definition of Done:
+
+- [ ] **Acceptance Criteria**: The change fulfills 100% of the acceptance criteria defined in the linked issue.
+- [ ] **Scoped Focus**: No unrelated changes, unnecessary dependency updates, or accidental formatting refactors.
+- [ ] **Test Coverage**:
+  - For Soroban contracts: Unit tests cover all success and failure branches in `contracts/accord/src/test.rs`.
+  - For Frontend: Component tests or mocks in `frontend/` reflect new state transitions.
+- [ ] **CI Passing**: All automated GitHub Actions checks pass without warnings or errors:
+  - Contract: `cargo test` passes all tests.
+  - Rust Lints: `cargo fmt --check` and `cargo clippy -- -D warnings` pass cleanly.
+  - Frontend: `npm run lint` and `npm run build` succeed.
+- [ ] **Documentation**:
+  - Updated relevant docs in `docs/` or `README.md` if any user-facing behavior, API, or configuration changed.
+  - If storage keys or TTL constants changed, `docs/ARCHITECTURE.md` and `docs/STORAGE_MODEL.md` are updated.
+- [ ] **Clean Git History**: Commits follow the convention `feat(<module>): ...` or `fix(<module>): ...` with concise imperative messages.
+- [ ] **Linked Issue**: The PR description includes `Closes #<issue_number>` or `Fixes #<issue_number>`.
 
 ### Review and merge criteria
 
@@ -303,6 +363,69 @@ A strong PR description helps reviewers and future readers. Include:
 3. **How to verify** (commands you ran, screenshots for UI).
 4. **Risks or follow-ups** (known limitations, TODOs that are intentionally left).
 
+### Examples of well-formed pull requests
+
+Here are practical examples of well-formed pull requests across different domains:
+
+#### Example 1: Contract feature or bugfix PR
+
+```markdown
+## Title: fix(contract): prevent duplicate approver weight in quorum calculation (#412)
+
+### Summary
+Fixes an edge case where an owner who re-approved an active proposal could have their weight counted twice if the approval key was not checked before updating cumulative weight.
+
+### Changes
+- Updated `approve()` in `contracts/accord/src/lib.rs` to check `has_approved()` prior to adding weight.
+- Added regression test `test_duplicate_approval_rejected` in `contracts/accord/src/test.rs`.
+
+### Verification
+Ran local contract checks:
+```bash
+cargo test
+cargo fmt --check
+cargo clippy -- -D warnings
+```
+All 32 tests pass without warnings.
+
+### Definition of Done Checklist
+- [x] Meets all acceptance criteria in #412
+- [x] Unit tests added covering edge case
+- [x] CI checks pass locally
+- [x] Storage/event docs updated (none affected)
+
+Closes #412
+```
+
+#### Example 2: Frontend UI improvement PR
+
+```markdown
+## Title: feat(frontend): add filter dropdown for proposal category (#520)
+
+### Summary
+Adds a filter selector allowing users to filter proposals by category (Transfer, Payroll, Grant, Ops).
+
+### Changes
+- Added `CategoryFilter` component in `frontend/src/components/CategoryFilter.tsx`.
+- Integrated filter into `frontend/src/pages/Dashboard.tsx`.
+- Updated test coverage for filter state transitions.
+
+### Verification
+- Tested with mock data across all 4 categories.
+- Verified responsive layout on desktop and mobile viewports.
+- Screenshot:
+  [Screenshot attached showing filter dropdown in active state]
+- Ran `npm run lint` and `npm run build` cleanly.
+
+### Definition of Done Checklist
+- [x] Meets acceptance criteria in #520
+- [x] Responsive layout verified
+- [x] Linting and build green
+- [x] No extraneous changes
+
+Closes #520
+```
+
 ### PR size and scope
 
 - **One PR should address one concern** (one issue, or one tightly related cluster of changes).
@@ -352,18 +475,73 @@ Use **GitHub Draft PRs** when you want early feedback on direction before the ch
 - Match the **style and patterns** of surrounding code unless an issue mandates a deliberate migration.
 - Do not add **secrets**, private keys, or personal configuration to the repository.
 
+### Secret scanning
+
+Every pull request and push to `main` runs Gitleaks over the full git history in
+the `Security checks` workflow (`.github/workflows/security.yml`). A finding
+fails the job. CI pins Gitleaks `8.30.1`; the reviewed configuration lives in
+[`.gitleaks.toml`](./.gitleaks.toml).
+
+Run the same scan locally:
+
+```bash
+gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
+```
+
+**If a real secret is detected:**
+
+1. Treat the credential as compromised and revoke or rotate it **immediately**,
+   before cleaning up the repository. Do not wait for the scan to be allowlisted.
+2. Remove it from the working tree and replace it with an environment variable
+   or a managed secret-store reference. Never commit a real value in a fixture,
+   test, script, or example.
+3. If the secret is already in git history, coordinate with maintainers to purge
+   it from history with `git filter-repo` (or an equivalent tool), then
+   force-push the affected branches. Assume anyone who fetched the history
+   already has the value.
+4. Audit provider logs and dependent systems for unauthorized use, and follow
+   the incident process in [`docs/SECRETS_MANAGEMENT.md`](./docs/SECRETS_MANAGEMENT.md)
+   and [`docs/INCIDENT_RESPONSE.md`](./docs/INCIDENT_RESPONSE.md).
+5. Never paste the leaked value into a public issue, pull request, or chat.
+   Reference it by provider and rotation status only.
+
+**False positives:** add the narrowest possible exact regex or path to the
+allowlist in [`.gitleaks.toml`](./.gitleaks.toml), with a comment explaining why
+the value is public or synthetic. Every allowlist change requires maintainer
+review. Do not add broad patterns or disable default rules to silence a finding.
+
 ---
 
 ## Testing and quality gates
 
 Run the relevant checks before requesting review.
 
+> **How CI is wired:** every suite below is exercised by GitHub Actions. See
+> [`docs/CI.md`](./docs/CI.md) for the workflow map, the caching/concurrency
+> policy, and the settings the release and preview workflows expect.
+
 ### Frontend
 
 ```bash
 cd frontend
 npm run lint
+npm run test          # unit tests + page-state matrix tests
 npm run build
+npm run check:bundle  # production bundle budget (run after `npm run build`)
+npm run e2e           # Playwright end-to-end suite
+```
+
+Bundle and load-performance budgets are documented in
+[`frontend/docs/performance-budgets.md`](./frontend/docs/performance-budgets.md).
+Raise a budget only as a deliberate, reviewed change — never to make a red build
+green.
+
+After editing any `#[contracttype]` or `#[contracterror]` definition, regenerate
+the frontend contract types and commit the result — see
+[`docs/CONTRACT_TYPES.md`](./docs/CONTRACT_TYPES.md):
+
+```bash
+python3 scripts/generate-contract-types.py
 ```
 
 ### Contracts (from repo root)
@@ -372,24 +550,99 @@ npm run build
 stellar contract test
 ```
 
-#### Updating snapshots
+#### Test snapshots
 
-Soroban tests may store **snapshot files** alongside the test source that capture expected contract output. When you make an **intentional** contract behaviour change a test may fail only because its stored snapshot no longer matches the new output — not because the logic is wrong.
+Soroban writes a snapshot for every `Env` created by a test into
+`contracts/accord/test_snapshots/` when the `Env` is dropped. The committed
+snapshots are the baseline for the `Contract Snapshot Verification` CI job
+(`.github/workflows/contract.yml`), which runs the suite and **reports drift as
+a warning**. The report is advisory so an existing stale baseline cannot block
+every pull request; the full patch is uploaded as the
+`contract-snapshot-verification` artifact. The job never rewrites or commits
+snapshots.
 
-To regenerate all snapshot files in one pass, set the `UPDATE_EXPECT` environment variable when running the test suite:
+Run the same check locally:
 
 ```bash
-UPDATE_EXPECT=1 stellar contract test
+bash scripts/verify-snapshots.sh
 ```
 
-After regeneration, review each updated snapshot file to confirm the new output is correct, then **commit the updated snapshot files alongside your code change**. A PR that changes contract behaviour but omits the refreshed snapshots will fail CI.
+The script runs `cargo test -p accord --lib --no-fail-fast`, writes the
+changed-file list and a readable patch to `target/snapshot-verification/`, and
+exits non-zero on drift. Set `SNAPSHOT_VERIFY_WARN_ONLY=1` to match CI's
+advisory mode. Test failures are reported by the regular Contract CI job; a
+failure that writes a changed snapshot is still reported as drift. Snapshot
+files are pinned to LF with `.gitattributes` so Windows line-ending conversion
+is not mistaken for drift.
+
+**Updating snapshots intentionally.** Snapshots are rewritten automatically
+when the tests run, so a normal `cargo test` is enough. If a contract change
+intentionally alters behaviour:
+
+1. Run `cargo test -p accord --lib`.
+2. Review the changed files under `contracts/accord/test_snapshots/` (the patch
+   from `scripts/verify-snapshots.sh` is easy to read).
+3. `git add contracts/accord/test_snapshots` and commit the refreshed snapshots
+   in the same PR.
+
+Never update snapshots just to make a red build green. Property tests use
+`non_snapshot_env()` on purpose: their inputs are random, so they do not write
+snapshots and no property-test snapshots should be committed. Use the same
+helper for any new randomized test.
+
+##### Governance event payload snapshots
+
+Every governance event (`ProposalCreatedEvent`, `ProposalApprovedEvent`, `ProposalRevokedEvent`, `ProposalExecutedEvent`, `AddOwnerExecutedEvent`, `RemoveOwnerExecutedEvent`, `ChangeThresholdExecutedEvent`, `SetSpendingLimitExecutedEvent`, `OwnerWeightChangedEvent`, `GovernanceMigratedEvent`, `RbacMigratedEvent`, `RoleGrantedEvent`, `RoleRevokedEvent`, etc.) is snapshot-tested to ensure payload schemas, field types, and versioning do not change silently.
+
+Downstream consumers (indexers, analytics processors, dashboards) depend on stable event payload shapes. Whenever an event struct is intentionally updated or a new event is introduced:
+1. Ensure the event struct includes `version: EVENT_SCHEMA_VERSION`.
+2. Add or update the deterministic unit test in `contracts/accord/src/test.rs` capturing the payload shape.
+3. Run `bash scripts/verify-snapshots.sh` locally to generate the updated snapshots under `contracts/accord/test_snapshots/`.
+4. Review the snapshot diff with `git diff contracts/accord/test_snapshots/`.
+5. Stage and commit the snapshot files together with the contract changes.
+
+CI enforces snapshot verification via `Contract Snapshot Verification` in `.github/workflows/contract.yml`.
+
+#### Coverage threshold
+
+CI (`Contract Coverage` in `.github/workflows/contract.yml`) measures line coverage of the contract source with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov), excluding `test.rs` and `bench.rs`, and **fails when it drops below the minimum** in `contracts/accord/Cargo.toml`:
+
+```toml
+[package.metadata.coverage]
+min-line-coverage = 85
+```
+
+The HTML report, `lcov.info` and a text summary are uploaded as the `contract-coverage` artifact on every run, and the summary is shown on the run page.
+
+```bash
+cargo install cargo-llvm-cov --locked   # once; also needs `rustup component add llvm-tools-preview`
+cargo llvm-cov -p accord --lib --ignore-filename-regex '(test|bench)\.rs$' --html --open
+```
+
+**Raising the threshold deliberately.** The threshold is a ratchet, not a target to hover at. When a PR adds tests that lift coverage durably, raise `min-line-coverage` in the same PR to a whole number about 2–3 points below the new measured figure (headroom for harmless refactors). Never lower it to make a PR pass: add the missing tests, or explain in the PR why the code is untestable and get maintainer sign-off for the change.
+
+#### Benchmark regression gate
+
+CI (`Contract Benchmarks`) runs `bench_hot_entrypoints` (`contracts/accord/src/bench.rs`), which meters the hot entrypoints (`initialize`, `create_proposal`, `approve`, `revoke`, `execute` for transfers and governance, and the main reads) and compares CPU instructions, memory, ledger entries and write entries/bytes with the baseline in `contracts/accord/bench-baseline.txt`. **A figure that grows more than 5% fails the build.** The per-metric deltas appear in the job summary, in the `contract-benchmarks` artifact and as a comment on the pull request.
+
+```bash
+cargo test -p accord --lib bench_hot_entrypoints -- --nocapture   # compare with the baseline
+```
+
+**Updating baselines intentionally.** Metering is deterministic, so the baseline only changes when the contract's cost does. If growth is intended (new feature, extra safety check), or a change made things cheaper:
+
+1. Confirm the delta in the report is explained by your change, and that the entrypoint still fits the budget documented in `docs/ARCHITECTURE.md` §12.
+2. Re-record: `ACCORD_BENCH_UPDATE=1 cargo test -p accord --lib bench_hot_entrypoints`.
+3. Commit the updated `bench-baseline.txt` **in the same PR** and state the old and new figures and why in the PR description. A baseline change with no explanation will not be merged.
+
+Set `ACCORD_BENCH_THRESHOLD_PCT` to try a different threshold locally. A new entrypoint to track needs a call in `measure()` plus a re-recorded baseline.
 
 If your change touches both areas, run **both** frontend and contract commands and state that in the PR.
 
 ### Adding tests
 
 - **Contracts:** add or extend tests alongside behavior changes. Prefer tests that encode **invariants** (for example, cannot execute below threshold).
-- **Frontend:** when logic grows beyond trivial UI, consider unit tests or component tests if the project introduces a test runner; until then, document manual test steps clearly in the PR.
+- **Frontend:** add or extend Vitest unit/component tests (`npm run test`) for logic and page states, and Playwright end-to-end tests (`npm run e2e`) for user flows. Every page must cover loading, empty, and error states in the page-state matrix (`frontend/src/pages/pageStateMatrix.test.tsx`).
 
 ### Fuzzing contract weight arithmetic
 
@@ -628,6 +881,110 @@ For example, a `contractCode` of `3` means `Unauthorized` (the signer is not a r
 - Update the **README** when you change user-visible setup steps, prerequisites, or high-level architecture.
 - Update **this file** when contribution rules or quality gates change.
 - For small behavior changes, **PR description** may be enough; for new contributor-facing workflows, prefer durable docs in the repo.
+
+### Translating the docs
+
+We welcome translations of Accord Protocol guides and documentation! Localized documents live in `docs/i18n/<locale>/` and mirror the English source structure.
+
+Before submitting a translation:
+- Review [`docs/i18n/README.md`](./docs/i18n/README.md) for directory layout, what must not be translated (code, commands, identifiers, contract types), and the required YAML header block.
+- Each translation requires review by a fluent or native speaker and a maintainer. If no fluent reviewer is currently available, PRs are accepted with `status: draft`.
+- Run `node scripts/check-translation-staleness.js` locally to ensure metadata and source commit references are valid.
+### Architecture decision records
+
+We document significant architectural decisions in [`docs/adr/`](./docs/adr/) using the [ADR template](./docs/adr/template.md).
+
+**When to write an ADR:**
+- Any change to the contract's authorization model, operational roles, or governance thresholds
+- Any change to the storage layout, storage key naming conventions, or entry lifetime (TTL) strategy
+- Any change to the contract upgrade mechanism, schema versioning, or on-chain migration strategy
+- Any change to the public contract interface, error codes, or event architecture
+- Introducing a new platform, language, major framework, or architectural pattern across frontend, contract, or indexer
+- Any design decision that would be costly or difficult to reverse
+
+Do not write an ADR for routine bug fixes, refactoring that preserves existing interfaces, or regular dependency updates. See [`docs/adr/README.md`](./docs/adr/README.md) for numbering, status lifecycles, and supersession guidelines.
+
+### API documentation build
+
+The project generates unified API reference documentation combining:
+1. **Rustdoc** for the Soroban smart contract (`contracts/accord`)
+2. **TypeDoc** for the frontend client libraries and domain types (`frontend/src/types` and `frontend/src/lib`)
+
+**Local build command:**
+```bash
+# Build both documentation suites into docs-site/
+bash scripts/build-docs.sh docs-site
+
+# Or using Makefile:
+make docs
+```
+
+**Publishing and GitHub Pages:**
+API references are published to GitHub Pages on pushes to `main` via [`.github/workflows/pages.yml`](./.github/workflows/pages.yml). The expected live address is `https://thegreatfeez.github.io/accord-protocol/` (maintainers should confirm upon enabling GitHub Actions as the Pages source). Pull requests validate documentation generation in CI without deploying.
+
+### Documentation link check and allowlist policy
+
+CI validates internal links, relative markdown paths, fragment anchors, and external URLs on every pull request and push to `main` via [`.github/workflows/docs.yml`](./.github/workflows/docs.yml), and runs weekly to detect external link rot.
+
+**Local verification:**
+```bash
+# If lychee is installed locally:
+lychee --config lychee.toml --ignore-path .lycheeignore "**/*.md"
+```
+
+**Allowlist policy:**
+- The reviewed allowlist lives in [`.lycheeignore`](./.lycheeignore).
+- **Mandatory comment**: Every pattern added to `.lycheeignore` must include a required reason comment explaining why it is excluded (e.g. anti-bot rate limits, parameterized placeholder URL, local test server).
+- **No broken links**: Genuine broken links and missing anchors must be fixed in source documentation; allowlisting broken links to bypass CI is forbidden.
+- **Review requirement**: Any changes to `.lycheeignore` require explicit maintainer review.
+
+---
+
+## Dependency updates
+
+The project uses [Dependabot](https://docs.github.com/en/code-security/dependabot) to keep dependencies current across Cargo crates, npm packages, and GitHub Actions. The automation is configured in [`.github/dependabot.yml`](./.github/dependabot.yml).
+
+### Cadence and limits
+
+- **Schedule**: Weekly on Mondays at 09:00 UTC (proposed default; maintainers to confirm).
+- **Open pull request limits**: Bounded to at most 10 open pull requests per package ecosystem to avoid notification fatigue.
+
+### Grouping and lockstep dependency families
+
+To reduce PR noise without hiding risk, Dependabot is configured with grouped updates:
+- **Minor and patch updates**: Grouped together within each ecosystem so routine maintenance arrives in single, consolidated PRs.
+- **Major updates**: Excluded from groups and opened as separate, isolated pull requests to ensure individual review, migration notes, and compatibility verification.
+- **Lockstep dependency families**:
+  - **Soroban ecosystem (`Cargo.toml`)**: `soroban-*` crates are grouped together to prevent version skew across SDK packages.
+  - **Stellar JavaScript SDKs (`frontend/package.json`, `indexer/package.json`)**: `@stellar/*` packages (`@stellar/stellar-sdk`, `@stellar/freighter-api`) are grouped so protocol bindings stay aligned.
+  - **React ecosystem (`frontend/package.json`)**: `react`, `react-dom`, and `@types/react*` packages are grouped to move in lockstep.
+  - **GitHub Actions (`.github/workflows`)**: Workflow action minor and patch updates are grouped.
+
+### Review, assignment, and auto-merge policy
+
+- **Review policy**: All dependency pull requests must be manually reviewed and approved by repository maintainers. Auto-merge is explicitly disabled.
+- **Reviewers and CODEOWNERS**: GitHub has deprecated the `reviewers` option in `dependabot.yml` in favor of `CODEOWNERS`. When a `CODEOWNERS` file is established with maintainer handles, Dependabot will automatically request reviews according to ownership rules.
+- **CI requirements**: Every Dependabot PR must pass all standard CI workflows before merge:
+  - Contract build, unit tests, coverage gate, and benchmarks (`.github/workflows/contract.yml`)
+  - Frontend lint, typecheck, unit tests, contract types currency check, and bundle budgets (`.github/workflows/frontend-ci.yml`)
+  - Indexer tests and analytics checks (`.github/workflows/indexer-analytics.yml`)
+  Dependabot branches run with a read-only `GITHUB_TOKEN` and no access to repository secrets; no required CI check depends on repository secrets or uses `pull_request_target`.
+
+### Handling major and security updates
+
+- **Security updates**: When a vulnerability advisory is published for a dependency, Dependabot or maintainers submit a targeted PR addressing the advisory. Security updates take precedence over routine weekly batches.
+- **Major upgrades**: Major version bumps represent breaking changes. The PR description must note the breaking API changes, required code adaptations, and testing evidence.
+
+### Adding a new manifest directory
+
+When adding a new service, crate, or application with its own manifest:
+1. Open [`.github/dependabot.yml`](./.github/dependabot.yml).
+2. Add a new entry under `updates:` specifying:
+   - `package-ecosystem`: `"npm"`, `"cargo"`, etc.
+   - `directory`: The relative path to the manifest directory (e.g. `"/services/new-service"`).
+   - `schedule`: The standard weekly cadence matching existing entries.
+   - `groups`: Ecosystem-specific grouping configuration.
+3. Commit the configuration change alongside the new manifest.
 
 ---
 

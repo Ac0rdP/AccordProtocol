@@ -12,6 +12,11 @@ on:
       - "frontend/**"
       - ".github/workflows/frontend-storybook.yml"
 
+# Cancel superseded pull-request runs on the same branch; never cancel main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   storybook-visual:
     name: Storybook build & visual snapshots
@@ -22,10 +27,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -42,7 +47,7 @@ jobs:
 
       - name: Upload Storybook artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: storybook-static
           path: frontend/storybook-static

@@ -242,6 +242,57 @@ stellar contract invoke \
 
 ---
 
+## Automated Testnet Upgrade Simulation
+
+Pull requests that touch `contracts/accord/**`, the workspace manifests, or the
+simulation script run the `Testnet Upgrade Simulation` job in
+[`.github/workflows/contract.yml`](../.github/workflows/contract.yml). The job
+is also runnable locally:
+
+```bash
+bash scripts/testnet-upgrade-simulation.sh
+```
+
+**What it does**
+
+1. Builds a *legacy-shaped* contract with the `legacy-fixture` cargo feature.
+   That feature makes `initialize` omit the governance-migration flag and the
+   storage-schema marker, simulating a deployment that predates those
+   migrations. It must never be enabled for a production build.
+2. Creates an ephemeral identity, funds it with Friendbot, and deploys the
+   legacy fixture to testnet.
+3. Initializes owner A, adds owners B and C through governance proposals, and
+   creates a partially-unapproved transfer proposal (an in-flight proposal).
+4. Builds the current source, uploads its WASM, and calls `upgrade` on the same
+   contract ID. The contract address and all storage must survive.
+5. Calls `migrate_to_weighted_governance` and verifies that owners, weights,
+   total weight, threshold, storage-schema version, proposal count, and the
+   in-flight proposal are all correct.
+6. Approves and revokes the pre-upgrade proposal to prove post-migration
+   behaviour still works on pre-existing state.
+
+**Isolation and cleanup**
+
+- The deployer and owner identities are generated per run. The script removes
+  them in an exit trap; set `KEEP_IDENTITIES=1` to keep them for debugging.
+- No repository secrets are required. Every account is disposable and funded
+  through Friendbot.
+- Soroban has no contract-delete operation, so the testnet contract is left
+  isolated under a unique per-run contract ID. It holds no funds and expires
+  naturally when its storage TTL lapses; it is never used by the frontend or by
+  any other deployment.
+- The report is written to `target/testnet-upgrade-simulation/report.md`, and
+  CI uploads that directory as the `testnet-upgrade-simulation` artifact.
+
+**Requirements**
+
+- Stellar CLI with `contract deploy`, `contract upload`, and `contract invoke`
+  support (the workflow installs `stellar/stellar-cli@v28.1.0`).
+- Rust `wasm32v1-none` target.
+- `python3` for JSON assertions.
+
+---
+
 ## Troubleshooting
 
 **Auth errors (`Error(Contract, #3)` — Unauthorized)**
@@ -275,3 +326,15 @@ Run these checks after every deploy or upgrade to confirm the contract is live a
   https://stellar.expert/explorer/testnet/contract/CONTRACT_ID
   ```
 - [ ] **Frontend connects** — start the frontend (`npm run dev`), open the app in a browser, and confirm proposals load without errors. If the page shows a connection error, double-check `VITE_CONTRACT_ADDRESS` and `VITE_SOROBAN_RPC_URL` in `frontend/.env.local`.
+
+---
+
+## Operational Runbooks
+
+For production operations, incident containment, rollback procedures, and key rotations, refer to the operational runbooks:
+
+- [Incident Response Runbook](./runbooks/INCIDENT_RESPONSE.md) — severity levels, detection, immediate containment (`freeze`, `enter_recovery`), escalation, and recovery.
+- [Upgrade Rollback Runbook](./runbooks/UPGRADE_ROLLBACK.md) — diagnosing flawed deployments, in-place WASM rollback via `upgrade`, bytecode TTL verification, and post-rollback state checks.
+- [Key Rotation Runbook](./runbooks/KEY_ROTATION.md) — step-by-step procedures for rotating multisig owner keys and replacing the guardian address.
+- [Runbooks Index](./runbooks/README.md) — directory overview, operational prerequisites, and secrets policy.
+

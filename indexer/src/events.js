@@ -10,7 +10,28 @@ function addressString(value) {
   return String(value);
 }
 
-export function parseTokenTransferEvent(event, tokenNames, treasuryAddress) {
+/**
+ * The stable identity of a contract event: `ledger:transaction:eventIndex`.
+ *
+ * It is derived from where the event sits on chain, so re-fetching it from the
+ * RPC (a retry, a backfill overlap, a reindex) always yields the same key. The
+ * event index is the RPC's own `eventIndex`/`index` when present, otherwise the
+ * numeric suffix of the Soroban event id (`<toid>-<eventIndex>`); an id with no
+ * usable suffix is used verbatim so two events can never share a key.
+ */
+export function eventDedupeKey(event) {
+  const ledger = Number(event.ledger);
+  const transaction = event.txHash ?? "unknown";
+  const id = String(event.id ?? event.pagingToken ?? "");
+  const suffix = id.includes("-") ? id.slice(id.lastIndexOf("-") + 1) : "";
+  const explicit = event.eventIndex ?? event.index;
+  const index = explicit !== undefined && explicit !== null
+    ? String(explicit)
+    : /^\d+$/.test(suffix) ? String(Number(suffix)) : id;
+  return `${ledger}:${transaction}:${index}`;
+}
+
+export function parseTokenTransferEvent(event, tokenNames, treasuryAddress, target) {
   const tokenAddress = String(event.contractId ?? "");
   const token = tokenNames.get(tokenAddress.toLowerCase());
   if (!token || !Array.isArray(event.topic) || event.topic.length < 3) return null;
@@ -31,7 +52,10 @@ export function parseTokenTransferEvent(event, tokenNames, treasuryAddress) {
   const ledger = Number(event.ledger);
   const transactionHash = event.txHash ?? null;
   return {
+    network: target?.network ?? null,
+    contractId: target?.contractId ?? treasuryAddress,
     eventId: String(event.id ?? event.pagingToken ?? `${ledger}:${transactionHash ?? "unknown"}`),
+    dedupeKey: eventDedupeKey(event),
     token,
     tokenAddress,
     direction: isInflow ? "inflow" : "outflow",
@@ -44,7 +68,7 @@ export function parseTokenTransferEvent(event, tokenNames, treasuryAddress) {
   };
 }
 
-export function parseAccordEvent(event, treasuryAddress) {
+export function parseAccordEvent(event, treasuryAddress, target) {
   const contractId = String(event.contractId ?? "").toLowerCase();
   if (contractId !== treasuryAddress.toLowerCase()) return null;
   if (!Array.isArray(event.topic) || event.topic.length === 0) return null;
@@ -74,9 +98,19 @@ export function parseAccordEvent(event, treasuryAddress) {
     return val;
   };
 
+  // Every contract event carries a `version` field (the event-schema version,
+  // `EVENT_SCHEMA_VERSION` in the contract). Events from pre-versioning
+  // deployments have none and are recorded with a null schema version.
+  const rawVersion = payload !== null && typeof payload === "object" ? payload.version : undefined;
+  const schemaVersion = rawVersion === undefined || rawVersion === null ? null : Number(rawVersion);
+
   return {
+    network: target?.network ?? null,
+    contractId: target?.contractId ?? treasuryAddress,
     eventId: String(event.id ?? event.pagingToken ?? `${ledger}:${transactionHash ?? "unknown"}`),
+    dedupeKey: eventDedupeKey(event),
     topic: topicName,
+    schemaVersion,
     payload: sanitize(payload),
     ledger,
     transactionHash,

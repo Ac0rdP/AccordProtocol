@@ -1,6 +1,8 @@
 # Accord Protocol — Architecture
 
 ## 1. System Overview
+
+> Architectural decisions: [ADR-0001: Soroban Platform and Rust SDK](adr/0001-soroban-platform-and-rust-sdk.md) &bull; [ADR-0009: Frontend Stack and Wallet Integration](adr/0009-frontend-stack-and-wallet-integration.md). For all records, see [Architecture Decision Records](adr/README.md).
  
 ```text
 ┌──────────────────────────────┐
@@ -52,6 +54,9 @@
 See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
 
 ## 3. Storage Layout (Soroban)
+
+> Architectural decisions: [ADR-0002: Storage Layout and TTL Strategy](adr/0002-storage-layout-and-ttl-strategy.md) &bull; [ADR-0007: Contract Upgradeability and Schema Migration](adr/0007-contract-upgradeability-and-migration.md).
+> **Complete Storage Reference**: For a comprehensive, key-by-key inventory covering every storage key, granularity, TTL behavior, and rent cost model, see [Storage Data-Model Reference](./STORAGE_MODEL.md).
 
 ### Instance Storage (low-cost, short TTL)
 
@@ -319,6 +324,8 @@ For long-lived multisigs, ensure at least one on-chain call touches the contract
 
 ## Weighted Governance Model
 
+> Architectural decision: [ADR-0005: Stakeholder-Weighted Governance Model](adr/0005-weighted-governance-model.md).
+
 Accord Protocol evolved from a flat M-of-N approval count into **weighted governance**: each owner carries an individual voting weight, proposals become `Ready` when accumulated approval weight meets a snapshotted quorum, and the contract maintains a total-weight counter that must always equal the sum of current owner weights.
 
 ### Weighted data model
@@ -366,6 +373,8 @@ Invariant operators must preserve: **sum(`get_owner_weights`) == `get_total_weig
 **Equal weights reduce to the old model.** A 2-of-3 multisig with weights `[1, 1, 1]` and threshold `2` still needs any two owners. Skewed weights (for example `[5, 3, 2]` with threshold `6`) let larger stakeholders carry more influence while still requiring coalition approvals when no single owner meets quorum alone. Legacy deployments that predate weights can call `migrate_to_weighted_governance` once (after upgrading WASM) to assign weight `1` to every existing owner.
 
 ## RBAC & Access Control
+
+> Architectural decision: [ADR-0006: Operational Role-Based Access Control](adr/0006-role-based-access-control.md).
 
 Role-based access control (RBAC) layers **least-privilege operational roles** on top of owner-weighted governance. Ownership still decides *how much weight* a vote carries; roles decide *who is allowed* to draft proposals, cast votes, push execute, or only observe. High-privilege security posture changes stay on the owner-weight path so a role grant alone cannot freeze, upgrade, or reconfigure guardianship.
 
@@ -434,6 +443,8 @@ Legacy deployments have no role data. After upgrading to RBAC-capable WASM:
 See also: [Roles & Permissions guide](./guides/roles-and-permissions.md), [CONTRACT_API error reference](./CONTRACT_API.md#error-reference) (`MissingRole`, `RoleAlreadyGranted`, `RoleNotGranted`, `InvalidRole`).
 
 ## 4. Proposal Lifecycle
+
+> Architectural decision: [ADR-0003: Proposal Lifecycle and Quorum Threshold Enforcement](adr/0003-proposal-lifecycle-and-threshold.md).
 
 ```
 create_proposal()
@@ -762,6 +773,8 @@ The sequence diagram below illustrates the full lifecycle of a recurring payment
 
 ## 7. Event Schema
 
+> Architectural decision: [ADR-0008: Strongly-Typed Errors and Event Architecture](adr/0008-typed-errors-and-event-architecture.md).
+
 The contract emits events using `env.events().publish()`. Each Soroban event has two components that external consumers must understand:
 
 **Event envelope structure:**
@@ -780,6 +793,12 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("executed",)` | `ProposalExecutedEvent { id, executor, transfers }`             | Execution history   |
 
 These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
+
+### Event Schema Versioning
+
+Every event payload carries a `version: u32` field set to `EVENT_SCHEMA_VERSION`, defined once in `contracts/accord/src/lib.rs`. The constant is bumped whenever any event struct gains, loses, renames, or retypes a field, so off-chain consumers can detect a schema change instead of silently mis-decoding. It is independent of the storage-schema version (`STOVER`) and the RBAC version (`get_role_version`): bumping one does not bump the others.
+
+Within one version, topic names, field names, and field types are stable; across versions they may change. The full policy, the version history, and the guarantees consumers can rely on are in [EVENTS.md](EVENTS.md#event-versioning-policy).
 
 ### Indexing Accord Events
 
@@ -902,8 +921,11 @@ The same panel also serves as a diagnostic tool: if an execute call fails with `
 | [CONTRACT_API.md](CONTRACT_API.md)                                        | Full contract function reference                               |
 | [ANALYTICS_API.md](ANALYTICS_API.md)                                      | Analytics HTTP API and indexed event schema reference          |
 | [SETUP.md](SETUP.md)                                                      | Developer setup and deployment instructions                    |
+| [docs/adr/README.md](adr/README.md)                                      | Architecture Decision Records (ADRs) and index table           |
 
 ## 12. Owner-Authorization Check Resource Cost
+
+> Architectural decisions: [ADR-0004: Owner Multi-Signature and Guardian Pause Authorization](adr/0004-owner-and-guardian-authorization.md) &bull; [ADR-0010: Testing Strategy, Coverage Gates, and Metered Benchmark Baselines](adr/0010-testing-strategy-and-quality-gates.md).
 
 Every authorized call into the contract (`approve`, `revoke`, `execute`, and each governance proposal creation) loads the entire `OWNERS` persistent entry (an `Address → u32` weight map) and looks up the caller's weight. This section measures the CPU instruction and memory cost of that check at the maximum owner count (`MAX_OWNERS = 20`) compared to a single-owner baseline.
 

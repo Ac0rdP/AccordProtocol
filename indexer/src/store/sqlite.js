@@ -9,8 +9,11 @@ import { DatabaseSync } from "node:sqlite";
  * it exactly like the Postgres store; see `./index.js` for the shared contract.
  */
 export function openLedgerStore(databasePath) {
-  const resolvedPath = resolve(databasePath);
-  mkdirSync(dirname(resolvedPath), { recursive: true });
+  // ":memory:" is SQLite's private in-memory database (used by replay); it
+  // must not be resolved into a file path.
+  const inMemory = databasePath === ":memory:";
+  const resolvedPath = inMemory ? databasePath : resolve(databasePath);
+  if (!inMemory) mkdirSync(dirname(resolvedPath), { recursive: true });
   const database = new DatabaseSync(resolvedPath);
 
   database.exec(`
@@ -44,7 +47,8 @@ export function openLedgerStore(databasePath) {
       payload TEXT NOT NULL,
       ledger INTEGER NOT NULL,
       transaction_hash TEXT,
-      occurred_at TEXT NOT NULL
+      occurred_at TEXT NOT NULL,
+      schema_version INTEGER
     );
     CREATE INDEX IF NOT EXISTS accord_events_time_idx
       ON accord_events (occurred_at, id);
@@ -84,11 +88,28 @@ export function openLedgerStore(databasePath) {
       ON webhook_deliveries (status, next_attempt_at, id);
   `);
 
+  // Databases created before the event-schema version existed lack the column.
+  const eventColumns = database.prepare("PRAGMA table_info(accord_events)").all();
+  if (!eventColumns.some((column) => column.name === "schema_version")) {
+    database.exec("ALTER TABLE accord_events ADD COLUMN schema_version INTEGER");
+  }
+
+  // The chain-position dedupe key (`ledger:transaction:eventIndex`, see
+  // events.js). Rows from before it existed keep a NULL key and stay covered
+  // by the `event_id` constraint; NULLs never collide in a unique index.
+  for (const table of ["ledger_entries", "accord_events"]) {
+    const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((column) => column.name === "dedupe_key")) {
+      database.exec(`ALTER TABLE ${table} ADD COLUMN dedupe_key TEXT`);
+    }
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${table}_dedupe_key_idx ON ${table} (dedupe_key)`);
+  }
+
   const insertEntry = database.prepare(`
     INSERT INTO ledger_entries (
       event_id, token, token_address, direction, amount, balance, ledger,
-      transaction_hash, occurred_at, from_address, to_address
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      transaction_hash, occurred_at, from_address, to_address, dedupe_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const deleteEntriesAbove = database.prepare("DELETE FROM ledger_entries WHERE ledger > ?");
   const deleteEventsAbove = database.prepare("DELETE FROM accord_events WHERE ledger > ?");
@@ -126,8 +147,8 @@ export function openLedgerStore(databasePath) {
   }
   const insertAccordEvent = database.prepare(`
     INSERT INTO accord_events (
-      event_id, topic, payload, ledger, transaction_hash, occurred_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      event_id, topic, payload, ledger, transaction_hash, occurred_at, schema_version, dedupe_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const selectBalance = database.prepare(
     "SELECT balance FROM token_balances WHERE token = ?"
@@ -207,14 +228,15 @@ export function openLedgerStore(databasePath) {
           entry.transactionHash ?? null,
           entry.occurredAt,
           entry.from,
-          entry.to
+          entry.to,
+          entry.dedupeKey ?? null
         );
         updateBalance.run(entry.token, balanceAfter.toString());
         database.exec("COMMIT");
         return true;
       } catch (error) {
         database.exec("ROLLBACK");
-        if (String(error.message).includes("UNIQUE constraint failed: ledger_entries.event_id")) {
+        if (/UNIQUE constraint failed: ledger_entries\.(event_id|dedupe_key)/.test(String(error.message))) {
           return false;
         }
         throw error;
@@ -258,11 +280,13 @@ export function openLedgerStore(databasePath) {
           JSON.stringify(entry.payload),
           entry.ledger,
           entry.transactionHash ?? null,
-          entry.occurredAt
+          entry.occurredAt,
+          entry.schemaVersion ?? null,
+          entry.dedupeKey ?? null
         );
         return true;
       } catch (error) {
-        if (String(error.message).includes("UNIQUE constraint failed: accord_events.event_id")) {
+        if (/UNIQUE constraint failed: accord_events\.(event_id|dedupe_key)/.test(String(error.message))) {
           return false;
         }
         throw error;
@@ -287,7 +311,8 @@ export function openLedgerStore(databasePath) {
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
       return database.prepare(`
         SELECT event_id AS eventId, topic, payload, ledger,
-          transaction_hash AS transactionHash, occurred_at AS occurredAt
+          transaction_hash AS transactionHash, occurred_at AS occurredAt,
+          schema_version AS schemaVersion
         FROM accord_events ${where}
         ORDER BY ledger ASC, id ASC LIMIT ? OFFSET ?
       `).all(...values, limit, offset).map((row) => ({
@@ -389,7 +414,8 @@ export function openLedgerStore(databasePath) {
     async getAccordEventsAfter(afterId, limit) {
       return database.prepare(`
         SELECT id, event_id AS eventId, topic, payload, ledger,
-          transaction_hash AS transactionHash, occurred_at AS occurredAt
+          transaction_hash AS transactionHash, occurred_at AS occurredAt,
+          schema_version AS schemaVersion
         FROM accord_events WHERE id > ? ORDER BY id ASC LIMIT ?
       `).all(afterId, limit).map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
     },

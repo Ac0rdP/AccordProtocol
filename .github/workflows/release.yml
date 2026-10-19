@@ -1,0 +1,287 @@
+name: Release
+
+# Publishes the SDK package, the built contract artifact and its manifest, and
+# generated release notes whenever a version tag (v*) is pushed.
+#
+# Cut a release by following the steps in CONTRIBUTING.md → "Release process",
+# then push an annotated tag:
+#
+#   git tag -a v0.2.0 -m "Release v0.2.0"
+#   git push origin v0.2.0
+#
+# See docs/CI.md for the full workflow map and required repository settings.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Allow re-running a release manually (for example after a transient failure)
+  # against an existing tag.
+  workflow_dispatch:
+
+# Releases are serialized per tag and never cancelled mid-flight: a partially
+# published release is worse than a queued run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the GitHub Release and upload its assets
+  packages: write # publish the SDK to GitHub Packages (npm registry)
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Release gates. The publish jobs below only run when every suite passes.
+  # ---------------------------------------------------------------------------
+  contract-tests:
+    name: "Gate: contract tests"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: wasm32v1-none
+
+      - name: Run contract test suite (flat weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=flat cargo test -p accord -- --nocapture
+
+      - name: Run contract test suite (skewed weight fixture)
+        run: ACCORD_WEIGHT_FIXTURE=skewed cargo test -p accord -- --nocapture
+
+      - name: Run RBAC tests
+        run: cargo test -p accord -- rbac -- --nocapture
+
+  frontend-tests:
+    name: "Gate: frontend tests"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run tests
+        run: npm test
+
+  indexer-tests:
+    name: "Gate: indexer tests"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_indexer_test
+          POSTGRES_USER: accord
+          POSTGRES_PASSWORD: accord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord -d accord_indexer_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: indexer
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: indexer/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run indexer tests
+        env:
+          TEST_POSTGRES_URL: postgres://accord:accord@localhost:5432/accord_indexer_test
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Build the contract artifact + manifest and publish the GitHub Release.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Build artifact & publish release
+    needs: [contract-tests, frontend-tests, indexer-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: wasm32v1-none
+
+      - name: Install stellar-cli
+        uses: stellar/stellar-cli@v28.1.0
+
+      - name: Build smart contracts
+        run: stellar contract build
+
+      - name: Generate wasm-manifest.json
+        run: |
+          python3 <<'PY'
+          import glob
+          import hashlib
+          import json
+          import os
+          import re
+          from datetime import datetime, timezone
+
+          wasm_files = sorted(glob.glob("target/wasm32*/release/*.wasm"))
+          if not wasm_files:
+              raise SystemExit("No WASM files found after contract build")
+
+          # Prefer the Accord contract artifact when multiple WASMs exist.
+          wasm_path = next(
+              (p for p in wasm_files if os.path.basename(p) == "accord.wasm"),
+              wasm_files[0],
+          )
+
+          with open(wasm_path, "rb") as f:
+              wasm_hash = hashlib.sha256(f.read()).hexdigest()
+
+          cargo_toml = open("Cargo.toml", encoding="utf-8").read()
+          match = re.search(
+              r'^soroban-sdk\s*=\s*"=?([^"\n]+)"',
+              cargo_toml,
+              flags=re.MULTILINE,
+          )
+          if not match:
+              raise SystemExit("Could not read soroban-sdk version from Cargo.toml")
+          soroban_sdk_version = match.group(1)
+
+          try:
+              lib_rs = open("contracts/accord/src/lib.rs", encoding="utf-8").read()
+              supports_recurring_payments = "RecurringPayment" in lib_rs and "disburse_recurring" in lib_rs
+              supports_rbac = ("GrantRole" in lib_rs and "RevokeRole" in lib_rs) or ("get_roles" in lib_rs and "get_role_version" in lib_rs)
+          except FileNotFoundError:
+              supports_recurring_payments = False
+              supports_rbac = False
+
+          manifest = {
+              "wasm_file": os.path.basename(wasm_path),
+              "wasm_hash": wasm_hash,
+              "commit_sha": os.environ.get("GITHUB_SHA", ""),
+              "tag": os.environ.get("GITHUB_REF_NAME", ""),
+              "build_timestamp": datetime.now(timezone.utc)
+              .replace(microsecond=0)
+              .isoformat()
+              .replace("+00:00", "Z"),
+              "soroban_sdk_version": soroban_sdk_version,
+              "supports_recurring_payments": supports_recurring_payments,
+              "supports_rbac": supports_rbac,
+          }
+
+          with open("wasm-manifest.json", "w", encoding="utf-8") as out:
+              json.dump(manifest, out, indent=2)
+              out.write("\n")
+
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Create GitHub Release with generated notes
+        uses: softprops/action-gh-release@v3
+        with:
+          # GitHub generates the notes from merged PRs since the previous tag.
+          generate_release_notes: true
+          files: |
+            target/wasm32*/release/*.wasm
+            wasm-manifest.json
+          fail_on_unmatched_files: false
+
+  # ---------------------------------------------------------------------------
+  # Publish the SDK package (frontend client build) to GitHub Packages.
+  # ---------------------------------------------------------------------------
+  publish-sdk:
+    name: Publish SDK to GitHub Packages
+    needs: [contract-tests, frontend-tests, indexer-tests]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Derive version from tag
+        id: version
+        working-directory: .
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ]; then
+            echo "Could not derive a version from ref ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Derive lowercase package scope
+        id: scope
+        working-directory: .
+        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+          # Writes the `//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}` line.
+          # The package's own `publishConfig.registry` routes the publish, and the
+          # package name is scoped to the (lowercased) repository owner below.
+          registry-url: https://npm.pkg.github.com
+
+      # Install before rewriting package metadata so `npm ci` still matches the
+      # committed package-lock.json.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build SDK
+        run: npm run build
+
+      - name: Point package metadata at the release
+        env:
+          SCOPE: ${{ steps.scope.outputs.value }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          node -e '
+          const fs = require("fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          pkg.name = `@${process.env.SCOPE}/accord-sdk`;
+          pkg.version = process.env.VERSION;
+          pkg.private = false;
+          pkg.description = "Accord Protocol treasury client SDK";
+          pkg.license = "MIT";
+          pkg.repository = { type: "git", url: `https://github.com/${process.env.GITHUB_REPOSITORY}.git` };
+          pkg.publishConfig = { registry: "https://npm.pkg.github.com" };
+          pkg.files = ["dist"];
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish

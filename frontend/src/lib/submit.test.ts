@@ -1,5 +1,9 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
-import { estimateCreateProposalFee } from "./submit";
+import {
+  estimateCreateProposalFee,
+  mapSubmissionError,
+  withSubmissionRetry,
+} from "./submit";
 
 // Mock the stellar-sdk to avoid real network calls
 vi.mock("@stellar/stellar-sdk", async () => {
@@ -66,6 +70,53 @@ describe("submit utils", () => {
       );
 
       expect(fee).toBe(0.015);
+    });
+  });
+
+  describe("mapSubmissionError", () => {
+    it.each([
+      ["Error(Contract, #5)", "Invalid list of owners."],
+      [new Error("User rejected the transaction"), "Transaction was rejected in your wallet."],
+      ["Network request failed", "Unable to connect to the network. Check your connection and try again."],
+      ["Transaction failed on-chain", "The transaction failed on-chain. Please review the proposal and try again."],
+      [new Error("unexpected failure"), "Something went wrong while processing the transaction. Please try again."],
+      [undefined, "Something went wrong while processing the transaction. Please try again."],
+    ])("maps %p to a user-facing message", (error, expected) => {
+      expect(mapSubmissionError(error)).toBe(expected);
+    });
+  });
+
+  describe("withSubmissionRetry", () => {
+    it("retries a network failure and returns the eventual success", async () => {
+      const operation = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(new Error("network unavailable"))
+        .mockResolvedValue("submitted");
+
+      await expect(
+        withSubmissionRetry(operation, { delayMs: 0 }),
+      ).resolves.toBe("submitted");
+      expect(operation).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up after the configured attempts with a mapped message", async () => {
+      const operation = vi.fn<() => Promise<void>>().mockRejectedValue(new Error("timeout"));
+
+      await expect(
+        withSubmissionRetry(operation, { maxAttempts: 3, delayMs: 0 }),
+      ).rejects.toThrow("Unable to connect to the network.");
+      expect(operation).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not retry wallet rejection errors", async () => {
+      const operation = vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error("User denied request"));
+
+      await expect(withSubmissionRetry(operation, { delayMs: 0 })).rejects.toThrow(
+        "Transaction was rejected in your wallet.",
+      );
+      expect(operation).toHaveBeenCalledTimes(1);
     });
   });
 });

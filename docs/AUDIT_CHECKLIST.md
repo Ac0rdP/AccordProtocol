@@ -2,7 +2,10 @@
 
 This checklist tracks everything that must be in place before Accord Protocol engages a third-party security auditor. It expands on the audit status note in [`docs/SECURITY.md`](./SECURITY.md), which states that the contract is unaudited and that a formal review is required before mainnet deployment.
 
+For the full consolidated audit package covering pinned toolchains, in-scope attack surfaces, protocol invariants, and storage architecture, refer to the [Audit Preparation Pack](./AUDIT_PREP.md).
+
 **When to complete this:** Work through every item while preparing for audit engagement. All boxes should be checked—and verifiable—before sharing the codebase with an auditor or scheduling the review kickoff. Revisit the checklist after major contract, frontend, or infrastructure changes.
+
 
 ---
 
@@ -11,7 +14,7 @@ This checklist tracks everything that must be in place before Accord Protocol en
 - [ ] Every `pub fn` exported from [`contracts/accord/src/lib.rs`](../contracts/accord/src/lib.rs) has at least one corresponding test in [`contracts/accord/src/test.rs`](../contracts/accord/src/test.rs) (run `cd contracts/accord && cargo test` and confirm all tests pass).
 - [ ] Every `ContractError` variant used in the contract is documented with its numeric code in the **Error Codes** table in [`docs/CONTRACT_API.md`](./CONTRACT_API.md).
 - [ ] `cargo clippy -- -D warnings` completes with zero warnings when run from `contracts/accord/` (see [`docs/CONTRIBUTING.md`](./CONTRIBUTING.md)).
-- [ ] `stellar contract build` succeeds and produces `target/wasm32v1-none/release/accord.wasm`; the WASM binary size is within the limit enforced by the CI size gate in [`.github/workflows/ci-contract.yml`](../.github/workflows/ci-contract.yml).
+- [ ] `stellar contract build` succeeds and produces `target/wasm32v1-none/release/accord.wasm`; the WASM binary size is within the limit enforced by the CI size gate in [`.github/workflows/contract.yml`](../.github/workflows/contract.yml).
 - [ ] [`docs/SECURITY.md`](./SECURITY.md) documents the threat model: **In-Scope**, **Out-of-Scope**, **Known Limitations**, and **Explicit Trust Assumptions** sections are complete and reflect the current contract behaviour.
 
 ---
@@ -37,8 +40,8 @@ This checklist tracks everything that must be in place before Accord Protocol en
 
 ## Infra & Process Readiness
 
-- [ ] GitHub Actions workflows under [`.github/workflows/`](../.github/workflows/) (e.g. `ci-contract.yml`, `ci-frontend.yml`, `ci-lint.yml`) trigger on every pull request to `main`.
+- [ ] GitHub Actions workflows under [`.github/workflows/`](../.github/workflows/) (e.g. `contract.yml`, `frontend-ci.yml`, `indexer-analytics.yml`) trigger on every pull request to `main`.
 - [ ] The contract CI workflow runs `cargo test`, `cargo clippy -- -D warnings`, and `stellar contract build` and reports a green status on the latest `main` commit.
 - [ ] The frontend CI workflow runs `npm run build` (and lint where configured) and reports a green status on the latest `main` commit.
-- [ ] A WASM binary-size gate is enforced in [`.github/workflows/ci-contract.yml`](../.github/workflows/ci-contract.yml) and fails the build when `accord.wasm` exceeds the configured threshold.
+- [ ] A WASM binary-size gate is enforced in [`.github/workflows/contract.yml`](../.github/workflows/contract.yml) and fails the build when `accord.wasm` exceeds the configured threshold.
 - [ ] [`docs/SECURITY.md`](./SECURITY.md) **Responsible Disclosure** section is publicly visible and includes both the contact method and expected response timelines before audit kickoff.
