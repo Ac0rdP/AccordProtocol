@@ -23,51 +23,96 @@ const SIM_SOURCE = import.meta.env.VITE_SIM_SOURCE as string;
 
 const server = new rpc.Server(RPC_URL);
 
+const inFlightSubmissions = new Map<string, Promise<void>>();
+
+export function getSubmissionKey(
+  callerAddress: string,
+  fn: string,
+  args: xdr.ScVal[] = []
+): string {
+  try {
+    const serializedArgs = args
+      .map((arg) => (typeof arg?.toXDR === "function" ? arg.toXDR("base64") : String(arg)))
+      .join(":");
+    return `${callerAddress}:${fn}:${serializedArgs}`;
+  } catch {
+    return `${callerAddress}:${fn}`;
+  }
+}
+
+export function isSubmissionInFlight(
+  callerAddress: string,
+  fn: string,
+  args: xdr.ScVal[] = []
+): boolean {
+  return inFlightSubmissions.has(getSubmissionKey(callerAddress, fn, args));
+}
+
 async function submitTransaction(
   callerAddress: string,
   fn: string,
   args: xdr.ScVal[]
 ): Promise<void> {
-  const account = await server.getAccount(callerAddress);
-  const contract = new Contract(CONTRACT_ID);
-
-  const tx = new TransactionBuilder(account, {
-    fee: "100000",
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(contract.call(fn, ...args))
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  if (!rpc.Api.isSimulationSuccess(sim)) {
-    const err = sim as rpc.Api.SimulateTransactionErrorResponse;
-    throw new Error(`Simulation failed: ${err.error ?? "unknown"}`);
+  const key = getSubmissionKey(callerAddress, fn, args);
+  if (inFlightSubmissions.has(key)) {
+    return inFlightSubmissions.get(key)!;
   }
 
-  const assembled = rpc.assembleTransaction(tx, sim).build();
-  const signed = await signTx(assembled.toXDR());
-  if (!signed.ok) throw new Error(signed.error);
+  const execution = (async () => {
+    const account = await server.getAccount(callerAddress);
+    const contract = new Contract(CONTRACT_ID);
 
-  const sent = await server.sendTransaction(
-    TransactionBuilder.fromXDR(signed.value, NETWORK_PASSPHRASE)
-  );
+    const tx = new TransactionBuilder(account, {
+      fee: "100000",
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call(fn, ...args))
+      .setTimeout(30)
+      .build();
 
-  if (sent.status === "ERROR") {
-    throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
-  }
-
-  const hash = sent.hash;
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const res = await server.getTransaction(hash);
-    if (res.status === "SUCCESS") return;
-    if (res.status === "FAILED") {
-      throw new Error("Transaction failed on-chain");
+    const sim = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(sim)) {
+      const err = sim as rpc.Api.SimulateTransactionErrorResponse;
+      throw new Error(`Simulation failed: ${err.error ?? "unknown"}`);
     }
+
+    const assembled = rpc.assembleTransaction(tx, sim).build();
+    const signed = await signTx(assembled.toXDR());
+    if (!signed.ok) throw new Error(signed.error);
+
+    const sent = await server.sendTransaction(
+      TransactionBuilder.fromXDR(signed.value, NETWORK_PASSPHRASE)
+    );
+
+    if (sent.status === "ERROR") {
+      throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
+    }
+
+    const hash = sent.hash;
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        const res = await server.getTransaction(hash);
+        if (res.status === "SUCCESS") return;
+        if (res.status === "FAILED") {
+          throw new Error("Transaction failed on-chain");
+        }
+      } catch (pollErr: unknown) {
+        if (pollErr instanceof Error && pollErr.message === "Transaction failed on-chain") {
+          throw pollErr;
+        }
+      }
+    }
+    throw new Error("Transaction not confirmed within 30s");
+  })();
+
+  inFlightSubmissions.set(key, execution);
+  try {
+    await execution;
+  } finally {
+    inFlightSubmissions.delete(key);
   }
-  throw new Error("Transaction not confirmed within 30s");
 }
 
 const FALLBACK_SUBMISSION_ERROR =

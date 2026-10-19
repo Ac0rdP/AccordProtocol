@@ -14203,3 +14203,170 @@ fn remove_owner_cannot_underflow_total_weight() {
     assert_eq!(client.get_total_weight(), 1);
     assert_eq!(client.get_owners().len(), 4);
 }
+
+// ─── Adversarial and Negative Tests for Money-Moving Paths (#847) ───────────
+
+#[test]
+fn adversarial_non_owner_cannot_drain_funds() {
+    let (env, client, _owner_a, _owner_b, _owner_c, attacker, token_client) = setup_weighted();
+    let initial_balance = token_client.balance(&client.address);
+    let attacker_recipient = Address::generate(&env);
+
+    // Attacker attempts to create a transfer proposal to themselves
+    assert_eq!(
+        client.try_create_proposal(
+            &attacker,
+            &t(&env, &attacker_recipient, 500_000_000, &token_client.address),
+            &str(&env, "drain attempt"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    // State & balance unchanged
+    assert_eq!(token_client.balance(&client.address), initial_balance);
+    assert_eq!(token_client.balance(&attacker_recipient), 0);
+}
+
+#[test]
+fn adversarial_cannot_re_execute_transfer_proposal_double_spend() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup_weighted();
+    let recipient = Address::generate(&env);
+    let amount = 100_000_000_i128;
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, amount, &token_client.address),
+        &str(&env, "legit transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    // First execution succeeds
+    assert!(client.try_execute(&owner_a, &id).is_ok());
+    let balance_after_first = token_client.balance(&client.address);
+    assert_eq!(token_client.balance(&recipient), amount);
+
+    // Second execution attempt (replay/double-spend) must be rejected
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+
+    // State & balances remain strictly unchanged
+    assert_eq!(token_client.balance(&client.address), balance_after_first);
+    assert_eq!(token_client.balance(&recipient), amount);
+}
+
+#[test]
+fn adversarial_cannot_bypass_spending_limit_on_transfer() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup_weighted();
+    let recipient = Address::generate(&env);
+
+    // Set a spending limit of 50_000 for owner_a
+    let limit_proposal = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &Some(50_000_i128),
+        &str(&env, "set limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_proposal);
+    client.approve(&owner_b, &limit_proposal);
+    client.execute(&owner_a, &limit_proposal);
+
+    // Attempt to execute a transfer exceeding spending limit (100_000 > 50_000)
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 100_000, &token_client.address),
+        &str(&env, "exceeding limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+}
+
+#[test]
+fn adversarial_cannot_execute_premature_or_unauthorized_recurring_disbursement() {
+    let (env, client, owner_a, _owner_b, _, _attacker, token_client) = setup_weighted();
+    let recipient = Address::generate(&env);
+    let amount = 10_000_i128;
+    let interval = 86400_u64;
+
+    // Create recurring schedule
+    let schedule_id = client.create_recurring_schedule(
+        &owner_a,
+        &token_client.address,
+        &recipient,
+        &amount,
+        &interval,
+        &Some(5_u32),
+    );
+
+    // Try to disburse before interval has passed
+    assert_eq!(
+        client.try_disburse_recurring_schedule(&schedule_id),
+        Err(Ok(ContractError::RecurringPaymentNotDue))
+    );
+
+    // Cancel schedule
+    client.cancel_recurring_schedule(&owner_a, &schedule_id);
+
+    // Advance time past interval
+    set_timestamp(&env, NOW + interval + 10);
+
+    // Try to disburse after cancellation
+    assert_eq!(
+        client.try_disburse_recurring_schedule(&schedule_id),
+        Err(Ok(ContractError::RecurringPaymentComplete))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+}
+
+#[test]
+fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
+    let (env, client, owner_a, owner_b, _, attacker, token_client) = setup_weighted();
+    let recipient = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    client.set_guardian(&owner_a, &guardian);
+
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 100_000, &token_client.address),
+        &str(&env, "transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    // Guardian freezes the treasury
+    client.freeze(&guardian);
+    assert!(client.is_frozen());
+
+    // Attacker tries to execute transfer while frozen
+    assert_eq!(
+        client.try_execute(&attacker, &id),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    // Even an owner cannot execute transfer while frozen
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+
+    assert_eq!(token_client.balance(&recipient), 0);
+}
+

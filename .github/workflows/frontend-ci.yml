@@ -187,18 +187,18 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
 
-      - name: Install Playwright browsers
+      - name: Install Playwright browsers (Chromium, Firefox, WebKit)
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium firefox webkit
 
-      - name: Run Playwright end-to-end tests
+      - name: Run Playwright cross-browser end-to-end tests
         # Advisory while the pre-existing suite is reconciled with the current
         # UI: several specs on `main` still assert screens that were replaced
         # (weighted-governance / owners-weight-distribution). The report is
         # uploaded below so regressions stay visible without blocking merges.
         continue-on-error: true
         working-directory: frontend
-        run: npm run e2e
+        run: npm run e2e:matrix
 
       - name: Upload Playwright report
         if: always()
