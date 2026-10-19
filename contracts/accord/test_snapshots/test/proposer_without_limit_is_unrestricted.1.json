@@ -510,6 +510,12 @@
                   },
                   {
                     "key": {
+                      "symbol": "attachment_hash"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "category"
                     },
                     "val": {
@@ -1192,6 +1198,12 @@
             ],
             "data": {
               "map": [
+                {
+                  "key": {
+                    "symbol": "attachment_hash"
+                  },
+                  "val": "void"
+                },
                 {
                   "key": {
                     "symbol": "category"

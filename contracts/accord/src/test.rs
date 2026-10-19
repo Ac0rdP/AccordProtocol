@@ -10118,8 +10118,22 @@ fn creation_path_reports_missing_role_before_contract_frozen() {
     let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
     // `owner_c` keeps its governance weight but loses every operational role.
     clear_roles(&env, &client, &owner_c);
+    let recurring_schedule = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &non_owner, 1_000, &token_client.address),
+        &86_400,
+        &3,
+        &str(&env, "Schedule"),
+    );
     freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
     assert!(client.is_frozen());
+
+    macro_rules! assert_role_precedes_freeze {
+        ($without_role:expr, $with_role:expr) => {{
+            assert_eq!($without_role, Err(Ok(ContractError::MissingRole)));
+            assert_eq!($with_role, Err(Ok(ContractError::ContractFrozen)));
+        }};
+    }
 
     // Doubly-failing call: the contract is frozen and the caller has no role.
     assert_eq!(
@@ -10181,6 +10195,232 @@ fn creation_path_reports_missing_role_before_contract_frozen() {
             &DEADLINE,
         ),
         Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_proposal_with_attachment(
+            &owner_c,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Attached payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+            &None::<BytesN<32>>,
+        ),
+        client.try_create_proposal_with_attachment(
+            &owner_a,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &str(&env, "Attached payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+            &None::<BytesN<32>>,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_add_owner_proposal(
+            &owner_c,
+            &Address::generate(&env),
+            &1,
+            &str(&env, "Add owner"),
+            &DEADLINE,
+        ),
+        client.try_create_add_owner_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &1,
+            &str(&env, "Add owner"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_spending_limit_proposal(
+            &owner_c,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &str(&env, "Set spending limit"),
+            &DEADLINE,
+        ),
+        client.try_create_spending_limit_proposal(
+            &owner_a,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &str(&env, "Set spending limit"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_spending_window_proposal(
+            &owner_c,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &86_400,
+            &str(&env, "Set spending window"),
+            &DEADLINE,
+        ),
+        client.try_create_spending_window_proposal(
+            &owner_a,
+            &owner_a,
+            &token_client.address,
+            &1_000,
+            &86_400,
+            &str(&env, "Set spending window"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_change_weight_proposal(
+            &owner_c,
+            &owner_b,
+            &2,
+            &str(&env, "Change weight"),
+            &DEADLINE,
+        ),
+        client.try_create_change_weight_proposal(
+            &owner_a,
+            &owner_b,
+            &2,
+            &str(&env, "Change weight"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_remove_owner_proposal(
+            &owner_c,
+            &owner_b,
+            &str(&env, "Remove owner"),
+            &DEADLINE,
+        ),
+        client.try_create_remove_owner_proposal(
+            &owner_a,
+            &owner_b,
+            &str(&env, "Remove owner"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_recurring_schedule(
+            &owner_c,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &86_400,
+            &3,
+            &str(&env, "Recurring schedule"),
+        ),
+        client.try_create_recurring_schedule(
+            &owner_a,
+            &t(&env, &non_owner, 1_000, &token_client.address),
+            &86_400,
+            &3,
+            &str(&env, "Recurring schedule"),
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_asset_proposal(
+            &owner_c,
+            &Vec::from_array(
+                &env,
+                [AssetTransfer {
+                    to: non_owner.clone(),
+                    asset: AssetReference::Address(token_client.address.clone()),
+                    amount: 1_000,
+                }],
+            ),
+            &str(&env, "Asset payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        client.try_create_asset_proposal(
+            &owner_a,
+            &Vec::from_array(
+                &env,
+                [AssetTransfer {
+                    to: non_owner.clone(),
+                    asset: AssetReference::Address(token_client.address.clone()),
+                    amount: 1_000,
+                }],
+            ),
+            &str(&env, "Asset payment"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Cancel schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_cancel_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Cancel schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_pause_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Pause schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_pause_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Pause schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_resume_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &str(&env, "Resume schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_resume_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &str(&env, "Resume schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_modify_recurring_proposal(
+            &owner_c,
+            &recurring_schedule,
+            &Some(2_000_i128),
+            &None,
+            &None,
+            &str(&env, "Modify schedule"),
+            &DEADLINE,
+        ),
+        client.try_create_modify_recurring_proposal(
+            &owner_a,
+            &recurring_schedule,
+            &Some(2_000_i128),
+            &None,
+            &None,
+            &str(&env, "Modify schedule"),
+            &DEADLINE,
+        )
+    );
+    assert_role_precedes_freeze!(
+        client.try_create_revoke_role_proposal(
+            &owner_c,
+            &owner_b,
+            &Symbol::new(&env, "Proposer"),
+            &str(&env, "Revoke role"),
+            &DEADLINE,
+        ),
+        client.try_create_revoke_role_proposal(
+            &owner_a,
+            &owner_b,
+            &Symbol::new(&env, "Proposer"),
+            &str(&env, "Revoke role"),
+            &DEADLINE,
+        )
     );
 }
 
@@ -11967,6 +12207,201 @@ fn resource_ceiling_weight_lookups_at_max_config() {
     assert_within_resource_ceiling(&env, "get_active_delegations");
 }
 
+// ─── #739: Exhaustive access-control matrix ──────────────────────────────────
+//
+// One suite that exercises every public entrypoint under each access condition:
+// role gate, owner-weight gate, guardian-only, permissionless, authenticated,
+// deprecated, and read-only. Every case records the entrypoint it covers; the
+// final `assert_complete` cross-checks the recorded set against
+// `ENTRYPOINT_MATRIX` and fails by name for any listed entrypoint that has no
+// case, so a new entrypoint (or a dropped case) cannot silently go untested.
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Access {
+    Initialize,
+    Migration,
+    Proposer,
+    ApproverOwner,
+    ExecutorRole,
+    OwnerWeight,
+    GuardianOnly,
+    Permissionless,
+    Authenticated,
+    Deprecated,
+    ReadOnly,
+}
+
+/// Every entrypoint in the `#[contractimpl]` block of `lib.rs`, paired with the
+/// access condition it enforces (mirrors the gating-matrix comment at
+/// lib.rs:1755 and each function's own gates).
+const ENTRYPOINT_MATRIX: &[(&str, Access)] = &[
+    ("initialize", Access::Initialize),
+    ("migrate_to_weighted_governance", Access::Migration),
+    ("migrate_to_rbac", Access::Migration),
+    // Proposer role (owner or role-only).
+    ("create_recurring_schedule", Access::Proposer),
+    ("create_proposal", Access::Proposer),
+    ("create_proposal_with_attachment", Access::Proposer),
+    ("create_add_owner_proposal", Access::Proposer),
+    ("create_spending_limit_proposal", Access::Proposer),
+    ("create_spending_window_proposal", Access::Proposer),
+    ("create_change_weight_proposal", Access::Proposer),
+    ("create_remove_owner_proposal", Access::Proposer),
+    ("create_change_threshold_proposal", Access::Proposer),
+    ("create_recurring_proposal", Access::Proposer),
+    ("create_cancel_recurring_proposal", Access::Proposer),
+    ("create_pause_recurring_proposal", Access::Proposer),
+    ("create_resume_recurring_proposal", Access::Proposer),
+    ("create_modify_recurring_proposal", Access::Proposer),
+    ("create_grant_role_proposal", Access::Proposer),
+    ("create_revoke_role_proposal", Access::Proposer),
+    ("create_asset_proposal", Access::Proposer),
+    // Owner + Approver role.
+    ("approve", Access::ApproverOwner),
+    ("revoke", Access::ApproverOwner),
+    // Executor role.
+    ("execute", Access::ExecutorRole),
+    ("cancel_expired", Access::ExecutorRole),
+    // Owner-weight governance (no role gate).
+    ("set_max_single_owner_weight_pct", Access::OwnerWeight),
+    ("set_guardian", Access::OwnerWeight),
+    ("unfreeze", Access::OwnerWeight),
+    ("exit_recovery", Access::OwnerWeight),
+    ("upgrade", Access::OwnerWeight),
+    ("set_classic_asset", Access::OwnerWeight),
+    // Guardian-only.
+    ("freeze", Access::GuardianOnly),
+    ("enter_recovery", Access::GuardianOnly),
+    // No role/owner gate.
+    ("disburse_recurring_schedule", Access::Permissionless),
+    ("disburse_recurring", Access::Authenticated),
+    ("cancel_recurring_schedule", Access::Deprecated),
+    // Read-only views (no authorization).
+    ("get_spent_tracker", Access::ReadOnly),
+    ("get_recurring_payment", Access::ReadOnly),
+    ("get_next_disbursement_time", Access::ReadOnly),
+    ("get_recurring_payments_paged", Access::ReadOnly),
+    ("get_active_recurring_count", Access::ReadOnly),
+    ("get_approvers", Access::ReadOnly),
+    ("get_version", Access::ReadOnly),
+    ("get_storage_version", Access::ReadOnly),
+    ("get_total_weight", Access::ReadOnly),
+    ("is_governance_migrated", Access::ReadOnly),
+    ("get_role_version", Access::ReadOnly),
+    ("get_roles", Access::ReadOnly),
+    ("has_role", Access::ReadOnly),
+    ("get_role_members", Access::ReadOnly),
+    ("get_owner_weight", Access::ReadOnly),
+    ("get_owner_weights", Access::ReadOnly),
+    ("get_max_single_owner_weight_pct", Access::ReadOnly),
+    ("get_delegations", Access::ReadOnly),
+    ("get_active_delegations", Access::ReadOnly),
+    ("get_effective_weight", Access::ReadOnly),
+    ("get_proposal", Access::ReadOnly),
+    ("get_proposals_paged", Access::ReadOnly),
+    ("get_owners", Access::ReadOnly),
+    ("get_spending_limit", Access::ReadOnly),
+    ("get_owner_spending_limits", Access::ReadOnly),
+    ("get_remaining_spending_limit", Access::ReadOnly),
+    ("get_spending_window", Access::ReadOnly),
+    ("get_threshold", Access::ReadOnly),
+    ("get_required_quorum_weight", Access::ReadOnly),
+    ("get_time_lock_delay", Access::ReadOnly),
+    ("get_total_proposals", Access::ReadOnly),
+    ("is_owner", Access::ReadOnly),
+    ("has_approved", Access::ReadOnly),
+    ("get_proposal_approval_progress", Access::ReadOnly),
+    ("get_classic_asset", Access::ReadOnly),
+    ("is_frozen", Access::ReadOnly),
+    ("is_in_recovery", Access::ReadOnly),
+    ("get_guardian", Access::ReadOnly),
+];
+
+/// Tracks which entries of `ENTRYPOINT_MATRIX` have been exercised by a case.
+struct Coverage {
+    seen: std::collections::BTreeSet<&'static str>,
+}
+
+impl Coverage {
+    fn new() -> Self {
+        Coverage {
+            seen: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn cover(&mut self, name: &'static str) {
+        self.seen.insert(name);
+    }
+
+    /// Panics, naming every listed entrypoint that was never exercised, and any
+    /// case that covered a name absent from the matrix.
+    fn assert_complete(&self) {
+        let mut missing = std::vec::Vec::new();
+        for (name, _) in ENTRYPOINT_MATRIX.iter() {
+            if !self.seen.contains(name) {
+                missing.push(*name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "access-control matrix (#739): entrypoints listed in ENTRYPOINT_MATRIX but with no case: {:?}",
+            missing
+        );
+        for name in self.seen.iter() {
+            assert!(
+                ENTRYPOINT_MATRIX.iter().any(|(listed, _)| listed == name),
+                "access-control matrix (#739): a case covers `{name}` which is not in ENTRYPOINT_MATRIX",
+            );
+        }
+    }
+}
+
+/// Builds and executes an active recurring-payment schedule, returning its id
+/// (the first schedule in a fresh env is always id 1).
+fn matrix_active_recurring(
+    env: &Env,
+    client: &AccordContractClient,
+    proposer: &Address,
+    approver: &Address,
+    executor: &Address,
+    token: &token::Client,
+) -> u64 {
+    let recipient = Address::generate(env);
+    let id = client.create_recurring_proposal(
+        proposer,
+        &recipient,
+        &token.address,
+        &1_000_i128,
+        &86_400_u64,
+        &NOW,
+        &0_u64,
+        &0_u64,
+        &0_i128,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(env, "payroll"),
+        &(NOW + 200_000),
+        &ProposalCategory::Payroll,
+    );
+    client.approve(proposer, &id);
+    client.approve(approver, &id);
+    client.execute(executor, &id);
+
+    // The recurring id counter is shared with the legacy
+    // `create_recurring_schedule` path, so the freshly created payment is not
+    // always id 1. Return the highest id that now exists.
+    let page = client.get_recurring_payments_paged(&0, &20);
+    let mut created = 0_u64;
+    for i in 0..page.len() {
+        let id = page.get(i).unwrap().id;
+        if id > created {
+            created = id;
+        }
+    }
+    assert!(created > 0, "recurring proposal created no payment");
+    created
+}
+
+fn matrix_initialize(cov: &mut Coverage) {
 // ─── Issue #1: Checked arithmetic on recurring counters ──────────────────────
 
 /// Helper: create and fully approve+execute a recurring proposal, returning
@@ -12868,6 +13303,832 @@ fn rejected_remove_owner_at_creation_leaves_total_weight_unchanged() {
     set_timestamp(&env, NOW);
     let contract_id = env.register(AccordContract, ());
     let client = AccordContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    let weights = Vec::from_array(&env, [1_u32]);
+
+    // Authorized: the sole owner authenticates and initializes.
+    client.initialize(&owners, &weights, &1, &0);
+    assert_eq!(client.get_threshold(), 1);
+
+    // Unauthorized/repeat: a second call is rejected.
+    assert_eq!(
+        client.try_initialize(&owners, &weights, &1, &0),
+        Err(Ok(ContractError::AlreadyInitialized))
+    );
+    cov.cover("initialize");
+}
+
+fn matrix_migration(cov: &mut Coverage) {
+    // migrate_to_weighted_governance
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    mark_governance_unmigrated(&env, &client.address);
+    let outsider = Address::generate(&env);
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&Vec::from_array(
+            &env,
+            [owner_a.clone(), outsider.clone()]
+        )),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&Vec::from_array(&env, [owner_a.clone()])),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.migrate_to_weighted_governance(&Vec::from_array(
+        &env,
+        [owner_a.clone(), owner_b.clone()],
+    ));
+    assert!(client.is_governance_migrated());
+    assert_eq!(
+        client.try_migrate_to_weighted_governance(&Vec::from_array(
+            &env,
+            [owner_a.clone(), owner_b.clone()]
+        )),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    cov.cover("migrate_to_weighted_governance");
+
+    // migrate_to_rbac
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let owners = client.get_owners();
+    mark_rbac_unmigrated(&env, &client.address, &owners);
+    assert_eq!(
+        client.try_migrate_to_rbac(&Vec::from_array(&env, [owner_a.clone()])),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.migrate_to_rbac(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
+    assert_eq!(client.get_role_version(), RBAC_VERSION);
+    cov.cover("migrate_to_rbac");
+}
+
+fn matrix_proposer_entrypoints(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
+    // `owner_c` keeps its governance weight but loses every operational role.
+    clear_roles(&env, &client, &owner_c);
+    let d = |s: &str| str(&env, s);
+    let to = Address::generate(&env);
+
+    // create_proposal
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_c,
+            &t(&env, &to, 1, &token.address),
+            &d("pay"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let pending = client.create_proposal(
+        &owner_a,
+        &t(&env, &to, 1, &token.address),
+        &d("pay"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(client.get_proposal(&pending).status, ProposalStatus::Pending);
+    cov.cover("create_proposal");
+
+    // create_proposal_with_attachment
+    assert_eq!(
+        client.try_create_proposal_with_attachment(
+            &owner_c,
+            &t(&env, &to, 1, &token.address),
+            &d("attach"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+            &None::<BytesN<32>>,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_proposal_with_attachment(
+        &owner_a,
+        &t(&env, &to, 1, &token.address),
+        &d("attach"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+        &None::<BytesN<32>>,
+    );
+    cov.cover("create_proposal_with_attachment");
+
+    // create_recurring_schedule
+    assert_eq!(
+        client.try_create_recurring_schedule(
+            &owner_c,
+            &t(&env, &to, 1, &token.address),
+            &86_400,
+            &3,
+            &d("sched"),
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &to, 1, &token.address),
+        &86_400,
+        &3,
+        &d("sched"),
+    );
+    cov.cover("create_recurring_schedule");
+
+    // create_add_owner_proposal
+    let new_owner = Address::generate(&env);
+    assert_eq!(
+        client.try_create_add_owner_proposal(
+            &owner_c,
+            &new_owner,
+            &1,
+            &d("add owner"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_add_owner_proposal(
+        &owner_a,
+        &new_owner,
+        &1,
+        &d("add owner"),
+        &DEADLINE,
+    );
+    cov.cover("create_add_owner_proposal");
+
+    // create_spending_limit_proposal
+    assert_eq!(
+        client.try_create_spending_limit_proposal(
+            &owner_c,
+            &owner_a,
+            &token.address,
+            &100,
+            &d("limit"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token.address,
+        &100,
+        &d("limit"),
+        &DEADLINE,
+    );
+    cov.cover("create_spending_limit_proposal");
+
+    // create_spending_window_proposal
+    assert_eq!(
+        client.try_create_spending_window_proposal(
+            &owner_c,
+            &owner_a,
+            &token.address,
+            &100,
+            &86_400,
+            &d("window"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_spending_window_proposal(
+        &owner_a,
+        &owner_a,
+        &token.address,
+        &100,
+        &86_400,
+        &d("window"),
+        &DEADLINE,
+    );
+    cov.cover("create_spending_window_proposal");
+
+    // create_change_weight_proposal
+    assert_eq!(
+        client.try_create_change_weight_proposal(
+            &owner_c,
+            &owner_b,
+            &1,
+            &d("weight"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_change_weight_proposal(
+        &owner_a,
+        &owner_b,
+        &1,
+        &d("weight"),
+        &DEADLINE,
+    );
+    cov.cover("create_change_weight_proposal");
+
+    // create_remove_owner_proposal
+    assert_eq!(
+        client.try_create_remove_owner_proposal(
+            &owner_c,
+            &owner_b,
+            &d("remove owner"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_remove_owner_proposal(
+        &owner_a,
+        &owner_b,
+        &d("remove owner"),
+        &DEADLINE,
+    );
+    cov.cover("create_remove_owner_proposal");
+
+    // create_change_threshold_proposal
+    assert_eq!(
+        client.try_create_change_threshold_proposal(&owner_c, &1, &d("threshold"), &DEADLINE),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ =
+        client.create_change_threshold_proposal(&owner_a, &1, &d("threshold"), &DEADLINE);
+    cov.cover("create_change_threshold_proposal");
+
+    // create_grant_role_proposal
+    assert_eq!(
+        client.try_create_grant_role_proposal(
+            &owner_c,
+            &non_owner,
+            &Symbol::new(&env, "Viewer"),
+            &d("grant"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_grant_role_proposal(
+        &owner_a,
+        &non_owner,
+        &Symbol::new(&env, "Viewer"),
+        &d("grant"),
+        &DEADLINE,
+    );
+    cov.cover("create_grant_role_proposal");
+
+    // create_revoke_role_proposal
+    assert_eq!(
+        client.try_create_revoke_role_proposal(
+            &owner_c,
+            &owner_b,
+            &Symbol::new(&env, "Proposer"),
+            &d("revoke"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_revoke_role_proposal(
+        &owner_a,
+        &owner_b,
+        &Symbol::new(&env, "Proposer"),
+        &d("revoke"),
+        &DEADLINE,
+    );
+    cov.cover("create_revoke_role_proposal");
+
+    // create_asset_proposal
+    let mut assets = Vec::new(&env);
+    assets.push_back(AssetTransfer {
+        to: to.clone(),
+        asset: AssetReference::Address(token.address.clone()),
+        amount: 1,
+    });
+    assert_eq!(
+        client.try_create_asset_proposal(
+            &owner_c,
+            &assets,
+            &d("asset"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_asset_proposal(
+        &owner_a,
+        &assets,
+        &d("asset"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    cov.cover("create_asset_proposal");
+
+    // create_recurring_proposal: built through the shared helper.
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_c,
+            &non_owner,
+            &token.address,
+            &1_000_i128,
+            &86_400_u64,
+            &NOW,
+            &0_u64,
+            &0_u64,
+            &0_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &d("payroll"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let schedule_id = matrix_active_recurring(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_a,
+        &token,
+    );
+    cov.cover("create_recurring_proposal");
+
+    // create_cancel_recurring_proposal (schedule is active)
+    assert_eq!(
+        client.try_create_cancel_recurring_proposal(
+            &owner_c,
+            &schedule_id,
+            &d("cancel"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &d("cancel"),
+        &DEADLINE,
+    );
+    cov.cover("create_cancel_recurring_proposal");
+
+    // create_pause_recurring_proposal (authorized call also pauses the schedule)
+    assert_eq!(
+        client.try_create_pause_recurring_proposal(
+            &owner_c,
+            &schedule_id,
+            &d("pause"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let pause_id =
+        client.create_pause_recurring_proposal(&owner_a, &schedule_id, &d("pause"), &DEADLINE);
+    cov.cover("create_pause_recurring_proposal");
+    client.approve(&owner_a, &pause_id);
+    client.approve(&owner_b, &pause_id);
+    client.execute(&owner_a, &pause_id);
+
+    // create_resume_recurring_proposal (schedule is now paused)
+    assert_eq!(
+        client.try_create_resume_recurring_proposal(
+            &owner_c,
+            &schedule_id,
+            &d("resume"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_resume_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &d("resume"),
+        &DEADLINE,
+    );
+    cov.cover("create_resume_recurring_proposal");
+
+    // create_modify_recurring_proposal
+    assert_eq!(
+        client.try_create_modify_recurring_proposal(
+            &owner_c,
+            &schedule_id,
+            &Some(2_000_i128),
+            &None,
+            &None,
+            &d("modify"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+    let _ = client.create_modify_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &Some(2_000_i128),
+        &None,
+        &None,
+        &d("modify"),
+        &DEADLINE,
+    );
+    cov.cover("create_modify_recurring_proposal");
+}
+
+fn matrix_approval_and_execution(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
+    let id = transfer_proposal(&env, &client, &owner_a, &token);
+    let expired = transfer_proposal(&env, &client, &owner_a, &token);
+
+    // approve: owner + Approver role required.
+    clear_roles(&env, &client, &owner_c);
+    assert_eq!(
+        client.try_approve(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    set_roles(&env, &client.address, &non_owner, &[Role::Approver]);
+    assert_eq!(
+        client.try_approve(&non_owner, &id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    client.approve(&owner_a, &id);
+    assert!(client.has_approved(&id, &owner_a));
+    cov.cover("approve");
+
+    // revoke: owner + Approver role required, and must have approved first.
+    assert_eq!(
+        client.try_revoke(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_revoke(&owner_b, &id),
+        Err(Ok(ContractError::NotApproved))
+    );
+    client.revoke(&owner_a, &id);
+    assert!(!client.has_approved(&id, &owner_a));
+    cov.cover("revoke");
+
+    // execute: Executor role required (owner membership not required).
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::MissingRole))
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+    client.execute(&owner_a, &id);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+    cov.cover("execute");
+
+    // cancel_expired: Executor role required; sweeps expired proposals.
+    set_timestamp(&env, DEADLINE + 1);
+    assert_eq!(
+        client.try_cancel_expired(&non_owner, &Vec::from_array(&env, [expired])),
+        Err(Ok(ContractError::MissingRole))
+    );
+    assert_eq!(
+        client.try_cancel_expired(&owner_a, &Vec::from_array(&env, [expired])),
+        Ok(Ok(1_u32))
+    );
+    cov.cover("cancel_expired");
+}
+
+fn matrix_owner_weight_governance(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, _, _, token) = setup(2);
+    let new_guardian = Address::generate(&env);
+    let role_only = Address::generate(&env);
+    grant_all_roles(&env, &client, &role_only);
+    let hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+
+    // set_max_single_owner_weight_pct
+    assert_eq!(
+        client.try_set_max_single_owner_weight_pct(&Vec::from_array(&env, [owner_a.clone()]), &40),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    assert_eq!(
+        client.try_set_max_single_owner_weight_pct(
+            &Vec::from_array(&env, [role_only.clone(), owner_a.clone()]),
+            &40
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    client
+        .set_max_single_owner_weight_pct(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &40);
+    assert_eq!(client.get_max_single_owner_weight_pct(), 40);
+    cov.cover("set_max_single_owner_weight_pct");
+
+    // set_guardian
+    assert_eq!(
+        client.try_set_guardian(
+            &Vec::from_array(&env, [owner_a.clone()]),
+            &new_guardian
+        ),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &new_guardian,
+    );
+    assert_eq!(client.get_guardian(), Some(new_guardian.clone()));
+    cov.cover("set_guardian");
+
+    // unfreeze (owner-weight gated, callable regardless of frozen state)
+    assert_eq!(
+        client.try_unfreeze(&Vec::from_array(&env, [owner_a.clone()])),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.unfreeze(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
+    assert!(!client.is_frozen());
+    cov.cover("unfreeze");
+
+    // exit_recovery
+    assert_eq!(
+        client.try_exit_recovery(&Vec::from_array(&env, [owner_a.clone()])),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.exit_recovery(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]));
+    assert!(!client.is_in_recovery());
+    cov.cover("exit_recovery");
+
+    // upgrade (owner-weight gated)
+    let hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+    assert_eq!(
+        client.try_upgrade(&Vec::from_array(&env, [owner_a.clone()]), &hash),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.upgrade(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &hash);
+    cov.cover("upgrade");
+
+    // set_classic_asset
+    let identifier = Symbol::new(&env, "USDC");
+    assert_eq!(
+        client.try_set_classic_asset(
+            &Vec::from_array(&env, [owner_a.clone()]),
+            &identifier,
+            &token.address
+        ),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    client.set_classic_asset(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &identifier,
+        &token.address,
+    );
+    assert_eq!(
+        client.get_classic_asset(&identifier),
+        Some(token.address.clone())
+    );
+    cov.cover("set_classic_asset");
+}
+
+fn matrix_guardian_entrypoints(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let guardian = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    // freeze before any guardian exists
+    assert_eq!(
+        client.try_freeze(&guardian),
+        Err(Ok(ContractError::NoGuardian))
+    );
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    assert_eq!(
+        client.try_freeze(&impostor),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    client.freeze(&guardian);
+    assert!(client.is_frozen());
+    cov.cover("freeze");
+
+    // enter_recovery: guardian-only as well.
+    assert_eq!(
+        client.try_enter_recovery(&impostor),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    client.enter_recovery(&guardian);
+    assert!(client.is_in_recovery());
+    cov.cover("enter_recovery");
+}
+
+fn matrix_permissionless_and_deprecated(cov: &mut Coverage) {
+    let (env, client, owner_a, _, _, non_owner, token) = setup(2);
+    let schedule_id = client.create_recurring_schedule(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1, &token.address),
+        &86_400,
+        &3,
+        &str(&env, "crank"),
+    );
+
+    // disburse_recurring_schedule: permissionless (no caller argument).
+    assert_eq!(
+        client.try_disburse_recurring_schedule(&schedule_id),
+        Ok(Ok(()))
+    );
+    cov.cover("disburse_recurring_schedule");
+
+    // cancel_recurring_schedule: deprecated, always rejected.
+    assert_eq!(
+        client.try_cancel_recurring_schedule(&owner_a, &schedule_id),
+        Err(Ok(ContractError::DeprecatedEntrypoint))
+    );
+    assert_eq!(
+        client.try_cancel_recurring_schedule(&non_owner, &schedule_id),
+        Err(Ok(ContractError::DeprecatedEntrypoint))
+    );
+    cov.cover("cancel_recurring_schedule");
+}
+
+fn matrix_authenticated_crank(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
+    let schedule_id =
+        matrix_active_recurring(&env, &client, &owner_a, &owner_b, &owner_c, &token);
+
+    // Authorized: a non-owner, authenticated caller may crank once due.
+    set_timestamp(&env, NOW + 200_000);
+    client.disburse_recurring(&non_owner, &schedule_id);
+    assert!(client.get_recurring_payment(&schedule_id).total_disbursed > 0);
+
+    // Frozen blocks the crank.
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+    assert_eq!(
+        client.try_disburse_recurring(&non_owner, &schedule_id),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    cov.cover("disburse_recurring");
+}
+
+fn matrix_read_only_entrypoints(cov: &mut Coverage) {
+    let (env, client, owner_a, owner_b, owner_c, _non_owner, token) = setup(2);
+    let schedule_id =
+        matrix_active_recurring(&env, &client, &owner_a, &owner_b, &owner_c, &token);
+    let proposal_id = transfer_proposal(&env, &client, &owner_a, &token);
+    let stranger = Address::generate(&env);
+
+    // Views carry no gate: each is callable without owner/role weight.
+    let _ = client.get_spent_tracker(&owner_a, &token.address);
+    cov.cover("get_spent_tracker");
+    let _ = client.get_recurring_payment(&schedule_id);
+    cov.cover("get_recurring_payment");
+    let _ = client.get_next_disbursement_time(&schedule_id);
+    cov.cover("get_next_disbursement_time");
+    let _ = client.get_recurring_payments_paged(&0, &20);
+    cov.cover("get_recurring_payments_paged");
+    let _ = client.get_active_recurring_count();
+    cov.cover("get_active_recurring_count");
+    let _ = client.get_approvers(&proposal_id);
+    cov.cover("get_approvers");
+    let _ = client.get_version();
+    cov.cover("get_version");
+    let _ = client.get_storage_version();
+    cov.cover("get_storage_version");
+    let _ = client.get_total_weight();
+    cov.cover("get_total_weight");
+    let _ = client.is_governance_migrated();
+    cov.cover("is_governance_migrated");
+    let _ = client.get_role_version();
+    cov.cover("get_role_version");
+    let _ = client.get_roles(&stranger);
+    cov.cover("get_roles");
+    let _ = client.has_role(&stranger, &Role::Viewer);
+    cov.cover("has_role");
+    let _ = client.get_role_members(&Role::Approver);
+    cov.cover("get_role_members");
+    let _ = client.get_owner_weight(&owner_a);
+    cov.cover("get_owner_weight");
+    let _ = client.get_owner_weights();
+    cov.cover("get_owner_weights");
+    let _ = client.get_max_single_owner_weight_pct();
+    cov.cover("get_max_single_owner_weight_pct");
+    let _ = client.get_delegations(&owner_a);
+    cov.cover("get_delegations");
+    let _ = client.get_active_delegations();
+    cov.cover("get_active_delegations");
+    let _ = client.get_effective_weight(&owner_a);
+    cov.cover("get_effective_weight");
+    let _ = client.get_proposal(&proposal_id);
+    cov.cover("get_proposal");
+    let _ = client.get_proposals_paged(&0, &20);
+    cov.cover("get_proposals_paged");
+    let _ = client.get_owners();
+    cov.cover("get_owners");
+    let _ = client.get_spending_limit(&owner_a, &token.address);
+    cov.cover("get_spending_limit");
+    let _ = client.get_owner_spending_limits(&owner_a);
+    cov.cover("get_owner_spending_limits");
+    let _ = client.get_remaining_spending_limit(&owner_a, &token.address);
+    cov.cover("get_remaining_spending_limit");
+    let _ = client.get_spending_window(&owner_a, &token.address);
+    cov.cover("get_spending_window");
+    let _ = client.get_threshold();
+    cov.cover("get_threshold");
+    let _ = client.get_required_quorum_weight();
+    cov.cover("get_required_quorum_weight");
+    let _ = client.get_time_lock_delay();
+    cov.cover("get_time_lock_delay");
+    let _ = client.get_total_proposals();
+    cov.cover("get_total_proposals");
+    let _ = client.is_owner(&owner_a);
+    cov.cover("is_owner");
+    let _ = client.has_approved(&proposal_id, &owner_a);
+    cov.cover("has_approved");
+    let _ = client.get_proposal_approval_progress(&proposal_id);
+    cov.cover("get_proposal_approval_progress");
+    let _ = client.get_classic_asset(&Symbol::new(&env, "XLM"));
+    cov.cover("get_classic_asset");
+    let _ = client.is_frozen();
+    cov.cover("is_frozen");
+    let _ = client.is_in_recovery();
+    cov.cover("is_in_recovery");
+    let _ = client.get_guardian();
+    cov.cover("get_guardian");
+}
+
+/// Every public entrypoint is exercised under its access condition, and the
+/// suite fails, by name, if a listed entrypoint has no case.
+#[test]
+fn access_control_matrix_covers_every_public_entrypoint() {
+    let mut cov = Coverage::new();
+    matrix_initialize(&mut cov);
+    matrix_migration(&mut cov);
+    matrix_proposer_entrypoints(&mut cov);
+    matrix_approval_and_execution(&mut cov);
+    matrix_owner_weight_governance(&mut cov);
+    matrix_guardian_entrypoints(&mut cov);
+    matrix_permissionless_and_deprecated(&mut cov);
+    matrix_authenticated_crank(&mut cov);
+    matrix_read_only_entrypoints(&mut cov);
+    cov.assert_complete();
+}
+
+/// Frozen state blocks the create and execute paths, while `approve`, `revoke`
+/// and the expiry sweep stay callable so a freeze cannot strand in-flight work.
+#[test]
+fn access_control_matrix_frozen_state_is_enforced() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token) = setup(2);
+
+    let ready = transfer_proposal(&env, &client, &owner_a, &token);
+    client.approve(&owner_a, &ready);
+    client.approve(&owner_b, &ready);
+    assert_eq!(client.get_proposal(&ready).status, ProposalStatus::Ready);
+
+    let pending = transfer_proposal(&env, &client, &owner_a, &token);
+    let expired = transfer_proposal(&env, &client, &owner_a, &token);
+
+    freeze_with_owner_pair(&env, &client, &owner_a, &owner_b);
+    assert!(client.is_frozen());
+
+    // Create paths fail with ContractFrozen.
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &non_owner, 1, &token.address),
+            &str(&env, "blocked"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_create_change_threshold_proposal(
+            &owner_a,
+            &1,
+            &str(&env, "blocked"),
+            &DEADLINE
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_create_recurring_proposal(
+            &owner_a,
+            &non_owner,
+            &token.address,
+            &1_000_i128,
+            &86_400_u64,
+            &NOW,
+            &0_u64,
+            &0_u64,
+            &0_i128,
+            &RecurringKind::FixedAmountPerPeriod,
+            &str(&env, "blocked"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+
+    // Execute path fails with ContractFrozen and spends nothing.
+    assert_eq!(
+        client.try_execute(&owner_c, &ready),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(client.get_proposal(&ready).status, ProposalStatus::Ready);
+
+    // approve / revoke remain callable while frozen.
+    client.approve(&owner_a, &pending);
+    client.approve(&owner_b, &pending);
+    assert_eq!(client.get_proposal(&pending).status, ProposalStatus::Ready);
+    client.revoke(&owner_b, &pending);
+    assert!(!client.has_approved(&pending, &owner_b));
+
+    // The expiry sweep remains callable while frozen.
+    set_timestamp(&env, DEADLINE + 1);
+    assert_eq!(
+        client.try_cancel_expired(&owner_a, &Vec::from_array(&env, [expired])),
+        Ok(Ok(1_u32))
+    );
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let c = Address::generate(&env);

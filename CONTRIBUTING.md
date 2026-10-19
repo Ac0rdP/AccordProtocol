@@ -644,6 +644,28 @@ If your change touches both areas, run **both** frontend and contract commands a
 - **Contracts:** add or extend tests alongside behavior changes. Prefer tests that encode **invariants** (for example, cannot execute below threshold).
 - **Frontend:** add or extend Vitest unit/component tests (`npm run test`) for logic and page states, and Playwright end-to-end tests (`npm run e2e`) for user flows. Every page must cover loading, empty, and error states in the page-state matrix (`frontend/src/pages/pageStateMatrix.test.tsx`).
 
+### Fuzzing contract weight arithmetic
+
+The `contracts/fuzz` cargo-fuzz target exercises owner-weight and approval-weight updates, checking that current owner weights sum to the stored total and that proposal approvals stay within the total weight snapshotted at proposal creation. The fuzzer requires the nightly Rust toolchain and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz). Install them, then run it from the repository root:
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+cargo +nightly fuzz run --fuzz-dir contracts/fuzz weight_arithmetic
+```
+
+The target accepts a corpus directory as an additional argument; for example:
+
+```bash
+cargo +nightly fuzz run --fuzz-dir contracts/fuzz weight_arithmetic -- contracts/fuzz/corpus/weight_arithmetic
+```
+
+To fuzz proposal IDs and active-proposal bookkeeping across create, approve, revoke, execute, and expiry-sweep operations, run:
+
+```bash
+cargo +nightly fuzz run --fuzz-dir contracts/fuzz proposal_bookkeeping
+```
+
 ---
 
 ## Debugging tips
