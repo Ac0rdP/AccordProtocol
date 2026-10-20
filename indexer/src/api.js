@@ -1,14 +1,44 @@
 import { createServer } from "node:http";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
+import { parseDestination, sendTestNotification } from "./notifications.js";
 
 const ROUTES = new Set([
   "/health", "/healthz", "/readyz", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/notifications/destinations", "/notifications/deliveries",
 ]);
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
+const DESTINATION_PATH = /^\/notifications\/destinations\/([^/]+)$/;
+const DESTINATION_TEST_PATH = /^\/notifications\/destinations\/([^/]+)\/test$/;
 
 function sendJson(response, statusCode, body) {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+async function readJsonBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("request body must be valid JSON");
+  }
+}
+
+/** Strips secrets from a destination before it is ever sent back to a client. */
+function redactDestination(destination) {
+  const { config, ...rest } = destination;
+  const redactedConfig = { ...config };
+  if (redactedConfig.secret) redactedConfig.secret = "••••••••";
+  return { ...rest, config: redactedConfig };
+}
+
+function routeLabelFor(pathname) {
+  if (ROUTES.has(pathname)) return pathname;
+  if (DESTINATION_TEST_PATH.test(pathname)) return "/notifications/destinations/:id/test";
+  if (DESTINATION_PATH.test(pathname)) return "/notifications/destinations/:id";
+  return "unmatched";
 }
 
 function parseDateParam(value, name) {
@@ -32,10 +62,75 @@ function parsePage(searchParams) {
  *
  *   /health /healthz /readyz /metrics   operations
  *   /ledger /events /reconciliation     indexed data
- *   /webhooks/deliveries                outbox inspection (?status=dead for the dead-letter queue)
+ *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue)
+ *   GET/PUT/POST /notifications/destinations          list / create / upsert destinations
+ *   GET/PUT/POST/DELETE /notifications/destinations/:id  read / upsert / delete one destination
+ *   POST /notifications/destinations/:id/test          send a synthetic test event right away
+ *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
 export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses }) {
   async function route(request, response, url) {
+    const destinationMatch = url.pathname.match(DESTINATION_PATH);
+    const destinationTestMatch = url.pathname.match(DESTINATION_TEST_PATH);
+
+    if (url.pathname === "/notifications/destinations") {
+      if (request.method === "GET") {
+        const destinations = await store.listNotificationDestinations();
+        return sendJson(response, 200, { destinations: destinations.map(redactDestination) });
+      }
+      if (request.method === "PUT" || request.method === "POST") {
+        const body = await readJsonBody(request);
+        const destination = parseDestination(body);
+        await store.upsertNotificationDestination({ ...destination, now: new Date().toISOString() });
+        return sendJson(response, 200, { destination: redactDestination(destination) });
+      }
+      return sendJson(response, 404, { error: "not found" });
+    }
+
+    if (destinationTestMatch) {
+      if (request.method !== "POST") return sendJson(response, 404, { error: "not found" });
+      const destination = await store.getNotificationDestination(destinationTestMatch[1]);
+      if (!destination) return sendJson(response, 404, { error: "destination not found" });
+      const result = await sendTestNotification(destination);
+      return sendJson(response, result.ok ? 200 : 502, result);
+    }
+
+    if (destinationMatch) {
+      const id = destinationMatch[1];
+      if (request.method === "GET") {
+        const destination = await store.getNotificationDestination(id);
+        if (!destination) return sendJson(response, 404, { error: "destination not found" });
+        return sendJson(response, 200, { destination: redactDestination(destination) });
+      }
+      if (request.method === "PUT" || request.method === "POST") {
+        const body = await readJsonBody(request);
+        const destination = parseDestination({ ...body, id });
+        await store.upsertNotificationDestination({ ...destination, now: new Date().toISOString() });
+        return sendJson(response, 200, { destination: redactDestination(destination) });
+      }
+      if (request.method === "DELETE") {
+        const deleted = await store.deleteNotificationDestination(id);
+        if (!deleted) return sendJson(response, 404, { error: "destination not found" });
+        response.writeHead(204);
+        return response.end();
+      }
+      return sendJson(response, 404, { error: "not found" });
+    }
+
+    if (url.pathname === "/notifications/deliveries") {
+      if (request.method !== "GET") return sendJson(response, 404, { error: "not found" });
+      const status = url.searchParams.get("status") ?? undefined;
+      if (status && !DELIVERY_STATUSES.includes(status)) {
+        throw new Error(`status must be one of: ${DELIVERY_STATUSES.join(", ")}`);
+      }
+      const deliveries = await store.listNotificationDeliveries({
+        status,
+        destinationId: url.searchParams.get("destination") ?? undefined,
+        ...parsePage(url.searchParams),
+      });
+      return sendJson(response, 200, { deliveries });
+    }
+
     if (request.method !== "GET") return sendJson(response, 404, { error: "not found" });
 
     switch (url.pathname) {
@@ -106,7 +201,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
     const startedAt = performance.now();
     const url = new URL(request.url, "http://localhost");
     // Unknown paths share one label so a scanner cannot blow up metric cardinality.
-    const routeLabel = ROUTES.has(url.pathname) ? url.pathname : "unmatched";
+    const routeLabel = routeLabelFor(url.pathname);
     response.on("finish", () => {
       metrics.httpRequests.inc({ method: request.method, route: routeLabel, status: response.statusCode });
       metrics.httpDuration.observe(

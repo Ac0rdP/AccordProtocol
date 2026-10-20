@@ -22,6 +22,7 @@ import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
 import { PWAInstallBanner } from "./components/PWAInstallBanner";
 import { ThemeControl } from "./components/ThemeControl";
+import { NotificationCenter } from "./components/NotificationCenter";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -332,6 +333,8 @@ export default function App() {
               className="ml-1"
             />
           </nav>
+
+          <NotificationCenter />
 
           {!wallet.installed ? (
             <a

@@ -21,6 +21,7 @@ import {
 import { createIndexerMetrics, recordBatchSuccess } from "./metrics.js";
 import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
+import { createNotificationDispatcher } from "./notifications.js";
 
 const HELP = `Accord treasury indexer
 
@@ -33,6 +34,7 @@ Commands:
   replay           Replay a ledger range into an isolated store and print every
                    event; the live store is never written
   webhooks-requeue Move dead-lettered webhook deliveries back to pending
+  notifications-requeue  Move dead-lettered notification deliveries back to pending
 
 Options:
   --from <ledger>  First ledger to cover. Defaults to the oldest ledger the
@@ -47,6 +49,7 @@ Options:
   --replay-store <path>    replay: keep the isolated SQLite store at this path
                    (default: in memory, discarded on exit). Never the live DB.
   --subscription <id>  Limit webhooks-requeue to one subscription
+  --destination <id>   Limit notifications-requeue to one destination
   -h, --help       Show this message
 
 Environment:
@@ -68,6 +71,12 @@ Environment:
   WEBHOOK_SUBSCRIPTIONS_FILE  JSON file of webhook subscriptions
   READY_MAX_STALENESS_MS  Max age of the last good batch for /readyz
                        (default ${DEFAULT_READY_MAX_STALENESS_MS})
+  EMAIL_API_URL        HTTP endpoint for the email transport used by "email"
+                       notification destinations (accepts {from,to,subject,text})
+  EMAIL_API_KEY        Bearer token sent to EMAIL_API_URL
+  EMAIL_FROM           "From" address sent to EMAIL_API_URL
+  NOTIFICATION_POLL_INTERVAL_MS  Notification worker poll interval (default 2000)
+  NOTIFICATION_MAX_ATTEMPTS      Attempts before dead-lettering (default 8)
 `;
 
 const targets = loadTargets();
@@ -91,6 +100,7 @@ function parseArgs(argv) {
     json: false,
     help: false,
     subscription: undefined,
+    destination: undefined,
     beforeCheckpoint: undefined,
     afterCheckpoint: undefined,
     checkpoint: undefined,
@@ -112,6 +122,8 @@ function parseArgs(argv) {
       args.json = true;
     } else if (arg === "--subscription") {
       args.subscription = argv[(index += 1)];
+    } else if (arg === "--destination") {
+      args.destination = argv[(index += 1)];
     } else if (arg === "--replay-store") {
       args.replayStore = argv[(index += 1)];
     } else if (arg in numericOptions) {
@@ -131,7 +143,7 @@ function parseArgs(argv) {
       throw new Error(`${flag} must be a positive integer`);
     }
   }
-  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue"].includes(args.command)) {
+  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue", "notifications-requeue"].includes(args.command)) {
     throw new Error(`unknown command ${args.command}`);
   }
   return args;
@@ -279,6 +291,14 @@ async function serve({ store, stellar }) {
     backoffMaxMs: Number(process.env.WEBHOOK_BACKOFF_MAX_MS ?? 3_600_000),
     timeoutMs: Number(process.env.WEBHOOK_TIMEOUT_MS ?? 10_000),
   });
+  const notifications = createNotificationDispatcher({
+    store,
+    metrics,
+    maxAttempts: Number(process.env.NOTIFICATION_MAX_ATTEMPTS ?? 8),
+    backoffBaseMs: Number(process.env.NOTIFICATION_BACKOFF_BASE_MS ?? 5000),
+    backoffMaxMs: Number(process.env.NOTIFICATION_BACKOFF_MAX_MS ?? 3_600_000),
+    timeoutMs: Number(process.env.NOTIFICATION_TIMEOUT_MS ?? 10_000),
+  });
 
   async function indexAvailableEvents() {
     if (indexing) return;
@@ -369,6 +389,7 @@ async function serve({ store, stellar }) {
       .finally(() => void reconcileBalances());
   });
   webhooks.start(Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000));
+  notifications.start(Number(process.env.NOTIFICATION_POLL_INTERVAL_MS ?? 2000));
 
   const indexTimer = setInterval(() => {
     void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
@@ -379,6 +400,7 @@ async function serve({ store, stellar }) {
     clearInterval(indexTimer);
     clearInterval(reconcileTimer);
     webhooks.stop();
+    notifications.stop();
     api.close(() => {
       store.close().finally(() => process.exit(0));
     });
@@ -412,6 +434,16 @@ async function main() {
       now: new Date().toISOString(),
     });
     console.log(`Requeued ${requeued} dead-lettered deliveries`);
+    await store.close();
+    return;
+  }
+
+  if (args.command === "notifications-requeue") {
+    const requeued = await store.requeueDeadNotificationDeliveries({
+      destinationId: args.destination,
+      now: new Date().toISOString(),
+    });
+    console.log(`Requeued ${requeued} dead-lettered notification deliveries`);
     await store.close();
     return;
   }

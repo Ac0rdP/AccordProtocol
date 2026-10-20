@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { StrKey } from "@stellar/stellar-sdk";
 import { createRecurringPaymentProposal } from "../lib/submit";
 import { displayToStroops, formatInterval } from "../lib/soroban";
+import { AddressBookField } from "./AddressBookField";
+import { ProposalTemplatePicker } from "./ProposalTemplatePicker";
 import type { ProposalCategory } from "../types/accord";
 
 const TOKEN_ADDRESSES: Record<string, string> = {
@@ -362,6 +364,35 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
               </p>
             </div>
 
+            <ProposalTemplatePicker
+              idPrefix="recurring-template"
+              fields={{
+                recipient,
+                amount,
+                token,
+                category,
+                kind,
+                interval,
+                cliff,
+                endDate: end,
+                cap,
+              }}
+              onApply={(fields) => {
+                if (fields.recipient) {
+                  setRecipient(fields.recipient);
+                  setRecipientTouched(true);
+                }
+                if (fields.amount) setAmount(fields.amount);
+                if (fields.token) setToken(fields.token);
+                if (fields.category) setCategory(fields.category as ProposalCategory);
+                if (fields.kind) setKind(fields.kind as RecurringKind);
+                if (fields.interval) setInterval(fields.interval);
+                if (fields.cliff) setCliff(fields.cliff);
+                if (fields.endDate) setEnd(fields.endDate);
+                if (fields.cap) setCap(fields.cap);
+              }}
+            />
+
             {/* ── Proposer ── */}
             <div>
               <label className="text-xs text-zinc-400 block mb-1.5">Proposer</label>
@@ -379,6 +410,15 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
             {/* ── Recipient ── */}
             <div>
               <label htmlFor="recurring-recipient" className="text-xs text-zinc-400 block mb-1.5">Recipient Address</label>
+              <AddressBookField
+                idPrefix="recurring-recipient"
+                address={recipient}
+                isValidAddress={StrKey.isValidEd25519PublicKey(recipient.trim())}
+                onSelectAddress={(addr) => {
+                  setRecipient(addr);
+                  setRecipientTouched(true);
+                }}
+              />
               <input
                 id="recurring-recipient"
                 ref={firstInputRef}
@@ -389,7 +429,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                 aria-label="Recipient Stellar address"
                 aria-invalid={recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim())}
                 aria-describedby={recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim()) ? "recurring-recipient-error" : undefined}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                className="mt-1.5 w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
               />
               {recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim()) && (
                 <p id="recurring-recipient-error" className="text-xs text-red-400 mt-1" role="alert">Enter a valid Stellar address.</p>

@@ -15,6 +15,7 @@ import {
   computeMonthlyOutflow,
 } from "../lib/contract";
 import type { DashboardStat, Owner, Proposal } from "../types/accord";
+import { getOwnerLabel } from "../lib/ownerLabels";
 
 type ContractState = {
   proposals: Proposal[];
@@ -111,7 +112,7 @@ export function useContract(walletAddress: string | null): ContractState {
           ownerAddrs.map((addr: string, i: number) => ({
             address: `${addr.slice(0, 6)}...${addr.slice(-4)}`,
             fullAddress: addr,
-            label: addr === walletAddress ? "You" : `Signer ${i + 1}`,
+            label: getOwnerLabel(addr) ?? (addr === walletAddress ? "You" : `Signer ${i + 1}`),
             roles: ownerRoles[i] ?? [],
             weight: ownerWeights[i] ?? 0,
           }))

@@ -17,6 +17,8 @@ import {
 } from "../lib/contract";
 import { displayToStroops, formatWeightPercent } from "../lib/soroban";
 import { VotingPowerPreview } from "./VotingPowerPreview";
+import { AddressBookField } from "./AddressBookField";
+import { ProposalTemplatePicker } from "./ProposalTemplatePicker";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { ProposalKind } from "../types/accord";
 // Testnet token addresses — swap for mainnet when ready
@@ -656,10 +658,33 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
         {/* Transfer specific fields */}
         {formType === "transfer" && (
           <>
+            <ProposalTemplatePicker
+              idPrefix="proposal-template"
+              fields={{ recipient: to, amount, token, description }}
+              onApply={(fields) => {
+                if (fields.recipient) {
+                  setTo(fields.recipient);
+                  setRecipientTouched(true);
+                }
+                if (fields.amount) setAmount(fields.amount);
+                if (fields.token) setToken(fields.token);
+                if (fields.description) setDescription(fields.description);
+              }}
+            />
+
             <div>
               <label className="text-xs text-zinc-400 block mb-1.5">
                 Recipient Address
               </label>
+              <AddressBookField
+                idPrefix="proposal-recipient"
+                address={to}
+                isValidAddress={StrKey.isValidEd25519PublicKey(to.trim())}
+                onSelectAddress={(addr) => {
+                  setTo(addr);
+                  setRecipientTouched(true);
+                }}
+              />
               <input
                 ref={firstInputRef}
                 value={to}
@@ -669,7 +694,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 }}
                 onBlur={() => setRecipientTouched(true)}
                 placeholder="G..."
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
+                className="mt-1.5 w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
               />
               {recipientTouched && !StrKey.isValidEd25519PublicKey(to.trim()) && (
                 <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>

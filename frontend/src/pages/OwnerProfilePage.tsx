@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Check, Copy, ArrowLeft } from "lucide-react";
 import { EmptyState } from "../components/EmptyState";
 import { ProposalCard } from "../components/ProposalCard";
+import { EditableOwnerLabel } from "../components/EditableOwnerLabel";
 import type { Owner, Proposal, Role } from "../types/accord";
 import { aggregateOwnerActivity, addressesMatch } from "../lib/ownerActivity";
 
@@ -38,6 +39,7 @@ export function OwnerProfilePage({
   const { address = "" } = useParams<{ address: string }>();
   const [activeTab, setActiveTab] = useState<"created" | "approved">("created");
   const [copied, setCopied] = useState(false);
+  const [labelOverride, setLabelOverride] = useState<string | null>(null);
 
   const decodedAddress = decodeURIComponent(address);
 
@@ -46,6 +48,8 @@ export function OwnerProfilePage({
     () => owners.find((o) => addressesMatch(o.fullAddress, decodedAddress)),
     [owners, decodedAddress],
   );
+
+  const displayLabel = labelOverride ?? ownerRecord?.label ?? "Owner Profile";
 
   const activity = useMemo(
     () => aggregateOwnerActivity(decodedAddress, proposals),
@@ -85,13 +89,20 @@ export function OwnerProfilePage({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
             <div className="h-12 w-12 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-emerald-400 font-semibold text-lg shrink-0">
-              {ownerRecord?.label ? ownerRecord.label[0] : "O"}
+              {displayLabel[0]}
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2 mb-1">
-                <h1 className="text-xl font-semibold text-white">
-                  {ownerRecord?.label ?? "Owner Profile"}
-                </h1>
+                {ownerRecord ? (
+                  <EditableOwnerLabel
+                    address={ownerRecord.fullAddress}
+                    label={displayLabel}
+                    onSaved={setLabelOverride}
+                    className="text-xl font-semibold text-white"
+                  />
+                ) : (
+                  <h1 className="text-xl font-semibold text-white">{displayLabel}</h1>
+                )}
                 {typeof ownerRecord?.weight === "number" && (
                   <span className="rounded-md border border-zinc-700 bg-zinc-800/80 px-2 py-0.5 text-xs font-mono text-zinc-300">
                     Weight {ownerRecord.weight}

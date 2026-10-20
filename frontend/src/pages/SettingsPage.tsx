@@ -15,6 +15,7 @@ import {
 } from "../lib/submit";
 import { StrKey } from "@stellar/stellar-sdk";
 import { PageState } from "../components/PageState";
+import { NotificationDestinationsPanel } from "../components/NotificationDestinationsPanel";
 import type { DashboardStat } from "../types/accord";
 
 const MAX_DESCRIPTION_LEN = 300;
@@ -544,6 +545,8 @@ export function SettingsPage({
           </div>
         </div>
       </div>
+
+      <NotificationDestinationsPanel />
     </div>
   );
 }

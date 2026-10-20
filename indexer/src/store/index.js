@@ -47,6 +47,10 @@ export function resolveStoreConfig(env = process.env) {
  *   getLatestAccordEventId() / getAccordEventsAfter(id, limit)
  *   enqueueWebhookDeliveries / claimDueWebhookDeliveries / completeWebhookDelivery
  *   countWebhookDeliveries / listWebhookDeliveries / requeueDeadWebhookDeliveries
+ *   upsertNotificationDestination / listNotificationDestinations
+ *   getNotificationDestination / deleteNotificationDestination
+ *   enqueueNotificationDeliveries / claimDueNotificationDeliveries / completeNotificationDelivery
+ *   countNotificationDeliveries / listNotificationDeliveries / requeueDeadNotificationDeliveries
  *   close()
  *
  * plus a `backend` string. Timestamps are ISO 8601 strings on both backends.
