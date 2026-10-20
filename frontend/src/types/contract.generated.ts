@@ -11,7 +11,8 @@ export type ContractProposalStatus =
   | "Ready"
   | "Executed"
   | "Expired"
-  | "Revoked";
+  | "Revoked"
+  | "Cancelled";
 
 export type ContractRole = "Proposer" | "Approver" | "Executor" | "Viewer";
 
@@ -33,7 +34,10 @@ export type ContractAssetTransfer = {
 
 export type ContractRecurringStatus = "Active" | "Paused" | "Completed" | "Cancelled";
 
-export type ContractRecurringKind = "FixedAmountPerPeriod" | "LinearVesting";
+export type ContractRecurringKind =
+  | "FixedAmountPerPeriod"
+  | "LinearVesting"
+  | "ContinuousStream";
 
 export type ContractRecurringPayment = {
   id: number;

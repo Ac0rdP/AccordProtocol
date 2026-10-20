@@ -446,6 +446,8 @@ The indexer decodes and stores every event the Accord contract emits (`contracts
 | `approved` | `ProposalApprovedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `threshold: u32`, `weight: u32`, `cumulative_weight: u32` |
 | `revoked` | `ProposalRevokedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `weight: u32`, `cumulative_weight: u32` |
 | `executed` | `ProposalExecutedEvent` | `id: u64`, `executor: Address`, `transfers: Vec<Transfer>` |
+| `p_canc` | `ProposalCancelledEvent` | `id: u64`, `proposer: Address` |
+| `exp_sw` | `ExpiredProposalsSweptEvent` | `swept: u32` |
 
 ### Governance and ownership
 
@@ -472,6 +474,7 @@ The indexer decodes and stores every event the Accord contract emits (`contracts
 | --- | --- | --- |
 | `r_crt` | `RecurringPaymentCreatedEvent` | `id: u64`, `proposer: Address`, `recipient: Address`, `token: Address`, `amount: i128`, `interval_secs: u64`, `start_time: u64`, `end_time: u64`, `cliff_time: u64`, `total_cap: i128`, `kind: RecurringKind` |
 | `rpay` | `RecurringPaymentDisbursedEvent` | `schedule_id: u64`, `recipient: Address`, `token: Address`, `amount: i128`, `total_disbursed: i128`, `periods_disbursed: u32` |
+| `str_clm` | `RecurringStreamClaimedEvent` | `schedule_id: u64`, `recipient: Address`, `token: Address`, `amount: i128`, `total_disbursed: i128` |
 | `r_pause` | `RecurringPaymentPausedEvent` | `id: u64`, `caller: Address` |
 | `r_resum` | `RecurringPaymentResumedEvent` | `id: u64`, `caller: Address` |
 | `r_mod` | `RecurringPaymentModifiedEvent` | `schedule_id: u64`, `previous_amount: i128`, `new_amount: i128`, `previous_interval: u64`, `new_interval: u64`, `previous_end_time: u64`, `new_end_time: u64` |

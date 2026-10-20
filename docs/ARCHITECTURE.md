@@ -404,6 +404,8 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 | **Role: Proposer** | All `create_*_proposal` entrypoints (transfers, owner/weight/threshold/spending-limit changes, recurring schedules, grant/revoke role) | Caller must hold `Proposer`. Non-owner proposers may draft; owner proposers still get spending-limit checks. |
 | **Owner + Role: Approver** | `approve`, `revoke` | Caller must be an **owner** (source of voting weight) **and** hold `Approver`. |
 | **Role: Executor** | `execute`, `cancel_expired` | Caller must hold `Executor` (may be a keeper that is not an owner). |
+| **Permissionless keeper** | `sweep_expired` | Any authenticated caller may sweep expired IDs; no role is required and the entrypoint remains callable while frozen. |
+| **Proposal proposer** | `cancel_proposal` | Only the original proposer may cancel a proposal that is still `Pending`. |
 | **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
 | **Guardian-only** | `freeze` (after guardian is set) | Guardian address must match; separate from RBAC roles. |
 | **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank. |
@@ -418,8 +420,9 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
         create_* ───────────────┼─────────────── approve/revoke
         (Proposer)              │               (owner + Approver)
                                 │
-                          execute / cancel_expired
-                                (Executor)
+                execute / cancel_expired
+                     (Executor)     sweep_expired
+                                      (any caller)
                                 │
                  ┌──────────────┴───────────────┐
                  │  Governance security path    │
@@ -677,6 +680,7 @@ pub struct RecurringPayment {
 #### Payment Types (`RecurringKind`)
 - **FixedAmountPerPeriod**: Periodic payouts (e.g. salary). Each successful disbursement releases a set `amount` after each `interval_secs`.
 - **LinearVesting**: Continuous second-by-second vesting (e.g. token grants). Claimable amounts accrue continuously between `start_time` and `end_time` up to `total_cap`.
+- **ContinuousStream**: `amount` is the token rate per second. The recipient calls `claim_stream` to withdraw newly accrued value; accrual begins at `start_time`, is gated by `cliff_time`, stops at `end_time`, and is limited by a positive `total_cap`.
 
 ---
 

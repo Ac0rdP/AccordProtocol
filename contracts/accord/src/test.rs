@@ -5382,9 +5382,9 @@ fn create_proposal_rejects_invalid_transfer_count() {
         Err(Ok(ContractError::InvalidAmount))
     );
 
-    // More than 3 transfers should be rejected.
+    // More than the documented batch maximum should be rejected.
     let mut too_many = Vec::new(&env);
-    for _ in 0..4 {
+    for _ in 0..=MAX_BATCH_TRANSFERS {
         too_many.push_back(Transfer {
             to: Address::generate(&env),
             token: token_client.address.clone(),
@@ -5402,7 +5402,7 @@ fn create_proposal_rejects_invalid_transfer_count() {
         Err(Ok(ContractError::InvalidAmount))
     );
 
-    // Exactly 1 and 3 should succeed (boundary check).
+    // A single transfer and the maximum batch size should be accepted.
     let mut one = Vec::new(&env);
     one.push_back(Transfer {
         to: Address::generate(&env),
@@ -5419,9 +5419,9 @@ fn create_proposal_rejects_invalid_transfer_count() {
         )
         .is_ok());
 
-    let mut three = Vec::new(&env);
-    for _ in 0..3 {
-        three.push_back(Transfer {
+    let mut maximum = Vec::new(&env);
+    for _ in 0..MAX_BATCH_TRANSFERS {
+        maximum.push_back(Transfer {
             to: Address::generate(&env),
             token: token_client.address.clone(),
             amount: 1_000_000,
@@ -5430,12 +5430,65 @@ fn create_proposal_rejects_invalid_transfer_count() {
     assert!(client
         .try_create_proposal(
             &owner_a,
-            &three,
-            &str(&env, "Three transfers"),
+            &maximum,
+            &str(&env, "Maximum batch"),
             &DEADLINE,
             &ProposalCategory::Transfer,
         )
         .is_ok());
+}
+
+#[test]
+fn batch_proposal_executes_all_maximum_size_transfers() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let mut transfers = Vec::new(&env);
+    let mut recipients = Vec::new(&env);
+    for _ in 0..MAX_BATCH_TRANSFERS {
+        let recipient = Address::generate(&env);
+        recipients.push_back(recipient.clone());
+        transfers.push_back(Transfer {
+            to: recipient,
+            token: token_client.address.clone(),
+            amount: 10,
+        });
+    }
+
+    let proposal_id = client.create_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "Maximum payroll batch"),
+        &DEADLINE,
+        &ProposalCategory::Payroll,
+    );
+    client.approve(&owner_a, &proposal_id);
+    client.approve(&owner_b, &proposal_id);
+    client.execute(&owner_c, &proposal_id);
+
+    for recipient in recipients.iter() {
+        assert_eq!(token_client.balance(&recipient), 10);
+    }
+}
+
+#[test]
+fn batch_proposal_rejects_invalid_entry_at_creation() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let mut transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+    transfers.push_back(Transfer {
+        to: Address::generate(&env),
+        token: Address::generate(&env),
+        amount: 10,
+    });
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &transfers,
+            &str(&env, "Invalid batch"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::InvalidToken))
+    );
 }
 
 #[test]
@@ -10771,3 +10824,323 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     assert_eq!(token_client.balance(&recipient), 0);
 }
 
+fn create_test_stream(
+    env: &Env,
+    client: &AccordContractClient<'static>,
+    proposer: &Address,
+    approver: &Address,
+    executor: &Address,
+    recipient: &Address,
+    token: &Address,
+    amount_per_second: i128,
+    start_time: u64,
+    end_time: u64,
+    cliff_time: u64,
+    total_cap: i128,
+) -> u64 {
+    let interval_secs = 60_u64;
+    let proposal_id = client.create_recurring_proposal(
+        proposer,
+        recipient,
+        token,
+        &amount_per_second,
+        &interval_secs,
+        &start_time,
+        &end_time,
+        &cliff_time,
+        &total_cap,
+        &RecurringKind::ContinuousStream,
+        &str(env, "Continuous payment stream"),
+        &DEADLINE,
+        &ProposalCategory::Grant,
+    );
+    client.approve(proposer, &proposal_id);
+    client.approve(approver, &proposal_id);
+    client.execute(executor, &proposal_id);
+    1
+}
+
+#[test]
+fn continuous_stream_accrues_per_second_and_supports_partial_claims() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        0,
+    );
+
+    assert_eq!(
+        client.try_claim_stream(&owner_b, &schedule_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    set_timestamp(&env, NOW + 2);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 6);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 6);
+
+    set_timestamp(&env, NOW + 5);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 15);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 15);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let claim_event = contract_events.events().iter().find(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("str_clm")
+            })
+            .unwrap_or(false)
+    }).expect("expected stream claim event");
+    let event_data = match &claim_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RecurringStreamClaimedEvent = event_data.into_val(&env);
+    assert_eq!(event.amount, 9);
+    assert_eq!(event.total_disbursed, 15);
+}
+
+#[test]
+fn continuous_stream_claims_are_blocked_until_the_cliff() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        NOW + 3,
+        0,
+    );
+
+    set_timestamp(&env, NOW + 2);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    set_timestamp(&env, NOW + 3);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 9);
+}
+
+#[test]
+fn continuous_stream_claims_respect_the_total_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        5,
+    );
+
+    set_timestamp(&env, NOW + 1);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 3);
+
+    set_timestamp(&env, NOW + 3);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 5);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 5);
+    assert_eq!(client.get_active_recurring_count(), 0);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
+    );
+}
+
+#[test]
+fn proposer_can_cancel_only_a_pending_proposal_and_active_count_decrements_once() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let pending_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Cancel pending"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(read_active_count(&env), 1);
+    client.cancel_proposal(&owner_a, &pending_id);
+    assert_eq!(client.get_proposal(&pending_id).status, ProposalStatus::Cancelled);
+    assert_eq!(read_active_count(&env), 0);
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &pending_id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+    assert_eq!(read_active_count(&env), 0);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    assert!(contract_events.events().iter().any(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("p_canc")
+            })
+            .unwrap_or(false)
+    }));
+
+    let ready_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Already ready"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &ready_id);
+    client.approve(&owner_b, &ready_id);
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &ready_id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+
+    let non_proposer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Wrong caller"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        client.try_cancel_proposal(&owner_b, &non_proposer_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    let terminal_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Already executed"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &terminal_id);
+    client.approve(&owner_b, &terminal_id);
+    client.execute(&owner_c, &terminal_id);
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &terminal_id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+}
+
+#[test]
+fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let mut guardian_approvers = Vec::new(&env);
+    guardian_approvers.push_back(owner_a.clone());
+    guardian_approvers.push_back(owner_b.clone());
+    client.set_guardian(&guardian_approvers, &guardian);
+
+    let expired_one = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Expired one"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let expired_two = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Expired two"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let live = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Still live"),
+        &(DEADLINE + 86_400),
+        &ProposalCategory::Transfer,
+    );
+
+    set_timestamp(&env, DEADLINE + 1);
+    client.freeze(&guardian);
+    let mut ids = Vec::new(&env);
+    ids.push_back(expired_one);
+    ids.push_back(expired_two);
+    ids.push_back(live);
+    ids.push_back(expired_one);
+
+    assert_eq!(client.sweep_expired(&non_owner, &ids), 2);
+    assert_eq!(read_active_count(&env), 1);
+    assert_eq!(client.get_proposal(&live).status, ProposalStatus::Pending);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let first_sweep_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let symbol: Symbol = topic.clone().into_val(&env);
+                    symbol == symbol_short!("exp_sw")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected expiry sweep event");
+    let event_data = match &first_sweep_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: ExpiredProposalsSweptEvent = event_data.into_val(&env);
+    assert_eq!(event.swept, 2);
+
+    assert_eq!(client.sweep_expired(&non_owner, &ids), 0);
+    assert_eq!(read_active_count(&env), 1);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let sweep_event = contract_events.events().iter().rev().find(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("exp_sw")
+            })
+            .unwrap_or(false)
+    }).expect("expected expiry sweep event");
+    let event_data = match &sweep_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: ExpiredProposalsSweptEvent = event_data.into_val(&env);
+    assert_eq!(event.swept, 0);
+}

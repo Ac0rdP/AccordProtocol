@@ -186,8 +186,12 @@ A proposal is a single proposed action — such as a token transfer, recurring d
 See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle), **ProposalStatus**, **Quorum weight**.
 
 **ProposalStatus**
-ProposalStatus is a proposal's current lifecycle state (`ProposalStatus` enum). The contract defines five variants: `Pending` (created, not yet enough approvals), `Ready` (quorum weight reached, awaiting execution), `Executed` (successfully run), `Expired` (deadline passed before execution), and `Revoked` (a terminal state in the type system, though calling `revoke()` in the current contract withdraws an individual vote rather than cancelling the proposal outright).
+ProposalStatus is a proposal's current lifecycle state (`ProposalStatus` enum). It includes `Pending` (created, not yet enough approvals), `Ready` (quorum weight reached, awaiting execution), `Executed` (successfully run), `Expired` (deadline passed before execution), `Revoked`, and `Cancelled` (withdrawn by its proposer before reaching quorum).
 See also: [Architecture §4 — Proposal Lifecycle](./ARCHITECTURE.md#4-proposal-lifecycle), **Proposal**.
+
+**Continuous stream**
+A continuous stream is a recurring payment schedule that accrues its configured token rate per second from its start time through its end time. The recipient can claim accrued funds at any time after the cliff, subject to the schedule's total cap.
+See also: [Contract API — claim_stream](./CONTRACT_API.md#claim_stream), **RecurringPayment**.
 
 **Proposer (proposal field)**
 On a given proposal, the proposer (`Proposal.proposer`) is the address that submitted that proposal. Their address is recorded in the proposal struct and emitted in `ProposalCreatedEvent`.
