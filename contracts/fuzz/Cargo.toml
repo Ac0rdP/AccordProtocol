@@ -25,3 +25,10 @@ path = "fuzz_targets/proposal_bookkeeping.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "proposal_input_validation"
+path = "fuzz_targets/proposal_input_validation.rs"
+test = false
+doc = false
+bench = false

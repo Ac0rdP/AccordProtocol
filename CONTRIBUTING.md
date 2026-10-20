@@ -666,6 +666,14 @@ To fuzz proposal IDs and active-proposal bookkeeping across create, approve, rev
 cargo +nightly fuzz run --fuzz-dir contracts/fuzz proposal_bookkeeping
 ```
 
+To fuzz proposal input validation (description length and content, deadline boundaries including past and far-future values, and malformed category encodings), run:
+
+```bash
+cargo +nightly fuzz run --fuzz-dir contracts/fuzz proposal_input_validation
+```
+
+The target asserts that invalid descriptions, deadlines, and categories are rejected with the expected `ContractError` (or a decoding error for categories) and that no input panics. Add `-- -max_total_time=60` to bound a run to 60 seconds.
+
 ---
 
 ## Debugging tips
