@@ -644,6 +644,44 @@ If your change touches both areas, run **both** frontend and contract commands a
 - **Contracts:** add or extend tests alongside behavior changes. Prefer tests that encode **invariants** (for example, cannot execute below threshold).
 - **Frontend:** add or extend Vitest unit/component tests (`npm run test`) for logic and page states, and Playwright end-to-end tests (`npm run e2e`) for user flows. Every page must cover loading, empty, and error states in the page-state matrix (`frontend/src/pages/pageStateMatrix.test.tsx`).
 
+### Flaky tests and quarantine
+
+A test is **flaky** when it both passes and fails without a code change. We track
+per-test pass/fail history and report the flakiest tests so they get fixed rather
+than retried forever.
+
+```bash
+# After a test run, record results (JUnit XML, or JSON [{name, status}])
+node scripts/flaky-tests.mjs record --results=results.xml --run=$GITHUB_RUN_ID
+# Dashboard: flakiest tests, quarantined tests, resolved tests, weekly trend
+node scripts/flaky-tests.mjs report --out=flaky-report.md
+# Validate quarantine.json (used as a gate)
+node scripts/flaky-tests.mjs check
+# Unit tests for the tooling
+node --test scripts/flaky-tests.test.mjs
+```
+
+History lives in `data/test-history.json` (kept bounded to 200 runs per test; CI
+should persist it, e.g. as an artifact or cache). A test is flagged when it has at
+least 5 runs, both outcomes, and a pass/fail flip rate of 10% or more.
+
+**Quarantine process**
+
+1. Open an issue for the flaky test and assign an owner.
+2. Add an entry to `quarantine.json` in the same PR that marks the test as
+   non-blocking (for example `#[ignore]` with a comment, or `test.skip`/a retry-free
+   non-required job). Quarantined tests must still run and be recorded, so
+   they remain visible on the dashboard; never delete or silently skip them.
+   ```json
+   { "name": "suite::test_name", "status": "quarantined", "issue": "#123",
+     "owner": "github-handle", "since": "2026-10-20" }
+   ```
+3. A quarantine lasts at most 30 days. `check` fails for entries with no issue or
+   owner, or older than 30 days, so they are fixed, escalated or removed.
+4. When fixed, un-quarantine the test and change the entry to
+   `"status": "fixed"` with `"fixedIn": "<PR or commit>"`. It then appears under
+   "Resolved" on the dashboard.
+
 ### Fuzzing contract weight arithmetic
 
 The `contracts/fuzz` cargo-fuzz target exercises owner-weight and approval-weight updates, checking that current owner weights sum to the stored total and that proposal approvals stay within the total weight snapshotted at proposal creation. The fuzzer requires the nightly Rust toolchain and [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz). Install them, then run it from the repository root:
