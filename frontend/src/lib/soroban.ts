@@ -1,9 +1,7 @@
-export function formatDeadline(ts: bigint): string {
-  return new Date(Number(ts) * 1000).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+import { formatDate, formatDigitsForLocale, getActiveLocale } from "./formatters";
+
+export function formatDeadline(ts: bigint, locale: string = getActiveLocale()): string {
+  return formatDate(Number(ts) * 1000, { month: "short", day: "numeric", year: "numeric" }, locale);
 }
 
 export function shortenAddr(addr: string): string {
@@ -169,12 +167,14 @@ export function formatCountdown(targetMs: number): string {
 /**
  * Format decimal token units without converting strings through Number.
  * bigint inputs are base units; Stellar XLM and USDC both default to 7 decimals.
- * Other tokens can supply their decimals explicitly. Output uses en-US grouping.
+ * Other tokens can supply their decimals explicitly. Grouping and decimal
+ * separators follow the active UI locale (or the `locale` override).
  */
 export function formatCurrency(
   value: string | number | bigint,
   token: string,
   decimals = 7,
+  locale: string = getActiveLocale(),
 ): string {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 100) return "—";
   let text: string;
@@ -185,7 +185,10 @@ export function formatCurrency(
   } else {
     if (typeof value === "number" && !Number.isFinite(value)) return "—";
     text = String(value).trim();
-    // Intl expands scientific notation for numeric chart values.
+    // Fixed-point digit extraction, not display — always "en-US" shaped
+    // (plain "." decimal, no grouping) regardless of locale, since the
+    // regex below parses it and the locale-correct separators are applied
+    // afterward via `formatDigitsForLocale`.
     if (typeof value === "number") text = value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: decimals });
   }
   const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(text);
@@ -194,10 +197,10 @@ export function formatCurrency(
   const scale = 10n ** BigInt(decimals);
   let units = BigInt(whole) * scale + BigInt(fraction.slice(0, decimals).padEnd(decimals, "0") || "0");
   if (Number(fraction[decimals] ?? "0") >= 5) units += 1n;
-  const integer = (units / scale).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   const places = Math.min(2, decimals);
   const tail = (units % scale).toString().padStart(decimals, "0").replace(/0+$/, "").padEnd(places, "0");
-  return `${sign === "-" && units !== 0n ? "-" : ""}${integer}${tail ? `.${tail}` : ""} ${token}`;
+  const digits = formatDigitsForLocale((units / scale).toString(), tail, locale);
+  return `${sign === "-" && units !== 0n ? "-" : ""}${digits} ${token}`;
 }
 
 /** Format percentage points (25 means 25%, not 2500%). */
@@ -218,22 +221,27 @@ export function formatWeightPercent(weight: number, totalWeight: number, fractio
   return formatPercent(weightToPercent(weight, totalWeight), fractionDigits);
 }
 
-/** Numeric timestamps are Unix seconds; strings are ISO dates. Always render UTC. */
+/**
+ * Numeric timestamps are Unix seconds; strings are ISO dates. Always render
+ * in UTC (chart axes must not shift with the viewer's timezone), but the
+ * month/day names follow the active UI locale.
+ */
 export function formatTimeSeriesLabel(
   timestamp: string | number | Date,
   granularity: "day" | "week" | "month" = "day",
+  locale: string = getActiveLocale(),
 ): string {
   const date = timestamp instanceof Date ? timestamp : new Date(typeof timestamp === "number" ? timestamp * 1000 : timestamp);
   if (!Number.isFinite(date.getTime())) return "—";
-  return date.toLocaleDateString("en-US", {
+  return formatDate(date, {
     timeZone: "UTC", month: "short",
     ...(granularity === "month" ? { year: "numeric" as const } : { day: "numeric" as const }),
-  });
+  }, locale);
 }
 
-/** Full UTC date for chart tooltips. */
-export function formatAnalyticsDate(timestamp: string | number | Date): string {
+/** Full UTC date for chart tooltips, in the active UI locale. */
+export function formatAnalyticsDate(timestamp: string | number | Date, locale: string = getActiveLocale()): string {
   const date = timestamp instanceof Date ? timestamp : new Date(typeof timestamp === "number" ? timestamp * 1000 : timestamp);
   if (!Number.isFinite(date.getTime())) return "—";
-  return date.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
+  return formatDate(date, { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" }, locale);
 }

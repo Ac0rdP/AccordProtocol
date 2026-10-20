@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Bell } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useNotificationCenter } from "../hooks/useNotificationCenter";
 import {
   getNotificationPreferences,
@@ -7,15 +8,16 @@ import {
   type NotificationEventType,
 } from "../lib/notificationPreferences";
 
-const EVENT_LABELS: Record<NotificationEventType, string> = {
-  proposal_created: "Proposal created",
-  proposal_approved: "Proposal approved",
-  proposal_ready: "Proposal ready to execute",
-  proposal_executed: "Proposal executed",
-  owner_weight_changed: "Owner weight changed",
-};
+const EVENT_TYPES: NotificationEventType[] = [
+  "proposal_created",
+  "proposal_approved",
+  "proposal_ready",
+  "proposal_executed",
+  "owner_weight_changed",
+];
 
 export function NotificationCenter() {
+  const { t } = useTranslation();
   const { notifications, unreadCount, markRead, markAllRead } = useNotificationCenter();
   const [open, setOpen] = useState(false);
   const [showPreferences, setShowPreferences] = useState(false);
@@ -42,7 +44,7 @@ export function NotificationCenter() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ""}`}
+        aria-label={`${t("notifications.title")}${unreadCount > 0 ? `, ${t("notifications.unread", { count: unreadCount })}` : ""}`}
         aria-expanded={open}
         className="relative inline-flex items-center justify-center rounded-lg p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400"
       >
@@ -50,7 +52,7 @@ export function NotificationCenter() {
         {unreadCount > 0 && (
           <span
             data-testid="notification-unread-badge"
-            className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-semibold text-black"
+            className="absolute -top-0.5 -end-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-semibold text-black"
           >
             {unreadCount > 99 ? "99+" : unreadCount}
           </span>
@@ -58,9 +60,9 @@ export function NotificationCenter() {
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl">
+        <div className="absolute end-0 z-50 mt-2 w-80 rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl">
           <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2.5">
-            <h3 className="text-sm font-semibold text-zinc-200">Notifications</h3>
+            <h3 className="text-sm font-semibold text-zinc-200">{t("notifications.title")}</h3>
             <div className="flex items-center gap-3">
               <button
                 type="button"
@@ -68,7 +70,7 @@ export function NotificationCenter() {
                 aria-pressed={showPreferences}
                 className="text-xs text-zinc-400 hover:text-zinc-200"
               >
-                {showPreferences ? "Done" : "Preferences"}
+                {showPreferences ? t("notifications.done") : t("notifications.preferences")}
               </button>
               {!showPreferences && unreadCount > 0 && (
                 <button
@@ -76,7 +78,7 @@ export function NotificationCenter() {
                   onClick={markAllRead}
                   className="text-xs text-emerald-400 hover:text-emerald-300"
                 >
-                  Mark all read
+                  {t("notifications.markAllRead")}
                 </button>
               )}
             </div>
@@ -84,21 +86,21 @@ export function NotificationCenter() {
 
           {showPreferences ? (
             <div className="max-h-80 space-y-3 overflow-y-auto p-3">
-              {(Object.keys(EVENT_LABELS) as NotificationEventType[]).map((type) => (
+              {EVENT_TYPES.map((type) => (
                 <label key={type} className="flex items-center justify-between text-sm text-zinc-300">
-                  <span>{EVENT_LABELS[type]}</span>
+                  <span>{t(`notifications.events.${type}`)}</span>
                   <input
                     type="checkbox"
                     checked={preferences[type]}
                     onChange={() => togglePreference(type)}
-                    aria-label={`Toggle ${EVENT_LABELS[type]} notifications`}
+                    aria-label={t(`notifications.events.${type}`)}
                     className="h-4 w-4 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-400 focus:ring-2"
                   />
                 </label>
               ))}
             </div>
           ) : notifications.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-zinc-500">No notifications yet.</p>
+            <p className="px-3 py-6 text-center text-sm text-zinc-500">{t("notifications.empty")}</p>
           ) : (
             <ul className="max-h-80 divide-y divide-zinc-800 overflow-y-auto">
               {notifications.map((n) => (

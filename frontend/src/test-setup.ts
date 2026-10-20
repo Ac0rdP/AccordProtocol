@@ -1,6 +1,9 @@
 import "@testing-library/jest-dom";
 import "vitest-axe/extend-expect";
 import { vi } from "vitest";
+// Mirrors main.tsx: initializes i18next before any component under test
+// renders, so useTranslation() resolves real strings instead of raw keys.
+import "./i18n";
 
 HTMLCanvasElement.prototype.getContext = vi.fn(() => null) as unknown as HTMLCanvasElement["getContext"];
 

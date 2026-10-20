@@ -1,0 +1,38 @@
+{
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "recurring": "المتكررة",
+    "history": "السجل",
+    "analytics": "التحليلات",
+    "owners": "الملاك",
+    "settings": "الإعدادات",
+    "docs": "المستندات"
+  },
+  "header": {
+    "network": "testnet",
+    "installFreighter": "تثبيت Freighter",
+    "connectWallet": "ربط المحفظة",
+    "connecting": "جاري الاتصال…"
+  },
+  "common": {
+    "retry": "إعادة المحاولة"
+  },
+  "languageSwitcher": {
+    "label": "اللغة"
+  },
+  "notifications": {
+    "title": "الإشعارات",
+    "unread": "{{count}} غير مقروء",
+    "preferences": "التفضيلات",
+    "done": "تم",
+    "markAllRead": "تحديد الكل كمقروء",
+    "empty": "لا توجد إشعارات حتى الآن.",
+    "events": {
+      "proposal_created": "تم إنشاء مقترح",
+      "proposal_approved": "تمت الموافقة على المقترح",
+      "proposal_ready": "المقترح جاهز للتنفيذ",
+      "proposal_executed": "تم تنفيذ المقترح",
+      "owner_weight_changed": "تم تغيير وزن المالك"
+    }
+  }
+}

@@ -79,7 +79,7 @@ export function OwnerProfilePage({
           to="/app/owners"
           className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-400 hover:text-white transition-colors"
         >
-          <ArrowLeft size={16} />
+          <ArrowLeft size={16} className="rtl:-scale-x-100" />
           Back to Owners
         </Link>
       </div>

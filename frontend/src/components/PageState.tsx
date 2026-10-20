@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 export type PageStateStatus = "loading" | "empty" | "error";
 
 type PageStateProps = {
@@ -22,10 +24,12 @@ export function PageState({
   title,
   description,
   onRetry,
-  retryLabel = "Retry",
+  retryLabel,
 }: PageStateProps) {
+  const { t } = useTranslation();
   const isError = status === "error";
   const isLoading = status === "loading";
+  const effectiveRetryLabel = retryLabel ?? t("common.retry");
 
   return (
     <div
@@ -58,7 +62,7 @@ export function PageState({
           onClick={onRetry}
           className="mt-5 rounded-lg bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
         >
-          {retryLabel}
+          {effectiveRetryLabel}
         </button>
       )}
     </div>
