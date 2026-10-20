@@ -86,6 +86,32 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx
       ON webhook_deliveries (status, next_attempt_at, id);
+    CREATE TABLE IF NOT EXISTS notification_destinations (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('webhook', 'slack', 'discord', 'email')),
+      config TEXT NOT NULL,
+      topics TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS notification_deliveries (
+      id INTEGER PRIMARY KEY,
+      destination_id TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'dead')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT NOT NULL,
+      last_error TEXT,
+      last_status_code INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      delivered_at TEXT,
+      UNIQUE (destination_id, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS notification_deliveries_due_idx
+      ON notification_deliveries (status, next_attempt_at, id);
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -167,6 +193,19 @@ export function openLedgerStore(databasePath) {
     ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
     ON CONFLICT(subscription_id, event_id) DO NOTHING
   `);
+  const upsertDestination = database.prepare(`
+    INSERT INTO notification_destinations (id, kind, config, topics, enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      kind = excluded.kind, config = excluded.config, topics = excluded.topics,
+      enabled = excluded.enabled, updated_at = excluded.updated_at
+  `);
+  const insertNotificationDelivery = database.prepare(`
+    INSERT INTO notification_deliveries (
+      destination_id, event_id, body, status, attempts, next_attempt_at, created_at, updated_at
+    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+    ON CONFLICT(destination_id, event_id) DO NOTHING
+  `);
 
   function inTransaction(work) {
     database.exec("BEGIN IMMEDIATE");
@@ -201,6 +240,40 @@ export function openLedgerStore(databasePath) {
     next_attempt_at AS nextAttemptAt, last_error AS lastError,
     last_status_code AS lastStatusCode, created_at AS createdAt, delivered_at AS deliveredAt
   `;
+
+  function toNotificationDelivery(row) {
+    return {
+      id: row.id,
+      destinationId: row.destinationId,
+      eventId: row.eventId,
+      body: row.body,
+      status: row.status,
+      attempts: row.attempts,
+      nextAttemptAt: row.nextAttemptAt,
+      lastError: row.lastError,
+      lastStatusCode: row.lastStatusCode,
+      createdAt: row.createdAt,
+      deliveredAt: row.deliveredAt,
+    };
+  }
+
+  const notificationDeliveryColumns = `
+    id, destination_id AS destinationId, event_id AS eventId, body, status, attempts,
+    next_attempt_at AS nextAttemptAt, last_error AS lastError,
+    last_status_code AS lastStatusCode, created_at AS createdAt, delivered_at AS deliveredAt
+  `;
+
+  function toDestination(row) {
+    return {
+      id: row.id,
+      kind: row.kind,
+      config: JSON.parse(row.config),
+      topics: row.topics ? JSON.parse(row.topics) : null,
+      enabled: Boolean(row.enabled),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
 
   return {
     backend: "sqlite",
@@ -403,6 +476,7 @@ export function openLedgerStore(databasePath) {
         const removedReconciliations = database.prepare("DELETE FROM reconciliation_results").run().changes;
         clearTokenBalances.run();
         database.prepare("DELETE FROM indexer_state WHERE key LIKE 'webhook_cursor:%'").run();
+        database.prepare("DELETE FROM indexer_state WHERE key LIKE 'notification_cursor:%'").run();
         return { removedEntries, removedEvents, removedReconciliations };
       });
     },
@@ -483,6 +557,100 @@ export function openLedgerStore(databasePath) {
           `).run(now, now, subscriptionId)
         : database.prepare(`
             UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?
+            WHERE status = 'dead'
+          `).run(now, now);
+      return Number(result.changes);
+    },
+
+    async upsertNotificationDestination({ id, kind, config, topics, enabled, now }) {
+      upsertDestination.run(
+        id, kind, JSON.stringify(config), topics ? JSON.stringify(topics) : null, enabled ? 1 : 0, now, now
+      );
+    },
+
+    async listNotificationDestinations() {
+      return database.prepare(`
+        SELECT id, kind, config, topics, enabled, created_at AS createdAt, updated_at AS updatedAt
+        FROM notification_destinations ORDER BY id ASC
+      `).all().map(toDestination);
+    },
+
+    async getNotificationDestination(id) {
+      const row = database.prepare(`
+        SELECT id, kind, config, topics, enabled, created_at AS createdAt, updated_at AS updatedAt
+        FROM notification_destinations WHERE id = ?
+      `).get(id);
+      return row ? toDestination(row) : null;
+    },
+
+    async deleteNotificationDestination(id) {
+      const result = database.prepare("DELETE FROM notification_destinations WHERE id = ?").run(id);
+      return result.changes > 0;
+    },
+
+    async enqueueNotificationDeliveries({ destinationId, deliveries, cursor, now }) {
+      return inTransaction(() => {
+        let inserted = 0;
+        for (const { eventId, body } of deliveries) {
+          inserted += Number(insertNotificationDelivery.run(destinationId, eventId, body, now, now, now).changes);
+        }
+        upsertState.run(`notification_cursor:${destinationId}`, String(cursor));
+        return inserted;
+      });
+    },
+
+    async claimDueNotificationDeliveries({ now, limit }) {
+      return database.prepare(`
+        SELECT ${notificationDeliveryColumns} FROM notification_deliveries
+        WHERE status = 'pending' AND next_attempt_at <= ?
+        ORDER BY id ASC LIMIT ?
+      `).all(now, limit).map(toNotificationDelivery);
+    },
+
+    async completeNotificationDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, now }) {
+      const status = outcome === "delivered" ? "delivered" : outcome === "dead" ? "dead" : "pending";
+      database.prepare(`
+        UPDATE notification_deliveries SET status = ?, attempts = ?, next_attempt_at = ?,
+          last_error = ?, last_status_code = ?, updated_at = ?,
+          delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
+        WHERE id = ?
+      `).run(status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, status, now, id);
+    },
+
+    async countNotificationDeliveries() {
+      const counts = { pending: 0, delivered: 0, dead: 0 };
+      for (const row of database.prepare("SELECT status, COUNT(*) AS count FROM notification_deliveries GROUP BY status").all()) {
+        counts[row.status] = Number(row.count);
+      }
+      return counts;
+    },
+
+    async listNotificationDeliveries({ status, destinationId, limit, offset }) {
+      const clauses = [];
+      const values = [];
+      if (status) {
+        clauses.push("status = ?");
+        values.push(status);
+      }
+      if (destinationId) {
+        clauses.push("destination_id = ?");
+        values.push(destinationId);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      return database.prepare(`
+        SELECT ${notificationDeliveryColumns} FROM notification_deliveries ${where}
+        ORDER BY id ASC LIMIT ? OFFSET ?
+      `).all(...values, limit, offset).map(toNotificationDelivery);
+    },
+
+    async requeueDeadNotificationDeliveries({ destinationId, now }) {
+      const result = destinationId
+        ? database.prepare(`
+            UPDATE notification_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?
+            WHERE status = 'dead' AND destination_id = ?
+          `).run(now, now, destinationId)
+        : database.prepare(`
+            UPDATE notification_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?
             WHERE status = 'dead'
           `).run(now, now);
       return Number(result.changes);

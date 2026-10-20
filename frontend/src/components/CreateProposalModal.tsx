@@ -17,6 +17,9 @@ import {
 } from "../lib/contract";
 import { displayToStroops, formatWeightPercent } from "../lib/soroban";
 import { VotingPowerPreview } from "./VotingPowerPreview";
+import { AddressBookField } from "./AddressBookField";
+import { ProposalTemplatePicker } from "./ProposalTemplatePicker";
+import { previewTransferProposal, type BalanceDeltaRow } from "../lib/transactionPreview";
 import { StrKey } from "@stellar/stellar-sdk";
 import type { ProposalKind } from "../types/accord";
 // Testnet token addresses — swap for mainnet when ready
@@ -155,6 +158,14 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
   const [feeEstimate, setFeeEstimate] = useState<number | null>(null);
   const [feeLoading, setFeeLoading] = useState(false);
   const [feeError, setFeeError] = useState(false);
+
+  // Transaction preview (transfer only): a blocking simulation that runs
+  // automatically on entering the preview step, so the fee and balance
+  // impact are known before the user can confirm.
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewFeeEstimate, setPreviewFeeEstimate] = useState<number | null>(null);
+  const [previewFeeError, setPreviewFeeError] = useState<string | null>(null);
+  const [previewBalances, setPreviewBalances] = useState<BalanceDeltaRow[]>([]);
 
   const firstInputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -453,11 +464,39 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     setStep("form");
   }
 
+  async function runTransferPreview(data: TransferFormData) {
+    setPreviewLoading(true);
+    setPreviewFeeEstimate(null);
+    setPreviewFeeError(null);
+    setPreviewBalances([]);
+    try {
+      const preview = await previewTransferProposal({
+        callerAddress: walletAddress!,
+        recipient: data.recipient,
+        tokenAddress: data.tokenAddr,
+        tokenSymbol: token,
+        amountStroops: data.amountStroops,
+        description: data.description,
+        deadlineUnix: data.deadlineUnix,
+      });
+      setPreviewFeeEstimate(preview.feeEstimate);
+      setPreviewFeeError(preview.feeError);
+      setPreviewBalances(preview.balances);
+    } catch (e) {
+      setPreviewFeeError(e instanceof Error ? e.message : "Transaction simulation failed. Please try again.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
   function handleSubmit() {
     const data = getValidatedForm();
     if (!data) return;
     clearError();
     setStep("preview");
+    if (data.type === "transfer") {
+      void runTransferPreview(data);
+    }
   }
 
   async function handleConfirmSubmit() {
@@ -656,10 +695,33 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
         {/* Transfer specific fields */}
         {formType === "transfer" && (
           <>
+            <ProposalTemplatePicker
+              idPrefix="proposal-template"
+              fields={{ recipient: to, amount, token, description }}
+              onApply={(fields) => {
+                if (fields.recipient) {
+                  setTo(fields.recipient);
+                  setRecipientTouched(true);
+                }
+                if (fields.amount) setAmount(fields.amount);
+                if (fields.token) setToken(fields.token);
+                if (fields.description) setDescription(fields.description);
+              }}
+            />
+
             <div>
               <label className="text-xs text-zinc-400 block mb-1.5">
                 Recipient Address
               </label>
+              <AddressBookField
+                idPrefix="proposal-recipient"
+                address={to}
+                isValidAddress={StrKey.isValidEd25519PublicKey(to.trim())}
+                onSelectAddress={(addr) => {
+                  setTo(addr);
+                  setRecipientTouched(true);
+                }}
+              />
               <input
                 ref={firstInputRef}
                 value={to}
@@ -669,7 +731,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 }}
                 onBlur={() => setRecipientTouched(true)}
                 placeholder="G..."
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
+                className="mt-1.5 w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
               />
               {recipientTouched && !StrKey.isValidEd25519PublicKey(to.trim()) && (
                 <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>
@@ -993,6 +1055,36 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                   <dt className="text-xs text-zinc-500">Action</dt>
                   <dd className="mt-1 break-all text-sm text-zinc-200">Transfer {amount} {token} to {to}</dd>
                 </div>
+                <div>
+                  <dt className="text-xs text-zinc-500">Estimated Fee</dt>
+                  <dd className="mt-1 text-sm text-zinc-200">
+                    {previewLoading ? (
+                      <span className="text-zinc-400">Simulating transaction…</span>
+                    ) : previewFeeEstimate !== null ? (
+                      <span className="font-mono">~{previewFeeEstimate.toFixed(7)} XLM</span>
+                    ) : (
+                      <span className="text-zinc-500">—</span>
+                    )}
+                  </dd>
+                </div>
+                {!previewLoading && previewBalances.length > 0 && (
+                  <div>
+                    <dt className="text-xs text-zinc-500">Balance Impact</dt>
+                    <dd className="mt-1.5 space-y-2">
+                      {previewBalances.map((row) => (
+                        <div
+                          key={`${row.label}-${row.address}`}
+                          className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 px-2.5 py-2 text-xs"
+                        >
+                          <div className="text-zinc-400">{row.label}</div>
+                          <div className="mt-0.5 font-mono text-zinc-200">
+                            {row.before} <span className="text-zinc-500">→</span> {row.after} {row.token}
+                          </div>
+                        </div>
+                      ))}
+                    </dd>
+                  </div>
+                )}
               </>
             )}
             {formType === "add_owner" && (
@@ -1068,6 +1160,12 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           </dl>
         </div>
 
+        {formType === "transfer" && previewFeeError && (
+          <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2" role="alert">
+            Could not simulate this transaction: {previewFeeError}
+          </p>
+        )}
+
         {error && (
           <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
             {error}
@@ -1086,9 +1184,17 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           <button
             type="button"
             onClick={handleConfirmSubmit}
-            disabled={submitting || !walletAddress}
+            disabled={
+              submitting ||
+              !walletAddress ||
+              (formType === "transfer" && (previewLoading || !!previewFeeError))
+            }
             title={
-              walletAddress ? undefined : "Connect your Freighter wallet to submit"
+              !walletAddress
+                ? "Connect your Freighter wallet to submit"
+                : formType === "transfer" && previewFeeError
+                ? "Resolve the simulation error before submitting"
+                : undefined
             }
             className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >

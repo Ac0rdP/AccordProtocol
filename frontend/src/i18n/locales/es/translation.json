@@ -1,0 +1,38 @@
+{
+  "nav": {
+    "dashboard": "panel",
+    "recurring": "recurrentes",
+    "history": "historial",
+    "analytics": "análisis",
+    "owners": "propietarios",
+    "settings": "configuración",
+    "docs": "documentación"
+  },
+  "header": {
+    "network": "testnet",
+    "installFreighter": "Instalar Freighter",
+    "connectWallet": "Conectar billetera",
+    "connecting": "Conectando…"
+  },
+  "common": {
+    "retry": "Reintentar"
+  },
+  "languageSwitcher": {
+    "label": "Idioma"
+  },
+  "notifications": {
+    "title": "Notificaciones",
+    "unread": "{{count}} sin leer",
+    "preferences": "Preferencias",
+    "done": "Listo",
+    "markAllRead": "Marcar todo como leído",
+    "empty": "Aún no hay notificaciones.",
+    "events": {
+      "proposal_created": "Propuesta creada",
+      "proposal_approved": "Propuesta aprobada",
+      "proposal_ready": "Propuesta lista para ejecutar",
+      "proposal_executed": "Propuesta ejecutada",
+      "owner_weight_changed": "Peso del propietario modificado"
+    }
+  }
+}

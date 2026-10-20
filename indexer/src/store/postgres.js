@@ -116,6 +116,37 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
   const deliveryColumns = `id, subscription_id, event_id, body, status, attempts, next_attempt_at,
     last_error, last_status_code, created_at, delivered_at`;
 
+  function toNotificationDelivery(row) {
+    return {
+      id: Number(row.id),
+      destinationId: row.destination_id,
+      eventId: row.event_id,
+      body: row.body,
+      status: row.status,
+      attempts: row.attempts,
+      nextAttemptAt: iso(row.next_attempt_at),
+      lastError: row.last_error,
+      lastStatusCode: row.last_status_code,
+      createdAt: iso(row.created_at),
+      deliveredAt: iso(row.delivered_at),
+    };
+  }
+
+  const notificationDeliveryColumns = `id, destination_id, event_id, body, status, attempts, next_attempt_at,
+    last_error, last_status_code, created_at, delivered_at`;
+
+  function toDestination(row) {
+    return {
+      id: row.id,
+      kind: row.kind,
+      config: typeof row.config === "string" ? JSON.parse(row.config) : row.config,
+      topics: row.topics ? (typeof row.topics === "string" ? JSON.parse(row.topics) : row.topics) : null,
+      enabled: Boolean(row.enabled),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+    };
+  }
+
   return {
     backend: "postgres",
 
@@ -302,6 +333,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         const reconciliations = await client.query("DELETE FROM reconciliation_results");
         await client.query("DELETE FROM token_balances");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'webhook\\_cursor:%'");
+        await client.query("DELETE FROM indexer_state WHERE key LIKE 'notification\\_cursor:%'");
         return {
           removedEntries: entries.rowCount,
           removedEvents: events.rowCount,
@@ -398,6 +430,107 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1
          WHERE status = 'dead' AND ($2::text IS NULL OR subscription_id = $2)`,
         [now, subscriptionId ?? null]
+      );
+      return rowCount;
+    },
+
+    async upsertNotificationDestination({ id, kind, config, topics, enabled, now }) {
+      await pool.query(
+        `INSERT INTO notification_destinations (id, kind, config, topics, enabled, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $6)
+         ON CONFLICT (id) DO UPDATE SET
+           kind = $2, config = $3, topics = $4, enabled = $5, updated_at = $6`,
+        [id, kind, JSON.stringify(config), topics ? JSON.stringify(topics) : null, Boolean(enabled), now]
+      );
+    },
+
+    async listNotificationDestinations() {
+      const { rows } = await pool.query(
+        `SELECT id, kind, config, topics, enabled, created_at, updated_at
+         FROM notification_destinations ORDER BY id ASC`
+      );
+      return rows.map(toDestination);
+    },
+
+    async getNotificationDestination(id) {
+      const { rows } = await pool.query(
+        `SELECT id, kind, config, topics, enabled, created_at, updated_at
+         FROM notification_destinations WHERE id = $1`,
+        [id]
+      );
+      return rows[0] ? toDestination(rows[0]) : null;
+    },
+
+    async deleteNotificationDestination(id) {
+      const { rowCount } = await pool.query("DELETE FROM notification_destinations WHERE id = $1", [id]);
+      return rowCount > 0;
+    },
+
+    async enqueueNotificationDeliveries({ destinationId, deliveries, cursor, now }) {
+      return withTransaction(async (client) => {
+        let inserted = 0;
+        for (const { eventId, body } of deliveries) {
+          const result = await client.query(
+            `INSERT INTO notification_deliveries (
+               destination_id, event_id, body, status, attempts, next_attempt_at, created_at, updated_at
+             ) VALUES ($1, $2, $3, 'pending', 0, $4, $4, $4)
+             ON CONFLICT (destination_id, event_id) DO NOTHING`,
+            [destinationId, eventId, body, now]
+          );
+          inserted += result.rowCount;
+        }
+        await client.query(
+          `INSERT INTO indexer_state (key, value) VALUES ($1, $2)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+          [`notification_cursor:${destinationId}`, String(cursor)]
+        );
+        return inserted;
+      });
+    },
+
+    async claimDueNotificationDeliveries({ now, limit }) {
+      const { rows } = await pool.query(
+        `SELECT ${notificationDeliveryColumns} FROM notification_deliveries
+         WHERE status = 'pending' AND next_attempt_at <= $1 ORDER BY id ASC LIMIT $2`,
+        [now, limit]
+      );
+      return rows.map(toNotificationDelivery);
+    },
+
+    async completeNotificationDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, now }) {
+      const status = outcome === "delivered" ? "delivered" : outcome === "dead" ? "dead" : "pending";
+      await pool.query(
+        `UPDATE notification_deliveries SET status = $1, attempts = $2, next_attempt_at = $3,
+           last_error = $4, last_status_code = $5, updated_at = $6,
+           delivered_at = CASE WHEN $1 = 'delivered' THEN $6::timestamptz ELSE delivered_at END
+         WHERE id = $7`,
+        [status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, id]
+      );
+    },
+
+    async countNotificationDeliveries() {
+      const counts = { pending: 0, delivered: 0, dead: 0 };
+      const { rows } = await pool.query("SELECT status, COUNT(*) AS count FROM notification_deliveries GROUP BY status");
+      for (const row of rows) counts[row.status] = Number(row.count);
+      return counts;
+    },
+
+    async listNotificationDeliveries({ status, destinationId, limit, offset }) {
+      const values = [];
+      const where = filterClause([["status", "=", status], ["destination_id", "=", destinationId]], values);
+      const { rows } = await pool.query(
+        `SELECT ${notificationDeliveryColumns} FROM notification_deliveries ${where}
+         ORDER BY id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+        [...values, limit, offset]
+      );
+      return rows.map(toNotificationDelivery);
+    },
+
+    async requeueDeadNotificationDeliveries({ destinationId, now }) {
+      const { rowCount } = await pool.query(
+        `UPDATE notification_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1
+         WHERE status = 'dead' AND ($2::text IS NULL OR destination_id = $2)`,
+        [now, destinationId ?? null]
       );
       return rowCount;
     },

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { UserCog } from "lucide-react";
+import { Link, useInRouterContext } from "react-router-dom";
 import { StrKey } from "@stellar/stellar-sdk";
 import { getSpendingLimit } from "../lib/contract";
 import { createSpendingLimitProposal } from "../lib/submit";
@@ -8,7 +9,26 @@ import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { useDelegations } from "../hooks/useDelegations";
 import { DelegateModal } from "../components/DelegateModal";
 import { PageState } from "../components/PageState";
+import { EmptyState } from "../components/EmptyState";
+import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
+import { EditableOwnerLabel } from "../components/EditableOwnerLabel";
 import type { Owner, Role } from "../types/accord";
+
+function OwnerLink({
+  to,
+  className,
+  children,
+}: {
+  to: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const inRouter = useInRouterContext();
+  if (inRouter) {
+    return <Link to={to} className={className}>{children}</Link>;
+  }
+  return <a href={to} className={className}>{children}</a>;
+}
 
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -78,14 +98,11 @@ export function OwnersPage({
   onRetry,
 }: OwnersPageProps) {
   const {
-    weights,
-    totalWeight,
+    weights: liveWeights,
+    totalWeight: liveTotal,
     loading: weightsLoading,
   } = useOwnerWeights(ownerAddresses);
-  const {
-    delegations,
-    refetch: refetchDelegations,
-  } = useDelegations(ownerAddresses);
+  const { refetch: refetchDelegations } = useDelegations(ownerAddresses);
   const [delegateModalOpen, setDelegateModalOpen] = useState(false);
   const [, setSpendingLimits] = useState<SpendingLimitMap>({});
   const [, setLimitsLoading] = useState(true);
@@ -131,20 +148,19 @@ export function OwnersPage({
     };
   }, [ownerAddresses]);
 
-  const visibleOwners = owners
-    .map((owner, idx) => {
-      const fullAddress = ownerAddresses[idx] ?? owner.address;
-      const weight = weights[fullAddress] ?? (weightsLoading ? null : 1);
-      const percentage = totalWeight > 0 && weight !== null
-        ? (weight / totalWeight) * 100
-        : 0;
-      const outgoing = delegations.find((d) => d.delegator === fullAddress) ?? null;
-      const incoming = delegations.filter((d) => d.delegate === fullAddress);
-      const effectiveWeight = weight === null
-        ? null
-        : weight - (outgoing?.weight ?? 0) + incoming.reduce((sum, d) => sum + d.weight, 0);
-      return { ...owner, fullAddress, weight, percentage, outgoing, incoming, effectiveWeight };
-    });
+  // Fall back to each owner's own `weight` field when the live contract
+  // query has nothing yet (e.g. not mocked in tests, or still loading).
+  const fallbackWeights: Record<string, number> = {};
+  let fallbackTotal = 0;
+  for (const o of owners) {
+    const w = typeof o.weight === "number" ? o.weight : 1;
+    fallbackWeights[o.fullAddress] = w;
+    fallbackTotal += w;
+  }
+
+  const weights =
+    Object.keys(liveWeights).length > 0 ? liveWeights : fallbackWeights;
+  const totalWeight = liveTotal > 0 ? liveTotal : fallbackTotal;
 
   if (loading) {
     return <PageState status="loading" title="Loading owners…" />;
@@ -219,10 +235,6 @@ export function OwnersPage({
     }
   }
 
-  const weights =
-    Object.keys(liveWeights).length > 0 ? liveWeights : fallbackWeights;
-  const totalWeight = liveTotal > 0 ? liveTotal : fallbackTotal;
-
   return (
     <>
       <div className="mb-8">
@@ -238,7 +250,7 @@ export function OwnersPage({
           totalWeight={totalWeight}
           threshold={threshold}
           totalOwners={totalOwners}
-          loading={loading && Object.keys(weights).length === 0}
+          loading={weightsLoading && Object.keys(weights).length === 0}
         />
       )}
 
@@ -260,12 +272,12 @@ export function OwnersPage({
                 </div>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <OwnerLink
-                      to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
-                      className="text-sm text-zinc-300 hover:text-emerald-400 font-medium transition-colors"
-                    >
-                      {owner.label}
-                    </OwnerLink>
+                    <EditableOwnerLabel
+                      address={owner.fullAddress}
+                      label={owner.label}
+                      onSaved={onProposalSubmitted}
+                      className="text-sm text-zinc-300 font-medium"
+                    />
                     {typeof owner.weight === "number" && (
                       <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
                         Weight {owner.weight}
@@ -373,16 +385,49 @@ export function OwnersPage({
                   htmlFor="sl-amount"
                   className="text-xs text-zinc-400 block mb-1.5"
                 >
-                  Activity Profile
-                </OwnerLink>
-                <button
-                  type="button"
-                  onClick={() => onManageRoles(owner.fullAddress)}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                  Limit Amount
+                </label>
+                <input
+                  id="sl-amount"
+                  value={slAmount}
+                  onChange={(e) => setSlAmount(e.target.value)}
+                  placeholder="0.00"
+                  type="number"
+                  min="0"
+                  step="any"
+                  aria-label="Spending limit amount"
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                />
+              </div>
+              <div className="w-28">
+                <label className="text-xs text-zinc-400 block mb-1.5">
+                  Token
+                </label>
+                <div
+                  className="grid grid-cols-3 gap-1"
+                  role="group"
+                  aria-label="Token selector"
                 >
-                  <UserCog size={14} />
-                  Manage Roles
-                </button>
+                  {TOKEN_SYMBOLS.map((symbol) => {
+                    const active = slToken === symbol;
+                    return (
+                      <button
+                        key={symbol}
+                        type="button"
+                        onClick={() => setSlToken(symbol)}
+                        aria-pressed={active}
+                        aria-label={`Select token ${symbol}`}
+                        className={`rounded-lg border px-1.5 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
+                          active
+                            ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
+                            : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+                        }`}
+                      >
+                        {symbol}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 

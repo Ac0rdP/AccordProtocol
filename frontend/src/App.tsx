@@ -7,6 +7,7 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { CreateProposalModal } from "./components/CreateProposalModal";
 import { CreateRecurringPaymentModal } from "./components/CreateRecurringPaymentModal";
 import { ErrorState } from "./components/ErrorState";
@@ -22,6 +23,10 @@ import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
 import { isFrozen } from "./lib/contract";
 import { PWAInstallBanner } from "./components/PWAInstallBanner";
 import { ThemeControl } from "./components/ThemeControl";
+import { NotificationCenter } from "./components/NotificationCenter";
+import { LanguageSwitcher } from "./components/LanguageSwitcher";
+import { CommandPalette } from "./components/CommandPalette";
+import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -35,13 +40,13 @@ import { SettingsPage } from "./pages/SettingsPage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
-  { label: "dashboard", to: "/app" },
-  { label: "recurring", to: "/app/recurring" },
-  { label: "history", to: "/app/history" },
-  { label: "analytics", to: "/app/analytics" },
-  { label: "owners", to: "/app/owners" },
-  { label: "settings", to: "/app/settings" },
-  { label: "docs", to: "/docs" },
+  { key: "dashboard", to: "/app" },
+  { key: "recurring", to: "/app/recurring" },
+  { key: "history", to: "/app/history" },
+  { key: "analytics", to: "/app/analytics" },
+  { key: "owners", to: "/app/owners" },
+  { key: "settings", to: "/app/settings" },
+  { key: "docs", to: "/docs" },
 ];
 
 type OptimisticPatch = {
@@ -50,6 +55,7 @@ type OptimisticPatch = {
 };
 
 export default function App() {
+  const { t } = useTranslation();
   const [showCreate, setShowCreate] = useState(false);
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
@@ -289,9 +295,107 @@ export default function App() {
     return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
   }
 
+  const anyModalOpen = showCreate || showCreateRecurring || roleModalTarget !== null;
+
+  const commands: Command[] = useMemo(() => {
+    const navigateCommands: Command[] = NAV_ITEMS.map(({ key, to }) => ({
+      id: `nav-${key}`,
+      title: `Go to ${t(`nav.${key}`)}`,
+      subtitle: to,
+      group: "navigate",
+      keywords: [key, to],
+      perform: () => navigate(to),
+    }));
+
+    const actionCommands: Command[] = [
+      {
+        id: "action-new-proposal",
+        title: "New Proposal",
+        subtitle: "Create a transfer, owner, or threshold proposal",
+        group: "action",
+        keywords: ["create", "transfer", "payment"],
+        shortcut: "N",
+        perform: () => setShowCreate(true),
+      },
+      {
+        id: "action-new-recurring",
+        title: "New Recurring Payment",
+        subtitle: "Create a scheduled or vested payment proposal",
+        group: "action",
+        keywords: ["create", "recurring", "schedule", "vesting", "payroll"],
+        shortcut: "R",
+        perform: () => setShowCreateRecurring(true),
+      },
+      {
+        id: "action-theme-light",
+        title: "Switch to Light Theme",
+        group: "action",
+        keywords: ["theme", "appearance", "light"],
+        perform: () => setTheme("light"),
+      },
+      {
+        id: "action-theme-dark",
+        title: "Switch to Dark Theme",
+        group: "action",
+        keywords: ["theme", "appearance", "dark"],
+        perform: () => setTheme("dark"),
+      },
+      {
+        id: "action-theme-system",
+        title: "Use System Theme",
+        group: "action",
+        keywords: ["theme", "appearance", "system", "auto"],
+        perform: () => setTheme("system"),
+      },
+    ];
+
+    if (wallet.address) {
+      actionCommands.push({
+        id: "action-disconnect-wallet",
+        title: "Disconnect Wallet",
+        subtitle: shortenAddr(wallet.address),
+        group: "action",
+        keywords: ["wallet", "freighter", "logout"],
+        perform: () => wallet.disconnect(),
+      });
+    } else if (wallet.installed) {
+      actionCommands.push({
+        id: "action-connect-wallet",
+        title: "Connect Wallet",
+        group: "action",
+        keywords: ["wallet", "freighter", "login"],
+        perform: () => wallet.connect(),
+      });
+    }
+
+    return [...navigateCommands, ...actionCommands];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate, t, wallet.address, wallet.installed]);
+
+  // Direct single-key shortcuts for the two most common actions. Ignored
+  // while typing in a field or while another modal is already open, so they
+  // never hijack normal text entry or stack on top of an open dialog.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      if (anyModalOpen) return;
+
+      if (event.key === "n" || event.key === "N") {
+        event.preventDefault();
+        setShowCreate(true);
+      } else if (event.key === "r" || event.key === "R") {
+        event.preventDefault();
+        setShowCreateRecurring(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [anyModalOpen]);
+
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
       <PWAInstallBanner />
+      <CommandPalette commands={commands} suspended={anyModalOpen} />
       <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
         <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
           <Link
@@ -303,16 +407,16 @@ export default function App() {
             </div>
             <span className="font-semibold tracking-tight">Accord</span>
             <span className="hidden font-mono text-xs text-zinc-600 sm:block">
-              testnet
+              {t("header.network")}
             </span>
           </Link>
 
           <GlobalSearch proposals={proposals} owners={owners} />
 
           <nav className="flex items-center gap-1">
-            {NAV_ITEMS.map(({ label, to }) => (
+            {NAV_ITEMS.map(({ key, to }) => (
               <Link
-                key={label}
+                key={key}
                 to={to}
                 className={`rounded-lg px-3 py-1.5 text-sm capitalize transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400 ${
                   location.pathname === to ||
@@ -321,7 +425,7 @@ export default function App() {
                     : "text-zinc-500 hover:text-zinc-300"
                 }`}
               >
-                {label}
+                {t(`nav.${key}`)}
               </Link>
             ))}
 
@@ -329,9 +433,13 @@ export default function App() {
             <ThemeControl
               currentTheme={theme}
               onThemeChange={setTheme}
-              className="ml-1"
+              className="ms-1"
             />
+
+            <LanguageSwitcher className="ms-1" />
           </nav>
+
+          <NotificationCenter />
 
           {!wallet.installed ? (
             <a
@@ -340,7 +448,7 @@ export default function App() {
               rel="noopener noreferrer"
               className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             >
-              Install Freighter
+              {t("header.installFreighter")}
             </a>
           ) : wallet.address ? (
             <button
@@ -357,7 +465,7 @@ export default function App() {
               disabled={wallet.connecting}
               className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
             >
-              {wallet.connecting ? "Connecting…" : "Connect Wallet"}
+              {wallet.connecting ? t("header.connecting") : t("header.connectWallet")}
             </button>
           )}
         </div>

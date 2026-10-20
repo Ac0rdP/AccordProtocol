@@ -712,6 +712,23 @@ async function simulateContractView(
   return (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
 }
 
+/** Raw token balance (base units) for any account — the treasury or any other address. */
+export async function getTokenBalanceOf(tokenAddress: string, accountAddress: string): Promise<bigint> {
+  const val = await simulateContractView(tokenAddress, "balance", [
+    nativeToScVal(accountAddress, { type: "address" }),
+  ]);
+  const raw = scValToNative(val);
+  if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
+    return BigInt(raw);
+  }
+  return 0n;
+}
+
+/** Raw treasury balance (base units) for a given token. */
+export async function getTreasuryTokenBalance(tokenAddress: string): Promise<bigint> {
+  return getTokenBalanceOf(tokenAddress, CONTRACT_ID);
+}
+
 export async function getContractXlmBalance(): Promise<string> {
   const xlmToken = import.meta.env.VITE_XLM_TOKEN_ADDRESS as string;
   if (!xlmToken) return "N/A";

@@ -661,6 +661,34 @@ export async function estimateCreateProposalFee(
   ]);
 }
 
+export async function estimateCreateRecurringPaymentFee(
+  callerAddress: string,
+  recipient: string,
+  tokenAddress: string,
+  amount: bigint,
+  intervalSeconds: bigint,
+  startTs: bigint,
+  cliffTs: bigint | null,
+  endTs: bigint | null,
+  cap: bigint | null,
+  category: ProposalCategory,
+  kind: "FixedAmountPerPeriod" | "LinearVesting" = "FixedAmountPerPeriod"
+): Promise<number> {
+  return await simulateOnly(callerAddress, "create_recurring_payment", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    nativeToScVal(recipient, { type: "address" }),
+    nativeToScVal(amount, { type: "i128" }),
+    nativeToScVal(tokenAddress, { type: "address" }),
+    nativeToScVal(intervalSeconds, { type: "u64" }),
+    nativeToScVal(startTs, { type: "u64" }),
+    optionalU64ScVal(cliffTs),
+    optionalU64ScVal(endTs),
+    optionalI128ScVal(cap),
+    proposalCategoryScVal(category),
+    xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(kind)]),
+  ]);
+}
+
 export async function createGrantRoleProposal(
   callerAddress: string,
   targetAddress: string,

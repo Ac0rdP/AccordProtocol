@@ -184,6 +184,21 @@ export function createIndexerMetrics() {
       help: "Webhook deliveries in the outbox by status (pending, delivered, dead).",
       labelNames: ["status"],
     }),
+    notificationDeliveries: registry.counter({
+      name: "accord_indexer_notification_deliveries_total",
+      help: "Notification delivery attempts by destination, channel kind, and result (delivered, retry, dead).",
+      labelNames: ["destination", "kind", "result"],
+    }),
+    notificationDeliveryDuration: registry.histogram({
+      name: "accord_indexer_notification_delivery_duration_seconds",
+      help: "Latency of notification delivery attempts.",
+      labelNames: ["destination", "kind"],
+    }),
+    notificationBacklog: registry.gauge({
+      name: "accord_indexer_notification_deliveries",
+      help: "Notification deliveries in the outbox by status (pending, delivered, dead).",
+      labelNames: ["status"],
+    }),
   };
 }
 

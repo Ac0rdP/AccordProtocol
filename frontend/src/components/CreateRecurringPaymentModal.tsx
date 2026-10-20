@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { StrKey } from "@stellar/stellar-sdk";
 import { createRecurringPaymentProposal } from "../lib/submit";
 import { displayToStroops, formatInterval } from "../lib/soroban";
+import { AddressBookField } from "./AddressBookField";
+import { ProposalTemplatePicker } from "./ProposalTemplatePicker";
+import { previewRecurringPaymentProposal, type BalanceDeltaRow } from "../lib/transactionPreview";
 import type { ProposalCategory } from "../types/accord";
 
 const TOKEN_ADDRESSES: Record<string, string> = {
@@ -15,6 +18,20 @@ const CATEGORY_OPTIONS: ProposalCategory[] = ["Payroll", "Grant", "Ops", "Transf
 const FOCUSABLE_SELECTORS =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 type RecurringKind = "FixedAmountPerPeriod" | "LinearVesting";
+
+type ValidatedRecurringForm = {
+  recipient: string;
+  tokenAddr: string;
+  tokenSymbol: string;
+  amountStroops: bigint;
+  intervalSecs: number;
+  startTs: bigint;
+  cliffTs: bigint | null;
+  endTs: bigint | null;
+  capStroops: bigint | null;
+  category: ProposalCategory;
+  kind: RecurringKind;
+};
 
 type Props = {
   walletAddress: string | null;
@@ -162,6 +179,15 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
   const [category, setCategory] = useState<ProposalCategory>("Payroll");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<"form" | "preview">("form");
+  const [pendingSubmission, setPendingSubmission] = useState<ValidatedRecurringForm | null>(null);
+
+  // Transaction preview: a blocking simulation of the first disbursement's
+  // fee and balance impact, run automatically on entering the preview step.
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewFeeEstimate, setPreviewFeeEstimate] = useState<number | null>(null);
+  const [previewFeeError, setPreviewFeeError] = useState<string | null>(null);
+  const [previewBalances, setPreviewBalances] = useState<BalanceDeltaRow[]>([]);
 
   const modalRef = useRef<HTMLDivElement>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
@@ -216,47 +242,47 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
   const intervalSecs = Number.parseInt(interval, 10);
   const intervalSecsValid = Number.isFinite(intervalSecs) && intervalSecs >= 1;
 
-  async function handleSubmit() {
+  function getValidatedForm(): ValidatedRecurringForm | null {
     if (!walletAddress) {
       setError("Connect your wallet first.");
-      return;
+      return null;
     }
     if (!recipient.trim() || !amount.trim() || !interval.trim() || !start.trim()) {
       setError("Recipient, amount, interval, and start date are required.");
-      return;
+      return null;
     }
     if (!StrKey.isValidEd25519PublicKey(recipient.trim())) {
       setError("Enter a valid Stellar address.");
-      return;
+      return null;
     }
 
     const amountNum = Number.parseFloat(amount);
     const amountStroops = displayToStroops(amountNum);
     if (Number.isNaN(amountNum) || amountStroops < 1n) {
       setError("Enter an amount above the minimum.");
-      return;
+      return null;
     }
 
     if (!Number.isFinite(intervalSecs) || intervalSecs < 1 || intervalSecs > 31_536_000) {
       setError("Interval must be between 1 and 31,536,000 seconds.");
-      return;
+      return null;
     }
 
     const startTs = toUnixSeconds(start);
     if (startTs === null) {
       setError("Enter a valid start date.");
-      return;
+      return null;
     }
 
     const cliffTs = cliff.trim() ? toUnixSeconds(cliff) : null;
     const endTs = end.trim() ? toUnixSeconds(end) : null;
     if (endTs !== null && endTs <= startTs) {
       setError("End must be after start.");
-      return;
+      return null;
     }
     if (cliffTs !== null && endTs !== null && cliffTs > endTs) {
       setError("Cliff must be on or before end.");
-      return;
+      return null;
     }
 
     const capTrimmed = cap.trim();
@@ -264,36 +290,94 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
     const capStroops = capNum === null ? null : displayToStroops(capNum);
     if (capTrimmed && (capNum === null || Number.isNaN(capNum) || capStroops === null || capStroops < amountStroops)) {
       setError("Cap must be at least the amount.");
-      return;
+      return null;
     }
 
     // For LinearVesting end date is required
     if (kind === "LinearVesting" && !end.trim()) {
       setError("End date is required for linear vesting.");
-      return;
+      return null;
     }
 
     const tokenAddr = TOKEN_ADDRESSES[token];
     if (!tokenAddr) {
       setError("Unknown token.");
-      return;
+      return null;
     }
+
+    return {
+      recipient: recipient.trim(),
+      tokenAddr,
+      tokenSymbol: token,
+      amountStroops,
+      intervalSecs,
+      startTs,
+      cliffTs,
+      endTs,
+      capStroops,
+      category,
+      kind,
+    };
+  }
+
+  async function runRecurringPreview(data: ValidatedRecurringForm) {
+    setPreviewLoading(true);
+    setPreviewFeeEstimate(null);
+    setPreviewFeeError(null);
+    setPreviewBalances([]);
+    try {
+      const preview = await previewRecurringPaymentProposal({
+        callerAddress: walletAddress!,
+        recipient: data.recipient,
+        tokenAddress: data.tokenAddr,
+        tokenSymbol: data.tokenSymbol,
+        amountStroops: data.amountStroops,
+        intervalSeconds: BigInt(data.intervalSecs),
+        startTs: data.startTs,
+        cliffTs: data.cliffTs,
+        endTs: data.endTs,
+        cap: data.capStroops,
+        category: data.category,
+        kind: data.kind,
+      });
+      setPreviewFeeEstimate(preview.feeEstimate);
+      setPreviewFeeError(preview.feeError);
+      setPreviewBalances(preview.balances);
+    } catch (e) {
+      setPreviewFeeError(e instanceof Error ? e.message : "Transaction simulation failed. Please try again.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function handleReview() {
+    const data = getValidatedForm();
+    if (!data) return;
+    setError(null);
+    setPendingSubmission(data);
+    setStep("preview");
+    void runRecurringPreview(data);
+  }
+
+  async function handleConfirmSubmit() {
+    const data = pendingSubmission;
+    if (!data || !walletAddress) return;
 
     setError(null);
     setSubmitting(true);
     try {
       await createRecurringPaymentProposal(
         walletAddress,
-        recipient.trim(),
-        tokenAddr,
-        amountStroops,
-        BigInt(intervalSecs),
-        startTs,
-        cliffTs,
-        endTs,
-        capStroops,
-        category,
-        kind
+        data.recipient,
+        data.tokenAddr,
+        data.amountStroops,
+        BigInt(data.intervalSecs),
+        data.startTs,
+        data.cliffTs,
+        data.endTs,
+        data.capStroops,
+        data.category,
+        data.kind
       );
       onSubmitted();
       onClose();
@@ -332,6 +416,8 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
           </div>
 
           <div className="space-y-4">
+          {step === "form" && (
+            <>
             {/* ── Mode toggle ── */}
             <div>
               <label className="text-xs text-zinc-400 block mb-1.5">Payment mode</label>
@@ -362,6 +448,35 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
               </p>
             </div>
 
+            <ProposalTemplatePicker
+              idPrefix="recurring-template"
+              fields={{
+                recipient,
+                amount,
+                token,
+                category,
+                kind,
+                interval,
+                cliff,
+                endDate: end,
+                cap,
+              }}
+              onApply={(fields) => {
+                if (fields.recipient) {
+                  setRecipient(fields.recipient);
+                  setRecipientTouched(true);
+                }
+                if (fields.amount) setAmount(fields.amount);
+                if (fields.token) setToken(fields.token);
+                if (fields.category) setCategory(fields.category as ProposalCategory);
+                if (fields.kind) setKind(fields.kind as RecurringKind);
+                if (fields.interval) setInterval(fields.interval);
+                if (fields.cliff) setCliff(fields.cliff);
+                if (fields.endDate) setEnd(fields.endDate);
+                if (fields.cap) setCap(fields.cap);
+              }}
+            />
+
             {/* ── Proposer ── */}
             <div>
               <label className="text-xs text-zinc-400 block mb-1.5">Proposer</label>
@@ -379,6 +494,15 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
             {/* ── Recipient ── */}
             <div>
               <label htmlFor="recurring-recipient" className="text-xs text-zinc-400 block mb-1.5">Recipient Address</label>
+              <AddressBookField
+                idPrefix="recurring-recipient"
+                address={recipient}
+                isValidAddress={StrKey.isValidEd25519PublicKey(recipient.trim())}
+                onSelectAddress={(addr) => {
+                  setRecipient(addr);
+                  setRecipientTouched(true);
+                }}
+              />
               <input
                 id="recurring-recipient"
                 ref={firstInputRef}
@@ -389,7 +513,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                 aria-label="Recipient Stellar address"
                 aria-invalid={recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim())}
                 aria-describedby={recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim()) ? "recurring-recipient-error" : undefined}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
+                className="mt-1.5 w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
               />
               {recipientTouched && !StrKey.isValidEd25519PublicKey(recipient.trim()) && (
                 <p id="recurring-recipient-error" className="text-xs text-red-400 mt-1" role="alert">Enter a valid Stellar address.</p>
@@ -548,15 +672,100 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
             <div className="pt-2">
               <button
                 type="button"
-                onClick={handleSubmit}
+                onClick={handleReview}
                 disabled={submitting || !walletAddress}
                 title={walletAddress ? undefined : "Connect your Freighter wallet to submit"}
-                aria-label={submitting ? "Submitting recurring payment" : "Create Recurring Payment"}
+                aria-label="Review Recurring Payment"
                 className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               >
-                {submitting ? "Submitting…" : "Create Recurring Payment"}
+                Review Payment
               </button>
             </div>
+            </>
+          )}
+
+          {step === "preview" && pendingSubmission && (
+            <>
+              <div className="space-y-3">
+                <h3 className="text-sm font-medium text-zinc-200">Preview Recurring Payment</h3>
+                <dl className="space-y-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3">
+                  <div>
+                    <dt className="text-xs text-zinc-500">Action</dt>
+                    <dd className="mt-1 break-all text-sm text-zinc-200">
+                      Pay {amount} {pendingSubmission.tokenSymbol} to {pendingSubmission.recipient}, {formatInterval(pendingSubmission.intervalSecs)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-zinc-500">Estimated Fee</dt>
+                    <dd className="mt-1 text-sm text-zinc-200">
+                      {previewLoading ? (
+                        <span className="text-zinc-400">Simulating transaction…</span>
+                      ) : previewFeeEstimate !== null ? (
+                        <span className="font-mono">~{previewFeeEstimate.toFixed(7)} XLM</span>
+                      ) : (
+                        <span className="text-zinc-500">—</span>
+                      )}
+                    </dd>
+                  </div>
+                  {!previewLoading && previewBalances.length > 0 && (
+                    <div>
+                      <dt className="text-xs text-zinc-500">Balance Impact (first disbursement)</dt>
+                      <dd className="mt-1.5 space-y-2">
+                        {previewBalances.map((row) => (
+                          <div
+                            key={`${row.label}-${row.address}`}
+                            className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 px-2.5 py-2 text-xs"
+                          >
+                            <div className="text-zinc-400">{row.label}</div>
+                            <div className="mt-0.5 font-mono text-zinc-200">
+                              {row.before} <span className="text-zinc-500">→</span> {row.after} {row.token}
+                            </div>
+                          </div>
+                        ))}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+
+              {previewFeeError && (
+                <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2" role="alert">
+                  Could not simulate this transaction: {previewFeeError}
+                </p>
+              )}
+
+              {error && (
+                <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2" role="alert">{error}</p>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setStep("form")}
+                  disabled={submitting}
+                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmSubmit}
+                  disabled={submitting || !walletAddress || previewLoading || !!previewFeeError}
+                  title={
+                    !walletAddress
+                      ? "Connect your Freighter wallet to submit"
+                      : previewFeeError
+                      ? "Resolve the simulation error before submitting"
+                      : undefined
+                  }
+                  aria-label={submitting ? "Submitting recurring payment" : "Confirm & Submit"}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                >
+                  {submitting ? "Submitting…" : "Confirm & Submit"}
+                </button>
+              </div>
+            </>
+          )}
           </div>
         </div>
       </div>
