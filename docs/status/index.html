@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Accord Protocol — Status</title>
+  <meta name="description" content="Live status of the Accord Protocol indexer and analytics API.">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent: #3b82f6;
+      --ok: #22c55e;
+      --degraded: #f59e0b;
+      --outage: #ef4444;
+      --unknown: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2.5rem 1.25rem 4rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main { max-width: 880px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.25rem; margin: 2.5rem 0 1rem; }
+    .subtitle { color: var(--text-muted); margin: 0 0 2rem; }
+    .banner {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      background: var(--card-bg);
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+    .dot { width: 0.85rem; height: 0.85rem; border-radius: 50%; flex: 0 0 auto; }
+    .dot-operational { background: var(--ok); }
+    .dot-degraded { background: var(--degraded); }
+    .dot-outage { background: var(--outage); }
+    .dot-unknown { background: var(--unknown); }
+    .meta { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.75rem; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+    .card h3 { margin: 0; font-size: 1.1rem; }
+    .pill {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .pill-operational { background: rgba(34, 197, 94, 0.15); color: var(--ok); }
+    .pill-degraded { background: rgba(245, 158, 11, 0.15); color: var(--degraded); }
+    .pill-outage { background: rgba(239, 68, 68, 0.15); color: var(--outage); }
+    .pill-unknown { background: rgba(107, 114, 128, 0.2); color: var(--text-muted); }
+    .detail { color: var(--text-muted); margin: 0.6rem 0 0; font-size: 0.95rem; }
+    dl.checks { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 1rem 0 0; font-size: 0.9rem; }
+    dl.checks dt { color: var(--text-muted); }
+    dl.checks dd { margin: 0; }
+    .check-ok { color: var(--ok); }
+    .check-failed { color: var(--outage); }
+    .bars { display: flex; gap: 3px; align-items: flex-end; margin-top: 0.75rem; }
+    .bar { flex: 1 1 0; height: 2.25rem; border-radius: 2px; background: var(--border); }
+    .bar-operational { background: var(--ok); }
+    .bar-degraded { background: var(--degraded); }
+    .bar-outage { background: var(--outage); }
+    .bar-unknown { background: var(--unknown); }
+    .legend { display: flex; gap: 1.25rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.85rem; margin-top: 0.75rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .incident { border-left: 3px solid var(--degraded); padding-left: 1rem; }
+    .incident h3 { margin: 0 0 0.35rem; font-size: 1.05rem; }
+    .incident .meta { margin: 0 0 0.5rem; }
+    .incident p { margin: 0.25rem 0 0; }
+    .empty { color: var(--text-muted); font-size: 0.95rem; }
+    a { color: var(--accent); }
+    footer { margin-top: 3rem; color: var(--text-muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Accord Protocol status</h1>
+  <p class="subtitle">Availability of the indexer and the analytics API.</p>
+  <div class="banner">
+    <span class="dot dot-unknown"></span>
+    <span>Status unknown</span>
+  </div>
+  <p class="meta">Last updated: 2026-10-22 00:00:00 UTC</p>
+  <p class="meta">No health check has completed yet; the page is refreshed as soon as the first one runs.</p>
+  <h2>Services</h2>
+  <section class="card">
+    <div class="card-head">
+      <h3>Indexer</h3>
+      <span class="pill pill-unknown">Unknown</span>
+    </div>
+    <p class="detail">Ingests Accord contract events from Stellar RPC into the ledger store.</p>
+    <p class="detail">No health check has run yet.</p>
+    <p class="meta">
+      Status since 2026-10-22 00:00:00 UTC (0m)
+    </p>
+  </section>
+  <section class="card">
+    <div class="card-head">
+      <h3>Analytics API</h3>
+      <span class="pill pill-unknown">Unknown</span>
+    </div>
+    <p class="detail">Serves proposals, spend and treasury analytics to the Accord frontend.</p>
+    <p class="detail">No health check has run yet.</p>
+    <p class="meta">
+      Status since 2026-10-22 00:00:00 UTC (0m)
+    </p>
+  </section>
+  <h2>Recent availability</h2>
+  <section class="card">
+    <div class="card-head">
+      <h3>Indexer</h3>
+      <span class="pill pill-unknown">No availability data yet</span>
+    </div>
+    <div class="bars">
+      <span class="bar bar-unknown" title="2026-09-23: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-24: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-25: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-26: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-27: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-28: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-29: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-30: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-01: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-02: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-03: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-04: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-05: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-06: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-07: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-08: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-09: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-10: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-11: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-12: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-13: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-14: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-15: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-16: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-17: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-18: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-19: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-20: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-21: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-22: no data"></span>
+    </div>
+    <div class="legend">
+      <span><span class="dot dot-operational"></span>Operational</span>
+      <span><span class="dot dot-degraded"></span>Degraded</span>
+      <span><span class="dot dot-outage"></span>Outage</span>
+      <span><span class="dot dot-unknown"></span>No data</span>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-head">
+      <h3>Analytics API</h3>
+      <span class="pill pill-unknown">No availability data yet</span>
+    </div>
+    <div class="bars">
+      <span class="bar bar-unknown" title="2026-09-23: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-24: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-25: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-26: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-27: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-28: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-29: no data"></span>
+      <span class="bar bar-unknown" title="2026-09-30: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-01: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-02: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-03: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-04: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-05: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-06: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-07: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-08: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-09: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-10: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-11: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-12: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-13: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-14: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-15: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-16: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-17: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-18: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-19: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-20: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-21: no data"></span>
+      <span class="bar bar-unknown" title="2026-10-22: no data"></span>
+    </div>
+    <div class="legend">
+      <span><span class="dot dot-operational"></span>Operational</span>
+      <span><span class="dot dot-degraded"></span>Degraded</span>
+      <span><span class="dot dot-outage"></span>Outage</span>
+      <span><span class="dot dot-unknown"></span>No data</span>
+    </div>
+  </section>
+  <h2>Incidents</h2>
+  <p class="empty">No incidents have been reported.</p>
+  <footer>
+    Health checks run every 15 minutes and update this page automatically.
+    Incident notes are maintained in <code>docs/status/incidents.json</code>; see <code>docs/STATUS.md</code> and <code>docs/INCIDENT_RESPONSE.md</code>.
+  </footer>
+</main>
+</body>
+</html>

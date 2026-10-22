@@ -204,6 +204,7 @@ invariant after both a not-yet-final ledger and a rollback.
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
 - `GET /healthz` - Liveness: `200` whenever the process can answer.
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
+- `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
 - `GET /metrics` - Prometheus metrics.
 - `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
