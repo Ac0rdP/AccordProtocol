@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- In-app "What's new" panel that reads this changelog at build time, lists recent entries by release, badges entries the user has not seen yet, and links issue references and documentation paths to GitHub.
 - Release workflow (`release.yml`) that gates on all test suites, builds and attaches the contract artifact with its manifest, publishes the SDK package to GitHub Packages, and generates release notes from a `v*` tag (#822).
 - Nightly full-suite workflow (`nightly.yml`) covering the contract, frontend, indexer, analytics API, and Playwright E2E suites, with per-component attribution and a single tracked failure issue (#820).
 - Frontend pull-request preview deployments (`preview.yml`) built from a deterministic seed dataset and torn down when the PR closes (#819).
