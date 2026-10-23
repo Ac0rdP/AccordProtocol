@@ -1,0 +1,130 @@
+{
+  "exceptions": [
+    {
+      "id": "SC-001",
+      "rule": "lockfile-missing",
+      "target": "packages/sdk",
+      "reason": "Published library with no committed lockfile; generate and commit package-lock.json so sdk-publish.yml `npm ci` is reproducible.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-002",
+      "rule": "lockfile-missing",
+      "target": "examples/multisig-dapp",
+      "reason": "Example app with no committed lockfile; generate and commit package-lock.json, then switch frontend-ci.yml to `npm ci`.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-003",
+      "rule": "npm-install",
+      "target": ".github/workflows/frontend-ci.yml",
+      "reason": "Example dApp build uses `npm install` until its lockfile exists (see the examples/multisig-dapp lockfile exception).",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-004",
+      "rule": "action-unpinned",
+      "target": "actions-rust-lang/setup-rust-toolchain@v1",
+      "reason": "Rust toolchain setup. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-005",
+      "rule": "action-unpinned",
+      "target": "actions-rust-lang/setup-rust-toolchain@v2",
+      "reason": "Rust toolchain setup. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-006",
+      "rule": "action-unpinned",
+      "target": "dtolnay/rust-toolchain@stable",
+      "reason": "Rust toolchain setup (tracks the stable channel by design). Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-007",
+      "rule": "action-unpinned",
+      "target": "Swatinem/rust-cache@v2",
+      "reason": "Cargo build cache. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-008",
+      "rule": "action-unpinned",
+      "target": "stellar/stellar-cli@v28.1.0",
+      "reason": "Stellar CLI install. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-009",
+      "rule": "action-unpinned",
+      "target": "taiki-e/install-action@cargo-llvm-cov",
+      "reason": "cargo-llvm-cov install. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-010",
+      "rule": "action-unpinned",
+      "target": "lycheeverse/lychee-action@v2",
+      "reason": "Docs link checker. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-011",
+      "rule": "action-unpinned",
+      "target": "peaceiris/actions-gh-pages@v4",
+      "reason": "Preview publishing to gh-pages. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-012",
+      "rule": "action-unpinned",
+      "target": "softprops/action-gh-release@v3",
+      "reason": "GitHub Release publishing. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-013",
+      "rule": "action-unpinned",
+      "target": "anchore/sbom-action/download-syft@v0",
+      "reason": "Syft download for SBOM generation. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    },
+    {
+      "id": "SC-014",
+      "rule": "action-unpinned",
+      "target": "anchore/scan-action/download-grype@v7",
+      "reason": "Grype download for vulnerability scan. Pin to a full commit SHA (Dependabot keeps SHA pins current); tag-only until the SHA is resolved and reviewed.",
+      "requestedBy": "Raymond Abiola",
+      "added": "2026-10-23",
+      "expires": "2027-04-01"
+    }
+  ]
+}

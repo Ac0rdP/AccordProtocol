@@ -4017,6 +4017,14 @@ impl AccordContract {
                     return Err(ContractError::SingleOwnerWeightCapExceeded);
                 }
 
+                // Invariant (INV-02): threshold <= total weight. The active-proposal
+                // scan below only sees quorum snapshots taken at creation, so a
+                // threshold raised after this proposal was created must be checked
+                // against the live value.
+                if new_total < read_threshold(&env)? {
+                    return Err(ContractError::WouldBreakThreshold);
+                }
+
                 // Invariant: ensure no active (Pending/Ready) proposal would
                 // become un-quorumable (quorum_weight > new_total_weight).
                 let active_ids = read_active_ids(&env);
@@ -5757,4 +5765,6 @@ impl AccordContract {
 mod test;
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod invariants;
 // TODO: Ensure tests verify event parsing and decoding into typed records
