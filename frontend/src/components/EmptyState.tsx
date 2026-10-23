@@ -29,13 +29,13 @@ export function EmptyState({
       className={`text-center ${padding}`}
     >
       {icon && (
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800 text-zinc-500">
+        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800 text-zinc-600 dark:text-zinc-400">
           {icon}
         </div>
       )}
       <h3 className="mb-1 text-sm font-semibold text-zinc-300">{title}</h3>
       {description && (
-        <p className="mx-auto mb-5 max-w-md text-sm text-zinc-500">
+        <p className="mx-auto mb-5 max-w-md text-sm text-zinc-600 dark:text-zinc-400">
           {description}
         </p>
       )}

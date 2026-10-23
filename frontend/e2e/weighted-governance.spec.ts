@@ -1,5 +1,11 @@
-import { Keypair, nativeToScVal, scValToNative, xdr } from "@stellar/stellar-sdk";
+import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { expect, test, TEST_WALLET } from "./setup";
+import {
+  ACCOUNT_ENTRY_B64,
+  ACCOUNT_KEY_B64,
+  TX_DATA_B64,
+  getCallDetails,
+} from "./gov-harness";
 
 const RPC = "https://mock-rpc.test";
 
@@ -29,27 +35,6 @@ type ProposalState = {
   status: "Pending" | "Ready" | "Executed";
   approvedOwners: Set<string>;
 };
-
-function getCallDetails(txBase64: string) {
-  try {
-    const env = xdr.TransactionEnvelope.fromXDR(txBase64, "base64");
-    const invoke = env
-      .v1()
-      .tx()
-      .operations()[0]
-      .body()
-      .invokeHostFunctionOp()
-      .hostFunction()
-      .invokeContract();
-
-    return {
-      fn: Buffer.from(invoke.functionName()).toString(),
-      args: invoke.args().map((arg) => scValToNative(arg)),
-    };
-  } catch {
-    return { fn: "", args: [] as unknown[] };
-  }
-}
 
 function ownerWeight(totalWeights: Record<string, number>, owner: string) {
   return totalWeights[owner] ?? 0;
@@ -83,6 +68,7 @@ test("weighted governance flow can propose, approve, and execute a weight change
   const approvedOwners = new Map<number, Set<string>>();
   const proposals: ProposalState[] = [];
   let nextProposalId = 1;
+  let lastEnvXdr = "";
 
   page.on("console", (msg) => {
     if (msg.type() === "error" || msg.text().startsWith("[STUB]")) {
@@ -104,7 +90,12 @@ test("weighted governance flow can propose, approve, and execute a weight change
         body: JSON.stringify({
           jsonrpc: "2.0",
           id,
-          result: { entries: [], latestLedger: 1000 },
+          result: {
+            entries: [
+              { key: ACCOUNT_KEY_B64, xdr: ACCOUNT_ENTRY_B64, lastModifiedLedgerSeq: 100 },
+            ],
+            latestLedger: 1000,
+          },
         }),
       });
     }
@@ -146,7 +137,7 @@ test("weighted governance flow can propose, approve, and execute a weight change
             cost: { cpuInsns: "1000", memBytes: "1000" },
             results: [{ auth: [], xdr: retval.toXDR("base64") }],
             minResourceFee: "100",
-            transactionData: xdr.ScVal.scvVoid().toXDR("base64"),
+            transactionData: TX_DATA_B64,
             events: [],
             latestLedger: 1000,
           },
@@ -155,6 +146,7 @@ test("weighted governance flow can propose, approve, and execute a weight change
     }
 
     if (method === "sendTransaction") {
+      lastEnvXdr = body.params?.transaction ?? "";
       const call = getCallDetails(body.params?.transaction ?? "");
       if (call.fn === "create_change_weight_proposal") {
         const proposer = String(call.args[0] ?? "");
@@ -216,7 +208,7 @@ test("weighted governance flow can propose, approve, and execute a weight change
             status: "SUCCESS",
             ledger: 1000,
             createdAt: Math.floor(Date.now() / 1000),
-            envelopeXdr: body.params?.transaction ?? "",
+            envelopeXdr: lastEnvXdr,
             resultXdr: xdr.TransactionResult.fromXDR(
               Buffer.from([0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
             ).toXDR("base64"),
@@ -257,7 +249,7 @@ test("weighted governance flow can propose, approve, and execute a weight change
     (window as any).__TEST_WALLET__ = wallet;
   }, OWNER_A);
 
-  await page.goto("/");
+  await page.goto("/app/owners");
 
   await expect(page.getByRole("heading", { name: "Multisig Owners" })).toBeVisible({
     timeout: 15_000,
@@ -274,13 +266,13 @@ test("weighted governance flow can propose, approve, and execute a weight change
   await page.getByRole("button", { name: "Submit Proposal" }).click();
 
   await page.getByRole("link", { name: "dashboard" }).click();
-  await expect(page.getByRole("link", { name: /Change Owner Weight/i })).toBeVisible({
+  await expect(page.getByText("Change Weight", { exact: true })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByText("0/4")).toBeVisible();
+  await expect(page.getByText("0 / 4 weight")).toBeVisible();
 
   await page.getByRole("button", { name: /Approve proposal/i }).click();
-  await expect(page.getByText("2/4")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("2 / 4 weight")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("status", { name: "Status: pending" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Execute" })).toHaveCount(0);
 
@@ -289,12 +281,12 @@ test("weighted governance flow can propose, approve, and execute a weight change
   }, OWNER_B);
   await page.reload();
 
-  await expect(page.getByRole("link", { name: /Change Owner Weight/i })).toBeVisible({
+  await expect(page.getByText("Change Weight", { exact: true })).toBeVisible({
     timeout: 20_000,
   });
   await page.getByRole("button", { name: /Approve proposal/i }).click();
 
-  await expect(page.getByText("5/4")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("5 / 4 weight")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("status", { name: "Status: ready" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Execute" })).toBeVisible();
 

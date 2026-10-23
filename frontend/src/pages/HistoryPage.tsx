@@ -240,7 +240,7 @@ export function HistoryPage({
           placeholder="Search by description…"
           className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-10 pr-4 py-2 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-700 transition-colors"
         />
-        <div className="absolute left-3 top-2.5 text-zinc-600">
+        <div className="absolute left-3 top-2.5 text-zinc-400">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"

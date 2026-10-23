@@ -156,7 +156,7 @@ export function FeedbackWidget({ walletAddress }: FeedbackWidgetProps) {
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-zinc-500 transition-colors hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+        className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm text-zinc-800 dark:text-white transition-colors hover:text-black dark:hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
         aria-label="Send feedback"
         title="Send feedback"
       >
@@ -221,7 +221,7 @@ export function FeedbackWidget({ walletAddress }: FeedbackWidgetProps) {
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   required
                 />
-                <p className="mt-1 text-xs text-zinc-500">{title.length}/256</p>
+                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">{title.length}/256</p>
               </div>
 
               <div className="mb-4">
@@ -255,7 +255,7 @@ export function FeedbackWidget({ walletAddress }: FeedbackWidgetProps) {
               )}
 
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-zinc-500">
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">
                   <ExternalLink size={12} className="inline mr-1" />
                   Opens GitHub issue
                 </p>
@@ -270,7 +270,7 @@ export function FeedbackWidget({ walletAddress }: FeedbackWidgetProps) {
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
                   >
                     <Send size={16} />
                     {submitting ? "Submitting..." : "Submit"}

@@ -35,6 +35,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
@@ -398,8 +399,8 @@ export default function App() {
     <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
       <PWAInstallBanner />
       <CommandPalette commands={commands} suspended={anyModalOpen} />
-      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
+      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 bg-white dark:bg-zinc-950 px-4 sm:px-6 py-4">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2">
           <Link
             to="/"
             className="flex shrink-0 items-center gap-3 transition-opacity hover:opacity-80"
@@ -408,14 +409,14 @@ export default function App() {
               A
             </div>
             <span className="font-semibold tracking-tight">Accord</span>
-            <span className="hidden font-mono text-xs text-zinc-600 sm:block">
+            <span className="hidden font-mono text-xs text-zinc-400 sm:block">
               {t("header.network")}
             </span>
           </Link>
 
           <GlobalSearch proposals={proposals} owners={owners} />
 
-          <nav className="flex items-center gap-1">
+          <nav className="order-last flex w-full flex-wrap items-center justify-end gap-1 pt-1">
             {NAV_ITEMS.map(({ key, to }) => (
               <Link
                 key={key}
@@ -424,7 +425,7 @@ export default function App() {
                   location.pathname === to ||
                   (to === "/app" && location.pathname === "/app/")
                     ? "bg-zinc-800 text-white"
-                    : "text-zinc-500 hover:text-zinc-300"
+                    : "text-zinc-400 hover:text-zinc-300"
                 }`}
               >
                 {t(`nav.${key}`)}
@@ -467,7 +468,7 @@ export default function App() {
               type="button"
               onClick={wallet.connect}
               disabled={wallet.connecting}
-              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
+              className="rounded-lg bg-emerald-700 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
             >
               {wallet.connecting ? t("header.connecting") : t("header.connectWallet")}
             </button>

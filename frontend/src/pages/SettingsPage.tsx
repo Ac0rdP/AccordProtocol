@@ -254,7 +254,7 @@ export function SettingsPage({
 
       <div className="space-y-4">
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
-          <div className="text-sm text-zinc-500 mb-2">Contract ID</div>
+          <div className="text-sm text-zinc-400 mb-2">Contract ID</div>
           <div className="flex items-center gap-2">
             <div className="font-mono text-sm text-zinc-100 break-all flex-1">{contractId}</div>
             <button
@@ -268,12 +268,12 @@ export function SettingsPage({
         </div>
 
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
-          <div className="text-sm text-zinc-500 mb-2">Network</div>
+          <div className="text-sm text-zinc-400 mb-2">Network</div>
           <div className="text-sm text-zinc-100">{network}</div>
         </div>
 
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
-          <div className="text-sm text-zinc-500 mb-2">Threshold</div>
+          <div className="text-sm text-zinc-400 mb-2">Threshold</div>
           <div className="text-sm text-zinc-100">{threshold}</div>
         </div>
       </div>
@@ -284,11 +284,11 @@ export function SettingsPage({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs text-zinc-500 mb-1">Contract Role Version</p>
+              <p className="text-xs text-zinc-400 mb-1">Contract Role Version</p>
               <p className="font-mono text-sm text-zinc-100">{roleVersion}</p>
             </div>
             <div className="text-right">
-              <p className="text-xs text-zinc-500 mb-1">Connected Wallet Roles</p>
+              <p className="text-xs text-zinc-400 mb-1">Connected Wallet Roles</p>
               {rolesLoading ? (
                 <div className="h-5 w-24 bg-zinc-800 animate-pulse rounded" />
               ) : !walletAddress ? (
@@ -322,13 +322,13 @@ export function SettingsPage({
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-zinc-500 mb-1">Current Guardian</p>
+                <p className="text-xs text-zinc-400 mb-1">Current Guardian</p>
                 <p className="font-mono text-sm text-zinc-200">
                   {guardian === "—" ? "—" : `${guardian.slice(0, 6)}...${guardian.slice(-4)}`}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-xs text-zinc-500 mb-1">Contract Status</p>
+                <p className="text-xs text-zinc-400 mb-1">Contract Status</p>
                 <span
                   className={`text-xs px-2 py-0.5 rounded-full font-mono ${
                     frozen
@@ -445,7 +445,7 @@ export function SettingsPage({
                 type="button"
                 onClick={handleSetGuardian}
                 disabled={sgSubmitting}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                className="w-full bg-emerald-700 hover:bg-emerald-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               >
                 {sgSubmitting ? "Submitting…" : "Create Set Guardian Proposal"}
               </button>
@@ -503,7 +503,7 @@ export function SettingsPage({
                 type="button"
                 onClick={handleUnfreeze}
                 disabled={ufSubmitting}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                className="w-full bg-emerald-700 hover:bg-emerald-700 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               >
                 {ufSubmitting ? "Submitting…" : "Create Unfreeze Proposal"}
               </button>
@@ -520,24 +520,24 @@ export function SettingsPage({
         </p>
         <div className="grid grid-cols-2 gap-4">
           <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4">
-            <div className="text-xs text-zinc-500 mb-1">XLM Balance</div>
+            <div className="text-xs text-zinc-400 mb-1">XLM Balance</div>
             <div className="text-xl font-mono font-semibold text-zinc-100">
               {balanceLoading ? (
                 <span className="inline-block h-5 w-16 animate-pulse rounded bg-zinc-800" />
               ) : xlmBalance === "—" ? (
-                <span className="text-zinc-500">—</span>
+                <span className="text-zinc-400">—</span>
               ) : (
                 <>{xlmBalance} XLM</>
               )}
             </div>
           </div>
           <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4">
-            <div className="text-xs text-zinc-500 mb-1">USDC Balance</div>
+            <div className="text-xs text-zinc-400 mb-1">USDC Balance</div>
             <div className="text-xl font-mono font-semibold text-zinc-100">
               {balanceLoading ? (
                 <span className="inline-block h-5 w-16 animate-pulse rounded bg-zinc-800" />
               ) : usdcBalance === "—" || usdcBalance === "N/A" ? (
-                <span className="text-zinc-500">{usdcBalance}</span>
+                <span className="text-zinc-400">{usdcBalance}</span>
               ) : (
                 <>{usdcBalance} USDC</>
               )}

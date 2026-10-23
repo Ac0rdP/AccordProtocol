@@ -445,7 +445,7 @@ The indexer decodes and stores every event the Accord contract emits (`contracts
 | `created` | `ProposalCreatedEvent` | `id: u64`, `proposer: Address`, `threshold: u32`, `category: ProposalCategory`, `transfers: Vec<Transfer>` (`{ to, token, amount: i128 }` each), `quorum_weight: u32`, `total_weight_at_creation: u32` |
 | `approved` | `ProposalApprovedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `threshold: u32`, `weight: u32`, `cumulative_weight: u32` |
 | `revoked` | `ProposalRevokedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `weight: u32`, `cumulative_weight: u32` |
-| `executed` | `ProposalExecutedEvent` | `id: u64`, `executor: Address`, `transfers: Vec<Transfer>` |
+| `executed` | `ProposalExecutedEvent` | `id: u64`, `executor: Address` |
 | `p_canc` | `ProposalCancelledEvent` | `id: u64`, `proposer: Address` |
 | `exp_sw` | `ExpiredProposalsSweptEvent` | `swept: u32` |
 

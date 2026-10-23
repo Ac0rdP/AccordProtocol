@@ -138,6 +138,8 @@ export interface ContractReadFixtures {
   getContractEvents: number;
   getContractXlmBalance: string;
   getContractUsdcBalance: string;
+  getTokenBalanceOf: bigint;
+  getTreasuryTokenBalance: bigint;
   getGuardian: string;
   isFrozen: boolean;
   getRoleVersion: number;
@@ -187,6 +189,8 @@ export function defaultReadFixtures(): ContractReadFixtures {
     getContractEvents: 1_050,
     getContractXlmBalance: "1,000.000000",
     getContractUsdcBalance: "250.000000",
+    getTokenBalanceOf: 50_000_000n,
+    getTreasuryTokenBalance: 250_000_000n,
     getGuardian: HARNESS_ACCOUNT.guardian,
     isFrozen: false,
     getRoleVersion: 7,

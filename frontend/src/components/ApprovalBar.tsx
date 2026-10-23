@@ -76,7 +76,7 @@ export const ApprovalBar = React.memo(function ApprovalBar({
           );
         })}
       </div>
-      <span className="text-xs text-zinc-500 font-mono">
+      <span className="text-xs text-zinc-600 dark:text-zinc-400 font-mono">
         {displayApprovalWeight} / {displayQuorumWeight} weight
       </span>
     </div>

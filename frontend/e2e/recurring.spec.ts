@@ -96,7 +96,8 @@ test("recurring payments can be created and disbursed", async ({ page }) => {
   await page.getByLabel("Recipient Stellar address").fill(OWNER_A);
   await page.getByLabel("Payment amount").fill("10");
   await page.getByLabel("Payment interval in seconds").fill("3600");
-  await page.getByRole("button", { name: "Create Recurring Payment" }).click();
+  await page.getByRole("button", { name: "Review Recurring Payment" }).click();
+  await page.getByRole("button", { name: "Confirm & Submit" }).click();
 
   await expect
     .poll(() => sent.filter((call) => call.fn === "create_recurring_payment").length, {

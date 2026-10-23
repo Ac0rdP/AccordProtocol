@@ -29,6 +29,14 @@ vi.mock("../lib/contract", () => ({
   getWeightCapPct: vi.fn().mockResolvedValue(50),
 }));
 
+vi.mock("../lib/transactionPreview", () => ({
+  previewTransferProposal: vi.fn().mockResolvedValue({
+    feeEstimate: 0.0001,
+    feeError: null,
+    balances: [],
+  }),
+}));
+
 vi.mock("@stellar/stellar-sdk", async () => {
   const original = (await vi.importActual("@stellar/stellar-sdk")) as any;
   return {
@@ -113,6 +121,7 @@ describe("CreateProposalModal - 375px Mobile Viewport", () => {
 
     const submitBtn = screen.getByRole("button", { name: /confirm & submit/i });
     expect(submitBtn.className).toContain("min-h-[44px]");
+    await waitFor(() => expect(submitBtn).not.toBeDisabled());
     fireEvent.click(submitBtn);
 
     await waitFor(() => {

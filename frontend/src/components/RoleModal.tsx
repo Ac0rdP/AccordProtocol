@@ -218,7 +218,7 @@ export function RoleModal({
                 onClick={handleGrant}
                 disabled={loading || roles.includes(selectedRole)}
                 aria-label={`Grant ${selectedRole} role`}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400"
               >
                 Grant Role
               </button>

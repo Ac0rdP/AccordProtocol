@@ -25,7 +25,7 @@ export function AnalyticsSectionState({
   if (loading) {
     return (
       <div className="h-48 flex items-center justify-center animate-pulse">
-        <div className="text-zinc-500 text-sm">Loading...</div>
+        <div className="text-zinc-600 dark:text-zinc-400 text-sm">Loading...</div>
       </div>
     );
   }
@@ -50,7 +50,7 @@ export function AnalyticsSectionState({
   if (empty) {
     return (
       <div className="h-48 flex items-center justify-center">
-        <div className="text-zinc-500 text-sm text-center px-4">
+        <div className="text-zinc-600 dark:text-zinc-400 text-sm text-center px-4">
           {emptyMessage}
         </div>
       </div>

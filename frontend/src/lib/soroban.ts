@@ -100,7 +100,7 @@ export const CONTRACT_ERRORS: Record<string, string> = {
   "43": "Owner weight is below the minimum required.",
   "44": "Invalid owner weight.",
   "45": "Contract has already been migrated to weighted governance.",
-  "46": "Single owner weight exceeds the allowed cap.",
+  "46": "Single owner weight exceeds the configured weight cap.",
   "47": "Target owner no longer exists.",
   "48": "Action would break the required quorum.",
   "49": "Cannot remove the last remaining owner.",

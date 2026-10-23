@@ -584,39 +584,39 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           <h3 className="text-sm font-medium text-zinc-200">Confirm Weight Change</h3>
           <dl className="space-y-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3">
             <div>
-              <dt className="text-xs text-zinc-500">Target Owner</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Target Owner</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono break-all">{target}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Owner Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Owner Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{oldWeight}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Proposed New Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Proposed New Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{isNaN(newWeight) ? "—" : newWeight}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Total Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Total Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{currentTotal}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Resulting Total Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Resulting Total Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{resultingTotal}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Quorum Requirement</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Quorum Requirement</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{currentQuorum}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Resulting Quorum Requirement</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Resulting Quorum Requirement</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{resultingQuorum}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Description</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Description</dt>
               <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-200">{description.trim()}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Deadline</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{formatDeadlineDate(deadline)}</dd>
             </div>
           </dl>
@@ -644,7 +644,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             {submitting ? "Submitting…" : "Confirm & Submit"}
           </button>
@@ -668,7 +668,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               className="rounded-xl border border-zinc-700 bg-zinc-800/50 p-3.5 sm:p-4 min-h-[48px] text-sm font-medium text-zinc-200 transition-colors hover:border-emerald-500/50 hover:bg-zinc-800 disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-between sm:justify-center"
             >
               <span>{label}</span>
-              <span className="text-zinc-500 sm:hidden">→</span>
+              <span className="text-zinc-600 dark:text-zinc-400 sm:hidden">→</span>
             </button>
           ))}
         </div>
@@ -685,7 +685,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             className={`w-full border rounded-lg px-3 py-2.5 text-sm ${
               walletAddress
                 ? "bg-zinc-800/60 border-zinc-700/60 text-zinc-300 font-mono"
-                : "bg-zinc-800/30 border-zinc-700/30 text-zinc-500"
+                : "bg-zinc-800/30 border-zinc-700/30 text-zinc-600 dark:text-zinc-400"
             } truncate`}
           >
             {truncateAddress(walletAddress)}
@@ -710,7 +710,10 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             />
 
             <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">
+              <label
+                htmlFor="proposal-recipient-input"
+                className="text-xs text-zinc-400 block mb-1.5"
+              >
                 Recipient Address
               </label>
               <AddressBookField
@@ -723,6 +726,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 }}
               />
               <input
+                id="proposal-recipient-input"
                 ref={firstInputRef}
                 value={to}
                 onChange={(e) => {
@@ -740,8 +744,14 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="flex-1">
-                <label className="text-xs text-zinc-400 block mb-1.5 font-sans">Amount</label>
+                <label
+                  htmlFor="proposal-amount-input"
+                  className="text-xs text-zinc-400 block mb-1.5 font-sans"
+                >
+                  Amount
+                </label>
                 <input
+                  id="proposal-amount-input"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
@@ -789,7 +799,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                       Estimated fee: <span className="text-white font-mono">~{feeEstimate.toFixed(7)} XLM</span>
                     </span>
                   ) : (
-                    <span className="text-zinc-500">No estimate yet</span>
+                    <span className="text-zinc-600 dark:text-zinc-400">No estimate yet</span>
                   )}
                 </div>
                 <button
@@ -902,7 +912,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               max={totalOwners}
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
             />
-            <p className="text-xs text-zinc-500 mt-1 font-sans">
+            <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1 font-sans">
               Threshold must be between 1 and {totalOwners}
             </p>
           </div>
@@ -977,10 +987,14 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
         {/* Common fields */}
         <div>
-          <label className="text-xs text-zinc-400 block mb-1.5">
+          <label
+            htmlFor="proposal-description-input"
+            className="text-xs text-zinc-400 block mb-1.5"
+          >
             Description
           </label>
           <input
+            id="proposal-description-input"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             maxLength={MAX_DESCRIPTION_LEN}
@@ -991,7 +1005,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             className={`mt-1 text-right text-xs ${
               description.length >= MAX_DESCRIPTION_LEN
                 ? "text-red-400"
-                : "text-zinc-500"
+                : "text-zinc-600 dark:text-zinc-400"
             }`}
           >
             {description.length} / {MAX_DESCRIPTION_LEN}
@@ -1031,7 +1045,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Review Proposal
           </button>
@@ -1052,24 +1066,24 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "transfer" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                   <dd className="mt-1 break-all text-sm text-zinc-200">Transfer {amount} {token} to {to}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">Estimated Fee</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Estimated Fee</dt>
                   <dd className="mt-1 text-sm text-zinc-200">
                     {previewLoading ? (
                       <span className="text-zinc-400">Simulating transaction…</span>
                     ) : previewFeeEstimate !== null ? (
                       <span className="font-mono">~{previewFeeEstimate.toFixed(7)} XLM</span>
                     ) : (
-                      <span className="text-zinc-500">—</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">—</span>
                     )}
                   </dd>
                 </div>
                 {!previewLoading && previewBalances.length > 0 && (
                   <div>
-                    <dt className="text-xs text-zinc-500">Balance Impact</dt>
+                    <dt className="text-xs text-zinc-600 dark:text-zinc-400">Balance Impact</dt>
                     <dd className="mt-1.5 space-y-2">
                       {previewBalances.map((row) => (
                         <div
@@ -1078,7 +1092,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                         >
                           <div className="text-zinc-400">{row.label}</div>
                           <div className="mt-0.5 font-mono text-zinc-200">
-                            {row.before} <span className="text-zinc-500">→</span> {row.after} {row.token}
+                            {row.before} <span className="text-zinc-600 dark:text-zinc-400">→</span> {row.after} {row.token}
                           </div>
                         </div>
                       ))}
@@ -1090,11 +1104,11 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "add_owner" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200">Add new owner</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">New Owner Address</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">New Owner Address</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{ownerAddress.trim()}</dd>
                 </div>
               </>
@@ -1102,11 +1116,11 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "remove_owner" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200">Remove owner</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">Owner to Remove</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Owner to Remove</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{selectedOwner}</dd>
                 </div>
               </>
@@ -1114,7 +1128,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "change_threshold" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200 font-sans">Change approval threshold to {newThreshold} of {totalOwners}</dd>
                 </div>
               </>
@@ -1122,31 +1136,31 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "change_owner_weight" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200 font-sans font-medium">Propose owner weight change</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Target Owner</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Target Owner</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{selectedOwner}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">New Weight</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">New Weight</dt>
                   <dd className="mt-1 font-mono text-sm text-zinc-200 font-medium">{newWeightInput}</dd>
                 </div>
               </>
             )}
             <div>
-              <dt className="text-xs text-zinc-500">Description</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Description</dt>
               <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-200">
                 {description.trim()}
               </dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Deadline</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{dl}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Required Quorum</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Required Quorum</dt>
               <dd className="mt-1 text-sm text-zinc-200">
                 {quorumWeight > 0 ? (
                   <>
@@ -1196,7 +1210,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 ? "Resolve the simulation error before submitting"
                 : undefined
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             {submitting ? "Submitting…" : "Confirm & Submit"}
           </button>
@@ -1220,7 +1234,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-lg min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2"
+            className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-lg min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2"
           >
             ✕
           </button>

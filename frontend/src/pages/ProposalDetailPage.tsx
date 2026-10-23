@@ -30,7 +30,7 @@ type ProposalDetailPageProps = {
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-      <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">{label}</p>
+      <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">{label}</p>
       <div className="mt-2 text-sm text-zinc-200">{children}</div>
     </div>
   );
@@ -187,11 +187,11 @@ export function ProposalDetailPage({
         <div>
           <Link
             to="/app"
-            className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+            className="text-sm text-zinc-600 dark:text-zinc-400 transition-colors hover:text-zinc-300"
           >
             Back to dashboard
           </Link>
-          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-600">
+          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-600 dark:text-zinc-400">
             Proposal Detail
           </p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
@@ -204,7 +204,7 @@ export function ProposalDetailPage({
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-sm text-zinc-500">Amount</p>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">Amount</p>
             <p className="mt-1 text-2xl font-semibold text-white">
               {proposal.amount} {proposal.token}
             </p>
@@ -241,7 +241,7 @@ export function ProposalDetailPage({
       </section>
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+        <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
           Description
         </p>
         <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-zinc-300">
@@ -251,7 +251,7 @@ export function ProposalDetailPage({
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
             Activity Timeline
           </p>
           {loadingEvents && (
@@ -369,7 +369,7 @@ export function ProposalDetailPage({
                       </span>
                     )}
                   </div>
-                  <span className="text-xs text-zinc-500">{event.timestamp}</span>
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">{event.timestamp}</span>
                 </div>
               );
             })}
@@ -388,7 +388,7 @@ export function ProposalDetailPage({
                   ? `Approve proposal #${proposal.id}`
                   : `Connect and approve proposal #${proposal.id}`
               }
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             >
               {connected ? "Approve" : "Connect & Approve"}
             </button>

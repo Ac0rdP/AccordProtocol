@@ -239,9 +239,9 @@ relayer is intended to cover its network fee.
 ## Approved-token registry
 
 The registry is disabled by default. Governance can enable it with
-`create_set_asset_registry_enabled_proposal`, then add or remove token contracts
-with `create_add_approved_token_proposal` and
-`create_remove_approved_token_proposal`. All changes require normal proposal
+`create_asset_registry_proposal`, then add or remove token contracts
+with `create_approve_token_proposal` and
+`create_unapprove_token_proposal`. All changes require normal proposal
 approval and execution. When enabled, transfer, recurring-payment, and escrow
 proposals reject tokens not in the registry; execution and recurring
 disbursement recheck the registry so a later removal takes effect. Registry
@@ -261,7 +261,7 @@ escrow record, preventing settlement more than once, and emit dedicated events.
 
 ## Guardian rotation
 
-`create_transfer_guardian_proposal(proposer, new_guardian, description, deadline)`
+`create_change_guardian_proposal(proposer, new_guardian, description, deadline)`
 uses the normal proposal lifecycle and weighted quorum. Executing it emits the
 same `GuardianSetEvent` as the direct `set_guardian` path.
 
@@ -1619,13 +1619,14 @@ struct ProposalRevokedEvent {
 |-------|-----------|----------------|-------------|
 | `id` | `u64` | `ScVal::U64` | Proposal ID that was executed |
 | `executor` | `Address` | `ScVal::Address` | Owner who triggered the execution |
-| `transfers` | `Vec<Transfer>` | `ScVal::Vec` | Asset transfers carried out by this execution; empty for governance proposals (add/remove owner, change threshold, spending limit). Each `Transfer` has `to: Address`, `token: Address`, `amount: i128` (see [Token Amounts](#token-amounts-and-decimals)) |
+
+The executed transfer list is intentionally **not** repeated in this event: at the maximum batch size (50 transfers) it pushed the transaction's contract-event payload past the network's 16 KiB limit. Use the `created` event or `get_proposal` to read the transfers.
 
 ```rust
 struct ProposalExecutedEvent {
     id: u64,
     executor: Address,
-    transfers: Vec<Transfer>,
+    version: u32,
 }
 ```
 

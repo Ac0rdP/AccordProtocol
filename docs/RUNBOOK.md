@@ -188,3 +188,11 @@ Keep this table in step with the code: `indexer/test/ops-assets.test.js` fails i
 | `WEBHOOK_BACKOFF_MAX_MS` | `3600000` | Retry delay cap. |
 | `WEBHOOK_TIMEOUT_MS` | `10000` | Per-delivery timeout. |
 | `WEBHOOK_POLL_INTERVAL_MS` | `2000` | Outbox poll cadence. |
+| `NOTIFICATION_MAX_ATTEMPTS` | `8` | Attempts before a notification delivery is dead-lettered. |
+| `NOTIFICATION_BACKOFF_BASE_MS` | `5000` | First notification retry delay. |
+| `NOTIFICATION_BACKOFF_MAX_MS` | `3600000` | Notification retry delay cap. |
+| `NOTIFICATION_TIMEOUT_MS` | `10000` | Per-delivery notification timeout. |
+| `NOTIFICATION_POLL_INTERVAL_MS` | `2000` | Notification outbox poll cadence. |
+| `EMAIL_API_URL` | none | HTTP endpoint used by `email` notification destinations. |
+| `EMAIL_API_KEY` | none | Bearer token sent to `EMAIL_API_URL`. |
+| `EMAIL_FROM` | none | `From` address sent to `EMAIL_API_URL`. |

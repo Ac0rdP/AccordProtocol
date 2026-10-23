@@ -95,7 +95,7 @@ export function TreasuryFlowChart({
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h3 className="font-semibold text-sm">Treasury Inflow vs Outflow</h3>
-          <p className="text-xs text-zinc-500 mt-0.5">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
             Deposits and executed transfers per window
           </p>
         </div>

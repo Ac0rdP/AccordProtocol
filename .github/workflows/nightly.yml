@@ -188,7 +188,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run end-to-end suite
-        run: npm run e2e
+        run: npx playwright test --project=chromium --project=e2e --project=responsive-375 --project=responsive-768 --project=responsive-1440
 
       - name: Upload Playwright report
         if: always()

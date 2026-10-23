@@ -135,5 +135,5 @@ export const EXPECTED = {
     `Owner spend chart with 4 owners. ${OWNER_A}: 1500.00 across 1 transactions; ` +
     `${OWNER_B}: 500.00 across 1 transactions; ${OWNER_A}: 250.00 across 1 transactions; ` +
     `${OWNER_C}: 0.00 across 0 transactions.`,
-  cumulativeOutflow: "Cumulative outflow ends at 2250.00.",
+  flowSummary: "Total inflow: 2800.00. Total outflow: 2250.00.",
 };

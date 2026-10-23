@@ -181,7 +181,7 @@ export function CreateWeightChangeProposalModal({
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.25em] text-zinc-600">
+            <p className="text-xs uppercase tracking-[0.25em] text-zinc-600 dark:text-zinc-400">
               Governance
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-white">
@@ -209,7 +209,7 @@ export function CreateWeightChangeProposalModal({
 
         <div className="mt-5 grid gap-4">
           <label className="grid gap-2">
-            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
               Owner
             </span>
             <select
@@ -228,7 +228,7 @@ export function CreateWeightChangeProposalModal({
           </label>
 
           <label className="grid gap-2">
-            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
               New Weight
             </span>
             <input
@@ -244,7 +244,7 @@ export function CreateWeightChangeProposalModal({
           </label>
 
           <label className="grid gap-2">
-            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
               Description
             </span>
             <textarea
@@ -256,13 +256,13 @@ export function CreateWeightChangeProposalModal({
               maxLength={MAX_DESCRIPTION_LEN}
               className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             />
-            <div className="text-right text-xs text-zinc-500">
+            <div className="text-right text-xs text-zinc-600 dark:text-zinc-400">
               {descriptionCount} / {MAX_DESCRIPTION_LEN}
             </div>
           </label>
 
           <label className="grid gap-2">
-            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+            <span className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
               Deadline
             </span>
             <input
@@ -271,7 +271,7 @@ export function CreateWeightChangeProposalModal({
               type="date"
               className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
             />
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">
               Submission deadline: {formatDeadlineDate(deadline)}
             </p>
           </label>
@@ -280,7 +280,7 @@ export function CreateWeightChangeProposalModal({
         <section className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
           <h3 className="text-sm font-semibold text-white">Quorum impact preview</h3>
           {loading ? (
-            <p className="mt-3 text-sm text-zinc-500">Loading current weights…</p>
+            <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">Loading current weights…</p>
           ) : selectedOwner ? (
             <div className="mt-3 space-y-2 text-sm text-zinc-300">
               <p>Current owner weight: <span className="font-mono text-white">{currentOwnerWeight}</span></p>
@@ -291,7 +291,7 @@ export function CreateWeightChangeProposalModal({
               <p>Quorum share: <span className="font-mono text-white">{formatPct(currentQuorumShare)} → {formatPct(projectedQuorumShare)}</span></p>
             </div>
           ) : (
-            <p className="mt-3 text-sm text-zinc-500">Select an owner to preview the effect.</p>
+            <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">Select an owner to preview the effect.</p>
           )}
         </section>
 
@@ -307,7 +307,7 @@ export function CreateWeightChangeProposalModal({
             type="button"
             onClick={handleSubmit}
             disabled={submitting || loading}
-            className="rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
+            className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
           >
             {submitting ? "Submitting…" : "Submit Proposal"}
           </button>

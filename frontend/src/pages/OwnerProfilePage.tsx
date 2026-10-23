@@ -119,7 +119,7 @@ export function OwnerProfilePage({
                   type="button"
                   onClick={handleCopy}
                   title="Copy full address"
-                  className="rounded p-1 text-zinc-500 hover:text-zinc-200 transition-colors"
+                  className="rounded p-1 text-zinc-600 dark:text-zinc-400 hover:text-zinc-200 transition-colors"
                 >
                   {copied ? (
                     <Check size={14} className="text-emerald-400" />
@@ -156,7 +156,7 @@ export function OwnerProfilePage({
           <p className="mt-1 font-mono text-2xl font-semibold text-white">
             {activity.createdCount}
           </p>
-          <p className="text-xs text-zinc-500 mt-0.5">Author of proposals</p>
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">Author of proposals</p>
         </div>
 
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -164,7 +164,7 @@ export function OwnerProfilePage({
           <p className="mt-1 font-mono text-2xl font-semibold text-emerald-400">
             {activity.approvedCount}
           </p>
-          <p className="text-xs text-zinc-500 mt-0.5">Signatures submitted</p>
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">Signatures submitted</p>
         </div>
 
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -172,7 +172,7 @@ export function OwnerProfilePage({
           <p className="mt-1 font-mono text-2xl font-semibold text-sky-400">
             {activity.totalCount}
           </p>
-          <p className="text-xs text-zinc-500 mt-0.5">Proposals & approvals</p>
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">Proposals & approvals</p>
         </div>
       </div>
 

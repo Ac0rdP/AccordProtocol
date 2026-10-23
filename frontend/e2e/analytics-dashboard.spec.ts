@@ -137,8 +137,8 @@ test("analytics page renders stat cards and charts from indexed treasury events"
 
   // Treasury outflow chart (GET /treasury/flow), cumulative across the one
   // indexed month.
-  const flowChart = page.getByRole("img", { name: "Treasury outflow over time chart. 1 data points shown." });
+  const flowChart = page.getByRole("img", { name: "Treasury inflow vs outflow chart. 1 data points shown." });
   await expect(flowChart).toBeVisible();
-  await expect(flowChart.locator("svg")).toHaveCount(1);
-  await expect(page.getByText(EXPECTED.cumulativeOutflow, { exact: true })).toHaveText(EXPECTED.cumulativeOutflow);
+  await expect(flowChart.locator("svg").first()).toBeVisible();
+  await expect(page.getByText(EXPECTED.flowSummary, { exact: true })).toHaveText(EXPECTED.flowSummary);
 });

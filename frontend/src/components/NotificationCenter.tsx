@@ -100,7 +100,7 @@ export function NotificationCenter() {
               ))}
             </div>
           ) : notifications.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-zinc-500">{t("notifications.empty")}</p>
+            <p className="px-3 py-6 text-center text-sm text-zinc-600 dark:text-zinc-400">{t("notifications.empty")}</p>
           ) : (
             <ul className="max-h-80 divide-y divide-zinc-800 overflow-y-auto">
               {notifications.map((n) => (
@@ -117,7 +117,7 @@ export function NotificationCenter() {
                       <p className="text-sm font-medium text-zinc-200">{n.title}</p>
                     </div>
                     <p className="mt-0.5 text-xs text-zinc-400">{n.body}</p>
-                    <p className="mt-1 text-[11px] text-zinc-600">
+                    <p className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">
                       {new Date(n.createdAt).toLocaleString()}
                     </p>
                   </button>

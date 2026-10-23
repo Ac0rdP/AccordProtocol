@@ -113,11 +113,16 @@ test("weighted approvals accumulate across owners until quorum is reached", asyn
     send: (fn, args) => {
       sent.push({ fn, args });
       if (fn === "create_proposal") {
+        const transfers = (args[1] ?? []) as Array<{
+          to: string;
+          amount: bigint;
+        }>;
+        const first = transfers[0];
         proposals.push({
           id: nextProposalId++,
           proposer: String(args[0] ?? ""),
-          to: String(args[1] ?? ""),
-          amount: BigInt(String(args[2] ?? 0)),
+          to: String(first?.to ?? ""),
+          amount: BigInt(first?.amount ?? 0),
           approvalWeight: 0,
           approvals: 0,
           status: "Pending",
@@ -145,7 +150,7 @@ test("weighted approvals accumulate across owners until quorum is reached", asyn
   await expect(page.getByText("No active proposals")).toBeVisible({ timeout: 15_000 });
 
   // ─── Create a transfer proposal ────────────────────────────────────────────
-  await page.getByRole("button", { name: "New" }).click();
+  await page.getByRole("button", { name: "New", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "New Proposal" })).toBeVisible();
   await page.getByRole("button", { name: "Transfer" }).click();
 
@@ -158,7 +163,7 @@ test("weighted approvals accumulate across owners until quorum is reached", asyn
   await expect(page.getByText("0 / 4 weight")).toBeVisible({ timeout: 20_000 });
   const created = sent.find((call) => call.fn === "create_proposal");
   expect(created, "create_proposal was submitted").toBeTruthy();
-  expect(created!.args[1]).toBe(OWNER_C);
+  expect((created!.args[1] as Array<{ to: string }>)[0].to).toBe(OWNER_C);
 
   // ─── Approve as A (weight 2 of 4) ──────────────────────────────────────────
   await page.getByRole("button", { name: "Approve proposal #1" }).click();
@@ -180,5 +185,7 @@ test("weighted approvals accumulate across owners until quorum is reached", asyn
   await page.getByRole("button", { name: "Confirm" }).click();
 
   await expect(page.getByText("No active proposals")).toBeVisible({ timeout: 20_000 });
-  expect(sent.some((call) => call.fn === "execute")).toBe(true);
+  await expect
+    .poll(() => sent.some((call) => call.fn === "execute"), { timeout: 10_000 })
+    .toBe(true);
 });

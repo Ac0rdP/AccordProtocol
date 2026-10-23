@@ -71,6 +71,17 @@ export type ContractCreateRecurringParams = {
   kind: ContractRecurringKind;
 };
 
+export type ContractEscrowReleaseMode =
+  | { OwnerQuorumUntil: number }
+  | { Deadline: number };
+
+export type ContractEscrowParams = {
+  recipient: string;
+  token: string;
+  amount: bigint;
+  release_mode: ContractEscrowReleaseMode;
+};
+
 export type ContractProposalKind =
   | { Transfer: ContractTransfer[] }
   | { AddOwner: [string, number] }
@@ -85,7 +96,12 @@ export type ContractProposalKind =
   | { ResumeRecurringPayment: number }
   | { ModifyRecurringPayment: ContractModifyRecurringParams }
   | { GrantRole: [string, string] }
-  | { RevokeRole: [string, string] };
+  | { RevokeRole: [string, string] }
+  | { SetAssetRegistryEnabled: boolean }
+  | { AddApprovedToken: string }
+  | { RemoveApprovedToken: string }
+  | { TransferGuardian: string }
+  | { CreateEscrow: ContractEscrowParams };
 
 export type ContractModifyRecurringParams = {
   schedule_id: number;
@@ -137,9 +153,12 @@ export type ContractSpendingLimitEntry = {
   limit: bigint;
 };
 
-export type ContractSpendingWindowEntry = {
+export type ContractEscrowRecord = {
+  id: number;
+  recipient: string;
   token: string;
-  window_secs: number;
+  amount: bigint;
+  release_mode: ContractEscrowReleaseMode;
 };
 
 export type ContractDelegation = {
@@ -163,6 +182,7 @@ export type ContractProposalCreatedEvent = {
   quorum_weight: number;
   total_weight_at_creation: number;
   attachment_hash: string | null;
+  version: number;
 };
 
 export type ContractRecurringSchedule = {
@@ -183,6 +203,7 @@ export type ContractProposalApprovedEvent = {
   threshold: number;
   weight: number;
   cumulative_weight: number;
+  version: number;
 };
 
 export type ContractProposalRevokedEvent = {
@@ -191,32 +212,77 @@ export type ContractProposalRevokedEvent = {
   approvals: number;
   weight: number;
   cumulative_weight: number;
+  version: number;
 };
 
 export type ContractProposalExecutedEvent = {
   id: number;
   executor: string;
-  transfers: ContractTransfer[];
+  version: number;
+};
+
+export type ContractProposalCancelledEvent = {
+  id: number;
+  proposer: string;
+};
+
+export type ContractExpiredProposalsSweptEvent = {
+  swept: number;
 };
 
 export type ContractGuardianSetEvent = {
   guardian: string;
+  version: number;
+};
+
+export type ContractApprovedTokenChangedEvent = {
+  token: string;
+  approved: boolean;
+};
+
+export type ContractAssetRegistryEnabledEvent = {
+  enabled: boolean;
+};
+
+export type ContractEscrowCreatedEvent = {
+  id: number;
+  recipient: string;
+  token: string;
+  amount: bigint;
+  release_mode: ContractEscrowReleaseMode;
+};
+
+export type ContractEscrowReleasedEvent = {
+  id: number;
+  recipient: string;
+  token: string;
+  amount: bigint;
+};
+
+export type ContractEscrowRefundedEvent = {
+  id: number;
+  token: string;
+  amount: bigint;
 };
 
 export type ContractFrozenEvent = {
   guardian: string;
+  version: number;
 };
 
 export type ContractUnfrozenEvent = {
   approvers: string[];
+  version: number;
 };
 
 export type ContractRecoveryEnteredEvent = {
   guardian: string;
+  version: number;
 };
 
 export type ContractRecoveryExitedEvent = {
   approvers: string[];
+  version: number;
 };
 
 export type ContractRecurringPaymentDisbursedEvent = {
@@ -226,16 +292,27 @@ export type ContractRecurringPaymentDisbursedEvent = {
   amount: bigint;
   total_disbursed: bigint;
   periods_disbursed: number;
+  version: number;
+};
+
+export type ContractRecurringStreamClaimedEvent = {
+  schedule_id: number;
+  recipient: string;
+  token: string;
+  amount: bigint;
+  total_disbursed: bigint;
 };
 
 export type ContractRecurringPaymentPausedEvent = {
   id: number;
   caller: string;
+  version: number;
 };
 
 export type ContractRecurringPaymentResumedEvent = {
   id: number;
   caller: string;
+  version: number;
 };
 
 export type ContractRecurringPaymentModifiedEvent = {
@@ -246,6 +323,7 @@ export type ContractRecurringPaymentModifiedEvent = {
   new_interval: number;
   previous_end_time: number;
   new_end_time: number;
+  version: number;
 };
 
 export type ContractRecurringPaymentCreatedEvent = {
@@ -260,31 +338,37 @@ export type ContractRecurringPaymentCreatedEvent = {
   cliff_time: number;
   total_cap: bigint;
   kind: ContractRecurringKind;
+  version: number;
 };
 
 export type ContractRecurringPaymentCancelledEvent = {
   id: number;
   caller: string;
+  version: number;
 };
 
 export type ContractUpgradeExecutedEvent = {
   caller: string;
   new_wasm_hash: string;
+  version: number;
 };
 
 export type ContractAddOwnerExecutedEvent = {
   new_owner: string;
   owner_count: number;
+  version: number;
 };
 
 export type ContractRemoveOwnerExecutedEvent = {
   removed_owner: string;
   owner_count: number;
+  version: number;
 };
 
 export type ContractChangeThresholdExecutedEvent = {
   previous_threshold: number;
   new_threshold: number;
+  version: number;
 };
 
 export type ContractSetSpendingLimitExecutedEvent = {
@@ -292,6 +376,7 @@ export type ContractSetSpendingLimitExecutedEvent = {
   token: string;
   previous_limit: bigint | null;
   new_limit: bigint;
+  version: number;
 };
 
 export type ContractOwnerWeightChangedEvent = {
@@ -299,16 +384,19 @@ export type ContractOwnerWeightChangedEvent = {
   old_weight: number;
   new_weight: number;
   new_total_weight: number;
+  version: number;
 };
 
 export type ContractGovernanceMigratedEvent = {
   owner_count: number;
   total_weight: number;
+  version: number;
 };
 
 export type ContractRbacMigratedEvent = {
   owner_count: number;
   role_version: number;
+  version: number;
 };
 
 export type ContractRoleGrantedEvent = {
@@ -316,6 +404,7 @@ export type ContractRoleGrantedEvent = {
   role: ContractRole;
   before: ContractRole[];
   after: ContractRole[];
+  version: number;
 };
 
 export type ContractRoleRevokedEvent = {
@@ -323,6 +412,7 @@ export type ContractRoleRevokedEvent = {
   role: ContractRole;
   before: ContractRole[];
   after: ContractRole[];
+  version: number;
 };
 
 export enum ContractError {
@@ -353,7 +443,6 @@ export enum ContractError {
   OwnerNotFound = 25,
   ContractFrozen = 26,
   NoGuardian = 27,
-  RecoveryActive = 57,
   InvalidInterval = 28,
   InvalidSchedule = 29,
   InvalidCap = 30,
@@ -383,4 +472,10 @@ export enum ContractError {
   RoleNotGranted = 54,
   InvalidRole = 55,
   DeprecatedEntrypoint = 56,
+  RecoveryActive = 57,
+  AssetNotApproved = 61,
+  AssetRegistryState = 62,
+  EscrowNotFound = 63,
+  EscrowConditionNotMet = 64,
+  EscrowFundsUnavailable = 65,
 }

@@ -9,6 +9,14 @@ vi.mock("../lib/submit", () => ({
   createRecurringPaymentProposal: vi.fn(),
 }));
 
+vi.mock("../lib/transactionPreview", () => ({
+  previewRecurringPaymentProposal: vi.fn().mockResolvedValue({
+    feeEstimate: 0.0001,
+    feeError: null,
+    balances: [],
+  }),
+}));
+
 vi.mock("@stellar/stellar-sdk", async () => {
   const original = await vi.importActual("@stellar/stellar-sdk") as any;
   return {
@@ -54,7 +62,7 @@ describe("CreateRecurringPaymentModal", () => {
     const { container } = render(<CreateRecurringPaymentModal {...defaultProps} />);
 
     fillBaseFields(container);
-    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Recurring Payment" }));
 
     expect(screen.getAllByText("Enter a valid Stellar address.")).toHaveLength(2);
     expect(createRecurringPaymentProposal).not.toHaveBeenCalled();
@@ -66,7 +74,7 @@ describe("CreateRecurringPaymentModal", () => {
     fillBaseFields(container);
     const dateInputs = container.querySelectorAll('input[type="date"]');
     fireEvent.change(dateInputs[2], { target: { value: "2026-08-30" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Recurring Payment" }));
 
     expect(screen.getByText("End must be after start.")).toBeTruthy();
     expect(createRecurringPaymentProposal).not.toHaveBeenCalled();
@@ -76,7 +84,11 @@ describe("CreateRecurringPaymentModal", () => {
     const { container } = render(<CreateRecurringPaymentModal {...defaultProps} />);
 
     fillBaseFields(container);
-    fireEvent.click(screen.getByRole("button", { name: "Create Recurring Payment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Recurring Payment" }));
+
+    const confirm = await screen.findByRole("button", { name: "Confirm & Submit" });
+    await waitFor(() => expect(confirm).not.toBeDisabled());
+    fireEvent.click(confirm);
 
     await waitFor(() => {
       expect(createRecurringPaymentProposal).toHaveBeenCalledTimes(1);

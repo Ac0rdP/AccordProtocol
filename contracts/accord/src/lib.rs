@@ -338,7 +338,6 @@ pub struct ProposalRevokedEvent {
 pub struct ProposalExecutedEvent {
     pub id: u64,
     pub executor: Address,
-    pub transfers: Vec<Transfer>,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
 }
@@ -666,7 +665,6 @@ pub enum ContractError {
     OwnerNotFound = 25,
     ContractFrozen = 26,
     NoGuardian = 27,
-    RecoveryActive = 57,
     InvalidInterval = 28,
     InvalidSchedule = 29,
     InvalidCap = 30,
@@ -699,11 +697,15 @@ pub enum ContractError {
     RoleNotGranted = 54,
     /// Thrown when a specified role is not valid for the current context.
     InvalidRole = 55,
-    AssetNotApproved = 56,
-    AssetRegistryState = 57,
-    EscrowNotFound = 58,
-    EscrowConditionNotMet = 59,
-    EscrowFundsUnavailable = 60,
+    /// Thrown when a deprecated entrypoint is called instead of its replacement.
+    DeprecatedEntrypoint = 56,
+    /// Thrown when an outflow is blocked because recovery mode is active.
+    RecoveryActive = 57,
+    AssetNotApproved = 61,
+    AssetRegistryState = 62,
+    EscrowNotFound = 63,
+    EscrowConditionNotMet = 64,
+    EscrowFundsUnavailable = 65,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -827,7 +829,12 @@ const STORAGE_SCHEMA_VERSION: u32 = 1;
 ///
 /// History:
 ///   1 — initial versioned event schema (all structs gain the `version` field).
-pub const EVENT_SCHEMA_VERSION: u32 = 1;
+///   2 — `ProposalExecutedEvent` drops `transfers`. A maximum-size batch
+///       (50 transfers) duplicated in the event pushed the transaction's
+///       contract-event payload past the network's 16 KiB limit, so the
+///       executed event now carries only `id` and `executor`; the transfer
+///       list remains available in `ProposalCreatedEvent` and on-chain state.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1906,6 +1913,22 @@ fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractErro
     validate_asset_registry(env, token_address)
 }
 
+/// Resolves an asset reference into the token address it stands for.
+///
+/// `AssetReference::Address` is used as is, `AssetReference::Classic` is
+/// looked up in the registry that `set_classic_asset` maintains. The resolved
+/// token is validated by the caller, exactly like a directly supplied one.
+fn resolve_asset(env: &Env, asset: &AssetReference) -> Result<Address, ContractError> {
+    match asset {
+        AssetReference::Address(token) => Ok(token.clone()),
+        AssetReference::Classic(identifier) => env
+            .storage()
+            .instance()
+            .get(&classic_asset_key(identifier))
+            .ok_or(ContractError::InvalidToken),
+    }
+}
+
 fn create_governance_proposal(
     env: &Env,
     proposer: Address,
@@ -1930,6 +1953,7 @@ fn create_governance_proposal(
         ready_at: 0,
         quorum_weight: threshold,
         category: ProposalCategory::Other,
+        attachment_hash: None,
     };
     write_proposal(env, &proposal);
     register_active_proposal(env, id)?;
@@ -1948,6 +1972,8 @@ fn create_governance_proposal(
             transfers: Vec::new(env),
             quorum_weight: threshold,
             total_weight_at_creation: read_total_weight(env),
+            attachment_hash: None,
+            version: EVENT_SCHEMA_VERSION,
         },
     );
     Ok(id)
@@ -2130,9 +2156,9 @@ pub struct AccordContract;
 //   create_recurring_proposal, create_cancel_recurring_proposal,
 //   create_pause_recurring_proposal, create_resume_recurring_proposal,
 //   create_modify_recurring_proposal, create_grant_role_proposal,
-//   create_revoke_role_proposal, create_set_asset_registry_enabled_proposal,
-//   create_add_approved_token_proposal, create_remove_approved_token_proposal,
-//   create_transfer_guardian_proposal, create_escrow_proposal.
+//   create_revoke_role_proposal, create_asset_registry_proposal,
+//   create_approve_token_proposal, create_unapprove_token_proposal,
+//   create_change_guardian_proposal, create_escrow_proposal.
 // Approver + owner membership/weight: approve, approve_sponsored, revoke.
 // Executor role: execute, cancel_expired (owner membership is not required).
 // Owner membership: cancel_recurring_schedule.
@@ -3378,7 +3404,7 @@ impl AccordContract {
     }
 
     /// Creates a governance proposal to enable or disable the approved-token registry.
-    pub fn create_set_asset_registry_enabled_proposal(
+    pub fn create_asset_registry_proposal(
         env: Env,
         proposer: Address,
         enabled: bool,
@@ -3398,7 +3424,7 @@ impl AccordContract {
     }
 
     /// Creates a proposal to allow a token when the registry is enabled.
-    pub fn create_add_approved_token_proposal(
+    pub fn create_approve_token_proposal(
         env: Env,
         proposer: Address,
         token: Address,
@@ -3422,7 +3448,7 @@ impl AccordContract {
     }
 
     /// Creates a proposal to remove a token from the approved-token registry.
-    pub fn create_remove_approved_token_proposal(
+    pub fn create_unapprove_token_proposal(
         env: Env,
         proposer: Address,
         token: Address,
@@ -3445,7 +3471,7 @@ impl AccordContract {
     }
 
     /// Creates a normal-quorum proposal to rotate the emergency guardian.
-    pub fn create_transfer_guardian_proposal(
+    pub fn create_change_guardian_proposal(
         env: Env,
         proposer: Address,
         new_guardian: Address,
@@ -3580,10 +3606,8 @@ impl AccordContract {
     /// threshold the status transitions back to `Pending`.
     pub fn revoke(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
-        let weight = {
-            require_role(&env, &approver, Role::Approver)?;
-            require_owner_and_weight(&env, &approver)?
-        };
+        require_role(&env, &approver, Role::Approver)?;
+        require_owner_and_weight(&env, &approver)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         proposal.status = derive_status(&env, &proposal);
@@ -3694,19 +3718,16 @@ impl AccordContract {
         // Dispatch on proposal kind.
         match &proposal.kind {
             ProposalKind::Transfer(transfers) => {
+                // Recovery mode blocks treasury outflows but must not block
+                // governance itself (role/threshold/owner changes), so the
+                // guard belongs here rather than at the top of `execute`.
+                require_not_recovery(&env)?;
+                // Validation and balance check only. The funds move in the
+                // transfer loop below, once every check has passed — moving
+                // them here as well would pay the recipient twice.
                 for transfer in transfers.iter() {
                     validate_token(&env, &transfer.token)?;
                     if available_balance(&env, &transfer.token)? < transfer.amount {
-                        return Err(ContractError::TransferFailed);
-                    }
-                    if token::Client::new(&env, &transfer.token)
-                        .try_transfer(
-                            &env.current_contract_address(),
-                            &transfer.to,
-                            &transfer.amount,
-                        )
-                        .is_err()
-                    {
                         return Err(ContractError::TransferFailed);
                     }
                 }
@@ -4314,6 +4335,7 @@ impl AccordContract {
                     (symbol_short!("guard_set"),),
                     GuardianSetEvent {
                         guardian: new_guardian.clone(),
+                        version: EVENT_SCHEMA_VERSION,
                     },
                 );
             }
@@ -4374,18 +4396,12 @@ impl AccordContract {
 
         remove_active_proposal(&env, proposal_id);
 
-        let transfers = match &proposal.kind {
-            ProposalKind::Transfer(transfers) => transfers.clone(),
-            _ => Vec::new(&env),
-        };
-
         env.events().publish(
             (symbol_short!("executed"),),
             ProposalExecutedEvent {
                 version: EVENT_SCHEMA_VERSION,
                 id: proposal_id,
                 executor,
-                transfers,
             },
         );
 
@@ -4430,9 +4446,17 @@ impl AccordContract {
     pub fn sweep_expired(env: Env, caller: Address, ids: Vec<u64>) -> Result<u32, ContractError> {
         caller.require_auth();
 
+        // Idempotency: a proposal that has already left the active set (a
+        // previous sweep, execution, or cancellation) must not be counted — or
+        // removed — again. Without this guard an expiry that was already
+        // swept still derives to Expired and would be reported on every call.
+        let active_ids = read_active_ids(&env);
         let mut swept_ids = Vec::new(&env);
         for id in ids.iter() {
             if swept_ids.contains(&id) {
+                continue;
+            }
+            if !active_ids.contains(&id) {
                 continue;
             }
             let proposal = match read_proposal(&env, id) {

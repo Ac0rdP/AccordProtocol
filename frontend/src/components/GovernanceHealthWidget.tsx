@@ -101,7 +101,7 @@ export function GovernanceHealthWidget({
         </div>
 
         {loading ? (
-          <span className="text-xs text-zinc-500 animate-pulse">Loading…</span>
+          <span className="text-xs text-zinc-600 dark:text-zinc-400 animate-pulse">Loading…</span>
         ) : (
           <WhaleWarningBadge
             triggered={isConcentrated}
@@ -115,7 +115,7 @@ export function GovernanceHealthWidget({
         <div className="space-y-2">
           {/* Skeleton bar */}
           <div className="h-3 rounded-full bg-zinc-800 border border-zinc-700 animate-pulse" />
-          <p className="text-xs text-zinc-600">Fetching owner weights…</p>
+          <p className="text-xs text-zinc-600 dark:text-zinc-400">Fetching owner weights…</p>
         </div>
       ) : (
         <>
@@ -151,18 +151,18 @@ export function GovernanceHealthWidget({
           {/* Stats row */}
           <div className="flex items-start justify-between gap-4 text-xs">
             <div>
-              <p className="text-zinc-500 mb-0.5">Largest single owner</p>
+              <p className="text-zinc-600 dark:text-zinc-400 mb-0.5">Largest single owner</p>
               {dominantAddress ? (
                 <p className="font-mono text-zinc-300">
                   {shortenAddr(dominantAddress)}
                 </p>
               ) : (
-                <p className="text-zinc-600">No owners found</p>
+                <p className="text-zinc-600 dark:text-zinc-400">No owners found</p>
               )}
             </div>
 
             <div className="text-right">
-              <p className="text-zinc-500 mb-0.5">Share of voting power</p>
+              <p className="text-zinc-600 dark:text-zinc-400 mb-0.5">Share of voting power</p>
               <p
                 className={`font-semibold text-sm tabular-nums ${
                   isConcentrated ? "text-amber-400" : "text-emerald-400"
@@ -170,13 +170,13 @@ export function GovernanceHealthWidget({
               >
                 {formatWeightPercent(dominantWeight, totalWeight)}
               </p>
-              <p className="text-zinc-600">
+              <p className="text-zinc-600 dark:text-zinc-400">
                 {dominantWeight} / {totalWeight} weight
               </p>
             </div>
 
             <div className="text-right">
-              <p className="text-zinc-500 mb-0.5">Owners</p>
+              <p className="text-zinc-600 dark:text-zinc-400 mb-0.5">Owners</p>
               <p className="text-zinc-300">{entries.length}</p>
             </div>
           </div>

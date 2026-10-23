@@ -100,7 +100,7 @@ export const PAGE_STATE_MATRIX: PageStateMatrixEntry[] = [
     dataBacked: true,
     states: {
       loading: { message: "Loading owners…", retry: false },
-      empty: { message: "No owners found.", retry: false },
+      empty: { message: "No owners found", retry: false },
       error: { message: "Could not load owners", retry: true },
     },
   },

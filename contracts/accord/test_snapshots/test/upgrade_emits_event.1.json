@@ -5,6 +5,7 @@
     "mux_id": 0
   },
   "auth": [
+    [],
     [
       [
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANHUF",
@@ -207,7 +208,7 @@
                   ]
                 },
                 {
-                  "bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  "bytes": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f"
                 }
               ]
             }
@@ -234,7 +235,7 @@
                   ]
                 },
                 {
-                  "bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  "bytes": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f"
                 }
               ]
             }
@@ -245,7 +246,7 @@
     ]
   ],
   "ledger": {
-    "protocol_version": 25,
+    "protocol_version": 29,
     "sequence_number": 0,
     "timestamp": 1000,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -742,7 +743,7 @@
               "val": {
                 "contract_instance": {
                   "executable": {
-                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "wasm": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f"
                   },
                   "storage": [
                     {
@@ -978,9 +979,40 @@
           "last_modified_ledger_seq": 0,
           "data": {
             "contract_code": {
+              "ext": {
+                "v1": {
+                  "ext": "v0",
+                  "cost_inputs": {
+                    "ext": "v0",
+                    "n_instructions": 0,
+                    "n_functions": 0,
+                    "n_globals": 0,
+                    "n_table_entries": 0,
+                    "n_types": 0,
+                    "n_data_segments": 1,
+                    "n_elem_segments": 0,
+                    "n_imports": 0,
+                    "n_exports": 0,
+                    "n_data_segment_bytes": 29
+                  }
+                }
+              },
+              "hash": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f",
+              "code": "0061736d01000000001e11636f6e7472616374656e766d6574617630000000000000001d00000000"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
               "ext": "v0",
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "code": ""
+              "hash": "604717fe3f12ac67985d74bf337e8e0fd36a19e068e8315706bf06b8edac4d4a",
+              "code": "746573745f636f6e74726163745f666f725f636f6e74726163745f69645f434141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414f4c5a4d"
             }
           },
           "ext": "v0"
@@ -994,7 +1026,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-        "type_": "system",
+        "type": "system",
         "body": {
           "v0": {
             "topics": [
@@ -1007,7 +1039,7 @@
                     "symbol": "Wasm"
                   },
                   {
-                    "bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "bytes": "604717fe3f12ac67985d74bf337e8e0fd36a19e068e8315706bf06b8edac4d4a"
                   }
                 ]
               },
@@ -1017,7 +1049,7 @@
                     "symbol": "Wasm"
                   },
                   {
-                    "bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "bytes": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f"
                   }
                 ]
               }
@@ -1034,7 +1066,7 @@
       "event": {
         "ext": "v0",
         "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
-        "type_": "contract",
+        "type": "contract",
         "body": {
           "v0": {
             "topics": [
@@ -1057,7 +1089,15 @@
                     "symbol": "new_wasm_hash"
                   },
                   "val": {
-                    "bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    "bytes": "4004ebdd4251b39047fcdf89b12676be9940144d7327dfab1939d30544d37d6f"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "version"
+                  },
+                  "val": {
+                    "u32": 2
                   }
                 }
               ]
