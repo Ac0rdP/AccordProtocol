@@ -52,13 +52,13 @@ jobs:
           stellar contract build
 
       - name: Run contract test suite (flat weight fixture)
-        run: ACCORD_WEIGHT_FIXTURE=flat cargo test -- --nocapture
+        run: ACCORD_WEIGHT_FIXTURE=flat cargo test --locked -- --nocapture
 
       - name: Run contract test suite (skewed weight fixture)
-        run: ACCORD_WEIGHT_FIXTURE=skewed cargo test -- --nocapture
+        run: ACCORD_WEIGHT_FIXTURE=skewed cargo test --locked -- --nocapture
 
       - name: Run RBAC tests
-        run: cargo test -- rbac -- --nocapture
+        run: cargo test --locked -- rbac -- --nocapture
 
       - name: Generate wasm-manifest.json
         run: |
@@ -210,7 +210,7 @@ jobs:
 
       - name: Measure contract coverage
         run: |
-          cargo llvm-cov -p accord --lib --no-report --ignore-run-fail \
+          cargo llvm-cov --locked -p accord --lib --no-report --ignore-run-fail \
             --ignore-filename-regex '(test|bench)\.rs$'
 
       - name: Write coverage reports
@@ -262,7 +262,7 @@ jobs:
           cache: true
 
       - name: Run resource benchmarks
-        run: cargo test -p accord --lib bench_hot_entrypoints -- --nocapture
+        run: cargo test --locked -p accord --lib bench_hot_entrypoints -- --nocapture
 
       - name: Report benchmark deltas
         if: always()

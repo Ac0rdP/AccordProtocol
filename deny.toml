@@ -23,6 +23,12 @@ name = "darling"
 [[bans.skip]]
 name = "spin"
 
+# Supply-chain policy (docs/SUPPLY_CHAIN_POLICY.md): crates.io is the only allowed source.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
 [licenses]
 # Only licenses that actually appear in the current dependency tree.
 allow = [

@@ -136,12 +136,12 @@ jobs:
         run: cargo fmt -p accord-analytics-api -- --check
 
       - name: Run Clippy
-        run: cargo clippy -p accord-analytics-api --all-targets -- -D warnings
+        run: cargo clippy --locked -p accord-analytics-api --all-targets -- -D warnings
 
       - name: Run API tests
         env:
           TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
-        run: cargo test -p accord-analytics-api
+        run: cargo test --locked -p accord-analytics-api
 
       - name: Verify the OpenAPI spec is valid JSON
         run: node -e "const s = JSON.parse(require('fs').readFileSync('docs/analytics-api.openapi.json', 'utf8')); if (s.openapi !== '3.0.3' || !Object.keys(s.paths).length) process.exit(1)"
@@ -151,4 +151,4 @@ jobs:
         # spec is reported by name rather than buried in the test output.
         env:
           TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
-        run: cargo test -p accord-analytics-api openapi
+        run: cargo test --locked -p accord-analytics-api openapi
