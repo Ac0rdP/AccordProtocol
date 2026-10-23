@@ -26,6 +26,7 @@ import { ThemeControl } from "./components/ThemeControl";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { CommandPalette } from "./components/CommandPalette";
+import { ChangelogPanel } from "./components/ChangelogPanel";
 import { FeedbackWidget } from "./components/FeedbackWidget";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
@@ -440,6 +441,7 @@ export default function App() {
             <LanguageSwitcher className="ms-1" />
           </nav>
 
+          <ChangelogPanel />
           <FeedbackWidget walletAddress={wallet.address} />
           <NotificationCenter />
 
