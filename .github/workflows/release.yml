@@ -122,9 +122,31 @@ jobs:
   # ---------------------------------------------------------------------------
   # Build the contract artifact + manifest and publish the GitHub Release.
   # ---------------------------------------------------------------------------
+  mainnet-checklist:
+    name: "Gate: mainnet launch checklist"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # Tags with a pre-release suffix (v1.0.0-rc.1) only get a structure check;
+      # any other v* tag is a mainnet release and needs a complete, signed-off checklist.
+      - name: Enforce launch checklist
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            node scripts/check-mainnet-checklist.mjs --structure
+          else
+            node scripts/check-mainnet-checklist.mjs --release "$GITHUB_REF_NAME"
+          fi
+
   release:
     name: Build artifact & publish release
-    needs: [contract-tests, frontend-tests, indexer-tests]
+    needs: [contract-tests, frontend-tests, indexer-tests, mainnet-checklist]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -218,7 +240,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-sdk:
     name: Publish SDK to GitHub Packages
-    needs: [contract-tests, frontend-tests, indexer-tests]
+    needs: [contract-tests, frontend-tests, indexer-tests, mainnet-checklist]
     runs-on: ubuntu-latest
     defaults:
       run:
