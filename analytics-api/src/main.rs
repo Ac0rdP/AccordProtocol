@@ -1,4 +1,6 @@
-use std::{collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap, collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use axum::{
@@ -143,12 +145,40 @@ struct HealthResponse {
     database: &'static str,
 }
 
+/// One dependency of the service and whether it is healthy.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusCheck {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    age_seconds: Option<u64>,
+}
+
+/// Structured service status consumed by the public status page.
+///
+/// `/health` and `/readyz` answer a single boolean; the status page needs to
+/// know *which* dependency is unhappy, so every dependency is reported on its
+/// own and the overall status is derived from them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusResponse {
+    service: &'static str,
+    status: &'static str,
+    checks: BTreeMap<&'static str, StatusCheck>,
+    updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_ledger: Option<i64>,
+}
+
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(root))
         .route("/health", get(health))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
+        .route("/status", get(status))
         .route("/metrics", get(metrics_endpoint))
         .route(
             "/graphql",
@@ -844,6 +874,105 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
             )
         }
     }
+}
+
+/// Maximum age of the indexer checkpoint before ingestion counts as degraded.
+const INGESTION_MAX_STALENESS_SECONDS: f64 = 120.0;
+
+/// Structured status for the public status page.
+///
+/// The overall status is derived from the individual checks: a broken datastore
+/// is an `outage`, a datastore that answers but stale ingestion data is
+/// `degraded`, everything else is `operational`.
+async fn status(State(state): State<AppState>) -> impl IntoResponse {
+    let mut checks: BTreeMap<&'static str, StatusCheck> = BTreeMap::new();
+
+    let database = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query("SELECT 1").execute(&state.pool),
+    )
+    .await;
+    let database_ok = matches!(database, Ok(Ok(_)));
+    if !database_ok {
+        tracing::error!(?database, "analytics database status check failed");
+    }
+    checks.insert(
+        "database",
+        StatusCheck {
+            ok: database_ok,
+            detail: (!database_ok).then(|| "the datastore did not answer within 2s".to_owned()),
+            age_seconds: None,
+        },
+    );
+
+    // The checkpoint row is written by the indexer. A missing or stale row
+    // means the analytics data is not advancing even though the API answers.
+    let checkpoint = tokio::time::timeout(
+        Duration::from_secs(2),
+        sqlx::query_as::<_, (i64, f64)>(
+            "SELECT last_ledger, EXTRACT(EPOCH FROM (NOW() - updated_at))::float8 \
+             FROM checkpoints WHERE contract_id = $1",
+        )
+        .bind(&state.contract_id)
+        .fetch_optional(&state.pool),
+    )
+    .await;
+
+    let mut latest_ledger = None;
+    let mut ingestion = StatusCheck {
+        ok: false,
+        detail: Some("no ingestion checkpoint recorded".to_owned()),
+        age_seconds: None,
+    };
+    match checkpoint {
+        Ok(Ok(Some((ledger, age)))) => {
+            latest_ledger = Some(ledger);
+            let age_seconds = age.max(0.0).round() as u64;
+            let fresh = age <= INGESTION_MAX_STALENESS_SECONDS;
+            ingestion = StatusCheck {
+                ok: fresh,
+                detail: (!fresh)
+                    .then(|| format!("the indexer checkpoint has not advanced for {age_seconds}s")),
+                age_seconds: Some(age_seconds),
+            };
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            ingestion.detail = Some(format!(
+                "the ingestion checkpoint could not be read: {error}"
+            ));
+        }
+        Err(_) => {
+            ingestion.detail = Some("the ingestion checkpoint did not answer within 2s".to_owned());
+        }
+    }
+    checks.insert("ingestion", ingestion);
+
+    let database_ok = checks.get("database").is_some_and(|check| check.ok);
+    let status = if !database_ok {
+        "outage"
+    } else if checks.values().all(|check| check.ok) {
+        "operational"
+    } else {
+        "degraded"
+    };
+
+    let code = if status == "outage" {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+
+    (
+        code,
+        Json(StatusResponse {
+            service: "analytics-api",
+            status,
+            checks,
+            updated_at: Utc::now().to_rfc3339(),
+            latest_ledger,
+        }),
+    )
 }
 
 async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
@@ -1781,6 +1910,23 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "unavailable");
         assert_eq!(json["checks"]["database"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn status_reports_an_outage_when_the_database_is_down() {
+        let response = get(unreachable_state(), "/status").await;
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["service"], "analytics-api");
+        assert_eq!(json["status"], "outage");
+        assert_eq!(json["checks"]["database"]["ok"], false);
+        assert_eq!(json["checks"]["ingestion"]["ok"], false);
+        assert!(json["updatedAt"].as_str().unwrap().contains('T'));
     }
 
     #[tokio::test]

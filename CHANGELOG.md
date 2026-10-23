@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- Public status page for the indexer and the analytics API: a structured `/status` endpoint on both services, a health-mapping and rendering script (`scripts/status-page.mjs`), a scheduled workflow that probes the health endpoints and publishes the page, daily availability history and incident notes (`docs/status/`), and the documentation in `docs/STATUS.md`.
 - In-app "What's new" panel that reads this changelog at build time, lists recent entries by release, badges entries the user has not seen yet, and links issue references and documentation paths to GitHub.
 - Release workflow (`release.yml`) that gates on all test suites, builds and attaches the contract artifact with its manifest, publishes the SDK package to GitHub Packages, and generates release notes from a `v*` tag (#822).
 - Nightly full-suite workflow (`nightly.yml`) covering the contract, frontend, indexer, analytics API, and Playwright E2E suites, with per-component attribution and a single tracked failure issue (#820).

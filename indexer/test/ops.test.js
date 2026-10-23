@@ -155,6 +155,62 @@ describeEachBackend("indexer api operations", () => {
     });
   });
 
+  it("serves structured status for the public status page", async () => {
+    const store = await createStore();
+    await withApi(store, async ({ base, readiness }) => {
+      const before = await fetch(`${base}/status`);
+      assert.equal(before.status, 200);
+      const body = await before.json();
+      assert.equal(body.service, "indexer");
+      assert.equal(body.status, "degraded", "no indexing batch yet is degraded, not an outage");
+      assert.equal(body.checks.store.ok, true);
+      assert.equal(body.checks.indexing.ok, false);
+      assert.equal(body.nextLedger, "5");
+      assert.equal(body.latestLedger, null);
+      assert.match(body.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+      readiness.markSuccess();
+      const after = await fetch(`${base}/status`);
+      assert.equal(after.status, 200);
+      assert.equal((await after.json()).status, "operational");
+    });
+  });
+
+  it("reports an outage when the store does not answer", async () => {
+    const store = await createStore();
+    const readiness = createReadiness({
+      store: { ping: async () => { throw new Error("connection refused"); } },
+    });
+    readiness.markSuccess();
+    await withApi(store, async ({ base }) => {
+      const response = await fetch(`${base}/status`);
+      assert.equal(response.status, 503);
+      const body = await response.json();
+      assert.equal(body.status, "outage");
+      assert.equal(body.checks.store.ok, false);
+      assert.equal(body.checks.store.detail, "connection refused");
+    }, { readiness });
+  });
+
+  it("keeps serving status when the store state cannot be read", async () => {
+    const store = await createStore();
+    const unreadable = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === "getState") return async () => { throw new Error("database is locked"); };
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await withApi(unreadable, async ({ base, readiness }) => {
+      readiness.markSuccess();
+      const response = await fetch(`${base}/status`);
+      assert.equal(response.status, 200);
+      const body = await response.json();
+      assert.equal(body.status, "operational");
+      assert.equal(body.nextLedger, "5");
+      assert.equal(body.latestLedger, null);
+    });
+  });
+
   it("serves Prometheus metrics including its own request latency", async () => {
     const store = await createStore();
     await withApi(store, async ({ base }) => {

@@ -11,6 +11,8 @@ Commands run from `indexer/` and read `../.env`.
 3. `curl -s localhost:8787/health` shows `nextLedger` (the checkpoint) and `latestLedger`.
 4. Find the matching alert section below.
 
+`curl -s localhost:8787/status` and `curl -s localhost:8080/status` return the same document the [public status page](STATUS.md) shows, with one entry per dependency.
+
 ## Common operations
 
 ### Restart the indexer
