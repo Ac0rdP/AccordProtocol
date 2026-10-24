@@ -3,6 +3,7 @@ import type { RecurringSchedule, RecurringScheduleStatus } from "../types/accord
 import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
+import { RecurringForecastChart } from "../components/RecurringForecastChart";
 import { PageState } from "../components/PageState";
 import {
   getRecurringPaymentsPaged,

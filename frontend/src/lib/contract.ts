@@ -282,6 +282,15 @@ const ROLE_ALIASES: Record<string, Role> = {
   spending_limit: "SpendingLimit",
 };
 
+function normalizeRole(raw: string): Role | null {
+  const key = raw.trim().toLowerCase();
+  return (
+    ROLE_ALIASES[key] ??
+    ROLE_ALIASES[key.replace(/[\s_-]+/g, "")] ??
+    null
+  );
+}
+
 function mapAccessRole(raw: unknown): Role | null {
   let key: string;
   if (typeof raw === "string") {

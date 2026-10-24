@@ -1,4 +1,4 @@
-import Server from "@stellar/stellar-sdk";
+import { Horizon } from "@stellar/stellar-sdk";
 import {
   isConnected,
   getAddress,
@@ -72,7 +72,7 @@ export async function getWalletNetworkPassphrase(): Promise<string | null> {
 }
 
 export async function getAccountBalances(address: string): Promise<{ xlm: string; usdc: string }>{
-  const server = new Server("https://horizon-testnet.stellar.org");
+  const server = new Horizon.Server("https://horizon-testnet.stellar.org");
   const acct = await server.loadAccount(address);
   let xlm = "0.00";
   let usdc = "0.00";

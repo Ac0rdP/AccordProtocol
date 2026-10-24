@@ -69,41 +69,38 @@ export function ownerWeightsFixture(): Array<{ address: string; weight: number }
 
 export function proposalEventsFixture(count = 2): ProposalEvent[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `evt-${index}`,
-    proposalId: 1,
     type: index === 0 ? "created" : "approved",
     actor: index === 0 ? HARNESS_ACCOUNT.owner : HARNESS_ACCOUNT.secondOwner,
     ledger: 1_000 + index,
-    occurredAt: "2026-09-27T12:00:00.000Z",
-  })) as ProposalEvent[];
+    timestamp: "2026-09-27T12:00:00.000Z",
+  }));
 }
 
 export function ownerWeightChangeEventsFixture(count = 2): OwnerWeightChangeEvent[] {
   return Array.from({ length: count }, (_, index) => ({
-    id: `weight-${index}`,
     owner: HARNESS_ACCOUNT.owner,
-    previousWeight: 4,
+    oldWeight: 4,
     newWeight: 6,
     ledger: 900 + index,
-    occurredAt: "2026-09-26T12:00:00.000Z",
-  })) as OwnerWeightChangeEvent[];
+    timestamp: "2026-09-26T12:00:00.000Z",
+  }));
 }
 
 export function recurringSchedulesFixture(): RecurringSchedule[] {
   return [
     {
       id: 1,
-      payee: HARNESS_ACCOUNT.secondOwner,
+      recipient: HARNESS_ACCOUNT.secondOwner,
       amount: "5.00",
-      rawAmount: String(50_000_000n),
       token: HARNESS_ACCOUNT.token,
-      period: "monthly",
-      nextDueTs: Math.floor(Date.now() / 1000) + 86_400,
+      cadence: "monthly",
+      interval: 30 * 24 * 60 * 60,
+      totalDisbursed: "0.00",
+      nextDisbursementTs: Date.now() + 86_400_000,
       status: "active",
       kind: "fixed_amount_per_period",
-      scheduleStatus: "active",
     },
-  ] as RecurringSchedule[];
+  ];
 }
 
 export function delegationsFixture(): { outgoing: Delegation | null; incoming: Delegation[] } {

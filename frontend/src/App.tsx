@@ -35,6 +35,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
