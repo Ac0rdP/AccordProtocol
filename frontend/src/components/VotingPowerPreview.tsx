@@ -90,7 +90,7 @@ export function VotingPowerPreview({
         )}
 
         {note && (
-          <p className="text-zinc-500 italic mt-1 font-sans">
+          <p className="text-zinc-600 dark:text-zinc-400 italic mt-1 font-sans">
             {note}
           </p>
         )}

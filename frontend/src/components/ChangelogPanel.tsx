@@ -159,7 +159,7 @@ export function ChangelogPanel({ releases = changelogReleases }: ChangelogPanelP
 
           <div className="max-h-96 overflow-y-auto">
             {releases.length === 0 ? (
-              <p className="px-3 py-6 text-center text-sm text-zinc-500">
+              <p className="px-3 py-6 text-center text-sm text-zinc-600 dark:text-zinc-400">
                 No changelog entries yet.
               </p>
             ) : (
@@ -170,7 +170,7 @@ export function ChangelogPanel({ releases = changelogReleases }: ChangelogPanelP
                       {releaseLabel(release.version)}
                     </p>
                     {release.entries.length === 0 ? (
-                      <p className="text-xs text-zinc-500">No entries.</p>
+                      <p className="text-xs text-zinc-600 dark:text-zinc-400">No entries.</p>
                     ) : (
                       <ul className="space-y-1.5">
                         {release.entries.map((entry: ChangelogEntry) => (

@@ -8,9 +8,8 @@ extern crate std;
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
 use proptest::prelude::*;
-use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
+use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
 use std::format;
-use std::string::ToString;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -172,6 +171,31 @@ fn has_contract_event(env: &Env, contract: &Address, expected_topic: Symbol) -> 
             })
             .unwrap_or(false)
     })
+}
+
+/// A minimal, structurally valid Soroban Wasm module: the magic header and
+/// version, plus the `contractenvmetav0` custom section carrying the current
+/// environment interface version. There is no code in it.
+///
+/// `upload_contract_wasm` parses and validates the bytes it is given, so the
+/// empty buffer the upgrade tests used to pass is rejected as malformed on
+/// current SDK versions. This placeholder parses and validates cleanly without
+/// coupling the unit test suite to a prior `stellar contract build` artifact.
+fn minimal_wasm(env: &Env) -> Bytes {
+    let mut bytes: std::vec::Vec<u8> = std::vec::Vec::new();
+    // Wasm magic number and binary format version.
+    bytes.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    let name = b"contractenvmetav0";
+    // XDR `ScEnvMetaEntry::ScEnvMetaKindInterfaceVersion` with protocol 29
+    // (the protocol this SDK targets) and pre-release 0.
+    let meta: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 29, 0, 0, 0, 0];
+    // Custom section (id 0), with a LEB128 payload length that fits in one byte.
+    bytes.push(0x00);
+    bytes.push((1 + name.len() + meta.len()) as u8);
+    bytes.push(name.len() as u8);
+    bytes.extend_from_slice(name);
+    bytes.extend_from_slice(&meta);
+    Bytes::from_slice(env, &bytes)
 }
 
 /// Sets up an env with 3 owners, a threshold, and a funded token.
@@ -1429,7 +1453,7 @@ fn approve_sponsored_rejects_unauthorized_address() {
 
     assert_eq!(
         client.try_approve_sponsored(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
     assert!(!client.has_approved(&id, &non_owner));
 }
@@ -1535,7 +1559,7 @@ fn approve_rejects_non_owner() {
     );
     assert_eq!(
         client.try_approve(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -3054,7 +3078,7 @@ fn upgrade_succeeds_with_threshold_many_owners() {
 #[test]
 fn upgrade_emits_event() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    let dummy_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+    let dummy_hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
     let mut approvers = Vec::new(&env);
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b);
@@ -5368,6 +5392,9 @@ fn multi_transfer_failure_atomic() {
 #[test]
 fn create_proposal_rejects_invalid_transfer_count() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    // Building and passing maximum-size batches consumes more than the default
+    // test budget, so lift it: this test exercises validation, not metering.
+    env.budget().reset_unlimited();
 
     // Empty transfer list should be rejected.
     let empty: Vec<Transfer> = Vec::new(&env);
@@ -5441,6 +5468,8 @@ fn create_proposal_rejects_invalid_transfer_count() {
 #[test]
 fn batch_proposal_executes_all_maximum_size_transfers() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // A maximum-size batch needs more than the default test budget.
+    env.budget().reset_unlimited();
     let mut transfers = Vec::new(&env);
     let mut recipients = Vec::new(&env);
     for _ in 0..MAX_BATCH_TRANSFERS {
@@ -7842,7 +7871,7 @@ fn migrate_to_rbac_emits_event() {
             return false;
         };
         let topic: Symbol = topic.clone().into_val(&env);
-        topic == symbol_short!("rbac_mig")
+        topic == Symbol::new(&env, "rbac_migrated")
     });
     let event = rbac_event.expect("expected an 'rbac_mig' event to be emitted");
     let event_data = match &event.body {
@@ -7850,8 +7879,8 @@ fn migrate_to_rbac_emits_event() {
     };
     let event: RbacMigratedEvent = event_data.into_val(&env);
     assert_eq!(event.version, EVENT_SCHEMA_VERSION);
-    assert_eq!(event.owners_count, 3);
-    assert_eq!(event.migrated_at, NOW);
+    assert_eq!(event.owner_count, 3);
+    assert_eq!(event.role_version, RBAC_VERSION);
 }
 
 #[test]
@@ -8314,14 +8343,11 @@ fn migration_preserves_approval_outcomes_across_approve_revoke_sequence() {
 /// coupling the unit test suite to a prebuilt artifact at compile time and
 /// breaking `cargo test` for anyone who runs it without that build step
 /// first — and would still only be testing this crate against itself rather
-/// than a genuinely prior version. A hand-written byte buffer can't stand in
-/// for one either: `upload_contract_wasm` validates real WASM structure (the
-/// magic header, then a Soroban contract metadata section), so only an
-/// actual compiled contract binary is accepted. The closest achievable
-/// equivalent implemented here performs a real `upload_contract_wasm` +
-/// `upgrade` call (using the same empty-bytes placeholder the pre-existing
-/// upgrade tests use, since that's what the host accepts without a real
-/// second build) followed by the real `migrate_to_weighted_governance` call
+/// than a genuinely prior version. A minimal, structurally valid Wasm module
+/// is accepted by `upload_contract_wasm` in place of a real second build, so
+/// the equivalent implemented here performs a real `upload_contract_wasm` +
+/// `upgrade` call with that placeholder followed by the real
+/// `migrate_to_weighted_governance` call
 /// and continued approve/revoke traffic against a proposal that existed
 /// before either step — exercising the storage- and quorum-continuity
 /// behavior that actually matters for a live deployment through the real
@@ -8343,19 +8369,21 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
     client.approve(&owner_a, &id);
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
 
-    // `upload_contract_wasm` validates real WASM structure (magic header,
-    // then a Soroban contract metadata section), so a hand-written byte
-    // buffer can't stand in for a real second contract build — confirming,
-    // in practice, the limitation documented above. Follow the same
-    // placeholder pattern the pre-existing upgrade tests use (empty bytes)
-    // for the upload/hash step; the substance under test is the migration
-    // and proposal-continuity behavior around the upgrade call, not WASM
-    // validation itself.
-    let new_wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+    // Use a minimal-but-valid module: `upload_contract_wasm` parses and links
+    // what it is given, so empty bytes are rejected as malformed. The
+    // substance under test is the migration and proposal-continuity behavior
+    // around the upgrade call, not WASM validation itself.
+    let new_wasm_hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
     let mut upgrade_approvers = Vec::new(&env);
     upgrade_approvers.push_back(owner_a.clone());
     upgrade_approvers.push_back(owner_b.clone());
     client.upgrade(&upgrade_approvers, &new_wasm_hash);
+
+    // The placeholder module carries no code, so the test harness must dispatch
+    // subsequent calls back to this crate's native implementation. Re-registering
+    // at the same id is a test-only capability (it does not exist on-chain) and
+    // leaves the contract's storage, including the in-flight proposal, intact.
+    env.register_at(&client.address, AccordContract, ());
 
     // The in-flight proposal's snapshot survives the upgrade unchanged.
     let proposal_after_upgrade = client.get_proposal(&id);
@@ -8480,10 +8508,13 @@ fn completed_recurring_schedule_cannot_disburse() {
     );
 
     // First disburse should succeed and mark Completed (occurrences == 1)
-    client.disburse_recurring(&owner_a, &id);
+    client.disburse_recurring_schedule(&id);
 
     // A subsequent disburse must be rejected.
-    assert_eq!(client.try_disburse_recurring(&owner_a, &id), Err(Ok(ContractError::ProposalNotActive)));
+    assert_eq!(
+        client.try_disburse_recurring_schedule(&id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
 }
 
 
@@ -9989,7 +10020,7 @@ fn governance_weight_sum_uses_owner_weight_not_roles() {
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -10092,10 +10123,12 @@ fn grant_and_revoke_role_lifecycle() {
     client.approve(&owner_b, &grant_id);
     client.execute(&owner_c, &grant_id);
 
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.has_role(&non_owner, &Role::Viewer));
     assert!(client.get_role_members(&Role::Viewer).contains(&non_owner));
-    
-    let contract_events = env.events().all().filter_by_contract(&client.address);
+
     let role_granted_found = contract_events.events().iter().any(|event| {
         let event_topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -10119,10 +10152,10 @@ fn grant_and_revoke_role_lifecycle() {
     client.approve(&owner_b, &revoke_id);
     client.execute(&owner_c, &revoke_id);
 
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(!client.has_role(&non_owner, &Role::Viewer));
     assert!(!client.get_role_members(&Role::Viewer).contains(&non_owner));
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let role_revoked_found = contract_events.events().iter().any(|event| {
         let event_topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -10281,7 +10314,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     assert!(!client.get_asset_registry_enabled());
     assert!(!client.is_token_approved(&token_client.address));
 
-    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+    let registry_proposal = client.create_asset_registry_proposal(
         &owner_a,
         &true,
         &str(&env, "Enable approved tokens"),
@@ -10290,6 +10323,10 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &registry_proposal);
     client.approve(&owner_b, &registry_proposal);
     client.execute(&owner_c, &registry_proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let registry_enabled_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.get_asset_registry_enabled());
     assert_eq!(
         client.try_create_spending_limit_proposal(
@@ -10320,7 +10357,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         Err(Ok(ContractError::AssetNotApproved))
     );
 
-    let add_proposal = client.create_add_approved_token_proposal(
+    let add_proposal = client.create_approve_token_proposal(
         &owner_a,
         &token_client.address,
         &str(&env, "Approve treasury token"),
@@ -10329,6 +10366,10 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &add_proposal);
     client.approve(&owner_b, &add_proposal);
     client.execute(&owner_c, &add_proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.is_token_approved(&token_client.address));
 
     let approved_transfer = client.create_proposal(
@@ -10346,7 +10387,6 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         ProposalStatus::Executed
     );
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let registry_event = contract_events
         .events()
         .iter()
@@ -10370,7 +10410,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     assert_eq!(event.token, token_client.address);
     assert!(event.approved);
 
-    let remove_proposal = client.create_remove_approved_token_proposal(
+    let remove_proposal = client.create_unapprove_token_proposal(
         &owner_a,
         &token_client.address,
         &str(&env, "Remove treasury token"),
@@ -10379,6 +10419,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &remove_proposal);
     client.approve(&owner_b, &remove_proposal);
     client.execute(&owner_c, &remove_proposal);
+    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(!client.is_token_approved(&token_client.address));
     assert_eq!(
         client.try_create_proposal(
@@ -10390,7 +10431,6 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         ),
         Err(Ok(ContractError::AssetNotApproved))
     );
-    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
     let token_events = latest_contract_events
         .events()
         .iter()
@@ -10407,9 +10447,9 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
                 .unwrap_or(false)
         })
         .count();
-    assert_eq!(token_events, 2);
+    assert_eq!(token_events, 1);
 
-    let registry_event = latest_contract_events
+    let registry_event = registry_enabled_events
         .events()
         .iter()
         .find(|event| {
@@ -10460,7 +10500,7 @@ fn asset_registry_is_rechecked_when_transfer_executes() {
     client.approve(&owner_a, &pending_transfer);
     client.approve(&owner_b, &pending_transfer);
 
-    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+    let registry_proposal = client.create_asset_registry_proposal(
         &owner_a,
         &true,
         &str(&env, "Enable approved tokens"),
@@ -10486,7 +10526,7 @@ fn asset_registry_is_rechecked_when_transfer_executes() {
 fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
     let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
     let guardian = Address::generate(&env);
-    let id = client.create_transfer_guardian_proposal(
+    let id = client.create_change_guardian_proposal(
         &owner_a,
         &guardian,
         &str(&env, "Rotate guardian"),
@@ -10501,9 +10541,12 @@ fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
 
     client.approve(&owner_b, &id);
     client.execute(&owner_c, &id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(client.get_guardian(), Some(guardian.clone()));
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let event = contract_events
         .events()
         .iter()
@@ -10548,9 +10591,13 @@ fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
     client.approve(&owner_a, &proposal);
     client.approve(&owner_b, &proposal);
     client.execute(&owner_c, &proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let escrow_created_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_crt"));
     let escrow_id = 1_u64;
     assert_eq!(client.get_escrow(&escrow_id).amount, 1_000);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_crt")));
+    assert!(escrow_created_emitted);
 
     let competing_transfer = client.create_proposal(
         &owner_a,
@@ -10582,8 +10629,9 @@ fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
     approvers.push_back(owner_a);
     approvers.push_back(owner_b);
     client.release_escrow(&approvers, &escrow_id);
+    let escrow_released_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_rel"));
     assert_eq!(token_client.balance(&recipient), 1_000);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_rel")));
+    assert!(escrow_released_emitted);
     assert_eq!(
         client.try_get_escrow(&escrow_id),
         Err(Ok(ContractError::EscrowNotFound))
@@ -10650,8 +10698,9 @@ fn expired_quorum_escrow_can_be_refunded_without_payout() {
     );
     client.refund_escrow(&owner_c, &1);
 
+    let escrow_refunded_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_ref"));
     assert_eq!(token_client.balance(&client.address), treasury_balance);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_ref")));
+    assert!(escrow_refunded_emitted);
     assert_eq!(
         client.try_get_escrow(&1),
         Err(Ok(ContractError::EscrowNotFound))
@@ -10666,7 +10715,9 @@ fn adversarial_non_owner_cannot_drain_funds() {
     let initial_balance = token_client.balance(&client.address);
     let attacker_recipient = Address::generate(&env);
 
-    // Attacker attempts to create a transfer proposal to themselves
+    // Attacker attempts to create a transfer proposal to themselves.
+    // Proposal creation is role-gated, and the attacker holds no role, so the
+    // caller is rejected by the role check before ownership is considered.
     assert_eq!(
         client.try_create_proposal(
             &attacker,
@@ -10675,7 +10726,7 @@ fn adversarial_non_owner_cannot_drain_funds() {
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 
     // State & balance unchanged
@@ -10720,20 +10771,9 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup_weighted();
     let recipient = Address::generate(&env);
 
-    // Set a spending limit of 50_000 for owner_a
-    let limit_proposal = client.create_spending_limit_proposal(
-        &owner_a,
-        &owner_a,
-        &token_client.address,
-        &Some(50_000_i128),
-        &str(&env, "set limit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &limit_proposal);
-    client.approve(&owner_b, &limit_proposal);
-    client.execute(&owner_a, &limit_proposal);
-
-    // Attempt to execute a transfer exceeding spending limit (100_000 > 50_000)
+    // Queue and fully approve a transfer *before* any limit exists, so the
+    // rejection below must come from the execute-time cumulative check rather
+    // than the creation-time cap.
     let id = client.create_proposal(
         &owner_a,
         &t(&env, &recipient, 100_000, &token_client.address),
@@ -10744,6 +10784,19 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
     client.approve(&owner_a, &id);
     client.approve(&owner_b, &id);
 
+    // Set a spending limit of 50_000 for owner_a
+    let limit_proposal = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &50_000_i128,
+        &str(&env, "set limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_proposal);
+    client.approve(&owner_b, &limit_proposal);
+    client.execute(&owner_a, &limit_proposal);
+
     assert_eq!(
         client.try_execute(&owner_a, &id),
         Err(Ok(ContractError::SpendingLimitExceeded))
@@ -10753,37 +10806,56 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
 
 #[test]
 fn adversarial_cannot_execute_premature_or_unauthorized_recurring_disbursement() {
-    let (env, client, owner_a, _owner_b, _, _attacker, token_client) = setup_weighted();
+    let (env, client, owner_a, owner_b, owner_c, _attacker, token_client) = setup_weighted();
     let recipient = Address::generate(&env);
     let amount = 10_000_i128;
     let interval = 86400_u64;
 
-    // Create recurring schedule
-    let schedule_id = client.create_recurring_schedule(
+    // Create a recurring payment through the governance flow.
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &token_client.address,
         &recipient,
+        &token_client.address,
         &amount,
         &interval,
-        &Some(5_u32),
+        &NOW,
+        &(NOW + interval * 5),
+        &0_u64,
+        &(amount * 5),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Adversarial recurring schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
     );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+    let schedule_id = 1_u64;
 
-    // Try to disburse before interval has passed
+    // A disbursement before the first interval has elapsed is rejected.
     assert_eq!(
-        client.try_disburse_recurring_schedule(&schedule_id),
-        Err(Ok(ContractError::RecurringPaymentNotDue))
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
     );
+    assert_eq!(token_client.balance(&recipient), 0);
 
-    // Cancel schedule
-    client.cancel_recurring_schedule(&owner_a, &schedule_id);
+    // Cancel the schedule through governance.
+    let cancel_id = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &str(&env, "Cancel recurring schedule"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
 
-    // Advance time past interval
+    // Advance time past the interval: a cancelled schedule still refuses to
+    // disburse and no funds move.
     set_timestamp(&env, NOW + interval + 10);
-
-    // Try to disburse after cancellation
     assert_eq!(
-        client.try_disburse_recurring_schedule(&schedule_id),
-        Err(Ok(ContractError::RecurringPaymentComplete))
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
     );
     assert_eq!(token_client.balance(&recipient), 0);
 }
@@ -10794,7 +10866,7 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     let recipient = Address::generate(&env);
     let guardian = Address::generate(&env);
 
-    client.set_guardian(&owner_a, &guardian);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
 
     let id = client.create_proposal(
         &owner_a,
@@ -10810,12 +10882,14 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     client.freeze(&guardian);
     assert!(client.is_frozen());
 
-    // Attacker tries to execute transfer while frozen
+    // Attacker tries to execute transfer while frozen. The role check runs
+    // before the freeze check, so a caller without the Executor role is
+    // rejected with MissingRole rather than ContractFrozen.
     assert_eq!(
         client.try_execute(&attacker, &id),
-        Err(Ok(ContractError::ContractFrozen))
+        Err(Ok(ContractError::MissingRole))
     );
-    // Even an owner cannot execute transfer while frozen
+    // An owner holds the Executor role, so it reaches the freeze check.
     assert_eq!(
         client.try_execute(&owner_a, &id),
         Err(Ok(ContractError::ContractFrozen))
@@ -10891,10 +10965,13 @@ fn continuous_stream_accrues_per_second_and_supports_partial_claims() {
 
     set_timestamp(&env, NOW + 5);
     client.claim_stream(&recipient, &schedule_id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(token_client.balance(&recipient), 15);
     assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 15);
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let claim_event = contract_events.events().iter().find(|event| {
         let topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -10990,17 +11067,29 @@ fn proposer_can_cancel_only_a_pending_proposal_and_active_count_decrements_once(
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
-    assert_eq!(read_active_count(&env), 1);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
     client.cancel_proposal(&owner_a, &pending_id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(client.get_proposal(&pending_id).status, ProposalStatus::Cancelled);
-    assert_eq!(read_active_count(&env), 0);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        0
+    );
     assert_eq!(
         client.try_cancel_proposal(&owner_a, &pending_id),
         Err(Ok(ContractError::ProposalNotActive))
     );
-    assert_eq!(read_active_count(&env), 0);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        0
+    );
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(contract_events.events().iter().any(|event| {
         let topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -11096,10 +11185,16 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
     ids.push_back(expired_one);
 
     assert_eq!(client.sweep_expired(&non_owner, &ids), 2);
-    assert_eq!(read_active_count(&env), 1);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
     assert_eq!(client.get_proposal(&live).status, ProposalStatus::Pending);
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let first_sweep_event = contract_events
         .events()
         .iter()
@@ -11123,8 +11218,9 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
     assert_eq!(event.swept, 2);
 
     assert_eq!(client.sweep_expired(&non_owner, &ids), 0);
-    assert_eq!(read_active_count(&env), 1);
 
+    // Capture before any storage helper runs: `as_contract` pops back to the
+    // top-level frame, which clears the recorded events.
     let contract_events = env.events().all().filter_by_contract(&client.address);
     let sweep_event = contract_events.events().iter().rev().find(|event| {
         let topics = match &event.body {
@@ -11143,4 +11239,9 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
     };
     let event: ExpiredProposalsSweptEvent = event_data.into_val(&env);
     assert_eq!(event.swept, 0);
+
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
 }

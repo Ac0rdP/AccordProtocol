@@ -254,7 +254,7 @@ A checkpoint is the ledger sequence number through which an indexer has fully pr
 See also: [Architecture §13.3 — Checkpointing, Resume, and Idempotency](./ARCHITECTURE.md#133-checkpointing-resume-and-idempotency), **Indexer**.
 
 **Event schema version**
-The event schema version (`EVENT_SCHEMA_VERSION = 1`) is an integer version identifier included in every contract event payload. It allows off-chain consumers and indexers to detect schema changes, ensure forward compatibility, and reliably decode historical events.
+The event schema version (`EVENT_SCHEMA_VERSION = 2`) is an integer version identifier included in every contract event payload. It allows off-chain consumers and indexers to detect schema changes, ensure forward compatibility, and reliably decode historical events.
 See also: [Architecture §8 — Off-Chain Event Indexer](./ARCHITECTURE.md#indexing-accord-events), **Indexer**.
 
 **Granularity**
@@ -286,7 +286,7 @@ See also: [ANALYTICS_API.md](./ANALYTICS_API.md), **Approver (vote)**, **Effecti
 See also: [ANALYTICS_API.md](./ANALYTICS_API.md), **Indexer**, **Proposal**, **Quorum weight**.
 
 **ProposalExecutedEvent**
-`ProposalExecutedEvent` is the event emitted upon successful execution of a ready proposal, capturing the executor address, the list of executed transfers, and the event schema version.
+`ProposalExecutedEvent` is the event emitted upon successful execution of a ready proposal, capturing the proposal ID, the executor address, and the event schema version. The executed transfers are not repeated in the event; read them from `ProposalCreatedEvent` or `get_proposal`.
 See also: [ANALYTICS_API.md](./ANALYTICS_API.md), **Executor (role)**, **Indexer**, **Proposal**.
 
 **RecurringPaymentDisbursedEvent**

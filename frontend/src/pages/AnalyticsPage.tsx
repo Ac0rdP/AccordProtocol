@@ -209,8 +209,8 @@ export function AnalyticsPage() {
             type="button"
             onClick={handleDownloadStatement}
             disabled={!data}
-            aria-label="Download PDF treasury statement for the current analytics filters"
-            className="text-xs px-3 py-1 bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            aria-label="Download Statement (PDF) for the current analytics filters"
+            className="text-xs px-3 py-1 bg-emerald-700 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             Download Statement (PDF)
           </button>
@@ -219,7 +219,7 @@ export function AnalyticsPage() {
 
       {/* ── Filters ───────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           From
           <input
             type="date"
@@ -234,7 +234,7 @@ export function AnalyticsPage() {
             className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           />
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           To
           <input
             type="date"
@@ -249,7 +249,7 @@ export function AnalyticsPage() {
             className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           />
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           Category
           <select
             aria-label="Filter by category"
@@ -269,7 +269,7 @@ export function AnalyticsPage() {
             ))}
           </select>
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           Owner
           <input
             type="text"

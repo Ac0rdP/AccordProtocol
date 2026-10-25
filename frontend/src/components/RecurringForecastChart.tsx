@@ -50,7 +50,7 @@ export function RecurringForecastChart({
           <h3 className="font-semibold text-sm sm:text-base text-zinc-100">
             Projected Recurring Outflow & Runway
           </h3>
-          <p className="text-xs text-zinc-500 mt-0.5">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
             Forward-looking forecast based on active recurring payment schedules, caps, and end dates
           </p>
         </div>
@@ -95,7 +95,7 @@ export function RecurringForecastChart({
                 ? `${forecast.runway.runwayMonths} mo`
                 : "∞ (No outflow)"}
             </span>
-            <span className="text-[11px] text-zinc-500">
+            <span className="text-[11px] text-zinc-600 dark:text-zinc-400">
               at current treasury balance
             </span>
           </div>
@@ -108,7 +108,7 @@ export function RecurringForecastChart({
             <span className="text-lg font-semibold font-mono text-white">
               ~{forecast.averageMonthlyOutflow.toLocaleString()} XLM
             </span>
-            <span className="text-[11px] text-zinc-500">per month</span>
+            <span className="text-[11px] text-zinc-600 dark:text-zinc-400">per month</span>
           </div>
         </div>
 
@@ -121,7 +121,7 @@ export function RecurringForecastChart({
             <span className="text-lg font-semibold font-mono text-white">
               {forecast.totalProjectedOutflow.toLocaleString()} XLM
             </span>
-            <span className="text-[11px] text-zinc-500">committed</span>
+            <span className="text-[11px] text-zinc-600 dark:text-zinc-400">committed</span>
           </div>
         </div>
       </div>
@@ -132,7 +132,7 @@ export function RecurringForecastChart({
           <p className="text-sm font-medium text-zinc-400 mb-1">
             No active recurring schedules
           </p>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400">
             Create or activate recurring payment schedules to view treasury outflow projections and runway modeling.
           </p>
         </div>

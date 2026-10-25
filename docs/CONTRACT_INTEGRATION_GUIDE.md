@@ -401,7 +401,7 @@ export async function pollAccordEvents(startLedger: number) {
 
 ### Event Schema Versioning
 
-Every event payload includes a trailing `version: u32` field set to `EVENT_SCHEMA_VERSION` (currently `1`). External indexers should check `payload.version` to ensure forward compatibility with contract upgrades.
+Every event payload includes a trailing `version: u32` field set to `EVENT_SCHEMA_VERSION` (currently `2`). External indexers should check `payload.version` to ensure forward compatibility with contract upgrades.
 
 ---
 

@@ -67,22 +67,22 @@ function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
         <Link to={`/proposals/${proposal.id}`} className="block" aria-label={`Send ${proposal.amount} ${proposal.token}`}>
           <p className="text-sm text-zinc-300">Send {proposal.amount} {proposal.token}</p>
           {proposal.rawAmount !== undefined && (
-            <p className="mt-0.5 font-mono text-xs text-zinc-500">{formatStroops(proposal.rawAmount)} stroops</p>
+            <p className="mt-0.5 font-mono text-xs text-zinc-600 dark:text-zinc-400">{formatStroops(proposal.rawAmount)} stroops</p>
           )}
-          <p className="mt-0.5 font-mono text-sm text-zinc-500">To {proposal.to}</p>
+          <p className="mt-0.5 font-mono text-sm text-zinc-600 dark:text-zinc-400">To {proposal.to}</p>
         </Link>
       );
     case "add_owner":
-      return <p className="mt-0.5 font-mono text-sm text-zinc-500">Owner {proposal.to}</p>;
+      return <p className="mt-0.5 font-mono text-sm text-zinc-600 dark:text-zinc-400">Owner {proposal.to}</p>;
     case "remove_owner":
-      return <p className="mt-0.5 font-mono text-sm text-zinc-500">Owner {proposal.to}</p>;
+      return <p className="mt-0.5 font-mono text-sm text-zinc-600 dark:text-zinc-400">Owner {proposal.to}</p>;
     case "change_threshold":
-      return <p className="mt-0.5 text-sm text-zinc-500">New threshold: {proposal.to}</p>;
+      return <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-400">New threshold: {proposal.to}</p>;
     case "set_spending_limit":
       return (
         <>
-          <p className="mt-0.5 font-mono text-sm text-zinc-500">Owner {proposal.to}</p>
-          <p className="text-sm text-zinc-500">Limit {proposal.amount} for {proposal.token}</p>
+          <p className="mt-0.5 font-mono text-sm text-zinc-600 dark:text-zinc-400">Owner {proposal.to}</p>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">Limit {proposal.amount} for {proposal.token}</p>
         </>
       );
     case "change_owner_weight": {
@@ -110,16 +110,16 @@ function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
               <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">Quorum Impact</p>
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-zinc-500">Current quorum</p>
+                  <p className="text-zinc-600 dark:text-zinc-400">Current quorum</p>
                   <p className="font-mono text-zinc-300">
-                    {quorumWeight} wt <span className="text-zinc-500">({formatWeightPercent(quorumWeight, totalWeight)})</span>
+                    {quorumWeight} wt <span className="text-zinc-600 dark:text-zinc-400">({formatWeightPercent(quorumWeight, totalWeight)})</span>
                   </p>
                 </div>
-                <span className="text-zinc-600">→</span>
+                <span className="text-zinc-600 dark:text-zinc-400">→</span>
                 <div className="text-right">
-                  <p className="text-zinc-500">After change</p>
+                  <p className="text-zinc-600 dark:text-zinc-400">After change</p>
                   <p className={`font-mono ${projectedQuorum > quorumWeight ? "text-amber-400" : projectedQuorum < quorumWeight ? "text-sky-400" : "text-zinc-300"}`}>
-                    {projectedQuorum} wt <span className="text-zinc-500">({formatWeightPercent(projectedQuorum, projectedTotal)})</span>
+                    {projectedQuorum} wt <span className="text-zinc-600 dark:text-zinc-400">({formatWeightPercent(projectedQuorum, projectedTotal)})</span>
                   </p>
                 </div>
               </div>
@@ -129,11 +129,11 @@ function KindSummary({ proposal, ownerWeights = {} }: KindSummaryProps) {
       );
     }
     case "grant_role":
-      return <p className="mt-0.5 text-sm text-zinc-500">Grant role to {proposal.to}</p>;
+      return <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-400">Grant role to {proposal.to}</p>;
     case "revoke_role":
-      return <p className="mt-0.5 text-sm text-zinc-500">Revoke role from {proposal.to}</p>;
+      return <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-400">Revoke role from {proposal.to}</p>;
     case "recurring":
-      return <p className="mt-0.5 text-sm text-zinc-500">Recurring payment to {proposal.to}</p>;
+      return <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-400">Recurring payment to {proposal.to}</p>;
     default:
       return null;
   }
@@ -208,7 +208,7 @@ export function ProposalCard({
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 transition-colors hover:border-zinc-700">
       <div className="mb-4 flex items-start justify-between">
         <div>
-          <p className="mb-1 font-mono text-xs text-zinc-500">Proposal #{proposal.id}</p>
+          <p className="mb-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">Proposal #{proposal.id}</p>
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-semibold text-white">{labels.title}</p>
             <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">{labels.badge}</span>
@@ -218,7 +218,7 @@ export function ProposalCard({
 
           <div className="mt-0.5 flex items-center gap-2">
             <div className="flex items-center gap-2">
-              <p className="font-mono text-sm text-zinc-500">
+              <p className="font-mono text-sm text-zinc-600 dark:text-zinc-400">
                 Proposed by →{" "}
                 <Link
                   to={`/app/owners/${encodeURIComponent(proposal.proposer)}`}
@@ -240,14 +240,14 @@ export function ProposalCard({
               type="button"
               onClick={() => copyAddress(proposal.proposer)}
               aria-label={copiedProposer ? `Proposer address copied for proposal #${proposal.id}` : `Copy proposer address for proposal #${proposal.id}`}
-              className="rounded text-zinc-500 transition-colors hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="rounded text-zinc-600 dark:text-zinc-400 transition-colors hover:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-400"
               title={copiedProposer ? "Copied" : "Copy address"}
             >
               {copiedProposer ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
             </button>
           </div>
 
-          {proposal.description && <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-500">{proposal.description}</p>}
+          {proposal.description && <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">{proposal.description}</p>}
 
           <Link to={`/proposals/${proposal.id}`} className="mt-2 inline-flex rounded text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400">
             View details
@@ -291,7 +291,7 @@ export function ProposalCard({
         />
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-600">{proposal.createdAt}</span>
+          <span className="text-xs text-zinc-600 dark:text-zinc-400">{proposal.createdAt}</span>
 
           {showApprove && (
             <button
@@ -300,7 +300,7 @@ export function ProposalCard({
               disabled={Boolean(approveDisabledReason)}
               title={approveDisabledReason}
               aria-label={connected ? `Approve proposal #${proposal.id}` : `Connect and approve proposal #${proposal.id}`}
-              className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-emerald-600"
+              className="rounded-lg bg-emerald-700 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-emerald-700"
             >
               {connected ? "Approve" : "Connect & Approve"}
             </button>

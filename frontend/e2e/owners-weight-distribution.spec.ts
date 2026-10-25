@@ -1,5 +1,6 @@
 import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { expect, test, TEST_WALLET } from "./setup";
+import { getCallDetails } from "./gov-harness";
 
 const RPC = "https://mock-rpc.test";
 const OWNERS = [
@@ -14,24 +15,20 @@ const OWNER_WEIGHTS = [
 ];
 
 const accountId = Keypair.fromPublicKey(TEST_WALLET).xdrAccountId();
-const ENTRY_B64 = new xdr.LedgerEntry({
-  lastModifiedLedgerSeq: 100,
-  data: xdr.LedgerEntryData.account(
-    new xdr.AccountEntry({
-      accountId,
-      balance: xdr.Int64.fromString("100000000000"),
-      seqNum: xdr.Int64.fromString("1000000000000"),
-      numSubEntries: 0,
-      inflationDest: null,
-      flags: 0,
-      homeDomain: Buffer.alloc(32),
-      thresholds: Buffer.alloc(4),
-      signers: [],
-      ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-    }),
-  ),
-  ext: xdr.LedgerEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-}).toXDR("base64");
+const ENTRY_B64 = xdr.LedgerEntryData.account(
+  new xdr.AccountEntry({
+    accountId,
+    balance: xdr.Int64.fromString("100000000000"),
+    seqNum: xdr.Int64.fromString("1000000000000"),
+    numSubEntries: 0,
+    inflationDest: null,
+    flags: 0,
+    homeDomain: Buffer.alloc(32),
+    thresholds: Buffer.alloc(4),
+    signers: [],
+    ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
+  }),
+).toXDR("base64");
 const KEY_B64 = xdr.LedgerKey.account(new xdr.LedgerKeyAccount({ accountId })).toXDR("base64");
 const TX_DATA_B64 = new xdr.SorobanTransactionData({
   ext: xdr.SorobanTransactionDataExt.fromXDR(Buffer.from([0, 0, 0, 0])),
@@ -43,20 +40,6 @@ const TX_DATA_B64 = new xdr.SorobanTransactionData({
   }),
   resourceFee: xdr.Int64.fromString("100"),
 }).toXDR("base64");
-
-function getFunctionName(transaction: string): string {
-  const envelope = xdr.TransactionEnvelope.fromXDR(transaction, "base64");
-  const functionName = envelope
-    .v1()
-    .tx()
-    .operations()[0]
-    .body()
-    .invokeHostFunctionOp()
-    .hostFunction()
-    .invokeContract()
-    .functionName();
-  return Buffer.from(functionName).toString();
-}
 
 function simulationResult(id: unknown, retval: string) {
   return {
@@ -98,11 +81,13 @@ test("owners weight distribution chart visual regression", async ({ page }) => {
       return;
     }
 
-    const functionName = getFunctionName(body.params?.transaction ?? "");
+    const functionName = getCallDetails(body.params?.transaction ?? "").fn;
     const resultByFunction: Record<string, string> = {
       get_owners: xdr.ScVal.scvVec(OWNERS.map((owner) => nativeToScVal(owner, { type: "address" }))).toXDR("base64"),
       get_threshold: nativeToScVal(15, { type: "u32" }).toXDR("base64"),
       get_total_proposals: nativeToScVal(0n, { type: "u64" }).toXDR("base64"),
+      get_total_weight: nativeToScVal(20, { type: "u32" }).toXDR("base64"),
+      get_roles: xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Owner")]).toXDR("base64"),
       get_owner_weights: xdr.ScVal.scvVec(
         OWNER_WEIGHTS.map(({ owner, weight }) => nativeToScVal({ owner, weight: BigInt(weight) })),
       ).toXDR("base64"),

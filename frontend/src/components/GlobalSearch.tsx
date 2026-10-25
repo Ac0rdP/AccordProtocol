@@ -116,7 +116,7 @@ export function GlobalSearch({
           viewBox="0 0 24 24"
           strokeWidth={1.5}
           stroke="currentColor"
-          className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-zinc-500"
+          className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-zinc-400"
           aria-hidden="true"
         >
           <path
@@ -129,6 +129,7 @@ export function GlobalSearch({
           ref={inputRef}
           id="global-search"
           type="search"
+          role="combobox"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -140,9 +141,9 @@ export function GlobalSearch({
           aria-autocomplete="list"
           aria-controls="global-search-results"
           aria-expanded={showPanel}
-          className="w-full rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-12 text-sm text-white placeholder-zinc-600 focus:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-900 py-1.5 pl-8 pr-12 text-sm text-white placeholder-zinc-400 focus:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
         />
-        <kbd className="pointer-events-none absolute right-2 top-1.5 hidden rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500 sm:inline">
+        <kbd className="pointer-events-none absolute right-2 top-1.5 hidden rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 sm:inline">
           ⌘K
         </kbd>
       </div>
@@ -155,7 +156,7 @@ export function GlobalSearch({
           className="absolute left-0 right-0 z-50 mt-2 max-h-80 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950 shadow-xl"
         >
           {results.length === 0 ? (
-            <p className="px-3 py-4 text-center text-sm text-zinc-500">
+            <p className="px-3 py-4 text-center text-sm text-zinc-400">
               No matches for “{query.trim()}”
             </p>
           ) : (
@@ -164,7 +165,7 @@ export function GlobalSearch({
               if (items.length === 0) return null;
               return (
                 <div key={group} className="border-b border-zinc-900 last:border-b-0">
-                  <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  <p className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
                     {GROUP_LABELS[group]}
                   </p>
                   <ul>
@@ -188,7 +189,7 @@ export function GlobalSearch({
                             <span className="block truncate font-medium">
                               {item.title}
                             </span>
-                            <span className="block truncate text-xs text-zinc-500">
+                            <span className="block truncate text-xs text-zinc-400">
                               {item.subtitle}
                             </span>
                           </Link>

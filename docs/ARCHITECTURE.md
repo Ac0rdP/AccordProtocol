@@ -794,7 +794,7 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("created",)`  | `ProposalCreatedEvent { id, proposer, threshold, category, transfers, quorum_weight, total_weight_at_creation }` | Proposal feed       |
 | `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold, weight, cumulative_weight }` | Approval bar update |
 | `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals, weight, cumulative_weight }`             | Approval bar update |
-| `("executed",)` | `ProposalExecutedEvent { id, executor, transfers }`             | Execution history   |
+| `("executed",)` | `ProposalExecutedEvent { id, executor }`                        | Execution history   |
 
 These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 

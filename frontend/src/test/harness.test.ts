@@ -22,7 +22,13 @@ const PURE_CONTRACT_EXPORTS = [
   "computeMonthlyOutflow",
   "reconstructTotalWeightHistory",
 ];
-const PURE_SUBMIT_EXPORTS = ["mapProposal", "mapSubmissionError", "withSubmissionRetry"];
+const PURE_SUBMIT_EXPORTS = [
+  "mapProposal",
+  "mapSubmissionError",
+  "withSubmissionRetry",
+  "getSubmissionKey",
+  "isSubmissionInFlight",
+];
 
 const harness = installContractCallHarness();
 

@@ -18,30 +18,26 @@ export const XLM_TOKEN =
 
 const accountId = Keypair.fromPublicKey(TEST_WALLET).xdrAccountId();
 
-const ENTRY_B64 = new xdr.LedgerEntry({
-  lastModifiedLedgerSeq: 100,
-  data: xdr.LedgerEntryData.account(
-    new xdr.AccountEntry({
-      accountId,
-      balance: xdr.Int64.fromString("100000000000"),
-      seqNum: xdr.Int64.fromString("1000000000000"),
-      numSubEntries: 0,
-      inflationDest: null,
-      flags: 0,
-      homeDomain: Buffer.alloc(32),
-      thresholds: Buffer.alloc(4),
-      signers: [],
-      ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-    }),
-  ),
-  ext: xdr.LedgerEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-}).toXDR("base64");
+export const ACCOUNT_ENTRY_B64 = xdr.LedgerEntryData.account(
+  new xdr.AccountEntry({
+    accountId,
+    balance: xdr.Int64.fromString("100000000000"),
+    seqNum: xdr.Int64.fromString("1000000000000"),
+    numSubEntries: 0,
+    inflationDest: null,
+    flags: 0,
+    homeDomain: Buffer.alloc(32),
+    thresholds: Buffer.alloc(4),
+    signers: [],
+    ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
+  }),
+).toXDR("base64");
 
-const KEY_B64 = xdr.LedgerKey.account(
+export const ACCOUNT_KEY_B64 = xdr.LedgerKey.account(
   new xdr.LedgerKeyAccount({ accountId }),
 ).toXDR("base64");
 
-const TX_DATA_B64 = new xdr.SorobanTransactionData({
+export const TX_DATA_B64 = new xdr.SorobanTransactionData({
   ext: xdr.SorobanTransactionDataExt.fromXDR(Buffer.from([0, 0, 0, 0])),
   resources: new xdr.SorobanResources({
     footprint: new xdr.LedgerFootprint({ readOnly: [], readWrite: [] }),
@@ -91,17 +87,19 @@ export function getCallDetails(txBase64: string): {
 } {
   try {
     const envelope = xdr.TransactionEnvelope.fromXDR(txBase64, "base64");
-    const invoke = envelope
-      .v1()
-      .tx()
-      .operations()[0]
-      .body()
-      .invokeHostFunctionOp()
-      .hostFunction()
-      .invokeContract();
+    if (envelope.type !== "envelopeTypeTx") return { fn: "", args: [] };
+    const body = envelope.v1.tx.operations[0]?.body;
+    if (!body || body.type !== "invokeHostFunction") {
+      return { fn: "", args: [] };
+    }
+    const hostFunction = body.invokeHostFunctionOp.hostFunction;
+    if (hostFunction.type !== "hostFunctionTypeInvokeContract") {
+      return { fn: "", args: [] };
+    }
+    const invoke = hostFunction.invokeContract;
     return {
-      fn: Buffer.from(invoke.functionName()).toString(),
-      args: invoke.args().map((arg) => scValToNative(arg)),
+      fn: invoke.functionName.toString(),
+      args: invoke.args.map((arg) => scValToNative(arg)),
     };
   } catch {
     return { fn: "", args: [] };
@@ -155,7 +153,7 @@ export async function installGovernanceRpc(
           id: body.id,
           result: {
             entries: [
-              { key: KEY_B64, xdr: ENTRY_B64, lastModifiedLedgerSeq: 100 },
+              { key: ACCOUNT_KEY_B64, xdr: ACCOUNT_ENTRY_B64, lastModifiedLedgerSeq: 100 },
             ],
             latestLedger: 1000,
           },

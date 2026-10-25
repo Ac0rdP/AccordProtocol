@@ -10,6 +10,8 @@ import { LoadingState } from "../components/LoadingState";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
 import { PageState } from "../components/PageState";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import {
   getDueRecurring,
   getOwnerWeightChangeEvents,
@@ -185,7 +187,7 @@ export function DashboardPage({
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 mb-6">
           <h3 className="font-semibold text-sm mb-3">
             Due for disbursement
-            <span className="ml-2 text-xs text-zinc-500 font-normal">
+            <span className="ml-2 text-xs text-zinc-400 font-normal">
               {dueSchedules.length}{" "}
               {dueSchedules.length === 1 ? "schedule" : "schedules"}
             </span>
@@ -200,14 +202,14 @@ export function DashboardPage({
                   <span className="text-sm text-white font-medium">
                     {schedule.amount} {schedule.token ?? ""}
                   </span>
-                  <span className="text-xs text-zinc-500 ml-2">
+                  <span className="text-xs text-zinc-400 ml-2">
                     Schedule #{schedule.id}
                   </span>
                 </div>
                 <button
                   type="button"
                   aria-label={`Disburse schedule ${schedule.id} now`}
-                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 shrink-0 ml-3"
+                  className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 shrink-0 ml-3"
                 >
                   Disburse now
                 </button>
@@ -327,7 +329,7 @@ export function DashboardPage({
               <button
                 type="button"
                 onClick={onCreateProposal}
-                className="inline-flex items-center gap-1.5 text-sm bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg transition-colors font-medium"
+                className="inline-flex items-center gap-1.5 text-sm bg-emerald-700 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg transition-colors font-medium"
               >
                 <Plus size={14} />
                 Create proposal
@@ -376,12 +378,12 @@ export function DashboardPage({
                     <p className="font-mono text-sm text-zinc-300 truncate">
                       {shortenAddr(change.owner)}
                     </p>
-                    <p className="text-xs text-zinc-500">{change.timestamp}</p>
+                    <p className="text-xs text-zinc-400">{change.timestamp}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0 text-sm font-mono">
-                  <span className="text-zinc-500">{change.oldWeight}</span>
-                  <span aria-hidden className="text-zinc-600">
+                  <span className="text-zinc-400">{change.oldWeight}</span>
+                  <span aria-hidden className="text-zinc-400">
                     →
                   </span>
                   <span className="text-emerald-400">{change.newWeight}</span>

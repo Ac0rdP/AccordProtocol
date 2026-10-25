@@ -14,7 +14,7 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `rpay`         | `RecurringPaymentDisbursedEvent` | `{ schedule_id: u64, recipient: Address, token: Address, amount: i128, total_disbursed: i128, periods_disbursed: u32, version: u32 }` |
 | `approved`     | `ProposalApprovedEvent`          | `{ id: u64, approver: Address, approvals: u32, threshold: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
 | `revoked`      | `ProposalRevokedEvent`           | `{ id: u64, approver: Address, approvals: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
-| `executed`     | `ProposalExecutedEvent`          | `{ id: u64, executor: Address, transfers: Vec<Transfer>, version: u32 }` |
+| `executed`     | `ProposalExecutedEvent`          | `{ id: u64, executor: Address, version: u32 }` |
 | `guard_set`    | `GuardianSetEvent`               | `{ guardian: Address, version: u32 }` |
 | `frozen`       | `FrozenEvent`                    | `{ guardian: Address, version: u32 }` |
 | `unfrozen`     | `UnfrozenEvent`                  | `{ approvers: Vec<Address>, version: u32 }` |
@@ -40,7 +40,7 @@ This catalog is loaded by the off-chain indexer to decode raw contract events de
 
 Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION`, a single public constant in `contracts/accord/src/lib.rs`. It is the only place the version is defined; bump it there and every event picks up the new value.
 
-**Current version: `1`.** Version `1` is the first versioned schema. Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
+**Current version: `2`.** Version `1` was the first versioned schema; version `2` removed `transfers` from `ProposalExecutedEvent` (a full 50-transfer batch duplicated in the event exceeded the network's 16 KiB contract-event limit). Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
 
 ### When the version is bumped
 
@@ -49,6 +49,7 @@ Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION
 | Version | Change |
 |---------|--------|
 | `1` | Initial versioned schema: every event struct gains `version`. |
+| `2` | `ProposalExecutedEvent` drops `transfers`; transfers remain in `ProposalCreatedEvent` and on-chain state. |
 
 ### Stability guarantees for consumers
 

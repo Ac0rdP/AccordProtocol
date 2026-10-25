@@ -303,7 +303,7 @@ function mapAccessRole(raw: unknown): Role | null {
 
   // Single source of truth for role-name aliases so the "list all roles" and
   // "roles for this address" paths can never drift apart.
-  return normalizeRole(key);
+  return mapRole(key);
 }
 
 function mapRoleList(raw: unknown): Role[] {
@@ -829,7 +829,10 @@ function parseScVal(val: unknown): unknown {
     }
   }
   try {
-    return scValToNative(val as xdr.ScVal);
+    const native = scValToNative(val as xdr.ScVal);
+    // `scValToNative` returns undefined instead of throwing for plain objects
+    // (e.g. decoded event fixtures), so fall back to the value itself.
+    return native === undefined ? val : native;
   } catch {
     return val;
   }

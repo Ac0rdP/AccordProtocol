@@ -262,7 +262,7 @@ export function OnboardingPage({ wallet, onComplete }: OnboardingPageProps) {
                     ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300 font-semibold"
                     : isDone
                     ? "border-zinc-700 bg-zinc-800/50 text-zinc-300"
-                    : "border-zinc-800 bg-zinc-900/40 text-zinc-500"
+                    : "border-zinc-800 bg-zinc-900/40 text-zinc-400"
                 }`}
               >
                 <div
@@ -271,7 +271,7 @@ export function OnboardingPage({ wallet, onComplete }: OnboardingPageProps) {
                       ? "bg-emerald-500 text-black font-bold"
                       : isActive
                       ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 font-bold"
-                      : "bg-zinc-800 text-zinc-500"
+                      : "bg-zinc-800 text-zinc-400"
                   }`}
                 >
                   {isDone ? "✓" : number}
@@ -370,7 +370,7 @@ export function OnboardingPage({ wallet, onComplete }: OnboardingPageProps) {
                 key={idx}
                 className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3"
               >
-                <div className="w-6 text-center text-xs font-mono text-zinc-500">#{idx + 1}</div>
+                <div className="w-6 text-center text-xs font-mono text-zinc-400">#{idx + 1}</div>
                 <div className="flex-1">
                   <input
                     type="text"
@@ -396,7 +396,7 @@ export function OnboardingPage({ wallet, onComplete }: OnboardingPageProps) {
                     type="button"
                     aria-label={`Remove owner ${idx + 1}`}
                     onClick={() => removeOwnerRow(idx)}
-                    className="p-1.5 text-zinc-500 hover:text-red-400 transition-colors"
+                    className="p-1.5 text-zinc-400 hover:text-red-400 transition-colors"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -462,7 +462,7 @@ export function OnboardingPage({ wallet, onComplete }: OnboardingPageProps) {
                 onChange={(e) => updateState({ timeLockDelay: Math.max(0, parseInt(e.target.value) || 0) })}
                 className="w-48 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
-              <p className="mt-1 text-xs text-zinc-500">
+              <p className="mt-1 text-xs text-zinc-400">
                 Optional grace period between proposal approval and execution (0 for instant execution).
               </p>
             </div>

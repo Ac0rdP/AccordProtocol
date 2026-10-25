@@ -80,7 +80,7 @@ function CategoryLegend({ rows }: { rows: SpendByCategoryRow[] }) {
             {row.total.toFixed(2)}
           </span>
           <span
-            className="text-zinc-500 tabular-nums w-12 text-right"
+            className="text-zinc-600 dark:text-zinc-400 tabular-nums w-12 text-right"
           >
             {formatShare(row.share)}
           </span>
@@ -112,7 +112,7 @@ export function SpendByCategoryChart({
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
       <div className="mb-4">
         <h3 className="font-semibold text-sm">Spend by Category</h3>
-        <p className="text-xs text-zinc-500 mt-0.5">
+        <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
           Total outflow and share per proposal category
         </p>
         <p className="sr-only">

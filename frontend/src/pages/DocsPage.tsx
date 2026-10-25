@@ -81,7 +81,7 @@ export function DocsPage() {
               <p className="text-sm font-semibold tracking-tight">
                 Accord Docs
               </p>
-              <p className="text-xs text-zinc-500">
+              <p className="text-xs text-zinc-400">
                 Testnet setup and operating guide
               </p>
             </div>
@@ -96,7 +96,7 @@ export function DocsPage() {
             </Link>
             <Link
               to="/app"
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-700"
             >
               Launch App
             </Link>
@@ -112,7 +112,7 @@ export function DocsPage() {
         >
           {sidebarOpen ? "Close" : "Menu"}
         </button>
-        <nav className="flex items-center gap-2 text-sm text-zinc-500">
+        <nav className="flex items-center gap-2 text-sm text-zinc-400">
           <Link to="/docs" className="hover:text-zinc-300 transition-colors">
             Docs
           </Link>
@@ -135,7 +135,7 @@ export function DocsPage() {
           } lg:translate-x-0 lg:sticky lg:top-8 lg:self-start`}
         >
           <div className="rounded-2xl border border-zinc-900 bg-zinc-950/80 p-4 lg:bg-transparent lg:border-0 lg:p-0">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-600">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-400">
               On this page
             </p>
             <label

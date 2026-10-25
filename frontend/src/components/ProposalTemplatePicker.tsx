@@ -117,7 +117,7 @@ export function ProposalTemplatePicker({ fields, onApply, idPrefix }: Props) {
           <button
             type="button"
             onClick={() => setSaving(false)}
-            className="text-xs text-zinc-500 hover:text-zinc-300"
+            className="text-xs text-zinc-600 dark:text-zinc-400 hover:text-zinc-300"
           >
             Cancel
           </button>
@@ -127,7 +127,7 @@ export function ProposalTemplatePicker({ fields, onApply, idPrefix }: Props) {
       {manageOpen && (
         <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-2 space-y-1.5">
           {templates.length === 0 ? (
-            <p className="text-xs text-zinc-500 px-1">No saved templates yet.</p>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400 px-1">No saved templates yet.</p>
           ) : (
             templates.map((template) => (
               <div key={template.id} className="flex items-center justify-between gap-2 px-1">
@@ -148,7 +148,7 @@ export function ProposalTemplatePicker({ fields, onApply, idPrefix }: Props) {
                     <button type="button" onClick={confirmRename} aria-label="Save name" className="text-emerald-400 hover:text-emerald-300">
                       <Check size={13} />
                     </button>
-                    <button type="button" onClick={() => setRenamingId(null)} aria-label="Cancel rename" className="text-zinc-500 hover:text-zinc-300">
+                    <button type="button" onClick={() => setRenamingId(null)} aria-label="Cancel rename" className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300">
                       <X size={13} />
                     </button>
                   </span>
@@ -160,7 +160,7 @@ export function ProposalTemplatePicker({ fields, onApply, idPrefix }: Props) {
                         type="button"
                         onClick={() => startRename(template.id, template.name)}
                         aria-label={`Rename template ${template.name}`}
-                        className="text-zinc-500 hover:text-zinc-300"
+                        className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300"
                       >
                         <Pencil size={13} />
                       </button>
@@ -168,7 +168,7 @@ export function ProposalTemplatePicker({ fields, onApply, idPrefix }: Props) {
                         type="button"
                         onClick={() => remove(template.id)}
                         aria-label={`Delete template ${template.name}`}
-                        className="text-zinc-500 hover:text-red-400"
+                        className="text-zinc-600 dark:text-zinc-400 hover:text-red-400"
                       >
                         <Trash2 size={13} />
                       </button>

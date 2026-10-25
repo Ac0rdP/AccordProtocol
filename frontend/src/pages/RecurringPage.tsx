@@ -85,8 +85,8 @@ function DisbursementTimeline({ schedules }: { schedules: RecurringSchedule[] })
               <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <span className="text-xs text-zinc-400">{entry.dateLabel}</span>
-                  <span className="text-xs text-zinc-600 mx-1.5">·</span>
-                  <span className="text-xs text-zinc-500">Schedule #{entry.scheduleId}</span>
+                  <span className="text-xs text-zinc-400 mx-1.5">·</span>
+                  <span className="text-xs text-zinc-400">Schedule #{entry.scheduleId}</span>
                 </div>
                 <div className="text-xs text-zinc-300 shrink-0">
                   {entry.amount} {entry.token ?? ""}
@@ -96,7 +96,7 @@ function DisbursementTimeline({ schedules }: { schedules: RecurringSchedule[] })
           ))}
         </div>
         {entries.length > 20 && (
-          <p className="text-xs text-zinc-600 mt-2 pl-6">
+          <p className="text-xs text-zinc-400 mt-2 pl-6">
             + {entries.length - 20} more upcoming disbursements
           </p>
         )}
