@@ -5,6 +5,8 @@ import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { ProposalCard } from "../components/ProposalCard";
 import { StatCard } from "../components/StatCard";
 import { ProposalCardSkeleton } from "../components/ProposalCardSkeleton";
+import { EmptyState } from "../components/EmptyState";
+import { LoadingState } from "../components/LoadingState";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
 import { PageState } from "../components/PageState";

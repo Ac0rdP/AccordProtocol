@@ -11,6 +11,7 @@ Helper scripts for Accord Protocol.
 | `keeper-recurring.js` | **Off-chain keeper** — polls due recurring schedules and calls `disburse_recurring` |
 | `query-analytics.js` | **Analytics query CLI** — queries indexed data and prints human-readable tables for spend, treasury flow, and summary metrics |
 | `status-page.mjs` | **Public status page** — probes the health endpoints of the indexer and the analytics API, maps them to a status and renders `docs/status/index.html` (see [docs/STATUS.md](../docs/STATUS.md)) |
+| `check-supply-chain.mjs` | **Supply-chain gate** — enforces lockfile, source, action-pinning and `--locked` rules, with reviewed expiring exceptions in `supply-chain/exceptions.json` (see `docs/SUPPLY_CHAIN_POLICY.md`) |
 | `flaky-tests.mjs` | **Flakiness tracker** — records per-test history, reports the flakiest tests, quarantine status and weekly trends (see CONTRIBUTING.md) |
 
 ---

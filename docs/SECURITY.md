@@ -114,6 +114,8 @@ The tests in `contracts/accord/src/test.rs` use two mock tokens: `AdversarialTok
 
 ## Threat Model
 
+> RBAC, delegation and recurring payments are analysed in full, with code links and residual risks, in [THREAT_MODEL_RBAC_DELEGATION_RECURRING.md](./THREAT_MODEL_RBAC_DELEGATION_RECURRING.md).
+
 ### Attack Surfaces
 
 The protocol's attack surface includes the following external entry points:

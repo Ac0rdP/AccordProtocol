@@ -13,6 +13,9 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | --- | --- | --- | --- |
 | Smart Contract — Build & CI | `.github/workflows/contract.yml` | push to `main`/`v*` tags, PRs | Builds the Soroban contract, runs the weight-fixture and RBAC suites, enforces coverage and resource-benchmark gates, and (on push/tags) runs the testnet smoke test and weight-invariant gate. |
 | Security Checks | `.github/workflows/security.yml` | PRs, pushes to `main` | Runs the tracked-file secret heuristic and Gitleaks over the full git history; any finding fails the job. |
+| Malware scan | `.github/workflows/malware-scan.yml` | PRs targeting `main` | Runs a trusted scanner against the pull-request diff and a ClamAV scan over changed files. It blocks download-and-execute payloads, obfuscated code, credential access, install scripts, non-registry dependencies, suspicious binaries, workflow privilege escalation, and Stellar address swaps. |
+| Supply-chain policy | `.github/workflows/supply-chain.yml` | PRs, pushes to `main`, PR reviews | Enforces [`SUPPLY_CHAIN_POLICY.md`](SUPPLY_CHAIN_POLICY.md): committed lockfiles, allowed sources, SHA-pinned third-party actions, `--locked`/`npm ci` installs, npm signature/provenance verification, and approving review for any policy exception. |
+| Launch checklist | `.github/workflows/launch-checklist.yml` | PRs touching `launch/**` | Validates the structure of the mainnet launch checklist. The strict, signed-off check runs as the `mainnet-checklist` gate in Release (see [`MAINNET_LAUNCH.md`](MAINNET_LAUNCH.md)). |
 | Frontend CI & Coverage | `.github/workflows/frontend-ci.yml` | pushes/PRs touching `frontend/**` | Type-check, lint (advisory), unit tests with coverage thresholds, and responsive screenshot comparisons. |
 | Frontend Storybook & Visual Regression | `.github/workflows/frontend-storybook.yml` | pushes/PRs touching `frontend/**` | Visual snapshot tests and a Storybook build. |
 | Indexer & Analytics CI | `.github/workflows/indexer-analytics.yml` | pushes/PRs touching indexer/analytics paths | Indexer tests against SQLite and Postgres, the analytics test suite, and the analytics API Rust checks (fmt, Clippy, tests). |
@@ -109,3 +112,31 @@ Previews are built from the committed sample dataset
 (`scripts/sample-analytics-data.json`) via `scripts/seed-preview.mjs`; the build
 receives no secrets, and only pull requests whose branch lives in this
 repository are deployed (fork PRs get a read-only token and are skipped).
+
+## Malware scan
+
+`malware-scan.yml` uses `pull_request_target` so the workflow and scanner are
+always loaded from the base branch: a pull request cannot edit the check that
+is evaluating it. The job never runs pull-request code. It checks out the
+contribution with `persist-credentials: false`, reads changed files through Git
+objects, and runs with a read-only token.
+
+High-severity findings fail the job and are reported as annotations on the
+diff. Medium findings are warnings. Add a reviewed exception to
+`.github/malware-scan-allowlist.json` only after deciding the finding is a
+false positive; because the allowlist is read from the base branch, the
+exception must be merged separately before it applies to a pull request.
+Changes to `malware-scan.mjs` itself are reported as a high-severity
+security-control change, so scanner updates need the same separate review.
+
+The scanner is dependency-free and can be run locally:
+
+```bash
+node .github/scripts/malware-scan.mjs \
+  --repo . \
+  --base origin/main \
+  --head HEAD
+```
+
+Make the **Malware scan** and **ClamAV scan** jobs required status checks in
+branch protection, alongside the existing Security and Supply-chain jobs.
