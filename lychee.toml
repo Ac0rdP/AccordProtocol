@@ -25,3 +25,8 @@ max_cache_age = "1d"
 
 # Formatted output
 format = "markdown"
+
+# The generated status page links to the live health endpoints of the deployed
+# services. Those URLs are deployment specific and are monitored by the status
+# page workflow, so they are not link-checked.
+exclude = ["docs-site/status.html"]

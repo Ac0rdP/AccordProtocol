@@ -62,6 +62,9 @@ jobs:
         run: |
           node scripts/query-analytics.js --help
 
+      - name: Run the status page tests
+        run: node --test scripts/status-page.test.mjs
+
   indexer:
     name: Indexer Tests (SQLite + Postgres)
     runs-on: ubuntu-latest

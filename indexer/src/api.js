@@ -3,7 +3,7 @@ import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
 
 const ROUTES = new Set([
-  "/health", "/healthz", "/readyz", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries",
 ]);
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
@@ -58,9 +58,46 @@ function parsePage(searchParams) {
 }
 
 /**
+ * Structured status for the public status page.
+ *
+ * `/healthz` and `/readyz` answer a single boolean; the status page has to
+ * know *which* dependency is unhappy, so every check is reported on its own.
+ * A broken store is an outage, a store that answers while indexing lags is
+ * degraded, everything else is operational.
+ */
+async function buildStatus({ store, readiness, startLedger, finalityLag }) {
+  const { checks } = await readiness.check();
+  const status = !checks.store?.ok
+    ? "outage"
+    : Object.values(checks).every((check) => check.ok)
+      ? "operational"
+      : "degraded";
+
+  // The store can be exactly what is broken, so reading its state is best effort.
+  let nextLedger = String(startLedger);
+  let latestLedger = null;
+  try {
+    nextLedger = (await store.getState("next_ledger")) ?? String(startLedger);
+    latestLedger = Number(await store.getState("last_seen_ledger") ?? 0) || null;
+  } catch {
+    // The checks above already say whether the store is healthy.
+  }
+
+  return {
+    service: "indexer",
+    status,
+    checks,
+    updatedAt: new Date().toISOString(),
+    nextLedger,
+    latestLedger,
+    finalityLag,
+  };
+}
+
+/**
  * Builds (without starting) the indexer's HTTP server.
  *
- *   /health /healthz /readyz /metrics   operations
+ *   /health /healthz /readyz /status /metrics   operations
  *   /ledger /events /reconciliation     indexed data
  *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue)
  *   GET/PUT/POST /notifications/destinations          list / create / upsert destinations
@@ -140,6 +177,11 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       case "/readyz": {
         const result = await readiness.check();
         return sendJson(response, result.ready ? 200 : 503, result);
+      }
+
+      case "/status": {
+        const status = await buildStatus({ store, readiness, startLedger, finalityLag });
+        return sendJson(response, status.status === "outage" ? 503 : 200, status);
       }
 
       case "/metrics":

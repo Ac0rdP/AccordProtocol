@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-22T00:00:00.000Z",
+  "services": [
+    {
+      "id": "indexer",
+      "name": "Indexer",
+      "description": "Ingests Accord contract events from Stellar RPC into the ledger store.",
+      "status": "unknown",
+      "since": "2026-10-22T00:00:00.000Z",
+      "detail": "No health check has run yet.",
+      "checks": {},
+      "latencyMs": null,
+      "endpoint": "http://127.0.0.1:8787/status"
+    },
+    {
+      "id": "analytics-api",
+      "name": "Analytics API",
+      "description": "Serves proposals, spend and treasury analytics to the Accord frontend.",
+      "status": "unknown",
+      "since": "2026-10-22T00:00:00.000Z",
+      "detail": "No health check has run yet.",
+      "checks": {},
+      "latencyMs": null,
+      "endpoint": "http://127.0.0.1:8080/status"
+    }
+  ],
+  "availability": {
+    "indexer": [],
+    "analytics-api": []
+  }
+}

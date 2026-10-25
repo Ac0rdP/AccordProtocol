@@ -7,6 +7,7 @@ The indexer (Node, default port 8787) and the analytics API (Rust, default port 
 | Metrics | `GET /metrics` | `GET /metrics` |
 | Liveness | `GET /healthz` | `GET /livez` |
 | Readiness | `GET /readyz` | `GET /readyz` |
+| Status | `GET /status` | `GET /status` |
 | Legacy | `GET /health` | `GET /health` |
 
 Both serve `text/plain; version=0.0.4`. Neither endpoint is authenticated: keep them on a private network or behind your ingress.
@@ -16,6 +17,7 @@ Both serve `text/plain; version=0.0.4`. Neither endpoint is authenticated: keep 
 - **Liveness** answers `200` whenever the process can respond. Restart on failure; it never depends on the database or RPC, so an outage elsewhere does not cause restart loops.
 - **Indexer readiness** is `200` only when the store answers and an indexing batch succeeded within `READY_MAX_STALENESS_MS` (default: the larger of 60s and six poll intervals). It is `503` before the first batch, when the RPC or database is failing, and when indexing has stalled. The JSON body names the failing check.
 - **API readiness** pings the database with a 2 second timeout: `200 {"status":"ok"}` or `503`.
+- **Status** reports every dependency separately so the [public status page](STATUS.md) can name the failing part. Both services answer with the same document: `service`, `status` (`operational`, `degraded` or `outage`), a `checks` object with one entry per dependency, and the time of the check. It is `503` only when a dependency the service cannot work without is down.
 
 ```yaml
 livenessProbe:  { httpGet: { path: /healthz, port: 8787 } }   # API: /livez on 8080
