@@ -124,13 +124,19 @@ Maintain a restricted JSON policy file with this shape:
 {
   "roles": {
     "alice": ["treasury_operator"],
-    "privacy-team": ["privacy_admin"]
+    "privacy-team": ["privacy_admin"],
+    "sec-admin": ["apikey_admin", "policy_admin"],
+    "auditor": ["security_auditor", "compliance_export"],
+    "infra-lead": ["infra_operator"]
   },
   "permissions": {
     "treasury_transfer": ["treasury_operator"],
     "privacy_export": ["privacy_admin"],
     "privacy_delete": ["privacy_admin"],
-    "policy_change": ["policy_admin"]
+    "policy_change": ["policy_admin"],
+    "apikey_admin": ["apikey_admin"],
+    "compliance_export": ["compliance_export"],
+    "infra_operator": ["infra_operator"]
   },
   "allowRecipients": ["G..."],
   "contractAllowList": ["C..."],
@@ -138,6 +144,10 @@ Maintain a restricted JSON policy file with this shape:
     "provider": "provider-name",
     "required": true,
     "results": { "g...": "clear" }
+  },
+  "allowedRegions": ["us-east-1", "eu-central-1"],
+  "workspaces": {
+    "ws-primary": { "pinnedRegion": "us-east-1", "dataClassification": "restricted" }
   }
 }
 ```
@@ -197,10 +207,187 @@ retention schedule. A current exception blocks the second command; the failed
 request and exception should be recorded manually in the case system. After
 the exception expires, rerun the request and verify the resulting audit record.
 
+### API key operations
+
+The Security Administrator issues, rotates, monitors, and revokes machine credentials.
+Plaintext API keys are output only upon initial creation or rotation; the keystore
+records only cryptographic hashes.
+
+#### Issuing a scoped API key
+
+```bash
+node scripts/security-controls.mjs apikey issue \
+  --keystore=./config/api-keys.json --policy=./config/security-policy.json \
+  --actor=sec-admin --name=indexer-ingest \
+  --scopes=audit:append,indexer:ingest --expires=90 \
+  --audit=./data/security-audit.jsonl
+```
+
+#### Key rotation with overlap window
+
+To replace an active key without downtime, operators trigger a rotation. The old key
+enters a rotating status and remains valid during the overlap grace window (e.g., 7 days)
+while the new key is deployed to client applications:
+
+```bash
+node scripts/security-controls.mjs apikey rotate \
+  --keystore=./config/api-keys.json --policy=./config/security-policy.json \
+  --actor=sec-admin --key=KEY_ID --overlap=7 --expires=90 \
+  --audit=./data/security-audit.jsonl
+```
+
+#### Monitoring rotation reminders
+
+Run scheduled checks for keys approaching expiration within the reminder window (e.g., 14 days):
+
+```bash
+node scripts/security-controls.mjs apikey reminders \
+  --keystore=./config/api-keys.json --window=14
+```
+
+#### Emergency key revocation
+
+If an API key is compromised or decommissioned, revoke it immediately. The revocation
+fails closed and invalidates authentication without waiting for key expiration:
+
+```bash
+node scripts/security-controls.mjs apikey revoke \
+  --keystore=./config/api-keys.json --policy=./config/security-policy.json \
+  --actor=sec-admin --key=KEY_ID --reason="suspected key exposure" \
+  --audit=./data/security-audit.jsonl
+```
+
+#### Authenticating and verifying API keys
+
+```bash
+node scripts/security-controls.mjs apikey verify \
+  --keystore=./config/api-keys.json --token=accord_key_... --scope=indexer:ingest
+```
+
+### SIEM event streaming operations
+
+Security, authorization, and governance audit records can be exported or streamed
+directly to enterprise SIEM platforms.
+
+#### Local export and dry-run verification
+
+Test the SIEM transformation locally to inspect sanitization and categorization:
+
+```bash
+node scripts/security-controls.mjs siem export \
+  --log=./data/security-audit.jsonl --target=splunk --out=./data/splunk-events.json
+
+node scripts/security-controls.mjs siem export \
+  --log=./data/security-audit.jsonl --target=datadog --out=./data/datadog-events.json
+```
+
+#### Live streaming to Splunk HEC or Datadog
+
+Forward events over HTTPS. All secret fields and tokens are automatically redacted
+prior to transmission:
+
+```bash
+# Streaming to Splunk HEC
+node scripts/security-controls.mjs siem stream \
+  --log=./data/security-audit.jsonl --target=splunk \
+  --endpoint="https://splunk-hec.internal.net:8088/services/collector/event" \
+  --token="${SPLUNK_HEC_TOKEN}"
+
+# Streaming to Datadog Logs API
+node scripts/security-controls.mjs siem stream \
+  --log=./data/security-audit.jsonl --target=datadog \
+  --endpoint="https://http-intake.logs.datadoghq.com/api/v2/logs" \
+  --token="${DATADOG_API_KEY}"
+```
+
+### SOC 2 compliance and auditor evidence packages
+
+Compliance officers and auditors use the `soc2` command to inspect control mappings
+and export verified evidence bundles.
+
+#### Inspecting control mappings
+
+```bash
+node scripts/security-controls.mjs soc2 map
+```
+
+#### Exporting auditor evidence package
+
+Generates a complete SOC 2 evidence package with SHA-256 hashes for all input evidence:
+
+```bash
+node scripts/security-controls.mjs soc2 export \
+  --policy=./config/security-policy.json \
+  --audit=./data/security-audit.jsonl \
+  --keystore=./config/api-keys.json \
+  --residency=./config/data-residency-policy.json \
+  --out=./data/soc2-evidence-package.json \
+  --actor=auditor
+```
+
+Auditors verify the package by validating the `overallStatus: "COMPLIANT"`, the
+underlying audit log hash chain, and the SHA-256 manifest of the evidence files.
+
+### Data residency and workspace operations
+
+Workspace data stores are pinned to approved geographical regions to enforce data
+sovereignty and regulatory compliance.
+
+#### Validating data residency
+
+```bash
+node scripts/security-controls.mjs residency verify \
+  --policy=./config/security-policy.json --workspace=ws-primary --region=us-east-1
+```
+
+#### Integrity-verified workspace backup
+
+Creates a region-pinned backup archive with an embedded SHA-256 checksum:
+
+```bash
+node scripts/security-controls.mjs workspace backup \
+  --data=./data/workspace-data.json --policy=./config/security-policy.json \
+  --workspace=ws-primary --region=us-east-1 \
+  --out=./data/workspace-backup.json \
+  --audit=./data/security-audit.jsonl --actor=infra-lead
+```
+
+#### Regional workspace export
+
+Exports workspace records with geographic provenance headers:
+
+```bash
+node scripts/security-controls.mjs workspace export \
+  --data=./data/workspace-data.json --policy=./config/security-policy.json \
+  --workspace=ws-primary --region=us-east-1 \
+  --out=./data/workspace-export.json \
+  --audit=./data/security-audit.jsonl --actor=privacy-team
+```
+
+#### Regional workspace deletion with legal hold checks
+
+Purges workspace data while checking active retention exceptions. If a retention
+exception exists, the operation fails closed:
+
+```bash
+node scripts/security-controls.mjs workspace delete \
+  --data=./data/workspace-data.json --policy=./config/security-policy.json \
+  --exceptions=./config/retention.json \
+  --workspace=ws-primary --region=us-east-1 \
+  --out=./data/workspace-deleted-receipt.json \
+  --audit=./data/security-audit.jsonl --actor=privacy-team
+```
+
 ### Verification record
 
-Automated verification is `node --test scripts/security-controls.test.mjs` and
-the audit-chain command above. Manual evidence consists of the provider request
-ID and response, policy revision, retention-exception decision, command output,
-and the protected audit-log head hash. The control owner reviews this evidence
-monthly and after any incident or policy change.
+| Control | Owner | Scope | Failure Behavior | Automated Verification | Manual Evidence |
+| --- | --- | --- | --- | --- | --- |
+| **Audit Log Hash Chain** | Security Auditor | All privileged operational records | Fails closed on hash mismatch | `scripts/security-controls.mjs audit verify` | Audit log head hash and weekly backup snapshot |
+| **Treasury Preflight** | Treasury Operator | On-chain fund disbursements | Fails closed on missing or non-clear screening | `node --test scripts/security-controls.test.mjs` | Provider query ID and sanctions screening response |
+| **API Key Scopes & Rotation** | Security Administrator | Machine credentials and integration tokens | Fails closed on invalid token, expired overlap, or missing scope | `node --test scripts/security-controls.test.mjs` | Keystore hash manifest and rotation log receipts |
+| **SIEM Event Streaming** | SOC Lead | Auth, authz, governance, and audit logs | Non-blocking fail-safe; redaction fails closed | `scripts/security-controls.mjs siem export --dry-run` | SIEM index ingestion confirmation and alerting rules |
+| **SOC 2 Evidence Package** | Compliance Officer | All protocol and operational controls | Fails closed on broken evidence chain | `scripts/security-controls.mjs soc2 export` | Signed auditor package and SHA-256 manifest file |
+| **Data Residency Pinning** | Infrastructure Operator | Workspace storage, backups, and exports | Fails closed on region mismatch or unapproved region | `scripts/security-controls.mjs residency verify` | Regional cloud tagging and backup checksum log |
+| **Privacy Export & Deletion** | Privacy Administrator | User and tenant personal data | Fails closed on active retention exceptions | `node --test scripts/security-controls.test.mjs` | Retention exception filings and deletion receipts |
+
+The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.
