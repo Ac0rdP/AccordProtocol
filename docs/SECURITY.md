@@ -136,6 +136,65 @@ Accord relies on several explicit assumptions for its security properties to hol
 3. **Asset Integrity**: Token contracts passed to the multisig are non-malicious and do not contain backdoors or non-standard callback logic.
 4. **Soroban Platform**: The underlying Soroban runtime correctly enforces `require_auth` and handles cryptographic verification.
 
+## Operational Security Controls
+
+The repository includes `scripts/security-controls.mjs`, an additive off-chain
+control for operator workflows. It does not replace contract authorization: the
+Accord contract remains the enforcement point for owner quorum, RBAC, guardian
+pause, and treasury execution. The control is owned by the Security and
+Compliance operator, applies to privileged workspace actions and every planned
+treasury transfer, and fails closed when policy, authorization, allowlist, or
+screening evidence is missing.
+
+### Workspace roles and tamper-evident audit
+
+The policy file maps actors to roles and actions to required roles. At minimum,
+deployments should separate `treasury_operator`, `privacy_admin`,
+`policy_admin`, and `security_auditor`; an actor with no matching role cannot
+append a privileged record, change an allow/deny list, or pass treasury
+preflight. Audit records are JSON Lines records chained
+with SHA-256 hashes. Each record contains `previousHash`, and its `hash` covers
+all unsigned fields. Operators must run:
+
+```bash
+node scripts/security-controls.mjs audit verify --log=./data/security-audit.jsonl
+```
+
+Any gap, modified record, malformed line, or missing log is an incident and
+blocks approval until the log is restored from protected evidence. Store the
+audit file with restricted permissions and copy it to write-once or otherwise
+access-controlled evidence storage at the end of each operating period. The
+hash chain is tamper-evident, not a substitute for access controls or an
+independent backup.
+
+This control addresses the existing RBAC risks of role concentration,
+unreviewed privileged operations, and incomplete incident evidence described in
+the [RBAC threat model](THREAT_MODEL_RBAC_DELEGATION_RECURRING.md). It does not
+grant roles or voting power and does not handle private keys.
+
+### Treasury recipient controls
+
+Before a transfer is submitted, the `treasury_operator` must run the
+`treasury preflight` command with the destination contract, recipient, and
+policy. A non-empty recipient or contract allowlist is restrictive; any deny
+list match wins. Screening is required by default and only a provider result of
+`clear` permits the transfer. Provider name, query time, request ID, and result
+must be included in the corresponding audit record. A provider outage,
+ambiguous response, stale result, or missing result is a denial, never an
+automatic approval. The contract's owner quorum and `Executor` role checks
+still apply after preflight.
+
+### Personal-data export, deletion, and retention
+
+The `privacy_admin` owns subject access exports and deletion requests. Export
+copies matching subject records to a new mode-`0600` file without changing the
+source. Deletion replaces personal-data fields with `[REDACTED]` while retaining
+stable record metadata and an audit record containing the actor, subject, and
+redaction count. A valid, unexpired retention exception (for example, a legal
+hold or reconciliation requirement) blocks deletion and must state its reason,
+subject, and `retainUntil` timestamp. Once the exception expires, the request
+must be retried; exceptions are not permission to retain data indefinitely.
+
 ### Mitigations
 
 Specific mechanisms are in place to enforce security boundaries:
