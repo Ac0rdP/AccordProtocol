@@ -109,3 +109,98 @@ groups:
 ```
 
 Tune thresholds to your poll interval and finality lag: the indexer's lag floor is `LEDGER_FINALITY_LAG` ledgers by design, so alert on a value comfortably above it.
+
+## Security control operations
+
+The security-control CLI is the operator evidence and preflight surface for
+workspace actions. It is intentionally separate from wallet signing and cannot
+weaken the on-chain owner quorum or contract RBAC.
+
+### Policy and audit workflow
+
+Maintain a restricted JSON policy file with this shape:
+
+```json
+{
+  "roles": {
+    "alice": ["treasury_operator"],
+    "privacy-team": ["privacy_admin"]
+  },
+  "permissions": {
+    "treasury_transfer": ["treasury_operator"],
+    "privacy_export": ["privacy_admin"],
+    "privacy_delete": ["privacy_admin"],
+    "policy_change": ["policy_admin"]
+  },
+  "allowRecipients": ["G..."],
+  "contractAllowList": ["C..."],
+  "screening": {
+    "provider": "provider-name",
+    "required": true,
+    "results": { "g...": "clear" }
+  }
+}
+```
+
+The `results` map is a deliberately small adapter boundary: production
+operators populate it from the approved screening provider and record the
+provider request ID and timestamp in the audit details. The CLI never accepts a
+missing or non-`clear` result. Review policy changes through the normal change
+process and append an audit record for each privileged action.
+
+Examples:
+
+```bash
+node scripts/security-controls.mjs treasury preflight \
+  --policy=./config/security-policy.json --actor=alice \
+  --recipient=G... --contract=C...
+
+node scripts/security-controls.mjs audit append \
+  --log=./data/security-audit.jsonl --policy=./config/security-policy.json \
+  --actor=alice --action=treasury_transfer --resource=C... \
+  --details='{"recipient":"G...","provider":"provider-name","requestId":"..."}'
+
+node scripts/security-controls.mjs audit verify --log=./data/security-audit.jsonl
+
+node scripts/security-controls.mjs policy update \
+  --policy=./config/security-policy.json --actor=policy-admin \
+  --list=allowRecipients --mode=add --value=G... \
+  --audit=./data/security-audit.jsonl
+```
+
+Run the verification command in scheduled compliance checks and before a
+release. Record the command output, log hash, policy revision, and operator in
+the evidence system. A failed verification, missing audit file, or failed
+preflight is a stop condition; contact Security and Compliance and do not
+submit the transaction.
+
+### Privacy requests
+
+The privacy administrator exports first, verifies the subject and destination,
+then performs deletion only after checking the retention-exception file:
+
+```bash
+node scripts/security-controls.mjs privacy export \
+  --data=./data/personal-records.json --policy=./config/security-policy.json \
+  --actor=privacy-team --subject=SUBJECT --out=./data/export.json \
+  --audit=./data/security-audit.jsonl
+
+node scripts/security-controls.mjs privacy delete \
+  --data=./data/personal-records.json --exceptions=./config/retention.json \
+  --policy=./config/security-policy.json --actor=privacy-team \
+  --subject=SUBJECT --out=./data/personal-records.redacted.json \
+  --audit=./data/security-audit.jsonl
+```
+
+Keep the export access-controlled and delete it according to the approved
+retention schedule. A current exception blocks the second command; the failed
+request and exception should be recorded manually in the case system. After
+the exception expires, rerun the request and verify the resulting audit record.
+
+### Verification record
+
+Automated verification is `node --test scripts/security-controls.test.mjs` and
+the audit-chain command above. Manual evidence consists of the provider request
+ID and response, policy revision, retention-exception decision, command output,
+and the protected audit-log head hash. The control owner reviews this evidence
+monthly and after any incident or policy change.
