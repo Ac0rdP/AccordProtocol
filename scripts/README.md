@@ -14,13 +14,14 @@ Helper scripts for Accord Protocol.
 | `check-supply-chain.mjs` | **Supply-chain gate** — enforces lockfile, source, action-pinning and `--locked` rules, with reviewed expiring exceptions in `supply-chain/exceptions.json` (see `docs/SUPPLY_CHAIN_POLICY.md`) |
 | `flaky-tests.mjs` | **Flakiness tracker** — records per-test history, reports the flakiest tests, quarantine status and weekly trends (see CONTRIBUTING.md) |
 | `security-controls.mjs` | **Security and compliance controls** — enforces role-aware preflight for treasury recipients, supports privacy export/redaction with retention exceptions, and writes/verifies hash-chained audit records (see [docs/SECURITY.md](../docs/SECURITY.md)) |
+| `sso-controls.mjs` | **Enterprise SSO** — verifies SAML/OIDC sign-ins against pinned IdP keys, just-in-time provisions team users from IdP groups, and enforces session lifetime, idle timeout and step-up re-authentication (see [docs/OPERATIONS.md](../docs/OPERATIONS.md#sso-operations-saml--oidc)) |
 
 ### Security controls
 
 Run the focused automated verification with:
 
 ```bash
-node --test scripts/security-controls.test.mjs
+node --test scripts/security-controls.test.mjs scripts/sso-controls.test.mjs
 ```
 
 The CLI requires explicit policy and data paths. It does not read or store

@@ -16,6 +16,17 @@ jobs:
       - name: Scan tracked files for secrets
         run: bash scripts/check-secrets.sh
 
+  security-controls:
+    name: Security and SSO control tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Run security control and SSO control suites
+        run: node --test scripts/security-controls.test.mjs scripts/sso-controls.test.mjs
+
   gitleaks:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest
