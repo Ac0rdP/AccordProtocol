@@ -3,6 +3,16 @@ import type { Proposal } from "../types/accord";
 import { getOwnerWeightChangeEvents } from "../lib/contract";
 import { addNotification } from "../lib/notificationCenter";
 import { isNotificationEnabled, type NotificationEventType } from "../lib/notificationPreferences";
+import {
+  enqueueDigestItem,
+  getDeliveryMode,
+  getNotificationSchedule,
+  summarizeDigest,
+  takeDueDigest,
+} from "../lib/notificationSchedule";
+
+/** How often queued quiet-hours / digest alerts are checked for delivery. */
+const DIGEST_CHECK_INTERVAL_MS = 60_000;
 
 function raiseBrowserNotification(permission: NotificationPermission, title: string, body: string) {
   if (permission !== "granted") return;
@@ -13,7 +23,11 @@ function raiseBrowserNotification(permission: NotificationPermission, title: str
   }
 }
 
-/** Logs to the in-app notification center (if that event type is enabled) and raises a browser notification. */
+/**
+ * Logs to the in-app notification center (if that event type is enabled) and
+ * raises a browser notification — immediately, or later when the user's
+ * notification schedule holds it for quiet hours or batches it into a digest.
+ */
 function notify(
   type: NotificationEventType,
   title: string,
@@ -22,31 +36,62 @@ function notify(
 ) {
   if (!isNotificationEnabled(type)) return;
   addNotification({ type, title, body });
-  raiseBrowserNotification(permission, title, body);
+  if (permission !== "granted") return;
+
+  const mode = getDeliveryMode(getNotificationSchedule(), new Date());
+  if (mode === "immediate") {
+    raiseBrowserNotification(permission, title, body);
+  } else {
+    enqueueDigestItem({ type, title, body, reason: mode });
+  }
+}
+
+function initialPermission(): NotificationPermission {
+  return typeof window !== "undefined" && "Notification" in window
+    ? Notification.permission
+    : "default";
 }
 
 export function useNotifications(
   walletAddress: string | null,
   proposals: Proposal[]
 ) {
-  const [permission, setPermission] = useState<NotificationPermission>("default");
+  const [permission, setPermission] = useState<NotificationPermission>(initialPermission);
   const notifiedIds = useRef<Set<number>>(new Set());
   const notifiedWeightChanges = useRef<Set<string>>(new Set());
   const prevProposalState = useRef<Map<number, { status: Proposal["status"]; approvals: number }>>(new Map());
   const lastWalletAddress = useRef<string | null>(null);
 
-  // Request/Check permission on mount
+  // Request permission on mount when the user has not decided yet
   useEffect(() => {
-    if (typeof window !== "undefined" && "Notification" in window) {
-      if (Notification.permission === "default") {
-        Notification.requestPermission().then((res) => {
-          setPermission(res);
-        });
-      } else {
-        setPermission(Notification.permission);
-      }
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "default"
+    ) {
+      Notification.requestPermission().then((res) => {
+        setPermission(res);
+      });
     }
   }, []);
+
+  // Release alerts held for quiet hours, and send digests when they fall due.
+  useEffect(() => {
+    if (permission !== "granted") return;
+    function deliverDue() {
+      const due = takeDueDigest(getNotificationSchedule(), new Date());
+      if (!due) return;
+      if (due.length === 1) {
+        raiseBrowserNotification(permission, due[0].title, due[0].body);
+      } else {
+        const summary = summarizeDigest(due);
+        raiseBrowserNotification(permission, summary.title, summary.body);
+      }
+    }
+    deliverDue();
+    const timer = setInterval(deliverDue, DIGEST_CHECK_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [permission]);
 
   // Clear notified IDs if the connected wallet address changes
   useEffect(() => {

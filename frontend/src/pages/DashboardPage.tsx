@@ -10,8 +10,6 @@ import { LoadingState } from "../components/LoadingState";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
 import { HistoricalWeightChart } from "../components/HistoricalWeightChart";
 import { PageState } from "../components/PageState";
-import { EmptyState } from "../components/EmptyState";
-import { LoadingState } from "../components/LoadingState";
 import {
   getDueRecurring,
   getOwnerWeightChangeEvents,

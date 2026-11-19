@@ -5198,7 +5198,7 @@ impl AccordContract {
 
     /// Returns the on-chain storage-schema version for this deployment: `0` for
     /// a legacy contract deployed before schema versioning existed, otherwise
-    /// the current [`STORAGE_SCHEMA_VERSION`]. The value is written by
+    /// the current `STORAGE_SCHEMA_VERSION`. The value is written by
     /// `initialize` and by the one-time migrations, and is bumped by any release
     /// that adds or changes storage keys. See `docs/ARCHITECTURE.md` §3
     /// (Storage Schema Versioning) for the per-version key list and upgrade path.

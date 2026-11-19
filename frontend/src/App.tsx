@@ -19,7 +19,12 @@ import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
 import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
-import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
+import {
+  approveProposal,
+  executeProposal,
+  mapSubmissionError,
+  revokeProposal,
+} from "./lib/submit";
 import { isFrozen } from "./lib/contract";
 import { PWAInstallBanner } from "./components/PWAInstallBanner";
 import { ThemeControl } from "./components/ThemeControl";
@@ -31,23 +36,31 @@ import { FeedbackWidget } from "./components/FeedbackWidget";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { BulkActionsPage } from "./pages/BulkActionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { NotificationSchedulePage } from "./pages/NotificationSchedulePage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { OwnerAvailabilityPage } from "./pages/OwnerAvailabilityPage";
 import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TemplateMarketplacePage } from "./pages/TemplateMarketplacePage";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
+  { key: "bulk", to: "/app/bulk" },
   { key: "recurring", to: "/app/recurring" },
   { key: "history", to: "/app/history" },
   { key: "analytics", to: "/app/analytics" },
   { key: "owners", to: "/app/owners" },
+  { key: "availability", to: "/app/availability" },
+  { key: "templates", to: "/app/templates" },
+  { key: "notifications", to: "/app/notifications" },
   { key: "settings", to: "/app/settings" },
   { key: "docs", to: "/docs" },
 ];
@@ -141,12 +154,11 @@ export default function App() {
     wasShowRecurringRef.current = showCreateRecurring;
   }, [showCreateRecurring]);
 
-  useEffect(() => {
-    if (!wallet.address && txPending) {
-      setTxPending(false);
-      setTxError("Wallet disconnected. Please reconnect and try again.");
-    }
-  }, [wallet.address, txPending]);
+  // Adjust state during render (not in an effect) when the wallet drops mid-transaction.
+  if (!wallet.address && txPending) {
+    setTxPending(false);
+    setTxError("Wallet disconnected. Please reconnect and try again.");
+  }
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -287,6 +299,26 @@ export default function App() {
       },
     });
   }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
+
+  // Bulk actions submit each proposal as its own transaction and must surface
+  // per-item failures, so they bypass withTx (which swallows errors).
+  const bulkApprove = useCallback(async (id: number) => {
+    if (!wallet.address) throw new Error("Connect a wallet to sign transactions.");
+    try {
+      await approveProposal(wallet.address, id);
+    } catch (err) {
+      throw new Error(mapSubmissionError(err), { cause: err });
+    }
+  }, [wallet.address]);
+
+  const bulkExecute = useCallback(async (id: number) => {
+    if (!wallet.address) throw new Error("Connect a wallet to sign transactions.");
+    try {
+      await executeProposal(wallet.address, id);
+    } catch (err) {
+      throw new Error(mapSubmissionError(err), { cause: err });
+    }
+  }, [wallet.address]);
 
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
@@ -629,6 +661,36 @@ export default function App() {
               }
             />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route
+              path="bulk"
+              element={
+                <BulkActionsPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={bulkApprove}
+                  onExecute={bulkExecute}
+                  onBatchComplete={refresh}
+                  onConnectWallet={wallet.connect}
+                  loading={loading}
+                  error={error}
+                  onRetry={refresh}
+                />
+              }
+            />
+            <Route path="templates" element={<TemplateMarketplacePage />} />
+            <Route
+              path="availability"
+              element={
+                <OwnerAvailabilityPage
+                  owners={owners}
+                  proposals={proposals}
+                  loading={loading}
+                  error={error}
+                  onRetry={refresh}
+                />
+              }
+            />
+            <Route path="notifications" element={<NotificationSchedulePage />} />
             <Route
               path="owners"
               element={
