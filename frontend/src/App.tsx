@@ -28,9 +28,11 @@ import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { CommandPalette } from "./components/CommandPalette";
 import { ChangelogPanel } from "./components/ChangelogPanel";
 import { FeedbackWidget } from "./components/FeedbackWidget";
+import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -46,6 +48,7 @@ const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
   { key: "recurring", to: "/app/recurring" },
   { key: "history", to: "/app/history" },
+  { key: "audit", to: "/app/audit" },
   { key: "analytics", to: "/app/analytics" },
   { key: "owners", to: "/app/owners" },
   { key: "settings", to: "/app/settings" },
@@ -397,6 +400,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      <LiveUpdatesAnnouncer proposals={proposals} />
       <PWAInstallBanner />
       <CommandPalette commands={commands} suspended={anyModalOpen} />
       <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 bg-white dark:bg-zinc-950 px-4 sm:px-6 py-4">
@@ -617,6 +621,7 @@ export default function App() {
                 <HistoryPage proposals={proposals} onApprove={handleApprove} />
               }
             />
+            <Route path="audit" element={<AuditLogPage proposals={proposals} />} />
             <Route
               path="recurring"
               element={
