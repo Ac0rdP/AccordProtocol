@@ -87,8 +87,8 @@ jobs:
             --ignore-path .lycheeignore
             --cache
             --max-cache-age 1d
-            --output lychee-report.md
             "**/*.md" "docs-site/**/*.html"
+          output: lychee-report.md
           fail: ${{ github.event_name != 'pull_request' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

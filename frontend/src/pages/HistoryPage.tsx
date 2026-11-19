@@ -4,6 +4,8 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { ProposalCard } from "../components/ProposalCard";
 import { PageState } from "../components/PageState";
+import { SavedViews } from "../components/SavedViews";
+import { getSavedViews, removeSavedView, saveView, type SavedView } from "../lib/savedViews";
 import {
   getProposalsPaged,
   getTotalProposals,
@@ -14,6 +16,12 @@ import { formatInterval } from "../lib/soroban";
 
 type Filter = "all" | ProposalStatus;
 type CategoryFilter = "all" | ProposalCategory;
+type HistoryFilters = {
+  activeTab: Filter;
+  categoryFilter: CategoryFilter;
+  searchTerm: string;
+  proposerFilter: string;
+};
 
 const TABS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
@@ -56,6 +64,7 @@ export function HistoryPage({
   const [offset, setOffset] = useState<number>(proposals.length);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
+  const [savedViews, setSavedViews] = useState<SavedView<HistoryFilters>[]>(() => getSavedViews<HistoryFilters>("history"));
   
   const noop = () => {};
 
@@ -118,6 +127,22 @@ export function HistoryPage({
         proposerFilter === "" ||
         p.proposer.toLowerCase().includes(proposerFilter.toLowerCase())
     );
+
+  const currentFilters: HistoryFilters = { activeTab, categoryFilter, searchTerm, proposerFilter };
+  const applyFilters = (filters: HistoryFilters) => {
+    setActiveTab(filters.activeTab);
+    setCategoryFilter(filters.categoryFilter);
+    setSearchTerm(filters.searchTerm);
+    setProposerFilter(filters.proposerFilter);
+  };
+  const saveCurrentView = (name: string) => {
+    const saved = saveView("history", name, currentFilters);
+    setSavedViews((current) => [...current.filter((view) => view.name !== saved.name), saved]);
+  };
+  const deleteSavedView = (id: string) => {
+    removeSavedView("history", id);
+    setSavedViews((current) => current.filter((view) => view.id !== id));
+  };
 
   const hasExecutedProposals = displayedProposals.some((p) => p.status === "executed");
   const hasRecurringSchedules = recurringSchedules.length > 0;
@@ -256,6 +281,16 @@ export function HistoryPage({
             />
           </svg>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <SavedViews
+          label="History"
+          views={savedViews}
+          onApply={applyFilters}
+          onSave={saveCurrentView}
+          onRemove={deleteSavedView}
+        />
       </div>
 
       <div className="space-y-3">

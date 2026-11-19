@@ -3,6 +3,7 @@
     "dashboard": "dashboard",
     "recurring": "recurring",
     "history": "history",
+    "audit": "audit log",
     "analytics": "analytics",
     "owners": "owners",
     "bulk": "bulk actions",

@@ -36,6 +36,59 @@ function DetailRow({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
+type DiffEntry = { label: string; timestamp: string; changes: string[] };
+
+/** Turns the append-only event feed into a compact, readable proposal diff. */
+function buildTimelineDiff(proposal: Proposal, events: ProposalEvent[]): DiffEntry[] {
+  let approvals = 0;
+  let status: Proposal["status"] = "pending";
+  const entries: DiffEntry[] = [{
+    label: "Created",
+    timestamp: proposal.createdAt,
+    changes: [
+      `Metadata: ${proposal.description || "No description"}`,
+      `Recipient: ${proposal.to}`,
+      `Amount: ${proposal.amount} ${proposal.token}`,
+      "Status: pending",
+    ],
+  }];
+
+  for (const event of events) {
+    const type = event.type.toLowerCase();
+    const changes: string[] = [];
+    let label: string;
+    if (type === "approved" || type === "approve") {
+      approvals += 1;
+      label = "Approval added";
+      changes.push(`Approvals: ${approvals} / ${proposal.threshold}`);
+      if (approvals >= proposal.threshold && status !== "ready") {
+        status = "ready";
+        changes.push("Status: pending → ready");
+      }
+    } else if (type === "revoked" || type === "revoke") {
+      approvals = Math.max(0, approvals - 1);
+      label = "Approval revoked";
+      changes.push(`Approvals: ${approvals} / ${proposal.threshold}`);
+      if (status === "ready") {
+        status = "pending";
+        changes.push("Status: ready → pending");
+      }
+    } else if (type === "executed" || type === "execute") {
+      label = "Executed";
+      changes.push(`Status: ${status} → executed`);
+      status = "executed";
+    } else if (type.includes("weight")) {
+      label = "Governance metadata changed";
+      changes.push(`Change: ${event.details || "Owner voting weight changed"}`);
+    } else {
+      label = event.type.replace(/_/g, " ");
+      changes.push(`Change: ${event.details || `Actor: ${event.actor}`}`);
+    }
+    entries.push({ label, timestamp: event.timestamp, changes });
+  }
+  return entries;
+}
+
 export function ProposalDetailPage({
   proposals,
   walletAddress,
@@ -238,6 +291,35 @@ export function ProposalDetailPage({
         <DetailRow label="Proposer">
           <p className="break-all font-mono">{proposal.proposer}</p>
         </DetailRow>
+      </section>
+
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5" aria-labelledby="timeline-diff-heading">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="timeline-diff-heading" className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">Change timeline</h2>
+            <p className="mt-1 text-sm text-zinc-400">Status, approvals, and proposal metadata over time.</p>
+          </div>
+          {loadingEvents && <LoadingState message="Building timeline…" variant="inline" />}
+        </div>
+        {!loadingEvents && eventsError && <div className="mt-4"><ErrorState message={eventsError} variant="section" /></div>}
+        {!loadingEvents && !eventsError && (
+          <ol className="mt-4 space-y-3 border-s border-zinc-700 ps-4">
+            {buildTimelineDiff(proposal, events).map((entry, index) => (
+              <li key={`${entry.label}-${index}`} className="relative">
+                <span aria-hidden="true" className="absolute -start-[21px] top-1.5 h-2 w-2 rounded-full bg-emerald-500" />
+                <div className="rounded-lg bg-zinc-950/50 p-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <h3 className="text-sm font-medium capitalize text-zinc-200">{entry.label}</h3>
+                    <time className="text-xs text-zinc-500">{entry.timestamp}</time>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+                    {entry.changes.map((change) => <li key={change} className="break-words">{change}</li>)}
+                  </ul>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
