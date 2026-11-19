@@ -598,6 +598,44 @@ Then run `sync-policy` so the suspended actor is removed from the policy.
 3. Review `sso_jit_provision`, `sso_role_sync`, `sso_login_denied`, and `sso_deprovision` audit records against IdP group changes and HR leaver lists.
 4. Confirm no suspended user holds roles in the policy and no session for them is `active`.
 
+### Frontend CSP and security headers
+
+The frontend serves a strict Content-Security-Policy and companion HTTP security headers from a single canonical definition in [`frontend/security-headers.mjs`](../frontend/security-headers.mjs), applied to Vercel deployments via [`frontend/vercel.json`](../frontend/vercel.json) and to Vite `dev`/`preview` servers via [`frontend/vite.config.ts`](../frontend/vite.config.ts).
+
+#### Changing allowed origins
+
+1. Identify the exact origin (`https://host` or `wss://host`) required — never add paths, query strings, credentials, or wildcards (`*`).
+2. For environment-specific endpoints (Soroban RPC, Analytics API, Indexer API, WebSocket/SSE push, or price feed), set the existing `VITE_*` environment variables (`VITE_SOROBAN_RPC_URL`, `VITE_API_BASE_URL`, `VITE_INDEXER_API_BASE_URL`, `VITE_EVENT_PUSH_URL`, `VITE_PRICE_FEED_URL`) or `VITE_CSP_EXTRA_CONNECT_SRC`.
+3. If a new default production origin is needed for Vercel deployments, update `DEFAULT_CONNECT_ORIGINS` in `frontend/security-headers.mjs` and the matching `Content-Security-Policy` header in `frontend/vercel.json` in the same PR.
+4. Run the header validation check before merging:
+   ```bash
+   node scripts/check-frontend-headers.mjs
+   node --test scripts/check-frontend-headers.test.mjs
+   ```
+5. To verify a live preview or staging deployment, run:
+   ```bash
+   node scripts/check-frontend-headers.mjs --url=https://<preview-host>
+   ```
+
+#### Fast rollback (Report-Only mode)
+
+If a production header change blocks a legitimate wallet or API flow:
+
+1. **Immediate mitigation**: Set `VITE_CSP_REPORT_ONLY=true` (or `CSP_REPORT_ONLY=true`) for Vite preview/self-hosted deployments, or change `"key": "Content-Security-Policy"` to `"key": "Content-Security-Policy-Report-Only"` in `frontend/vercel.json` and redeploy.
+2. Collect the blocked directive and origin from browser DevTools console logs.
+3. Fix the policy narrowly (adding only the specific verified origin) and restore enforcing `Content-Security-Policy`.
+
+#### Manual browser verification checklist (not automated in CI)
+
+Automated tests cannot exercise real browser wallet extensions. Perform and record these checks manually in a real browser after any CSP or wallet change:
+
+- [ ] **Freighter connect**: Connect Freighter on Testnet; confirm address and network passphrase populate with zero CSP errors in DevTools console.
+- [ ] **Transaction signing**: Build, simulate, sign, and submit a proposal or approval via Freighter; confirm no `connect-src` or `script-src` violation blocks signing.
+- [ ] **Wallet providers (Ledger / Passkey / WalletConnect)**: Confirm USB/HID/WebAuthn prompts and configured relay origins are not blocked by `Permissions-Policy` or `connect-src`.
+- [ ] **Analytics & Indexer API**: Load the Dashboard and Analytics views; confirm `/proposals`, `/stats/summary`, and notification destination calls succeed with zero CSP violations.
+- [ ] **Price feed & QR/PDF export**: Confirm CoinGecko fiat quotes load, QR codes render (`img-src data:`), and PDF export succeeds (`img-src blob:`).
+- [ ] **Response headers in DevTools Network tab**: Confirm `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and `Strict-Transport-Security: max-age=31536000` (without `includeSubDomains` or `preload`) are present and not duplicated.
+
 ### Verification record
 
 | Control | Owner | Scope | Failure Behavior | Automated Verification | Manual Evidence |
@@ -610,5 +648,6 @@ Then run `sync-policy` so the suspended actor is removed from the policy.
 | **Data Residency Pinning** | Infrastructure Operator | Workspace storage, backups, and exports | Fails closed on region mismatch or unapproved region | `scripts/security-controls.mjs residency verify` | Regional cloud tagging and backup checksum log |
 | **Privacy Export & Deletion** | Privacy Administrator | User and tenant personal data | Fails closed on active retention exceptions | `node --test scripts/security-controls.test.mjs` | Retention exception filings and deletion receipts |
 | **SSO (SAML/OIDC), JIT & Session Policy** | Security Administrator | Team sign-in, SSO-managed roles, and privileged-action sessions | Fails closed on unpinned key, claim mismatch, replay, off-domain or non-MFA login, suspended user, or expired/idle/step-up session | `node --test scripts/sso-controls.test.mjs`; `scripts/sso-controls.mjs validate` | Quarterly IdP metadata comparison and leaver review of SSO audit records |
+| **Frontend CSP & Security Headers** | Frontend Maintainer | Accord web frontend (`frontend/`) responses on Vercel and Vite | Fails closed in browser (blocked script/frame/connect); CI fails on policy drift or `'unsafe-inline'`/`'unsafe-eval'` in production `script-src` | `node scripts/check-frontend-headers.mjs`; `node --test scripts/check-frontend-headers.test.mjs` | Manual browser DevTools checklist (Freighter connect/sign, Analytics API, zero CSP console violations) |
 
 The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.

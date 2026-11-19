@@ -301,6 +301,22 @@ guardian checks.
   - Addresses the **Role Concentration Risk** and **Role-Revocation** concerns in the [RBAC threat model addendum](#role-based-access-control-rbac-threat-model-addendum) by tying off-chain roles to centrally managed IdP groups with prompt revocation, and the credential-exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md) by hashing session tokens and refusing secret key material in config.
 - **Residual risk**: a fully compromised IdP can still sign in as any user in an allowed domain and obtain that user's non-protected roles. Treasury movement still requires on-chain owner quorum. Keep `jit.allowedRoles` minimal, require MFA, and alert on `sso_role_sync` events in the SIEM.
 
+### Frontend Content Security Policy (CSP) and Security Headers
+
+- **Control**: Strict HTTP `Content-Security-Policy` and companion browser security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, and `Strict-Transport-Security: max-age=31536000` on production HTTPS without `includeSubDomains` or `preload`) defined centrally in [`frontend/security-headers.mjs`](../frontend/security-headers.mjs) and applied to Vercel deployments ([`frontend/vercel.json`](../frontend/vercel.json)) and Vite servers ([`frontend/vite.config.ts`](../frontend/vite.config.ts)).
+- **Owner**: Frontend Maintainer.
+- **Scope**: All document and asset responses served by the Accord web frontend (`frontend/`).
+- **Threat Model**:
+  - **Cross-Site Scripting (XSS) & Injected Third-Party Scripts**: Production `script-src` is strictly `'self'` with no `'unsafe-inline'` and no `'unsafe-eval'`. The dark-mode theme bootstrap was moved from an inline `<script>` in `frontend/index.html` to a static external file (`frontend/public/theme-init.js`), preserving static CDN caching with zero nonces or hashes required.
+  - **Clickjacking / UI Redressing**: `frame-ancestors 'none'` and `X-Frame-Options: DENY` prevent embedding the multisig approval UI in malicious frames; `frame-src 'none'` and `object-src 'none'` block active plugin or iframe injection.
+  - **Data Exfiltration**: `connect-src` restricts outbound browser fetches and WebSockets to `'self'`, configured Stellar Soroban RPC / Horizon origins, the CoinGecko price feed origin, and any explicitly configured Analytics/Indexer/Push origins (stripped to `scheme://host[:port]` so paths, queries, and credentials can never appear in headers). `base-uri 'self'` and `form-action 'self'` prevent base-tag and form hijacking.
+  - **Wallet Compatibility**: `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` are intentionally omitted so Freighter and wallet popups/bridges are not broken, and `Permissions-Policy` leaves `usb`, `hid`, and `publickey-credentials-get` unrestricted for Ledger and Passkey wallets.
+- **Failure Behavior**:
+  - **Browser runtime**: Fails closed — any unauthorized script, frame, or network origin is blocked by the browser.
+  - **CI & config validation**: `scripts/check-frontend-headers.mjs` and `scripts/check-frontend-headers.test.mjs` fail closed if `frontend/vercel.json` drifts from `frontend/security-headers.mjs`, if `'unsafe-inline'` or `'unsafe-eval'` appears in production `script-src`, if an unexpected origin or wildcard is introduced, or if inline `<script>` tags reappear in `frontend/index.html`.
+- **Rollback**: Set `VITE_CSP_REPORT_ONLY=true` (or `CSP_REPORT_ONLY=true`) or switch `"key": "Content-Security-Policy"` to `"key": "Content-Security-Policy-Report-Only"` in `frontend/vercel.json` and redeploy. See [`docs/OPERATIONS.md`](./OPERATIONS.md#frontend-csp-and-security-headers) for operator steps and the manual browser wallet checklist.
+- **Link to Existing Risks**: Mitigates the frontend/contract integration attack surfaces in [Attack Surfaces](#attack-surfaces) (malicious script injection attempting to forge or alter transaction signing payloads before Freighter/hardware wallet confirmation). *(Note: the repository does not maintain a formal numbered risk register.)*
+
 ### Mitigations
 
 Specific mechanisms are in place to enforce security boundaries:

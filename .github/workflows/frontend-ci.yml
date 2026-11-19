@@ -59,6 +59,11 @@ jobs:
         working-directory: frontend
         run: npm run test
 
+      - name: Verify frontend CSP & security headers
+        run: |
+          node scripts/check-frontend-headers.mjs
+          node --test scripts/check-frontend-headers.test.mjs
+
   contract-types:
     name: Generated contract types are current
     runs-on: ubuntu-latest
