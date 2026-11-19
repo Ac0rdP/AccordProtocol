@@ -5,6 +5,10 @@
     "history": "history",
     "analytics": "analytics",
     "owners": "owners",
+    "bulk": "bulk actions",
+    "availability": "availability",
+    "templates": "templates",
+    "notifications": "notifications",
     "settings": "settings",
     "docs": "docs"
   },

@@ -17,7 +17,14 @@ import { AnalyticsPage } from "./AnalyticsPage";
 import { OwnersPage } from "./OwnersPage";
 import { SettingsPage } from "./SettingsPage";
 import { ProposalDetailPage } from "./ProposalDetailPage";
+import { BulkActionsPage } from "./BulkActionsPage";
+import { TemplateMarketplacePage } from "./TemplateMarketplacePage";
+import { OwnerAvailabilityPage } from "./OwnerAvailabilityPage";
+import { NotificationSchedulePage } from "./NotificationSchedulePage";
 import { useTreasuryAnalytics } from "../hooks/useTreasuryAnalytics";
+import { useTemplateMarketplace } from "../hooks/useTemplateMarketplace";
+import { useNotificationSchedule } from "../hooks/useNotificationSchedule";
+import { DEFAULT_NOTIFICATION_SCHEDULE } from "../lib/notificationSchedule";
 import type { TreasuryAnalytics } from "../types/accord";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
@@ -52,6 +59,14 @@ vi.mock("../lib/contract", () => ({
 
 vi.mock("../hooks/useTreasuryAnalytics", () => ({
   useTreasuryAnalytics: vi.fn(),
+}));
+
+vi.mock("../hooks/useTemplateMarketplace", () => ({
+  useTemplateMarketplace: vi.fn(),
+}));
+
+vi.mock("../hooks/useNotificationSchedule", () => ({
+  useNotificationSchedule: vi.fn(),
 }));
 
 vi.mock("recharts", async () => {
@@ -96,6 +111,33 @@ function scoreAnalytics(kind: PageStateKind) {
     refresh: vi.fn(),
   });
 }
+
+function scoreTemplateMarketplace(kind: PageStateKind) {
+  vi.mocked(useTemplateMarketplace).mockReturnValue({
+    templates: [],
+    installs: {},
+    loading: kind === "loading",
+    error: kind === "error" ? "boom" : null,
+    retry: vi.fn(),
+    install: vi.fn(),
+    uninstall: vi.fn(),
+  });
+}
+
+function scoreNotificationSchedule(kind: PageStateKind) {
+  vi.mocked(useNotificationSchedule).mockReturnValue({
+    schedule: kind === "empty" ? DEFAULT_NOTIFICATION_SCHEDULE : null,
+    loading: kind === "loading",
+    error: kind === "error" ? "boom" : null,
+    retry: vi.fn(),
+    reset: vi.fn(),
+    save: vi.fn(),
+    queue: [],
+    clearQueue: vi.fn(),
+  });
+}
+
+const asyncNoop = async () => {};
 
 // ─── Renderer registry ───────────────────────────────────────────────────────
 // One entry per page in the matrix. `renderPage` is intentionally exhaustive:
@@ -177,6 +219,38 @@ const RENDERERS: Record<string, (kind: PageStateKind) => void> = {
         onRetry={noop}
       />,
     );
+  },
+  BulkActionsPage: (kind) => {
+    render(
+      <BulkActionsPage
+        proposals={[]}
+        walletAddress={null}
+        onApprove={asyncNoop}
+        onExecute={asyncNoop}
+        loading={kind === "loading"}
+        error={kind === "error" ? "boom" : null}
+        onRetry={noop}
+      />,
+    );
+  },
+  TemplateMarketplacePage: (kind) => {
+    scoreTemplateMarketplace(kind);
+    render(<TemplateMarketplacePage />);
+  },
+  OwnerAvailabilityPage: (kind) => {
+    render(
+      <OwnerAvailabilityPage
+        owners={[]}
+        proposals={[]}
+        loading={kind === "loading"}
+        error={kind === "error" ? "boom" : null}
+        onRetry={noop}
+      />,
+    );
+  },
+  NotificationSchedulePage: (kind) => {
+    scoreNotificationSchedule(kind);
+    render(<NotificationSchedulePage now={Date.UTC(2026, 10, 19, 12)} />);
   },
   ProposalDetailPage: (kind) => {
     render(
