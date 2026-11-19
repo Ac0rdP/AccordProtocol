@@ -367,3 +367,37 @@ If the budget check causes false-positive failures during runner degradation or 
    gh workflow enable "CI Time and Cost Budgets"
    ```
 
+## Canary contract release & rollback
+
+Contract upgrades follow a staged canary release and manual promotion workflow in [`.github/workflows/canary-release.yml`](../.github/workflows/canary-release.yml), backed by [`scripts/canary-release-gate.mjs`](../scripts/canary-release-gate.mjs) and [`scripts/canary-release-gate.test.mjs`](../scripts/canary-release-gate.test.mjs).
+
+### Upgrade & rollback model
+
+Accord implements in-place WASM upgrades via `upgrade(approvers, new_wasm_hash)` in `contracts/accord/src/lib.rs`, preserving contract ID and persistent state. Rollback therefore reverts the contract in-place to the previous verified WASM hash (unless a flawed release altered persistent storage schema — see [`docs/runbooks/UPGRADE_ROLLBACK.md`](./runbooks/UPGRADE_ROLLBACK.md) Step 4.2). **Rollback is never automatic** to avoid worsening partial state changes.
+
+### Stages & gates
+
+1. **Stage 1 (`build-and-hash`)**: Runs `scripts/canary-release-gate.test.mjs`, runs `cargo test --locked -p accord invariants`, runs `scripts/verify-reproducible-build.sh`, and records the built WASM SHA-256 hash into `canary-manifest.json`.
+2. **Stage 2 (`canary-gate`, Environment: `canary`)**: Verifies that:
+   - `deployed_wasm_hash` matches the Stage 1 `built_hash` exactly (prevents promoting an untested binary).
+   - Both the canary Indexer (`GET <CANARY_INDEXER_STATUS_URL>/status`) and Analytics API (`GET <CANARY_ANALYTICS_API_STATUS_URL>/status`) return HTTP 200, `status: "operational"`, all dependency checks `ok: true`, and a fresh `updatedAt` timestamp (<= 300s old, preventing stale-endpoint false passes).
+   - Core contract invariants from [`docs/INVARIANTS.md`](./INVARIANTS.md) hold (`INV-01` total weight == sum of owner weights, `INV-02` `1 <= threshold <= total_weight`, `INV-03` `1 <= owners <= 20`, `INV-08` `active_proposals <= 50`, and `version`/`storage_version >= 1`).
+3. **Stage 3 (`prepare-production-promotion`, Environment: `production-promotion`)**: Runs **only** on manual `workflow_dispatch` with `action: promote` after required reviewers approve the protected environment. Following [`docs/OPERATIONS.md`](./OPERATIONS.md#hsm-and-mpc-signer-integration-runbook), **no production owner private keys exist in GitHub secrets**; Stage 3 outputs an unsigned `production-promotion-bundle.json` artifact for out-of-band HSM/MPC owner co-signing.
+4. **Rollback (`prepare-rollback-plan`, Environment: `production-rollback`)**: Runs on manual `workflow_dispatch` with `action: rollback-plan`, selects the latest verified prior WASM hash via `scripts/canary-release-gate.mjs rollback-plan`, and outputs an unsigned rollback + optional `freeze` containment plan.
+
+### Required repository settings, environments & variables
+
+| Setting | Type | Purpose |
+| --- | --- | --- |
+| `canary` | GitHub Environment | Isolates testnet canary verification variables |
+| `production-promotion` | Protected GitHub Environment | **Must configure required reviewers** before enabling mainnet promotion |
+| `production-rollback` | Protected GitHub Environment | **Must configure required reviewers** for rollback plan approval |
+| `CANARY_CONTRACT_ID` | Environment / Repo Variable | Testnet canary contract ID (e.g. `CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS`) |
+| `CANARY_INDEXER_STATUS_URL` | Environment / Repo Variable | Base URL of the canary indexer status endpoint |
+| `CANARY_ANALYTICS_API_STATUS_URL` | Environment / Repo Variable | Base URL of the canary analytics API status endpoint |
+| `PRODUCTION_CONTRACT_ID` | Environment / Repo Variable | Mainnet Accord contract ID (once deployed) |
+
+- **Secrets**: None required for production signing (production owner keys stay strictly in HSM/MPC custody).
+- **Permissions**: Top-level `permissions: {}`; every job uses `contents: read` only.
+- **Dry run**: Dispatch `Canary Contract Release` with `dry_run: true` (the default) to validate build tooling, unit tests, gate evaluation, and rollback planning without touching any network.
+

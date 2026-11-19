@@ -1,0 +1,317 @@
+name: Canary Contract Release
+
+# Staged canary contract release, promotion gate, and manual rollback planner.
+#
+# Security & custody model (see docs/SECURITY.md & docs/OPERATIONS.md):
+# - Production owner signing keys NEVER live in GitHub secrets or CI.
+# - Promotion to production is NEVER automatic: it requires a manual dispatch
+#   and a protected GitHub Environment ("production-promotion") with required reviewers,
+#   producing an unsigned promotion bundle for out-of-band HSM/MPC co-signing.
+# - Rollback is NEVER automatic: it prepares a verified in-place `upgrade` rollback
+#   plan targeting the previous verified WASM hash for manual HSM/MPC co-signing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Stage to run: canary, promote, or rollback-plan"
+        required: true
+        default: "canary"
+        type: choice
+        options:
+          - canary
+          - promote
+          - rollback-plan
+      dry_run:
+        description: "Run in dry-run mode (validates scripts, hashes, and gates without live deploy)"
+        required: true
+        default: true
+        type: boolean
+      deployed_wasm_hash:
+        description: "Deployed canary WASM SHA-256 hash to verify against the built artifact (optional in dry-run)"
+        required: false
+        default: ""
+        type: string
+      rollback_failed_hash:
+        description: "Failed WASM SHA-256 hash to roll back from (only for rollback-plan)"
+        required: false
+        default: ""
+        type: string
+
+# Serialize releases so two canary or promotion runs can never overlap.
+concurrency:
+  group: canary-contract-release
+  cancel-in-progress: false
+
+# Least-privilege default; jobs request only what they strictly need.
+permissions: {}
+
+jobs:
+  build-and-hash:
+    name: "Stage 1: Build artifact & record SHA-256"
+    if: inputs.action == 'canary' || inputs.action == 'promote'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      wasm_hash: ${{ steps.record.outputs.wasm_hash }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: Run canary gate unit tests
+        run: node --test scripts/canary-release-gate.test.mjs
+
+      - name: Build contract & verify reproducibility (or dry-run)
+        id: record
+        env:
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          GITHUB_SHA_VAL: ${{ github.sha }}
+          GITHUB_REF_NAME_VAL: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/canary-release
+
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            DRY_RUN=1 bash scripts/verify-reproducible-build.sh
+            WASM_HASH="$(printf 'dry-run-%s' "${GITHUB_SHA_VAL}" | sha256sum | awk '{print $1}')"
+          else
+            rustup target add wasm32v1-none
+            cargo test --locked -p accord invariants
+            bash scripts/verify-reproducible-build.sh
+            WASM_HASH="$(awk '/^wasm_hash:/ {print $2}' target/reproducible-build/status.txt)"
+          fi
+
+          if [ -z "${WASM_HASH}" ]; then
+            echo "::error::Failed to obtain built WASM SHA-256 hash."
+            exit 1
+          fi
+
+          cat > target/canary-release/canary-manifest.json <<EOF
+          {
+            "wasm_hash": "${WASM_HASH}",
+            "commit_sha": "${GITHUB_SHA_VAL}",
+            "ref": "${GITHUB_REF_NAME_VAL}",
+            "dry_run": ${INPUT_DRY_RUN},
+            "recorded_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          echo "wasm_hash=${WASM_HASH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Canary Stage 1: Build & Hash"
+            echo "- **Run**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- **Dry Run**: \`${INPUT_DRY_RUN}\`"
+            echo "- **Built WASM SHA-256**: \`${WASM_HASH}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Stage 1 build evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: canary-stage1-manifest
+          path: |
+            target/canary-release/canary-manifest.json
+            target/reproducible-build/
+          if-no-files-found: ignore
+
+  canary-gate:
+    name: "Stage 2: Canary verification gate (health + invariants)"
+    needs: [build-and-hash]
+    if: inputs.action == 'canary' || inputs.action == 'promote'
+    runs-on: ubuntu-latest
+    environment: canary
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: Download Stage 1 manifest
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: canary-stage1-manifest
+          path: target/canary-release
+
+      - name: Run canary health, hash, and invariant gate
+        env:
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          BUILT_HASH: ${{ needs.build-and-hash.outputs.wasm_hash }}
+          DEPLOYED_HASH: ${{ inputs.deployed_wasm_hash }}
+          CANARY_CONTRACT_ID: ${{ vars.CANARY_CONTRACT_ID }}
+          CANARY_INDEXER_STATUS_URL: ${{ vars.CANARY_INDEXER_STATUS_URL }}
+          CANARY_ANALYTICS_API_STATUS_URL: ${{ vars.CANARY_ANALYTICS_API_STATUS_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/canary-release
+
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            TARGET_DEPLOYED_HASH="${DEPLOYED_HASH:-${BUILT_HASH}}"
+            node scripts/canary-release-gate.mjs gate \
+              --dry-run \
+              --built-hash="${BUILT_HASH}" \
+              --deployed-hash="${TARGET_DEPLOYED_HASH}" \
+              --out=target/canary-release/canary-gate-report.json
+          else
+            if [ -z "${CANARY_CONTRACT_ID}" ] || [ -z "${CANARY_INDEXER_STATUS_URL}" ] || [ -z "${CANARY_ANALYTICS_API_STATUS_URL}" ]; then
+              echo "::error::Canary target is not configured. Set CANARY_CONTRACT_ID, CANARY_INDEXER_STATUS_URL, and CANARY_ANALYTICS_API_STATUS_URL repository/environment variables."
+              exit 1
+            fi
+            if [ -z "${DEPLOYED_HASH}" ]; then
+              echo "::error::Provide deployed_wasm_hash from the canary deployment to verify it matches the built artifact."
+              exit 1
+            fi
+            if [ ! -f target/canary-release/invariants.json ]; then
+              echo "::error::Live canary invariants snapshot (target/canary-release/invariants.json) is not present. Query the canary contract view functions on testnet before running live promotion."
+              exit 1
+            fi
+            node scripts/canary-release-gate.mjs gate \
+              --built-hash="${BUILT_HASH}" \
+              --deployed-hash="${DEPLOYED_HASH}" \
+              --invariants-file=target/canary-release/invariants.json \
+              --out=target/canary-release/canary-gate-report.json
+          fi
+
+      - name: Report Stage 2 summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### Canary Stage 2: Health & Invariant Gate"
+            echo "- **Status**: \`${JOB_STATUS}\`"
+            echo "- **Run**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- **Evidence**: Uploaded as \`canary-stage2-gate-report\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Stage 2 gate evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: canary-stage2-gate-report
+          path: target/canary-release/canary-gate-report.json
+          if-no-files-found: ignore
+
+  prepare-production-promotion:
+    name: "Stage 3: Prepare production promotion bundle (manual review)"
+    needs: [build-and-hash, canary-gate]
+    if: inputs.action == 'promote'
+    runs-on: ubuntu-latest
+    # Protected environment: repository admins MUST configure required reviewers.
+    environment: production-promotion
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prepare unsigned HSM/MPC production upgrade bundle
+        env:
+          BUILT_HASH: ${{ needs.build-and-hash.outputs.wasm_hash }}
+          PROD_CONTRACT_ID: ${{ vars.PRODUCTION_CONTRACT_ID }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/canary-release
+          CONTRACT_TARGET="${PROD_CONTRACT_ID:-<PRODUCTION_CONTRACT_ID>}"
+
+          cat > target/canary-release/production-promotion-bundle.json <<EOF
+          {
+            "schemaVersion": 1,
+            "network": "mainnet",
+            "networkPassphrase": "Public Global Stellar Network ; September 2015",
+            "contractId": "${CONTRACT_TARGET}",
+            "verifiedWasmHash": "${BUILT_HASH}",
+            "dryRun": ${INPUT_DRY_RUN},
+            "signingPolicy": "Out-of-band HSM/MPC multisig owner co-signing required (docs/OPERATIONS.md). No production keys exist in CI.",
+            "unsignedUpgradeCommand": "stellar contract invoke --build-only --network mainnet --source-account <FEE_PAYER> --id ${CONTRACT_TARGET} -- upgrade --approvers '[\"<OWNER_1>\",\"<OWNER_2>\"]' --new_wasm_hash ${BUILT_HASH}",
+            "preparedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "workflowRunUrl": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          }
+          EOF
+
+          {
+            echo "### Canary Stage 3: Production Promotion Bundle Ready"
+            echo "- **Verified WASM SHA-256**: \`${BUILT_HASH}\`"
+            echo "- **Target Contract**: \`${CONTRACT_TARGET}\`"
+            echo "- **Next Step**: Download \`production-promotion-bundle\` and execute out-of-band HSM/MPC owner co-signing per \`docs/OPERATIONS.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload production promotion bundle
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: production-promotion-bundle
+          path: target/canary-release/production-promotion-bundle.json
+          if-no-files-found: ignore
+
+  prepare-rollback-plan:
+    name: "Rollback: Prepare verified in-place rollback plan (manual review)"
+    if: inputs.action == 'rollback-plan'
+    runs-on: ubuntu-latest
+    # Protected environment: repository admins MUST configure required reviewers.
+    environment: production-rollback
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: Generate manual rollback plan
+        env:
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          FAILED_HASH: ${{ inputs.rollback_failed_hash }}
+          PROD_CONTRACT_ID: ${{ vars.PRODUCTION_CONTRACT_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/canary-release
+
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            cat > target/canary-release/sample-history.json <<'EOF'
+          [
+            { "tag": "v0.3.0-canary", "commit_sha": "dryrun-new", "wasm_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "status": "verified" },
+            { "tag": "v0.2.0", "commit_sha": "dryrun-prev", "wasm_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "status": "verified" }
+          ]
+          EOF
+            TARGET_FAILED="${FAILED_HASH:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+            node scripts/canary-release-gate.mjs rollback-plan \
+              --history=target/canary-release/sample-history.json \
+              --failed-hash="${TARGET_FAILED}" \
+              --contract-id="${PROD_CONTRACT_ID:-CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS}" \
+              --network=testnet \
+              --out=target/canary-release/rollback-plan.json
+          else
+            if [ -z "${FAILED_HASH}" ] || [ ! -f release-history.json ]; then
+              echo "::error::Provide rollback_failed_hash and a verified release-history.json manifest to generate a live rollback plan."
+              exit 1
+            fi
+            node scripts/canary-release-gate.mjs rollback-plan \
+              --history=release-history.json \
+              --failed-hash="${FAILED_HASH}" \
+              --contract-id="${PROD_CONTRACT_ID:-<PRODUCTION_CONTRACT_ID>}" \
+              --network=mainnet \
+              --out=target/canary-release/rollback-plan.json
+          fi
+
+      - name: Upload rollback plan artifact
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: contract-rollback-plan
+          path: target/canary-release/rollback-plan.json
+          if-no-files-found: ignore
