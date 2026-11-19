@@ -34,6 +34,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ChangelogPanel } from "./components/ChangelogPanel";
 import { FeedbackWidget } from "./components/FeedbackWidget";
 import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
+import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
@@ -481,33 +482,7 @@ export default function App() {
           <FeedbackWidget walletAddress={wallet.address} />
           <NotificationCenter />
 
-          {!wallet.installed ? (
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            >
-              {t("header.installFreighter")}
-            </a>
-          ) : wallet.address ? (
-            <button
-              type="button"
-              onClick={wallet.disconnect}
-              className="rounded-lg bg-zinc-800 px-4 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            >
-              {shortenAddr(wallet.address)}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={wallet.connect}
-              disabled={wallet.connecting}
-              className="rounded-lg bg-emerald-700 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
-            >
-              {wallet.connecting ? t("header.connecting") : t("header.connectWallet")}
-            </button>
-          )}
+          <WalletSessionSwitcher wallet={wallet} />
         </div>
       </header>
 
@@ -553,42 +528,7 @@ export default function App() {
           </div>
         )}
 
-        {!wallet.installed ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
-            <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-300">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-                className="h-6 w-6"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M15.75 19.5a3 3 0 0 0 3-3V6.75A3 3 0 0 0 15.75 3.75H8.25a3 3 0 0 0-3 3V16.5a3 3 0 0 0 3 3m7.5 0h-7.5m7.5 0v.75a.75.75 0 0 1-.75.75H8.25a.75.75 0 0 1-.75-.75v-.75m7.5 0v-3.375c0-.621-.504-1.125-1.125-1.125H9.375c-.621 0-1.125.504-1.125 1.125V19.5"
-                />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-semibold">
-              Freighter wallet required
-            </h1>
-            <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
-              Freighter is the supported browser extension for signing Stellar
-              transactions in Accord. Install it to connect a wallet and use the
-              app.
-            </p>
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-6 inline-flex items-center rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-amber-500"
-            >
-              Install Freighter
-            </a>
-          </div>
-        ) : loading ? (
+        {loading ? (
           <LoadingState message="Loading contract data…" />
         ) : (
           <>
