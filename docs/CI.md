@@ -181,6 +181,12 @@ reported". They still run and report normally whenever their paths change; use
 the release gates or a follow-up aggregator workflow if they must block merges
 unconditionally.
 
+`scripts/check-ci-guards.mjs` runs in the required **Pinning policy** job and
+fails if a change reintroduces a gate regression that has blocked pull requests
+before: a `.github/dependabot.yml` file, a fork pull-request checkout in
+`malware-scan.yml` without `allow-unsafe-pr-checkout: true`, or a lychee
+`--output` argument in `docs.yml` that conflicts with the action input.
+
 Apply the protection with the GitHub CLI (run as a repository administrator):
 
 ```bash
