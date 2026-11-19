@@ -68,6 +68,17 @@ export const PAGE_STATE_MATRIX: PageStateMatrixEntry[] = [
     },
   },
   {
+    page: "AuditLogPage",
+    route: "/app/audit",
+    dataSource: "getProposalEvents",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading audit log…", retry: false },
+      empty: { message: "No audit events match these filters", retry: false },
+      error: { message: "Could not load audit log", retry: true },
+    },
+  },
+  {
     page: "RecurringPage",
     route: "/app/recurring",
     dataSource: "getTotalRecurringPayments / getRecurringPaymentsPaged",

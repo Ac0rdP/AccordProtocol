@@ -12,6 +12,7 @@ import {
 } from "./pageStateMatrix";
 import { DashboardPage } from "./DashboardPage";
 import { HistoryPage } from "./HistoryPage";
+import { AuditLogPage } from "./AuditLogPage";
 import { RecurringPage } from "./RecurringPage";
 import { AnalyticsPage } from "./AnalyticsPage";
 import { OwnersPage } from "./OwnersPage";
@@ -175,6 +176,16 @@ const RENDERERS: Record<string, (kind: PageStateKind) => void> = {
           onRetry={noop}
         />
       </MemoryRouter>,
+    );
+  },
+  AuditLogPage: (kind) => {
+    render(
+      <AuditLogPage
+        proposals={[]}
+        loading={kind === "loading"}
+        error={kind === "error" ? "boom" : null}
+        onRetry={noop}
+      />,
     );
   },
   RecurringPage: (kind) => {
