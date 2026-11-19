@@ -13,7 +13,7 @@ import { validateAbi } from "./abi.js";
 import type { AbiParam, AbiType, AbiTypeDef, ContractAbi } from "./abi.js";
 import { AccordValidationError } from "./errors.js";
 
-export const SUPPORTED_LANGUAGES = ["python", "go"] as const;
+export const SUPPORTED_LANGUAGES = ["python", "go", "rust"] as const;
 
 export type CodegenLanguage = (typeof SUPPORTED_LANGUAGES)[number];
 
@@ -44,6 +44,13 @@ const GO_RESERVED = new Set([
   "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
   "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
   "return", "select", "struct", "switch", "type", "var",
+]);
+
+const RUST_RESERVED = new Set([
+  "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
+  "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+  "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true",
+  "type", "unsafe", "use", "where", "while", "async", "await", "dyn",
 ]);
 
 function words(name: string): string[] {
@@ -350,6 +357,145 @@ function generateGo(abi: ContractAbi, clientName: string, packageName: string): 
   return `${[...header, ...body].join("\n")}\n`;
 }
 
+// ─── Rust ────────────────────────────────────────────────────────────────────
+
+function rustIdent(name: string): string {
+  const id = snake(name);
+  return RUST_RESERVED.has(id) ? `r#${id}` : id;
+}
+
+function rustType(type: AbiType): string {
+  switch (type.kind) {
+    case "primitive":
+      switch (type.name) {
+        case "bool":
+          return "bool";
+        case "u32":
+          return "u32";
+        case "i32":
+          return "i32";
+        case "u64":
+        case "timepoint":
+        case "duration":
+          return "u64";
+        case "i64":
+          return "i64";
+        case "u128":
+          return "u128";
+        case "i128":
+          return "i128";
+        case "u256":
+        case "i256":
+          return "[u8; 32]";
+        case "bytes":
+          return "Vec<u8>";
+        case "string":
+        case "symbol":
+        case "address":
+        case "muxed_address":
+          return "String";
+        default:
+          return "serde_json::Value";
+      }
+    case "vec":
+      return `Vec<${rustType(type.element)}>`;
+    case "option":
+      return `Option<${rustType(type.value)}>`;
+    case "map":
+      return `std::collections::BTreeMap<${rustType(type.key)}, ${rustType(type.value)}>`;
+    case "tuple":
+      return type.elements.length === 0 ? "()" : `(${type.elements.map(rustType).join(", ")})`;
+    case "bytesN":
+      return `[u8; ${type.size}]`;
+    case "result":
+      return rustType(type.ok);
+    case "udt":
+      return type.name;
+  }
+}
+
+function rustDoc(text: string, indent = ""): string[] {
+  return text ? text.split("\n").map((l) => `${indent}///${l ? ` ${l}` : ""}`) : [];
+}
+
+function rustTypeDef(def: AbiTypeDef): string[] {
+  const out: string[] = [...rustDoc(def.doc)];
+  if (def.kind === "struct") {
+    out.push("#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]");
+    out.push(`pub struct ${def.name} {`);
+    for (const f of def.fields) {
+      out.push(...rustDoc(f.doc, "    "));
+      out.push(`    pub ${rustIdent(f.name)}: ${rustType(f.type)},`);
+    }
+    out.push("}");
+  } else if (def.kind === "union") {
+    out.push("#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]");
+    out.push("#[serde(tag = \"tag\", content = \"values\")]");
+    out.push(`pub enum ${def.name} {`);
+    for (const c of def.cases) {
+      out.push(...rustDoc(c.doc, "    "));
+      out.push(`    ${pascal(c.name)},`);
+    }
+    out.push("}");
+  } else {
+    out.push("#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]");
+    out.push("#[repr(u32)]");
+    out.push(`pub enum ${def.name} {`);
+    for (const c of def.cases) {
+      out.push(...rustDoc(c.doc, "    "));
+      out.push(`    ${pascal(c.name)} = ${c.value},`);
+    }
+    out.push("}");
+    if (def.kind === "errorEnum") {
+      out.push("", `impl std::fmt::Display for ${def.name} {`);
+      out.push("    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {");
+      out.push("        write!(f, \"{:?} ({})\", self, *self as u32)");
+      out.push("    }", "}");
+      out.push(`impl std::error::Error for ${def.name} {}`);
+    }
+  }
+  return out;
+}
+
+function generateRust(abi: ContractAbi, clientName: string): string {
+  const body: string[] = [];
+  for (const def of abi.types) {
+    body.push("", ...rustTypeDef(def));
+  }
+
+  body.push("", `/// ${clientName} wraps contract invocations with typed methods.`);
+  body.push(`pub struct ${clientName}<I: Invoker> {`, "    invoker: I,", "}");
+  body.push("", `impl<I: Invoker> ${clientName}<I> {`);
+  body.push(`    pub fn new(invoker: I) -> Self {`, "        Self { invoker }", "    }");
+
+  for (const fn of abi.functions) {
+    const params = fn.inputs.map((p) => `${rustIdent(p.name)}: ${rustType(p.type)}`).join(", ");
+    let out = fn.outputs[0];
+    while (out?.kind === "result") out = out.ok;
+    const isVoid = !out || (out.kind === "primitive" && out.name === "void");
+    const retType = isVoid ? "Result<(), Box<dyn std::error::Error>>" : `Result<${rustType(out)}, Box<dyn std::error::Error>>`;
+    const argList = fn.inputs.map((p) => `(${JSON.stringify(p.name)}, serde_json::to_value(&${rustIdent(p.name)})?)`).join(", ");
+
+    body.push("", ...rustDoc(fn.doc, "    "));
+    body.push(`    pub fn ${snake(fn.name)}(&self${params ? `, ${params}` : ""}) -> ${retType} {`);
+    body.push(`        self.invoker.invoke(${JSON.stringify(fn.name)}, &[${argList}])`);
+    body.push("    }");
+  }
+  body.push("}");
+
+  const header = [
+    `// Code generated by ${GENERATED_BY}. DO NOT EDIT.`,
+    "//",
+    "// Typed Accord contract bindings for Rust.",
+    "",
+    "pub trait Invoker {",
+    "    fn invoke<T: serde::de::DeserializeOwned>(&self, method: &str, args: &[(&str, serde_json::Value)]) -> Result<T, Box<dyn std::error::Error>>;",
+    "}",
+  ];
+
+  return `${[...header, ...body].join("\n")}\n`;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -382,11 +528,39 @@ export function generateClient(abi: ContractAbi, options: CodegenOptions): Gener
     return { language, fileName: `${snake(clientName)}.py`, source: generatePython(abi, clientName) };
   }
 
+  if (language === "rust") {
+    return { language, fileName: `${snake(clientName)}.rs`, source: generateRust(abi, clientName) };
+  }
+
   const packageName = options.packageName ?? "accord";
   if (!/^[a-z][a-z0-9]*$/.test(packageName) || GO_RESERVED.has(packageName)) {
     throw new AccordValidationError("packageName", "Go package name must be a lowercase identifier.");
   }
   return { language, fileName: `${snake(clientName)}.go`, source: generateGo(abi, clientName, packageName) };
+}
+
+/** Generates a typed Python client from a parsed contract ABI. */
+export function generatePythonClient(
+  abi: ContractAbi,
+  options?: Omit<CodegenOptions, "language">
+): GeneratedClient {
+  return generateClient(abi, { ...options, language: "python" });
+}
+
+/** Generates a typed Go client from a parsed contract ABI. */
+export function generateGoClient(
+  abi: ContractAbi,
+  options?: Omit<CodegenOptions, "language">
+): GeneratedClient {
+  return generateClient(abi, { ...options, language: "go" });
+}
+
+/** Generates a typed Rust client from a parsed contract ABI. */
+export function generateRustClient(
+  abi: ContractAbi,
+  options?: Omit<CodegenOptions, "language">
+): GeneratedClient {
+  return generateClient(abi, { ...options, language: "rust" });
 }
 
 /** Generates clients for several languages at once (defaults to all supported). */

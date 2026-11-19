@@ -363,6 +363,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/reports"),
         ("POST", "/reports/run"),
         ("GET", "/alerts"),
+        ("GET", "/owners/participation"),
     ] {
         let (status, _, body) = request(&state, method, &format!("{path}?bogus=1")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {path}");
