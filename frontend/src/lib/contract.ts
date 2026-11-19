@@ -266,31 +266,6 @@ export async function getActiveDelegations(): Promise<Delegation[]> {
   }
 }
 
-const ROLE_ALIASES: Record<string, Role> = {
-  owner: "Owner",
-  admin: "Owner",
-  guardian: "Guardian",
-  manager: "SpendingLimit",
-  operator: "SpendingLimit",
-  viewer: "Viewer",
-  maintainer: "SpendingLimit",
-  administrator: "Owner",
-  proposer: "Proposer",
-  approver: "Approver",
-  executor: "Executor",
-  spendinglimit: "SpendingLimit",
-  spending_limit: "SpendingLimit",
-};
-
-function normalizeRole(raw: string): Role | null {
-  const key = raw.trim().toLowerCase();
-  return (
-    ROLE_ALIASES[key] ??
-    ROLE_ALIASES[key.replace(/[\s_-]+/g, "")] ??
-    null
-  );
-}
-
 function mapAccessRole(raw: unknown): Role | null {
   let key: string;
   if (typeof raw === "string") {
