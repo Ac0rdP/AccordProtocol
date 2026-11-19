@@ -462,7 +462,7 @@ fn test_differential_boundary_exact_quorum_and_timelock() {
     h.advance_time(119);
     assert_eq!(
         h.client.try_execute(&h.owners[2], &id),
-        Err(Ok(ContractError::TimeLockNotExpired))
+        Err(Ok(ContractError::TimeLockActive))
     );
     assert_eq!(
         h.reference_model.execute(&h.owners[2], id),
@@ -499,7 +499,7 @@ fn test_differential_failure_cases() {
         &deadline,
         &ProposalCategory::Transfer,
     );
-    let ref_id = h
+    let _ref_id = h
         .reference_model
         .create_transfer_proposal(&h.owners[0], &recipient, amount, deadline)
         .unwrap();
@@ -507,7 +507,7 @@ fn test_differential_failure_cases() {
     // Case 1: Non-owner approval fails in both
     assert_eq!(
         h.client.try_approve(&non_owner, &id),
-        Err(Ok(ContractError::NotAnOwner))
+        Err(Ok(ContractError::MissingRole))
     );
     assert_eq!(
         h.reference_model.approve(&non_owner, id),
@@ -540,7 +540,7 @@ fn test_differential_failure_cases() {
     // Case 4: Execution below quorum fails in both
     assert_eq!(
         h.client.try_execute(&h.owners[0], &id),
-        Err(Ok(ContractError::QuorumNotReached))
+        Err(Ok(ContractError::ThresholdNotMet))
     );
     assert_eq!(
         h.reference_model.execute(&h.owners[0], id),
@@ -698,7 +698,7 @@ fn test_differential_regression_fixture_in_flight_weight_and_timelock() {
     // Try executing when dropped below quorum -> Rejects in both!
     assert_eq!(
         h.client.try_execute(&h.owners[0], &id),
-        Err(Ok(ContractError::QuorumNotReached))
+        Err(Ok(ContractError::ThresholdNotMet))
     );
     assert_eq!(
         h.reference_model.execute(&h.owners[0], ref_id),

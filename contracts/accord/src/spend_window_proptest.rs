@@ -110,7 +110,9 @@ impl SpendWindowHarness {
             limit,
             window_secs,
             current_time: START_TIME,
-            active_epoch: 0,
+            // The contract anchors the window when the window policy is
+            // configured, not when the first transfer happens.
+            active_epoch: START_TIME,
             tracked_spent: 0,
         }
     }
@@ -119,7 +121,7 @@ impl SpendWindowHarness {
         self.current_time = self.current_time.saturating_add(seconds);
         set_ledger_time(&self.env, self.current_time);
 
-        // If time advanced beyond the active window epoch + window_secs, tracker resets
+        // Match the contract: the window is still active at the exact boundary.
         if self.active_epoch > 0 && self.current_time > self.active_epoch.saturating_add(self.window_secs) {
             self.tracked_spent = 0;
             self.active_epoch = 0;
@@ -151,21 +153,20 @@ impl SpendWindowHarness {
                 self.client.approve(&self.owner_a, &id);
                 self.client.approve(&self.owner_b, &id);
 
-                let exec_res = self.client.try_execute(&self.owner_c, &id);
-                match exec_res {
-                    Ok(Ok(_)) => {
+                match self.client.try_execute(&self.owner_c, &id) {
+                    Ok(Ok(())) => {
                         if self.active_epoch == 0 {
                             self.active_epoch = self.current_time;
                         }
                         self.tracked_spent += amount;
                         Ok(id)
                     }
-                    Ok(Err(err)) => Err(err),
-                    Err(_) => Err(ContractError::SpendingLimitExceeded),
+                    Err(Ok(err)) => Err(err),
+                    Ok(Err(_)) | Err(Err(_)) => Err(ContractError::SpendingLimitExceeded),
                 }
             }
-            Ok(Err(err)) => Err(err),
-            Err(_) => Err(ContractError::SpendingLimitExceeded),
+            Err(Ok(err)) => Err(err),
+            Ok(Err(_)) | Err(Err(_)) => Err(ContractError::SpendingLimitExceeded),
         }
     }
 
