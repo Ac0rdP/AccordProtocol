@@ -327,6 +327,151 @@ const owners = await withResilience(
 
 ---
 
+## Cookbook
+
+Runnable recipes for the common flows. Each recipe checks preconditions before spending fees and is typed against `CookbookClient` (a slice of `AccordClient`), so the same code runs on a live client or on the [`MockAccordContract`](#testing-harness) used below.
+
+```typescript
+import {
+  MockAccordContract,
+  approveUntilQuorum,
+  collectTreasuryAnalytics,
+  executeWhenReady,
+  proposeRecurringPayment,
+  runTransferLifecycle,
+} from "@accord-protocol/sdk";
+
+const [alice, bob, carol] = ["GALICE", "GBOB", "GCAROL"]; // real G... addresses with AccordClient
+const now = 1_700_000_000n;
+const client = new MockAccordContract({ owners: [alice, bob, carol], threshold: 2, now });
+
+// Create → approve → execute in one call (stops before execute if quorum is short or time-locked).
+const { proposal, executeTxHash } = await runTransferLifecycle(client, {
+  proposer: alice,
+  approvers: [alice, bob, carol], // carol is skipped once quorum is reached
+  executor: bob,
+  transfers: [{ to: carol, token: "CUSDC", amount: 250_0000000n }],
+  description: "Design retainer",
+  deadline: now + 86_400n,
+  now,
+});
+
+// Recurring payroll: propose, then approve and execute like any proposal.
+const payroll = await proposeRecurringPayment(client, {
+  proposer: alice,
+  schedule: {
+    recipient: carol, token: "CUSDC", amount: 1_000n, interval_secs: 2_592_000n,
+    start_time: now, end_time: 0n, cliff_time: 0n, total_cap: 12_000n, kind: "FixedAmountPerPeriod",
+  },
+  description: "Monthly payroll",
+  deadline: now + 86_400n,
+});
+await approveUntilQuorum(client, payroll.proposalId, [alice, bob]);
+await executeWhenReady(client, bob, payroll.proposalId, { now });
+
+// Analytics: pages through every proposal and aggregates by status, category and token.
+const analytics = await collectTreasuryAnalytics(client);
+console.log(analytics.activeRecurring, analytics.proposals.executedByToken); // 1 { CUSDC: 2500000000n }
+```
+
+| Recipe | Does | Fails early with `AccordValidationError` when |
+|---|---|---|
+| `proposeTransfer` | `createProposal`, then reads back the proposal id | no transfers |
+| `approveUntilQuorum` | approves in order, skipping prior signers and anyone after quorum | no approvers |
+| `executeWhenReady` | `execute` once Ready and the time-lock has elapsed | not Ready / still time-locked |
+| `runTransferLifecycle` | the three steps above | any of the above |
+| `proposeRecurringPayment` | `validateRecurringParams` + `createRecurringProposal` | interval, cap, end or cliff out of contract bounds |
+| `summarizeProposals` / `collectTreasuryAnalytics` | counts by status/category, requested vs executed per token, execution rate | — |
+
+Contract rejections are not swallowed: they surface as the client's `AccordContractError`.
+
+---
+
+## Testing Harness
+
+`MockAccordContract` is a deterministic, in-memory contract with the same method names and signatures as `AccordClient` for the proposal lifecycle (create, approve, revoke, execute, recurring proposals, paging, approval progress). It follows the on-chain rules — ids from 1, per-proposal quorum snapshots, weighted approvals, deadline expiry, time-locks, freeze — and throws the same `AccordContractError` codes. Transaction hashes, ledgers and event ids are counter-based, so assertions are stable.
+
+```typescript
+import { ContractError, MockAccordContract, createMockRpcHandler, subscribeEvents } from "@accord-protocol/sdk";
+
+const mock = new MockAccordContract({
+  owners: [{ address: "GALICE", weight: 2 }, "GBOB"],
+  threshold: 2,
+  timeLockDelay: 3_600n,
+  now: 1_700_000_000n,
+});
+
+await mock.createProposal("GALICE", [{ to: "GBOB", token: "CUSDC", amount: 5n }], "Refund", 1_700_086_400n);
+await mock.approve("GALICE", 1n);                       // weight 2 ≥ quorum 2 → Ready
+await mock.execute("GBOB", 1n).catch((e) => e.errorCode === ContractError.TimeLockActive); // true
+mock.advanceTime(3_600);                                // deterministic clock
+await mock.execute("GBOB", 1n);
+
+mock.failNext("approve", new Error("RPC unavailable")); // fault injection for error paths
+mock.setFrozen(true);                                   // ContractFrozen on execute
+
+// Event stream: drive subscriptions, or serve it over JSON-RPC 2.0.
+const sub = subscribeEvents((cursor) => mock.fetchEvents(cursor), { pollIntervalMs: 10 });
+const rpc = createMockRpcHandler(mock);
+await rpc({ jsonrpc: "2.0", id: 1, method: "getEvents", params: { cursor: null, limit: 50 } });
+sub.stop();
+```
+
+The JSON-RPC handler implements `getHealth`, `getLatestLedger` and `getEvents` (decoded events with bigints as strings, not XDR); mount it behind any HTTP server to test polling consumers. The mock does not encode XDR, so code that calls `simulateView`/`executeTransaction` directly still needs a stubbed `rpc.Server`.
+
+---
+
+## Versioned ABI JSON
+
+Publish the contract ABI as a versioned, fingerprinted JSON artifact for tooling and code generation. The artifact records the contract, event-schema and storage-schema versions it was extracted from; serialization is key-sorted so diffs are stable.
+
+```typescript
+import { readFileSync, writeFileSync } from "node:fs";
+import {
+  createVersionedAbi, diffAbi, parseSorobanSpec, parseVersionedAbi, serializeVersionedAbi, versionedAbiFileName,
+} from "@accord-protocol/sdk";
+
+const abi = parseSorobanSpec(readFileSync("accord-spec.json", "utf8"));
+const artifact = createVersionedAbi(abi, { contractVersion: 1, eventSchemaVersion: 2, storageSchemaVersion: 1 });
+writeFileSync(versionedAbiFileName(artifact), serializeVersionedAbi(artifact)); // accord-abi.v1.json
+
+// Consumers verify format and fingerprint before trusting a downloaded artifact.
+const published = parseVersionedAbi(readFileSync("accord-abi.v1.json", "utf8"));
+const { breaking, removedFunctions } = diffAbi(published, abi);
+```
+
+```bash
+npm run build
+npm run abi:export -- --spec=accord-spec.json --contract-version=1 --event-schema=2 --storage-schema=1 --out=abi
+# Gate releases: exits 1 on a breaking diff without a contract-version bump
+npm run abi:export -- --spec=accord-spec.json --contract-version=1 --event-schema=2 --storage-schema=1 \
+  --previous=abi/accord-abi.v1.json
+```
+
+`parseVersionedAbi` throws `AccordValidationError` for invalid JSON, unknown formats, artifacts newer than the SDK supports, malformed ABIs and fingerprint mismatches. `diffAbi` treats additions as compatible and removals or signature/type changes as breaking.
+
+---
+
+## Migrating from SDK API v1
+
+[`MIGRATION.md`](./MIGRATION.md) lists every breaking change with before/after code and the compatibility matrix. The same data is exported (`SDK_V2_BREAKING_CHANGES`, `SDK_COMPATIBILITY_MATRIX`), along with codemods and a contract compatibility check:
+
+```typescript
+import { checkCompatibility, readContractSurface, runCodemods } from "@accord-protocol/sdk";
+
+// 1. Is the deployed contract ready for this SDK?
+const report = checkCompatibility(await readContractSurface(client));
+// { compatible: false, requiredMigrations: ["migrate_to_rbac"], issues: [...] }
+
+// 2. Rewrite mechanical changes and list the rest for review.
+const { output, changes, findings } = runCodemods(source);
+// output:   proposal.approvals >= threshold  →  proposal.approval_weight >= proposal.quorum_weight
+//           err.errorCode === 56             →  err.errorCode === ContractError.DeprecatedEntrypoint
+// findings: ProposalExecutedEvent.transfers reads, Unauthorized-only checks, legacy recurring entrypoints
+```
+
+---
+
 ## Releases
 
 Releases are automated from [Conventional Commits](https://www.conventionalcommits.org/) by `.github/workflows/sdk-release.yml` on every push to `main` that touches `packages/sdk/`:
