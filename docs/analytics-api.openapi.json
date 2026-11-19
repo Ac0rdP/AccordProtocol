@@ -1493,6 +1493,425 @@
         }
       }
     },
+    "/report-templates": {
+      "get": {
+        "operationId": "listReportTemplates",
+        "summary": "Branded report templates",
+        "tags": [
+          "Reports"
+        ],
+        "description": "The report templates configured per workspace (one network + contract pair). Templates are applied to scheduled and manual CSV and PDF reports and to their delivery emails. Not cached, so an edit shows on the next read.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Templates per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of templates to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_OFFSET",
+            "x-invalid-example": "-1"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of templates ordered by network and contract.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportTemplatePage"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "putReportTemplate",
+        "summary": "Create or replace a workspace's report template",
+        "tags": [
+          "Reports"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "description": "Replaces the whole template: a field left out returns to its default. The logo is referenced by https URL and printed in the PDF header, CSV and email; it is not embedded as an image. Requires `Authorization: Bearer <ADMIN_TOKEN>` when the deployment sets ADMIN_TOKEN.",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "The contract whose template is written. Required when the deployment serves more than one contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "The network whose template is written. Required when the deployment serves more than one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportTemplateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored template.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportTemplate"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter or body field is invalid, or the target workspace is ambiguous.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 16 KiB."
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteReportTemplate",
+        "summary": "Remove a workspace's report template",
+        "tags": [
+          "Reports"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "description": "Reports for the workspace go back to the default layout.",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "The contract whose template is written. Required when the deployment serves more than one contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "The network whose template is written. Required when the deployment serves more than one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The template was removed.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or the target workspace is ambiguous.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The workspace has no template.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/alerts": {
       "get": {
         "operationId": "listAlerts",
@@ -1849,6 +2268,7 @@
                 "enum": [
                   "VALIDATION_ERROR",
                   "INVALID_PARAMETER",
+                  "UNAUTHORIZED",
                   "NOT_FOUND",
                   "RATE_LIMITED",
                   "INTERNAL_ERROR"
@@ -1899,6 +2319,12 @@
               "INVALID_PERIOD_DAYS",
               "INVALID_SEVERITY",
               "INVALID_GROUP_BY",
+              "MISSING_PARAMETER",
+              "INVALID_BODY",
+              "INVALID_TEMPLATE_FIELD",
+              "INVALID_LOGO_URL",
+              "INVALID_COLOR",
+              "INVALID_SECTION",
               "RATE_LIMITED"
             ]
           }
@@ -2535,6 +2961,172 @@
             }
           }
         ]
+      },
+      "ReportTemplateInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "brandName": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "description": "Brand name printed above the report title."
+          },
+          "title": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 120,
+            "description": "Report title. May use {network}, {contract} and {period}. Defaults to the standard title."
+          },
+          "headerText": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "description": "A single line printed under the title."
+          },
+          "footerText": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "description": "A single line printed at the bottom of every PDF page and at the end of the CSV and email."
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2048,
+            "description": "https:// URL of the workspace logo, referenced in the PDF header, CSV and email."
+          },
+          "accentColor": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Hex colour used for the PDF heading."
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "token_totals",
+                "category_totals",
+                "transactions"
+              ]
+            },
+            "description": "Sections to include, in order. Defaults to all four. In the PDF the transaction rows always follow the summary blocks."
+          }
+        }
+      },
+      "ReportTemplate": {
+        "type": "object",
+        "required": [
+          "id",
+          "network",
+          "contractId",
+          "sections",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "network": {
+            "type": "string"
+          },
+          "contractId": {
+            "type": "string"
+          },
+          "brandName": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "description": "Brand name printed above the report title."
+          },
+          "title": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 120,
+            "description": "Report title. May use {network}, {contract} and {period}. Defaults to the standard title."
+          },
+          "headerText": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "description": "A single line printed under the title."
+          },
+          "footerText": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "description": "A single line printed at the bottom of every PDF page and at the end of the CSV and email."
+          },
+          "logoUrl": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2048,
+            "description": "https:// URL of the workspace logo, referenced in the PDF header, CSV and email."
+          },
+          "accentColor": {
+            "type": "string",
+            "nullable": true,
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Hex colour used for the PDF heading."
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "token_totals",
+                "category_totals",
+                "transactions"
+              ]
+            },
+            "description": "Sections to include, in order. Defaults to all four. In the PDF the transaction rows always follow the summary blocks."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ReportTemplatePage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Page"
+          },
+          {
+            "type": "object",
+            "required": [
+              "items"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReportTemplate"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "securitySchemes": {
+      "adminBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The deployment's ADMIN_TOKEN. Only enforced when ADMIN_TOKEN is set."
       }
     }
   }

@@ -5,14 +5,14 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /reports`, `POST /reports/run`, `GET /alerts` and `GET /alerts/rules` serve the scheduled treasury reports and the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
 ## Conventions
 
 - **Base URL** — set by `VITE_API_BASE_URL` on the frontend; requests are same-origin (relative paths) when unset.
-- **Method** — every data endpoint is `GET`, except `POST /reports/run` and `POST /graphql`. Any other method returns `405 METHOD_NOT_ALLOWED`.
+- **Method** — every data endpoint is `GET`, except `POST /reports/run`, `POST /graphql` and the `PUT`/`DELETE` writes on `/report-templates`. Any other method returns `405 METHOD_NOT_ALLOWED`.
 - **OpenAPI** — the machine-readable contract is [analytics-api.openapi.json](analytics-api.openapi.json) (see [OpenAPI specification](#openapi-specification)).
 - **Rate limits and caching** — every endpoint except the probes and `/metrics` is rate limited per client and the heavy reads are cached; see [Rate limiting and caching](#rate-limiting-and-caching).
 - **Amounts** — token amounts are decimal token-unit strings (for example `"1500.0000000"`), never JSON numbers and never raw stroops. See [ARCHITECTURE.md §9 — Token Handling](ARCHITECTURE.md#9-token-handling).
@@ -353,6 +353,70 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `activeProposals` — count of proposals in `pending` or `ready` status. Not affected by `startDate`/`endDate`/`token`.
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
+
+## Branded report templates
+
+Scheduled and manual treasury reports (`REPORT_SCHEDULE`, `POST /reports/run`) render the same default layout for everyone until a workspace customises it. A **workspace** is one network + contract pair and has at most one template; a pair without one keeps the default layout, so existing deployments are unaffected.
+
+A template controls what a workspace's CSV, PDF and delivery email look like:
+
+| Field | Type | Limits | Effect |
+| --- | --- | --- | --- |
+| `brandName` | string | ≤ 80 chars | Brand line above the title (PDF, CSV `brand` row, email). |
+| `title` | string | ≤ 120 chars | Replaces the default title (also the email subject). May use `{network}`, `{contract}` and `{period}`; other `{…}` placeholders are rejected. |
+| `headerText` | string | ≤ 500 chars | One line under the title. |
+| `footerText` | string | ≤ 500 chars | Printed at the bottom of every PDF page and at the end of the CSV and email. |
+| `logoUrl` | string | `https://` URL, ≤ 2048 chars | The workspace logo, **referenced** in the PDF header, the CSV `logo` row and the email. It is not embedded as an image and the service never fetches it. |
+| `accentColor` | string | `#rrggbb` | Colour of the PDF brand and title. |
+| `sections` | string[] | non-empty, unique | Which blocks to include, in order: `summary`, `token_totals`, `category_totals`, `transactions`. Defaults to all four. |
+
+Text fields are trimmed, an empty string means "not set", and they must be a single line without control characters, so a template can never inject extra email headers or CSV rows. In the CSV, template text that begins with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet does not run it as a formula. With a template the CSV starts with `brand`/`title`/`header`/`logo` identity rows, then each chosen section as its own block in the template's order, then a `footer` row. In the PDF the summary blocks (`summary`, `token_totals`, `category_totals`) follow the template's order and the transaction rows always follow them.
+
+### `GET /report-templates`
+
+**Query parameters:** `limit`, `offset`, `contractId`, `network`.
+
+**Response (`ReportTemplatePage`):**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "brandName": "Acme Treasury",
+      "title": "{network} statement, {period}",
+      "headerText": "Confidential",
+      "footerText": "Acme Inc.",
+      "logoUrl": "https://cdn.example.com/logo.png",
+      "accentColor": "#1a73e8",
+      "sections": ["summary", "transactions"],
+      "createdAt": "2026-11-19T08:30:00Z",
+      "updatedAt": "2026-11-19T08:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+Templates are ordered by network and contract. This endpoint is rate limited like the others but **not cached**, so an edit shows on the next read.
+
+### `PUT /report-templates`
+
+Creates or replaces a workspace's template. **Query parameters:** `contractId` and `network` name the workspace; each is required when the deployment serves more than one (otherwise it defaults to the only one) and `400 MISSING_PARAMETER` says which is missing. The JSON body (≤ 16 KiB) holds the fields above. A `PUT` replaces the whole template, so a field you leave out returns to its default. Returns `200` with the stored template.
+
+Validation reports every problem at once as `400 VALIDATION_ERROR`, with one detail per field: `INVALID_BODY` (malformed JSON, an unknown field or a wrong type), `INVALID_TEMPLATE_FIELD`, `INVALID_LOGO_URL`, `INVALID_COLOR` or `INVALID_SECTION`. A body over 16 KiB gets `413`.
+
+### `DELETE /report-templates`
+
+Removes the workspace's template so its reports return to the default layout. Same query parameters as `PUT`. Returns `204`, or `404 NOT_FOUND` when the workspace has no template.
+
+### Securing the writes
+
+Reads are open like every other endpoint. When `ADMIN_TOKEN` is set, `PUT` and `DELETE /report-templates` require `Authorization: Bearer <ADMIN_TOKEN>` and otherwise answer `401 UNAUTHORIZED`. With `ADMIN_TOKEN` unset the writes are as open as `POST /reports/run`, so set it on any deployment reachable beyond a trusted network.
 
 ## Alerting
 

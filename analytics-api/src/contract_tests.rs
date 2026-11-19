@@ -34,7 +34,7 @@ use crate::{
     },
     app,
     limits::{Limits, LimitsConfig},
-    funnel, proposals, report_api, spend,
+    funnel, proposals, report_api, spend, templates,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -118,13 +118,23 @@ fn router_operations() -> BTreeSet<(String, String)> {
         let path_start = chunk.find('"').unwrap() + 1;
         let path = &chunk[path_start..path_start + chunk[path_start..].find('"').unwrap()];
         let after = &chunk[path_start + path.len()..];
-        let method = ["get(", "post("]
-            .iter()
-            .filter_map(|method| after.find(method).map(|index| (index, *method)))
-            .min()
-            .unwrap()
-            .1;
-        operations.insert((method.trim_end_matches('(').to_uppercase(), path.to_owned()));
+        // A route can chain several methods: `get(..).put(..).delete(..)`.
+        for method in ["get", "post", "put", "delete"] {
+            let call = format!("{method}(");
+            let registered = after.match_indices(&call).any(|(index, _)| {
+                after[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|before| before == ' ' || before == '.')
+            });
+            if registered {
+                operations.insert((method.to_uppercase(), path.to_owned()));
+            }
+        }
+        assert!(
+            operations.iter().any(|(_, known)| known == path),
+            "{path} registers no method"
+        );
     }
     operations
 }
@@ -234,6 +244,9 @@ fn openapi_query_parameters_match_the_validators() {
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
+        ("/report-templates", "get", templates::LIST_PARAMS),
+        ("/report-templates", "put", templates::WRITE_PARAMS),
+        ("/report-templates", "delete", templates::WRITE_PARAMS),
         ("/alerts", "get", alert_api::QUERY_PARAMS),
     ] {
         let documented = names(&query_parameters(&spec, path, method));
@@ -297,6 +310,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals", "get"),
         ("/proposals/funnel", "get"),
         ("/reports", "get"),
+        ("/report-templates", "get"),
         ("/alerts", "get"),
     ] {
         let parameters = query_parameters(&spec, path, method);
@@ -373,6 +387,9 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/spend/by-category"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
+        ("GET", "/report-templates"),
+        ("PUT", "/report-templates"),
+        ("DELETE", "/report-templates"),
         ("GET", "/alerts"),
         ("GET", "/owners/participation"),
     ] {
@@ -490,6 +507,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
         "/proposals?startDate=2026-09-27&endDate=2026-09-26",
         "/proposals/funnel?groupBy=x&category=x&limit=0",
         "/reports?format=x&status=x",
+        "/report-templates?limit=0&offset=-1&contractId=x&network=x&bogus=1",
         "/alerts?severity=x",
     ] {
         let (_, body) = get(&state, uri).await;
@@ -1336,6 +1354,251 @@ async fn the_funnel_paginates_groups_and_spans_contracts() {
     // No contractId: both contracts are included.
     let (_, everything) = get(&state, "/proposals/funnel").await;
     assert_eq!(everything["totals"]["created"], 7);
+
+    db.cleanup().await;
+}
+
+// --- branded report templates -------------------------------------------------
+
+async fn send(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: &str,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let response = app(state.clone())
+        .oneshot(builder.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+fn first_detail(body: &Value) -> (&str, &str) {
+    (
+        body["error"]["details"][0]["field"].as_str().unwrap_or(""),
+        body["error"]["details"][0]["code"].as_str().unwrap_or(""),
+    )
+}
+
+#[test]
+fn openapi_template_sections_match_the_implementation() {
+    let spec = spec();
+    let documented: Vec<&str> = spec["components"]["schemas"]["ReportTemplateInput"]["properties"]
+        ["sections"]["items"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+
+    assert_eq!(documented, templates::SECTION_NAMES);
+}
+
+#[tokio::test]
+async fn template_writes_reject_bad_requests_before_touching_the_database() {
+    let state = lazy_state();
+    let uri = "/report-templates?contractId=test-contract";
+    for (body, field, code) in [
+        ("not json", "body", "INVALID_BODY"),
+        (r#"{"colour":"red"}"#, "body", "INVALID_BODY"),
+        (r#"{"accentColor":"red"}"#, "accentColor", "INVALID_COLOR"),
+        (
+            r#"{"logoUrl":"http://x.example/logo.png"}"#,
+            "logoUrl",
+            "INVALID_LOGO_URL",
+        ),
+        (r#"{"sections":[]}"#, "sections", "INVALID_SECTION"),
+        (r#"{"sections":["charts"]}"#, "sections", "INVALID_SECTION"),
+        (r#"{"title":"{oops}"}"#, "title", "INVALID_TEMPLATE_FIELD"),
+        (
+            r#"{"headerText":"two\nlines"}"#,
+            "headerText",
+            "INVALID_TEMPLATE_FIELD",
+        ),
+    ] {
+        let (status, response) = send(&state, "PUT", uri, body, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(response["error"]["code"], "VALIDATION_ERROR", "{body}");
+        assert_eq!(first_detail(&response), (field, code), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn template_writes_need_a_target_when_several_are_served() {
+    // `scope()` serves two contracts, so the caller must name one.
+    let (status, body) = send(&lazy_state(), "PUT", "/report-templates", "{}", None).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body), ("contractId", "MISSING_PARAMETER"));
+
+    let (status, body) = send(&lazy_state(), "DELETE", "/report-templates", "", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body), ("contractId", "MISSING_PARAMETER"));
+}
+
+#[tokio::test]
+async fn template_writes_reject_oversized_bodies() {
+    let huge = format!(r#"{{"headerText":"{}"}}"#, "a".repeat(templates::MAX_BODY_BYTES));
+    let (status, _) = send(
+        &lazy_state(),
+        "PUT",
+        "/report-templates?contractId=test-contract",
+        &huge,
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn template_writes_require_the_admin_token_when_one_is_configured() {
+    let state = lazy_state().with_admin_token(Some(Arc::from("s3cret")));
+    let uri = "/report-templates?contractId=test-contract";
+
+    for token in [None, Some("wrong"), Some("")] {
+        for method in ["PUT", "DELETE"] {
+            let (status, body) = send(&state, method, uri, "{}", token).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {token:?}");
+            assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+        }
+    }
+
+    // With the token the request is authorised and reaches validation.
+    let (status, body) = send(&state, "PUT", uri, r#"{"accentColor":"red"}"#, Some("s3cret")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body).1, "INVALID_COLOR");
+
+    // Reads stay open.
+    let (status, _) = send(&state, "GET", "/report-templates?limit=0", "", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "validated, not refused");
+}
+
+#[tokio::test]
+async fn templates_can_be_created_listed_replaced_and_removed() {
+    let Some(db) = TestDb::connect("templates", true).await else {
+        return;
+    };
+    let state = db.state();
+    let uri = "/report-templates?contractId=test-contract&network=testnet";
+
+    let (status, empty) = send(&state, "GET", "/report-templates", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty["total"], 0);
+    assert_eq!(empty["limit"], 20);
+
+    let (status, created) = send(
+        &state,
+        "PUT",
+        uri,
+        r##"{"brandName":" Acme ","title":"{network} report","logoUrl":"https://cdn.example.com/a.png","accentColor":"#1A73E8","footerText":"Confidential","sections":["transactions","summary"]}"##,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["brandName"], "Acme");
+    assert_eq!(created["accentColor"], "#1a73e8");
+    assert_eq!(created["sections"], serde_json::json!(["transactions", "summary"]));
+    assert_eq!(created["contractId"], "test-contract");
+    assert!(created["headerText"].is_null());
+
+    // A second PUT replaces: omitted fields go back to their defaults.
+    let (_, replaced) = send(&state, "PUT", uri, r#"{"headerText":"Hello"}"#, None).await;
+    assert_eq!(replaced["id"], created["id"], "same row, updated in place");
+    assert_eq!(replaced["headerText"], "Hello");
+    assert!(replaced["brandName"].is_null());
+    assert_eq!(
+        replaced["sections"],
+        serde_json::json!(["summary", "token_totals", "category_totals", "transactions"])
+    );
+
+    // The other contract gets its own template.
+    send(
+        &state,
+        "PUT",
+        "/report-templates?contractId=other-contract",
+        r#"{"brandName":"Other"}"#,
+        None,
+    )
+    .await;
+    let (_, all) = send(&state, "GET", "/report-templates", "", None).await;
+    assert_eq!(all["total"], 2);
+    let names: Vec<&str> = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["contractId"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["other-contract", "test-contract"]);
+
+    let (_, page) = send(&state, "GET", "/report-templates?limit=1&offset=1", "", None).await;
+    assert_eq!(page["total"], 2);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    let (_, narrowed) = send(&state, "GET", "/report-templates?contractId=test-contract", "", None).await;
+    assert_eq!(narrowed["total"], 1);
+
+    let (status, _) = send(&state, "DELETE", uri, "", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, missing) = send(&state, "DELETE", uri, "", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(missing["error"]["code"], "NOT_FOUND");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_stored_template_brands_the_generated_report() {
+    use crate::{
+        reports::{ReportFormat, ReportPeriod, TreasuryReport},
+        templates::ReportTemplate,
+    };
+
+    let Some(db) = TestDb::connect("template_report", true).await else {
+        return;
+    };
+    let state = db.state();
+    send(
+        &state,
+        "PUT",
+        "/report-templates?contractId=test-contract",
+        r#"{"brandName":"Acme","footerText":"Confidential","sections":["transactions"]}"#,
+        None,
+    )
+    .await;
+
+    let period = ReportPeriod::ending_at(
+        chrono::DateTime::parse_from_rfc3339("2026-09-30T00:00:00Z")
+            .unwrap()
+            .into(),
+        60,
+    );
+    let mut report = TreasuryReport::load(&db.pool, "testnet", "test-contract", period, period.end)
+        .await
+        .unwrap();
+    assert!(report.template.is_none(), "load alone does not brand");
+    report.template = ReportTemplate::load(&db.pool, "testnet", "test-contract")
+        .await
+        .unwrap();
+    assert!(
+        ReportTemplate::load(&db.pool, "testnet", "other-contract")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let csv = String::from_utf8(report.render(ReportFormat::Csv).unwrap()).unwrap();
+    assert!(csv.starts_with("brand,Acme\n"));
+    assert!(csv.contains("network,contract_id,proposal_id"));
+    assert!(!csv.contains("token_total"));
+    assert!(csv.trim_end().ends_with("footer,Confidential"));
+    assert!(report.render(ReportFormat::Pdf).unwrap().starts_with(b"%PDF-"));
 
     db.cleanup().await;
 }

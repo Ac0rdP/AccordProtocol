@@ -12,6 +12,7 @@ use crate::{
         SmtpReportTransport, deliver_with_retry,
     },
     reports::{ReportFormat, ReportPeriod, TreasuryReport},
+    templates::ReportTemplate,
 };
 
 const DEFAULT_FROM: &str = "accord-analytics@localhost";
@@ -390,9 +391,14 @@ async fn generate_and_deliver(
     format: ReportFormat,
     now: DateTime<Utc>,
 ) -> Result<RunOutcome, String> {
-    let report = TreasuryReport::load(pool, network, contract_id, period, now)
+    let mut report = TreasuryReport::load(pool, network, contract_id, period, now)
         .await
         .map_err(|error| format!("failed to read indexed records: {error}"))?;
+    // The workspace's branding, if it has any. A failed read fails the run
+    // rather than silently sending an unbranded report.
+    report.template = ReportTemplate::load(pool, network, contract_id)
+        .await
+        .map_err(|error| format!("failed to read the report template: {error}"))?;
     let bytes = report.render(format)?;
     let byte_size = bytes.len() as i64;
     let file_path = write_to_output_dir(config, &report, format, &bytes)?;
@@ -410,13 +416,13 @@ async fn generate_and_deliver(
 
     let envelope = ReportEnvelope {
         subject: report.title(),
-        body: format!(
+        body: report.email_body(format!(
             "The attached {} report covers {} on {} for contract {}.",
             format.as_str(),
             period_label(period),
             network,
             contract_id
-        ),
+        )),
         recipients: config.recipients.clone(),
         attachments: vec![ReportAttachment {
             filename: report.filename(format),

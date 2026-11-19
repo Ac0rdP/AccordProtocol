@@ -21,6 +21,7 @@ use sqlx::{
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod admin;
 mod alerts;
 mod funnel;
 mod limits;
@@ -28,6 +29,7 @@ mod mail;
 mod reports;
 mod schedule;
 mod scope;
+mod templates;
 
 #[cfg(test)]
 mod contract_tests;
@@ -61,6 +63,8 @@ struct AppState {
     transport: Option<Arc<dyn ReportTransport>>,
     limits: Arc<Limits>,
     alert_engine: Option<Arc<AlertEngine>>,
+    /// Bearer token the write endpoints require; `None` leaves them open.
+    admin_token: Option<Arc<str>>,
     schema: graphql::AccordSchema,
     graphql_timeout: Duration,
 }
@@ -86,6 +90,7 @@ impl AppState {
             transport,
             limits: Arc::new(Limits::disabled()),
             alert_engine: None,
+            admin_token: None,
             schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
             graphql_timeout: graphql::GraphqlConfig::default().timeout,
         }
@@ -98,6 +103,11 @@ impl AppState {
 
     fn with_alerts(mut self, engine: Option<Arc<AlertEngine>>) -> Self {
         self.alert_engine = engine;
+        self
+    }
+
+    fn with_admin_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.admin_token = token;
         self
     }
 
@@ -191,6 +201,13 @@ fn app(state: AppState) -> Router {
         .route("/spend/by-category", get(spend::by_category))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
+        .route(
+            "/report-templates",
+            get(templates::list)
+                .put(templates::put)
+                .delete(templates::delete)
+                .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
         .route("/owners/participation", get(owner_participation::list))
@@ -1367,6 +1384,17 @@ mod proposals {
             }
         }
 
+        /// An error with a fixed code and message and no per-field details.
+        pub(super) fn new(code: &'static str, message: &'static str) -> Self {
+            Self {
+                error: ErrorBody {
+                    code,
+                    message,
+                    details: Vec::new(),
+                },
+            }
+        }
+
         fn parameter(message: &'static str) -> Self {
             Self {
                 error: ErrorBody {
@@ -1909,6 +1937,13 @@ async fn main() -> Result<()> {
     let state = AppState::with_scope(pool, config.scope.clone(), reports, transport)
         .with_limits(limits)
         .with_alerts(alert_engine)
+        .with_admin_token(
+            env::var("ADMIN_TOKEN")
+                .ok()
+                .map(|token| token.trim().to_owned())
+                .filter(|token| !token.is_empty())
+                .map(Arc::from),
+        )
         .with_graphql(graphql_config);
     axum::serve(
         listener,
