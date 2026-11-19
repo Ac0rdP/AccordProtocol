@@ -19,4 +19,8 @@ regexes = [
 
   # Placeholder webhook signing secret in an indexer unit-test fixture.
   '''whsec_0123456789abcdef''',
+
+  # Synthetic API token in the SIEM redaction test fixture
+  # (scripts/security-controls.test.mjs). The test asserts that it is redacted.
+  '''accord_test_0123456789abcdef0123456789''',
 ]

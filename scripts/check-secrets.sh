@@ -4,6 +4,9 @@ set -euo pipefail
 allowlist="scripts/check-secrets.allowlist"
 
 files=$(git ls-files -z | xargs -0 -r grep -Il . || true)
+# The allowlist intentionally contains the reviewed lines verbatim, so it must
+# never be scanned as if those lines were live assignments.
+files=$(printf '%s\n' "$files" | grep -vx 'scripts/check-secrets.allowlist' || true)
 if [ -z "$files" ]; then exit 0; fi
 
 # Remove reviewed false positives. An allowlist entry matches one exact
