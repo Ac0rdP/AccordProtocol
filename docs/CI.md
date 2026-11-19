@@ -23,6 +23,7 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | Nightly Full Suite | `.github/workflows/nightly.yml` | `schedule` (03:17 UTC), manual | Runs every component suite — including the slower E2E run — and files/updates a single tracked issue on failure. |
 | Release | `.github/workflows/release.yml` | `v*` tags, manual | Gates on all suites, builds the contract artifact + manifest, publishes the SDK to GitHub Packages, and creates a GitHub Release with generated notes. |
 | Status Page | `.github/workflows/status-page.yml` | `schedule` (every 15 minutes), manual | Probes the `/status` endpoints of the indexer and the analytics API and publishes the public status page when the status changed (see [STATUS.md](STATUS.md)). |
+| Reproducible Contract Builds | `.github/workflows/reproducible-builds.yml` | pushes/PRs touching `contracts/**`, tags | Verifies byte-for-byte reproducible WASM artifacts across isolated build passes and supported toolchain versions with least-privilege permissions and failure artifact links. |
 
 ## Testnet upgrade simulation
 
@@ -140,3 +141,64 @@ node .github/scripts/malware-scan.mjs \
 
 Make the **Malware scan** and **ClamAV scan** jobs required status checks in
 branch protection, alongside the existing Security and Supply-chain jobs.
+
+## Reproducible contract builds
+
+`reproducible-builds.yml` verifies byte-for-byte reproducibility of the compiled
+Soroban contract WASM (`target/wasm32v1-none/release/accord.wasm`). It runs on
+every push to `main`, version tags, and pull requests affecting contract sources
+or toolchain manifests.
+
+### Guarantees and verification model
+
+1. Two clean, isolated compilation passes are executed in independent environments.
+2. The SHA-256 digests of the resulting WASM binaries are computed and compared.
+3. The build is declared valid only when both passes produce identical byte sequences.
+4. The verification script (`scripts/verify-reproducible-build.sh`) supports local
+   and CI execution, including dry-run validation (`DRY_RUN=1`).
+
+```bash
+# Run local verification
+bash scripts/verify-reproducible-build.sh
+
+# Dry-run validation of the environment
+DRY_RUN=1 bash scripts/verify-reproducible-build.sh
+```
+
+### Permissions, settings and secrets
+
+- **Workflow permissions**: Configured with strict least privilege:
+  ```yaml
+  permissions:
+    contents: read
+  ```
+- **Secrets**: Requires zero secrets. The workflow uses only standard GitHub Actions
+  runners and public toolchain registries.
+- **Actions pinning**: Third-party actions follow `SUPPLY_CHAIN_POLICY.md` and are
+  strictly pinned.
+
+### Failure reporting and artifacts
+
+When a divergence occurs:
+- The job outputs an error annotation containing direct links to the affected run
+  and artifact report:
+  `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts`.
+- Detailed status and mismatch diagnostics are written to
+  `target/reproducible-build/failure-report.txt` and uploaded as an artifact with
+  30-day retention.
+- An issue summary is appended to `$GITHUB_STEP_SUMMARY`.
+
+### Rollback steps
+
+If a bytecode mismatch or unreproducible release build is detected:
+1. **Halt Deployment**: Reject pending upgrade proposals or deployments referencing
+   the mismatched WASM hash.
+2. **Quarantine Commit**: Mark the offending commit/tag in `quarantine.json` or
+   block promotion in release gating.
+3. **Audit Toolchains & Dependencies**: Verify compiler and toolchain versions:
+   `rustc --version --verbose`, `stellar --version`, and `cargo metadata --locked`.
+   Check whether upstream dependency versions shifted in untracked files or transient
+   dependencies.
+4. **Revert and Re-tag**: Revert the commit on `main` and redeploy using the last
+   verified reproducible release WASM digest.
+

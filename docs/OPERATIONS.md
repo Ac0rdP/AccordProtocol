@@ -109,3 +109,39 @@ groups:
 ```
 
 Tune thresholds to your poll interval and finality lag: the indexer's lag floor is `LEDGER_FINALITY_LAG` ledgers by design, so alert on a value comfortably above it.
+
+## Contract reproducible build verification & rollback
+
+Before initiating any contract upgrade on testnet or mainnet, operators must independently verify
+the bytecode reproducibility of the release WASM artifact.
+
+### Pre-deployment verification checklist
+
+1. Clone or check out the target release tag:
+   ```bash
+   git checkout tags/vX.Y.Z
+   ```
+2. Run the reproducibility check script:
+   ```bash
+   bash scripts/verify-reproducible-build.sh
+   ```
+3. Read the verified SHA-256 digest from `target/reproducible-build/status.txt`:
+   ```bash
+   cat target/reproducible-build/status.txt
+   ```
+4. Confirm that the digest matches:
+   - The `wasm_hash` in `wasm-manifest.json` from the release artifact.
+   - The parameter in the `Upgrade` proposal submitted on-chain.
+
+### Rollback and mitigation
+
+If an upgrade proposal was created with a mismatched or unreproducible bytecode hash:
+1. **Vote to Reject**: Multisig owners must immediately submit `revoke` or vote against
+   the upgrade proposal.
+2. **Revoke Proposal**: If executable threshold was met but time-lock is active, multisig
+   participants must submit counter-governance or let the proposal expire past its deadline.
+3. **Audit Discrepancies**: Compare local compiler versions against CI build environments
+   (`rustc --version --verbose`, `stellar --version`) and verify lockfile integrity.
+4. **Emergency Contact**: Follow [INCIDENT_RESPONSE.md](INCIDENT_RESPONSE.md) and report
+   unreproducible build incidents to the security team.
+
