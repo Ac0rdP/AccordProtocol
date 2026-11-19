@@ -138,5 +138,88 @@ node .github/scripts/malware-scan.mjs \
   --head HEAD
 ```
 
-Make the **Malware scan** and **ClamAV scan** jobs required status checks in
-branch protection, alongside the existing Security and Supply-chain jobs.
+## Required status checks
+
+`main` is protected: a pull request cannot be merged unless every required
+status check passes and the branch is up to date with `main`. No one,
+including administrators, can bypass the checks, force-push `main`, or delete
+it. The required checks are the jobs that run on **every** pull request,
+regardless of which paths it touches:
+
+| Required check | Workflow |
+| --- | --- |
+| Secret heuristic scan | `security.yml` |
+| Security and SSO control tests | `security.yml` |
+| Gitleaks secret scan | `security.yml` |
+| Malware scan | `malware-scan.yml` |
+| ClamAV scan | `malware-scan.yml` |
+| Pinning policy | `supply-chain.yml` |
+| npm provenance (frontend) | `supply-chain.yml` |
+| npm provenance (indexer) | `supply-chain.yml` |
+| Cargo sources and lockfile | `supply-chain.yml` |
+| Exception changes need an approving review | `supply-chain.yml` |
+| Contract CI | `contract.yml` |
+| Contract Snapshot Verification | `contract.yml` |
+| Contract Coverage | `contract.yml` |
+| Contract Benchmarks | `contract.yml` |
+| Detect testnet upgrade paths | `contract.yml` |
+
+`Testnet Upgrade Simulation` is intentionally not required: it only runs when
+the upgrade-path detector marks a pull request as relevant, and GitHub treats a
+skipped job as passing.
+
+`Docs build & link validation` is also not required while the lychee action's
+`output` configuration is being fixed; the documentation build still runs and
+reports on every pull request.
+
+Path-filtered workflows (`frontend-ci.yml`, `frontend-storybook.yml`,
+`indexer-analytics.yml`, `launch-checklist.yml`, `sbom.yml`, `pages.yml`,
+`preview.yml`) are **not** required checks. A path filter prevents the workflow
+from starting on unrelated pull requests, and a required check that never runs
+leaves the pull request permanently "Expected — waiting for status to be
+reported". They still run and report normally whenever their paths change; use
+the release gates or a follow-up aggregator workflow if they must block merges
+unconditionally.
+
+Apply the protection with the GitHub CLI (run as a repository administrator):
+
+```bash
+gh api -X PUT repos/Ac0rdP/AccordProtocol/branches/main/protection \
+  --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "Secret heuristic scan",
+      "Security and SSO control tests",
+      "Gitleaks secret scan",
+      "Malware scan",
+      "ClamAV scan",
+      "Pinning policy",
+      "npm provenance (frontend)",
+      "npm provenance (indexer)",
+      "Cargo sources and lockfile",
+      "Exception changes need an approving review",
+      "Contract CI",
+      "Contract Snapshot Verification",
+      "Contract Coverage",
+      "Contract Benchmarks",
+      "Detect testnet upgrade paths"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+JSON
+```
+
+## Dependency updates
+
+Dependabot version updates are disabled: the repository has no
+`.github/dependabot.yml` and Dependabot security updates are off in repository
+settings. Dependency upgrades are opened manually as pull requests and must pass
+the required checks above plus the supply-chain workflow before merge.

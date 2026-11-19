@@ -11,6 +11,13 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "none"
 unsound = "none"
 yanked = "warn"
+# Reviewed exceptions mirrored from .cargo/audit.toml: each advisory has no
+# compatible fixed version yet, and the comment there records the upstream bump
+# that removes it.
+ignore = [
+  "RUSTSEC-2026-0387", # crypto-bigint via elliptic-curve/soroban-env-host
+  "RUSTSEC-2026-0459", # libsqlite3-sys pinned by sqlx-sqlite 0.8.x
+]
 
 [bans]
 multiple-versions = "allow"
@@ -41,6 +48,10 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "LGPL-2.1-or-later",
+    # NCSA: libfuzzer-sys (fuzz harness only).
+    "NCSA",
+    # 0BSD: quoted_printable via lettre (analytics API mail).
+    "0BSD",
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
