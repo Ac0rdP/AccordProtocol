@@ -24,6 +24,7 @@ use tracing_subscriber::EnvFilter;
 mod admin;
 mod alert_rules;
 mod alerts;
+mod freshness;
 mod funnel;
 mod limits;
 mod mail;
@@ -192,6 +193,7 @@ fn app(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/status", get(status))
         .route("/metrics", get(metrics_endpoint))
+        .route("/freshness", get(freshness::get))
         .route(
             "/graphql",
             post(graphql::handler).layer(DefaultBodyLimit::max(graphql::MAX_BODY_BYTES)),

@@ -34,7 +34,7 @@ use crate::{
     },
     app,
     limits::{Limits, LimitsConfig},
-    funnel, proposals, report_api, spend, templates,
+    freshness, funnel, proposals, report_api, spend, templates,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -248,6 +248,7 @@ fn openapi_query_parameters_match_the_validators() {
         ("/report-templates", "put", templates::WRITE_PARAMS),
         ("/report-templates", "delete", templates::WRITE_PARAMS),
         ("/alert-rules", "get", alert_rules::LIST_PARAMS),
+        ("/freshness", "get", freshness::QUERY_PARAMS),
         ("/alert-rules/test", "post", alert_rules::TEST_PARAMS),
         ("/alert-rules/{id}/test", "post", alert_rules::TEST_PARAMS),
         ("/alerts", "get", alert_api::QUERY_PARAMS),
@@ -328,6 +329,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/reports", "get"),
         ("/report-templates", "get"),
         ("/alert-rules", "get"),
+        ("/freshness", "get"),
         ("/alerts", "get"),
     ] {
         let parameters = query_parameters(&spec, path, method);
@@ -407,6 +409,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/report-templates"),
         ("PUT", "/report-templates"),
         ("DELETE", "/report-templates"),
+        ("GET", "/freshness"),
         ("GET", "/alert-rules"),
         ("POST", "/alert-rules"),
         ("POST", "/alert-rules/test"),
@@ -1983,6 +1986,74 @@ async fn a_rule_can_be_tested_against_recent_history_without_side_effects() {
     // Nothing was recorded or sent.
     let (_, alerts) = send(&state, "GET", "/alerts", "", None).await;
     assert_eq!(alerts["total"], 0);
+
+    db.cleanup().await;
+}
+
+// --- data freshness and SLA -------------------------------------------------------
+
+#[tokio::test]
+async fn freshness_rejects_bad_parameters_before_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/freshness?limit=0", "INVALID_LIMIT"),
+        ("/freshness?offset=-1", "INVALID_OFFSET"),
+        ("/freshness?contractId=nope", "INVALID_CONTRACT_ID"),
+        ("/freshness?network=nope", "INVALID_NETWORK"),
+    ] {
+        let (status, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(first_detail(&body).1, code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn freshness_reports_each_pair_against_its_objectives() {
+    let Some(db) = TestDb::connect("freshness", true).await else {
+        return;
+    };
+    let state = db.state();
+    sqlx::raw_sql(
+        "INSERT INTO checkpoints (network, contract_id, last_ledger, updated_at) VALUES \
+          ('testnet', 'test-contract', 4242, NOW() - INTERVAL '10 seconds'), \
+          ('testnet', 'other-contract', 7, NOW() - INTERVAL '1 hour'); \
+         INSERT INTO report_runs (network, contract_id, period_start, period_end, format, status, created_at) VALUES \
+          ('testnet', 'test-contract', '2026-08-01Z', '2026-09-01Z', 'csv', 'delivered', NOW() - INTERVAL '1 day'), \
+          ('testnet', 'test-contract', '2026-09-01Z', '2026-10-01Z', 'csv', 'failed', NOW());",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let (status, body) = get(&state, "/freshness").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["limit"], 20);
+    assert_eq!(body["slo"]["ingestionLagSeconds"], 120);
+    assert_eq!(body["status"], "breach", "one lagging pair breaches the overall status");
+    assert!(body["generatedAt"].is_string());
+    assert!(["ok", "breach", "unknown"].contains(&body["api"]["status"].as_str().unwrap()));
+
+    let items = body["items"].as_array().unwrap();
+    let fresh = items.iter().find(|i| i["contractId"] == "test-contract").unwrap();
+    assert_eq!(fresh["lastLedger"], 4242);
+    assert_eq!(fresh["ingestionStatus"], "ok");
+    assert_eq!(fresh["reportStatus"], "ok", "a failed run does not count as a fresh report");
+    assert_eq!(fresh["status"], "ok");
+    let lag = fresh["ingestionLagSeconds"].as_f64().unwrap();
+    assert!((9.0..60.0).contains(&lag), "lag was {lag}");
+
+    let stale = items.iter().find(|i| i["contractId"] == "other-contract").unwrap();
+    assert_eq!(stale["ingestionStatus"], "breach");
+    assert_eq!(stale["reportStatus"], "unknown", "no report yet");
+    assert_eq!(stale["status"], "breach");
+
+    // Scoping and paging.
+    let (_, one) = get(&state, "/freshness?contractId=test-contract").await;
+    assert_eq!(one["total"], 1);
+    let (_, page) = get(&state, "/freshness?limit=1&offset=1").await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["total"], 2);
 
     db.cleanup().await;
 }

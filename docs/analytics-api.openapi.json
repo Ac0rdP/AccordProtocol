@@ -272,6 +272,149 @@
         }
       }
     },
+    "/freshness": {
+      "get": {
+        "operationId": "getFreshness",
+        "summary": "Data freshness and SLA status",
+        "tags": [
+          "Operations"
+        ],
+        "description": "Per network and contract: ingestion lag (age of the indexer checkpoint) and report freshness (age of the last generated or delivered treasury report), each judged against its SLO, plus the API's own request latency (p50 and p95 since the process started, probes excluded; percentiles are histogram bucket upper bounds). SLOs come from SLO_INGESTION_LAG_SECS (default 120), SLO_API_P95_MS (default 500) and SLO_REPORT_MAX_AGE_SECS (default 32 days). A status is `ok`, `breach`, or `unknown` when there is nothing to judge yet. Live health, so it is not cached.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Network and contract pairs per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of pairs to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_OFFSET",
+            "x-invalid-example": "-1"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The freshness of every pair in scope, one page of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Freshness"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/graphql": {
       "post": {
         "operationId": "postGraphql",
@@ -4699,6 +4842,160 @@
             }
           }
         }
+      },
+      "FreshnessItem": {
+        "type": "object",
+        "required": [
+          "network",
+          "contractId",
+          "ingestionStatus",
+          "reportStatus",
+          "status"
+        ],
+        "properties": {
+          "network": {
+            "type": "string"
+          },
+          "contractId": {
+            "type": "string"
+          },
+          "lastLedger": {
+            "type": "integer",
+            "nullable": true
+          },
+          "lastCheckpointAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ingestionLagSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "Seconds since the indexer checkpoint last advanced; null without a checkpoint."
+          },
+          "ingestionStatus": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "breach",
+              "unknown"
+            ]
+          },
+          "lastReportAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "reportAgeSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "Seconds since the last generated or delivered report; null when there is none."
+          },
+          "reportStatus": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "breach",
+              "unknown"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "breach",
+              "unknown"
+            ],
+            "description": "The worse of ingestionStatus and reportStatus."
+          }
+        }
+      },
+      "Freshness": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Page"
+          },
+          {
+            "type": "object",
+            "required": [
+              "generatedAt",
+              "slo",
+              "status",
+              "api",
+              "items"
+            ],
+            "properties": {
+              "generatedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "slo": {
+                "type": "object",
+                "required": [
+                  "ingestionLagSeconds",
+                  "apiP95Ms",
+                  "reportMaxAgeSeconds"
+                ],
+                "properties": {
+                  "ingestionLagSeconds": {
+                    "type": "integer"
+                  },
+                  "apiP95Ms": {
+                    "type": "integer"
+                  },
+                  "reportMaxAgeSeconds": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "breach",
+                  "unknown"
+                ],
+                "description": "The worst status across the API and every pair in scope, not only this page."
+              },
+              "api": {
+                "type": "object",
+                "required": [
+                  "requests",
+                  "status"
+                ],
+                "properties": {
+                  "requests": {
+                    "type": "integer"
+                  },
+                  "p50Ms": {
+                    "type": "number",
+                    "nullable": true,
+                    "description": "Median request latency."
+                  },
+                  "p95Ms": {
+                    "type": "number",
+                    "nullable": true,
+                    "description": "95th percentile request latency."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "ok",
+                      "breach",
+                      "unknown"
+                    ]
+                  }
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/FreshnessItem"
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "securitySchemes": {

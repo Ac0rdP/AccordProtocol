@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
@@ -353,6 +353,45 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `activeProposals` — count of proposals in `pending` or `ready` status. Not affected by `startDate`/`endDate`/`token`.
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
+
+## Data freshness and SLA
+
+### `GET /freshness`
+
+How fresh the analytics data is, judged against service level objectives. For every network and contract in scope it reports **ingestion lag** (the age of the indexer's checkpoint) and **report freshness** (the age of the last generated or delivered treasury report; a failed run does not count), and it reports the **API's own latency**.
+
+**Query parameters:** `limit`, `offset` (they page through the network and contract pairs), `contractId`, `network`. Validation and errors are as for the other endpoints. The response is live health, so it is not cached; it is rate limited like the other endpoints.
+
+```json
+{
+  "generatedAt": "2026-11-19T12:00:00Z",
+  "slo": { "ingestionLagSeconds": 120, "apiP95Ms": 500, "reportMaxAgeSeconds": 2764800 },
+  "status": "ok",
+  "api": { "requests": 1840, "p50Ms": 10, "p95Ms": 100, "status": "ok" },
+  "items": [
+    {
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "lastLedger": 4242,
+      "lastCheckpointAt": "2026-11-19T11:59:50Z",
+      "ingestionLagSeconds": 10,
+      "ingestionStatus": "ok",
+      "lastReportAt": "2026-11-01T06:00:02Z",
+      "reportAgeSeconds": 1555198,
+      "reportStatus": "ok",
+      "status": "ok"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- A status is `ok` (within its objective), `breach` or `unknown` (nothing to judge yet: no checkpoint, no report, no requests). An item's `status` is the worse of its two; the top-level `status` is the worst across the API and **every** pair in scope, not just the page returned. A breach outranks unknown.
+- `api` covers every route except the probes, `/metrics` and `/freshness`, since the process started. Percentiles are latency-histogram bucket upper bounds, so they never understate latency.
+- Objectives come from the environment: `SLO_INGESTION_LAG_SECS` (default `120`), `SLO_API_P95_MS` (default `500`) and `SLO_REPORT_MAX_AGE_SECS` (default 32 days). A missing or invalid value uses the default.
+- The dashboard's *Data freshness* page (`/app/freshness`) shows this endpoint.
 
 ## Branded report templates
 
