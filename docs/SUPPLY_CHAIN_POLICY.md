@@ -46,7 +46,10 @@ Verification is applied wherever the ecosystem supports it:
 - **Release binaries** — the Gitleaks binary is checked against the checksum
   file published with its release before it runs.
 - **Advisories and licenses** — `cargo audit` and `cargo deny check` run in
-  [`contract.yml`](../.github/workflows/contract.yml).
+  [`contract.yml`](../.github/workflows/contract.yml). Reviewed advisory
+  exceptions live in [`.cargo/audit.toml`](../.cargo/audit.toml); only
+  advisories with no compatible fixed version are listed, each with the
+  upstream bump that removes it.
 
 ## Updating dependencies
 

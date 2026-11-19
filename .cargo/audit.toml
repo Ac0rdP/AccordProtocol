@@ -1,4 +1,26 @@
+# cargo-audit configuration (read by `cargo audit` in contract.yml).
+#
+# The default advisory database stays enabled. Only advisories that cannot be
+# fixed with a compatible dependency version are listed here, each with the
+# reason and the upstream bump that removes it. Remove an entry as soon as the
+# patched version becomes reachable from our dependency graph.
+
 [advisories]
-# rsa is only present through SQLx's optional MySQL backend; this workspace enables PostgreSQL only.
-# RUSTSEC-2023-0071 has no fixed release, so ignore the inactive lockfile entry.
-ignore = ["RUSTSEC-2023-0071"]
+# RUSTSEC-2026-0387 (crypto-bigint 0.5.5): reached through
+# elliptic-curve 0.13 -> k256/p256 -> soroban-env-host 29.0.1. The patched
+# 0.7.x line requires a newer RustCrypto stack than the pinned Soroban SDK
+# provides; forcing a duplicate crypto-bigint into the wasm build is unsafe.
+# Remove after the Soroban SDK bump.
+ignore = [
+  "RUSTSEC-2026-0387",
+  # RUSTSEC-2026-0459 (libsqlite3-sys 0.30.1): pinned by sqlx-sqlite 0.8.6
+  # (`libsqlite3-sys = "^0.30.1"`). The patched 0.39.0 requires a sqlx release
+  # that does not exist yet. The analytics API uses Postgres, not SQLite.
+  # Remove after the sqlx bump.
+  "RUSTSEC-2026-0459",
+  # RUSTSEC-2023-0071 (rsa 0.9.10 Marvin timing sidechannel): no patched
+  # release exists. The crate is present in Cargo.lock but is not reachable
+  # from the workspace dependency graph. Remove if a patched rsa or a
+  # lockfile-pruning toolchain update drops it.
+  "RUSTSEC-2023-0071",
+]
