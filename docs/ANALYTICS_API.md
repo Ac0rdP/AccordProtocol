@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /reports`, `POST /reports/run`, `GET /alerts` and `GET /alerts/rules` serve the scheduled treasury reports and the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /reports`, `POST /reports/run`, `GET /alerts` and `GET /alerts/rules` serve the scheduled treasury reports and the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
@@ -68,7 +68,7 @@ Every endpoint except `/`, `/health`, `/livez`, `/readyz`, `/status` and `/metri
 }
 ```
 
-Successful `GET /proposals`, `GET /proposals/:id` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
+Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -182,6 +182,47 @@ A single proposal plus its full event timeline.
 
 `timeline` entries follow `ProposalEvent` (`frontend/src/types/accord.ts`) — see [Event Payload Schemas](#event-payload-schemas) for how each `type` maps back to a contract-emitted event. Returns `404 NOT_FOUND` if no proposal with that ID has been indexed.
 Timeline records are ordered by ledger sequence and event index, oldest first.
+
+### `GET /proposals/funnel`
+
+Proposal funnel and conversion analytics: how many proposals created in a period went on to be approved and executed, and how many left the funnel through cancellation or expiry, grouped by category or by proposing owner.
+
+**Query parameters:** `groupBy` (`category` by default, or `owner`), `category`, `owner`, `token`, `startDate`, `endDate`, `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the *groups*; `startDate`/`endDate` bound the proposals' creation time, so every row is a cohort ("proposals created in this window"). Unknown parameters, an unsupported `groupBy`, an unknown `category` and the other usual validation failures are all reported together in one `400 VALIDATION_ERROR`; `groupBy` failures use the code `INVALID_GROUP_BY`.
+
+**Response (`ProposalFunnelPage`):**
+
+```json
+{
+  "groupBy": "category",
+  "items": [
+    {
+      "key": "Payroll",
+      "created": 10,
+      "approved": 8,
+      "executed": 6,
+      "cancelled": 1,
+      "expired": 1,
+      "open": 2,
+      "approvalRate": 80.0,
+      "executionRate": 60.0,
+      "cancellationRate": 10.0,
+      "approvalToExecutionRate": 75.0,
+      "avgSecondsToExecute": 43200
+    }
+  ],
+  "totals": { "key": "all", "created": 10, "approved": 8, "executed": 6, "cancelled": 1, "expired": 1, "open": 2, "approvalRate": 80.0, "executionRate": 60.0, "cancellationRate": 10.0, "approvalToExecutionRate": 75.0, "avgSecondsToExecute": 43200 },
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- `created` is every proposal in the cohort. `executed`, `cancelled` (revoked), `expired` and `open` (still pending or ready) partition it, so they always add up to `created`.
+- `approved` counts proposals that reached their approval threshold (status `ready` or `executed`, or `approvals >= threshold`), even if they were later revoked or expired, so `approved` is not a subset of any one status.
+- Rates are percentages in the range 0–100 rounded to two places. `approvalRate`, `executionRate` and `cancellationRate` are fractions of `created`; `approvalToExecutionRate` is `executed / approved`. A rate with an empty denominator is `0`, never `NaN`.
+- `avgSecondsToExecute` is the mean time from creation to execution, or `null` when nothing in the group was executed.
+- `totals` covers every matching proposal regardless of paging; `total` is the number of groups. Rows are ordered by `created` descending, then by `key`, so pages tile exactly.
+- Like `GET /proposals`, successful responses are cached and carry `X-Cache`, and every response carries the `X-RateLimit-*` headers.
 
 ### `GET /spend/by-category`
 

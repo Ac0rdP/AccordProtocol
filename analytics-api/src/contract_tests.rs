@@ -34,7 +34,7 @@ use crate::{
     },
     app,
     limits::{Limits, LimitsConfig},
-    proposals, report_api, spend,
+    funnel, proposals, report_api, spend,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -230,6 +230,7 @@ fn openapi_query_parameters_match_the_validators() {
     for (path, method, accepted) in [
         ("/proposals", "get", proposals::QUERY_PARAMS),
         ("/proposals/{id}", "get", proposals::DETAIL_PARAMS),
+        ("/proposals/funnel", "get", funnel::QUERY_PARAMS),
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
@@ -272,6 +273,14 @@ fn openapi_enumerations_match_the_validators() {
         ["asc", "desc"]
     );
     assert_eq!(
+        enum_of(&spec, "/proposals/funnel", "get", "groupBy"),
+        funnel::GROUP_BY
+    );
+    assert_eq!(
+        enum_of(&spec, "/proposals/funnel", "get", "category"),
+        proposals::CATEGORIES
+    );
+    assert_eq!(
         enum_of(&spec, "/reports", "get", "status"),
         report_api::STATUSES
     );
@@ -286,6 +295,7 @@ fn openapi_pagination_bounds_match_the_validators() {
     let spec = spec();
     for (path, method) in [
         ("/proposals", "get"),
+        ("/proposals/funnel", "get"),
         ("/reports", "get"),
         ("/alerts", "get"),
     ] {
@@ -359,6 +369,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
     for (method, path) in [
         ("GET", "/proposals"),
         ("GET", "/proposals/1"),
+        ("GET", "/proposals/funnel"),
         ("GET", "/spend/by-category"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
@@ -477,6 +488,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
     for uri in [
         "/proposals?limit=0&offset=-1&sort=x&order=x&status=x&category=x&bogus=1&startDate=a&contractId=x&network=x",
         "/proposals?startDate=2026-09-27&endDate=2026-09-26",
+        "/proposals/funnel?groupBy=x&category=x&limit=0",
         "/reports?format=x&status=x",
         "/alerts?severity=x",
     ] {
@@ -1146,6 +1158,184 @@ async fn cached_reads_are_dropped_when_new_events_are_indexed() {
         "new events invalidated the cache"
     );
     assert_eq!(fresh["total"], 7);
+
+    db.cleanup().await;
+}
+
+// --- proposal funnel ---------------------------------------------------------
+
+fn funnel_items(body: &Value) -> Vec<(String, i64)> {
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["key"].as_str().unwrap().to_owned(),
+                row["created"].as_i64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_funnel_rejects_bad_input_before_touching_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/proposals/funnel?groupBy=token", "INVALID_GROUP_BY"),
+        ("/proposals/funnel?category=Bogus", "INVALID_CATEGORY"),
+        ("/proposals/funnel?limit=101", "INVALID_LIMIT"),
+        ("/proposals/funnel?offset=-1", "INVALID_OFFSET"),
+        ("/proposals/funnel?startDate=soon", "INVALID_DATE"),
+        (
+            "/proposals/funnel?startDate=2026-09-27&endDate=2026-09-26",
+            "INVALID_DATE_RANGE",
+        ),
+        ("/proposals/funnel?network=nope", "INVALID_NETWORK"),
+    ] {
+        let (status, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}");
+        assert_eq!(body["error"]["details"][0]["code"], code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn the_funnel_is_not_mistaken_for_a_proposal_id() {
+    // `/proposals/funnel` must route to the funnel, not to `/proposals/{id}`,
+    // which would answer INVALID_PARAMETER for a non-numeric id.
+    let (_, body) = get(&lazy_state(), "/proposals/funnel?limit=0").await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn the_funnel_groups_by_category_with_conversion_rates() {
+    let Some(db) = TestDb::connect("funnel_category", true).await else {
+        return;
+    };
+    let state = db.state();
+
+    let (status, body) = get(&state, "/proposals/funnel?contractId=test-contract").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["groupBy"], "category");
+    assert_eq!(body["total"], 5);
+    assert_eq!(body["limit"], 20);
+    assert_eq!(body["offset"], 0);
+    assert_eq!(
+        funnel_items(&body),
+        [
+            ("Payroll".to_owned(), 2),
+            ("Grant".to_owned(), 1),
+            ("Ops".to_owned(), 1),
+            ("Other".to_owned(), 1),
+            ("Transfer".to_owned(), 1),
+        ],
+        "largest cohort first, ties broken by key"
+    );
+
+    let payroll = &body["items"][0];
+    assert_eq!(payroll["approved"], 1);
+    assert_eq!(payroll["executed"], 1);
+    assert_eq!(payroll["open"], 1);
+    assert_eq!(payroll["approvalRate"], 50.0);
+    assert_eq!(payroll["executionRate"], 50.0);
+    assert_eq!(payroll["approvalToExecutionRate"], 100.0);
+    assert_eq!(payroll["avgSecondsToExecute"], 43_200.0);
+
+    let ops = &body["items"][2];
+    assert_eq!(ops["expired"], 1);
+    assert_eq!(ops["approvalRate"], 0.0);
+    assert_eq!(ops["approvalToExecutionRate"], 0.0, "no division by zero");
+    assert!(ops["avgSecondsToExecute"].is_null());
+
+    let other = &body["items"][3];
+    assert_eq!(other["cancelled"], 1);
+    assert_eq!(other["cancellationRate"], 100.0);
+
+    let totals = &body["totals"];
+    assert_eq!(totals["key"], "all");
+    assert_eq!(totals["created"], 6);
+    assert_eq!(totals["approved"], 3);
+    assert_eq!(totals["executed"], 2);
+    assert_eq!(totals["cancelled"], 1);
+    assert_eq!(totals["expired"], 1);
+    assert_eq!(totals["open"], 2);
+    assert_eq!(totals["approvalRate"], 50.0);
+    assert_eq!(totals["executionRate"], 33.33);
+    assert_eq!(totals["cancellationRate"], 16.67);
+    assert_eq!(totals["approvalToExecutionRate"], 66.67);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_funnel_groups_by_owner_and_filters_the_cohort() {
+    let Some(db) = TestDb::connect("funnel_owner", true).await else {
+        return;
+    };
+    let state = db.state();
+    let base = "/proposals/funnel?contractId=test-contract&groupBy=owner";
+
+    let (_, body) = get(&state, base).await;
+    assert_eq!(body["groupBy"], "owner");
+    assert_eq!(
+        funnel_items(&body),
+        [
+            ("GALICE".to_owned(), 2),
+            ("GBOB".to_owned(), 2),
+            ("GCAROL".to_owned(), 1),
+            ("GDAVE".to_owned(), 1),
+        ]
+    );
+    assert_eq!(body["items"][0]["approved"], 2);
+    assert_eq!(body["items"][1]["approved"], 0);
+
+    for (filter, created) in [
+        ("token=USDC", 3),
+        ("category=Payroll", 2),
+        ("owner=alice", 2),
+        ("startDate=2026-09-10", 4),
+        ("endDate=2026-09-10", 3),
+        ("token=XLM&category=Ops", 1),
+        ("category=Grant&token=XLM", 0),
+    ] {
+        let (status, body) = get(&state, &format!("{base}&{filter}")).await;
+        assert_eq!(status, StatusCode::OK, "{filter}");
+        assert_eq!(body["totals"]["created"], created, "{filter}");
+        let summed: i64 = funnel_items(&body).iter().map(|(_, count)| count).sum();
+        assert_eq!(summed, created, "{filter}: rows add up to the totals");
+    }
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_funnel_paginates_groups_and_spans_contracts() {
+    let Some(db) = TestDb::connect("funnel_page", true).await else {
+        return;
+    };
+    let state = db.state();
+
+    let mut seen = Vec::new();
+    for offset in [0, 2, 4] {
+        let (status, page) = get(
+            &state,
+            &format!("/proposals/funnel?contractId=test-contract&limit=2&offset={offset}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["total"], 5, "total counts groups, ignoring paging");
+        assert_eq!(page["totals"]["created"], 6, "totals ignore paging too");
+        seen.extend(funnel_items(&page).into_iter().map(|(key, _)| key));
+    }
+    assert_eq!(seen, ["Payroll", "Grant", "Ops", "Other", "Transfer"]);
+
+    let (_, beyond) = get(&state, "/proposals/funnel?offset=100").await;
+    assert!(beyond["items"].as_array().unwrap().is_empty());
+
+    // No contractId: both contracts are included.
+    let (_, everything) = get(&state, "/proposals/funnel").await;
+    assert_eq!(everything["totals"]["created"], 7);
 
     db.cleanup().await;
 }

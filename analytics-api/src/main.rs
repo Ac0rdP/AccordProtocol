@@ -22,6 +22,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 mod alerts;
+mod funnel;
 mod limits;
 mod mail;
 mod reports;
@@ -185,6 +186,7 @@ fn app(state: AppState) -> Router {
             post(graphql::handler).layer(DefaultBodyLimit::max(graphql::MAX_BODY_BYTES)),
         )
         .route("/proposals", get(proposals::list))
+        .route("/proposals/funnel", get(funnel::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
         .route("/reports", get(report_api::list))
