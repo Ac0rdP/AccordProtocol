@@ -401,3 +401,52 @@ Accord implements in-place WASM upgrades via `upgrade(approvers, new_wasm_hash)`
 - **Permissions**: Top-level `permissions: {}`; every job uses `contents: read` only.
 - **Dry run**: Dispatch `Canary Contract Release` with `dry_run: true` (the default) to validate build tooling, unit tests, gate evaluation, and rollback planning without touching any network.
 
+## Status-page incident automation
+
+Automated incident creation, updates, and resolution from Indexer and Analytics API health checks run via [`.github/workflows/status-incident-automation.yml`](../.github/workflows/status-incident-automation.yml), backed by [`scripts/status-incident-automation.mjs`](../scripts/status-incident-automation.mjs) and [`scripts/status-incident-automation.test.mjs`](../scripts/status-incident-automation.test.mjs).
+
+### Provider & state model
+
+- **Default provider (`repo-status-page`)**: The repository does not configure a third-party hosted status-page SaaS. By default, automation manages incidents in `docs/status/incidents.json` (rendered into `docs/status/index.html` by `scripts/status-page.mjs render`) and persists consecutive failure/success counters in `docs/status/incident-automation-state.json`.
+- **External provider adapter**: Passing `--provider=external` (or setting `STATUS_PAGE_PROVIDER` to an external provider name) routes through `createExternalProviderAdapter`, which **fails loudly** until a real provider adapter and `STATUS_PAGE_API_TOKEN` / `STATUS_PAGE_ID` are configured.
+- **Component isolation & deduplication**: `indexer` and `analytics-api` are evaluated independently (partial outages open an incident only for the failing component). Open automated incidents are matched by a stable marker (`accord-auto:<componentId>`) so repeated runs update the existing incident rather than creating duplicates.
+- **Anti-flapping thresholds**:
+  - `INCIDENT_FAILURE_THRESHOLD` (default `3` consecutive failed runs) before opening an incident.
+  - `INCIDENT_RECOVERY_THRESHOLD` (default `2` consecutive healthy runs) before resolving an open incident.
+  - Transient probe retries (`2` retries per run) before counting a probe as failed.
+
+### Required repository settings, variables & secrets
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `INDEXER_STATUS_URL` | Repo Variable | Base URL of the Indexer `/status` endpoint (never logged) |
+| `ANALYTICS_API_STATUS_URL` | Repo Variable | Base URL of the Analytics API `/status` endpoint (never logged) |
+| `INCIDENT_FAILURE_THRESHOLD` | Repo Variable (optional) | Consecutive failures to open an incident (default `3`) |
+| `INCIDENT_RECOVERY_THRESHOLD` | Repo Variable (optional) | Consecutive successes to resolve an incident (default `2`) |
+| `STATUS_PAGE_PROVIDER` | Repo Variable (optional) | `repo-status-page` (default) or an implemented external provider |
+| `STATUS_PAGE_ID` | Repo Variable (external only) | External status page ID |
+| `STATUS_PAGE_API_TOKEN` | Repo Secret (external only) | External status page API token (never printed) |
+
+- **Permissions**: Top-level `permissions: {}`; `evaluate` uses `contents: read`; `publish` uses `contents: write` only when publishing non-dry-run `repo-status-page` updates.
+- **Scheduled workflow caveat**: GitHub Actions `schedule` triggers can be delayed during platform load and are automatically disabled after 60 days of repository inactivity. A failing `Status Page Incident Automation` workflow run indicates a monitoring or configuration failure, **not** necessarily a service outage; inspect the uploaded `status-incident-automation-report` artifact and workflow summary link.
+
+### Rollback & emergency disable
+
+If automated incident management misbehaves or creates false-positive incidents:
+
+1. **Disable the workflow immediately**:
+   ```bash
+   gh workflow disable "Status Page Incident Automation"
+   ```
+2. **Manually resolve any false-positive incident**: Edit `docs/status/incidents.json` to set `"status": "resolved"`, set `"resolvedAt"` to the current UTC ISO-8601 timestamp, and append a clarifying update note.
+3. **Re-render and commit**:
+   ```bash
+   node scripts/status-page.mjs render
+   git add docs/status/incidents.json docs/status/index.html
+   git commit -m "chore(status): manually resolve false-positive automated incident"
+   ```
+4. Re-enable the workflow once the root cause is fixed:
+   ```bash
+   gh workflow enable "Status Page Incident Automation"
+   ```
+
