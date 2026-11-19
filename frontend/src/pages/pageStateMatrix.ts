@@ -68,6 +68,17 @@ export const PAGE_STATE_MATRIX: PageStateMatrixEntry[] = [
     },
   },
   {
+    page: "AuditLogPage",
+    route: "/app/audit",
+    dataSource: "getProposalEvents",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading audit log…", retry: false },
+      empty: { message: "No audit events match these filters", retry: false },
+      error: { message: "Could not load audit log", retry: true },
+    },
+  },
+  {
     page: "RecurringPage",
     route: "/app/recurring",
     dataSource: "getTotalRecurringPayments / getRecurringPaymentsPaged",
@@ -124,6 +135,50 @@ export const PAGE_STATE_MATRIX: PageStateMatrixEntry[] = [
       loading: { message: "Loading proposal…", retry: false },
       empty: { message: "Proposal not found", retry: false },
       error: { message: "Could not load proposal", retry: true },
+    },
+  },
+  {
+    page: "BulkActionsPage",
+    route: "/app/bulk",
+    dataSource: "useContract(proposals)",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading proposals for bulk actions…", retry: false },
+      empty: { message: "No proposals ready for bulk actions", retry: false },
+      error: { message: "Could not load proposals", retry: true },
+    },
+  },
+  {
+    page: "TemplateMarketplacePage",
+    route: "/app/templates",
+    dataSource: "useTemplateMarketplace (fetchMarketplaceTemplates)",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading template marketplace…", retry: false },
+      empty: { message: "No community templates yet", retry: false },
+      error: { message: "Could not load the template marketplace", retry: true },
+    },
+  },
+  {
+    page: "OwnerAvailabilityPage",
+    route: "/app/availability",
+    dataSource: "useContract(owners/proposals) + useOwnerAvailability",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading owner availability…", retry: false },
+      empty: { message: "No owners to schedule", retry: false },
+      error: { message: "Could not load owner availability", retry: true },
+    },
+  },
+  {
+    page: "NotificationSchedulePage",
+    route: "/app/notifications",
+    dataSource: "useNotificationSchedule (schedule + digest queue)",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading notification schedule…", retry: false },
+      empty: { message: "No alerts waiting", retry: false },
+      error: { message: "Could not load notification schedule", retry: true },
     },
   },
   {

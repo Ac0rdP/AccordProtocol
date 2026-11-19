@@ -22,6 +22,10 @@ import { createIndexerMetrics, recordBatchSuccess } from "./metrics.js";
 import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
+import { createSubscriptionManager } from "./subscriptions.js";
+import { resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import { createStreamDispatcher } from "./stream-exporters.js";
+import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
 const HELP = `Accord treasury indexer
 
@@ -292,6 +296,32 @@ async function serve({ store, stellar }) {
     backoffMaxMs: Number(process.env.NOTIFICATION_BACKOFF_MAX_MS ?? 3_600_000),
     timeoutMs: Number(process.env.NOTIFICATION_TIMEOUT_MS ?? 10_000),
   });
+  const graphqlConfig = resolveGraphQLConfig();
+  const graphqlSubscriptions = graphqlConfig.enabled
+    ? createSubscriptionManager({
+        store,
+        metrics,
+        keepAliveMs: graphqlConfig.keepAliveMs,
+        maxSubscriptionsPerClient: graphqlConfig.maxSubscriptionsPerClient,
+        replayMaxEvents: graphqlConfig.replayMaxEvents,
+      })
+    : null;
+
+  const streamConfig = resolveStreamExportersConfig();
+  const streamDispatcher = createStreamDispatcher({
+    store,
+    config: streamConfig,
+    metrics,
+  });
+  void streamDispatcher.start();
+
+  const warehouseConfig = resolveWarehouseConfig();
+  const warehouseManager = createWarehouseExportManager({
+    store,
+    config: warehouseConfig,
+    metrics,
+  });
+  void warehouseManager.start();
 
   async function indexAvailableEvents() {
     if (indexing) return;
@@ -306,6 +336,8 @@ async function serve({ store, stellar }) {
         startLedger,
         pageLimit,
         finalityLag,
+        subscriptions: graphqlSubscriptions,
+        onEvent: (event) => streamDispatcher.publish(event),
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
@@ -370,7 +402,15 @@ async function serve({ store, stellar }) {
     }
   }
 
-  const api = createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses });
+  const api = createApi({
+    store,
+    readiness,
+    metrics,
+    startLedger,
+    finalityLag,
+    tokenAddresses,
+    subscriptions: graphqlSubscriptions,
+  });
 
   const host = process.env.HOST ?? "127.0.0.1";
   const port = Number(process.env.PORT ?? 8787);
@@ -394,6 +434,9 @@ async function serve({ store, stellar }) {
     clearInterval(reconcileTimer);
     webhooks.stop();
     notifications.stop();
+    graphqlSubscriptions?.close?.();
+    streamDispatcher.close();
+    warehouseManager.close();
     api.close(() => {
       store.close().finally(() => process.exit(0));
     });

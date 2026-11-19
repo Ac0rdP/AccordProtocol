@@ -1,15 +1,6 @@
 {
   "exceptions": [
     {
-      "id": "SC-001",
-      "rule": "lockfile-missing",
-      "target": "packages/sdk",
-      "reason": "Published library with no committed lockfile; generate and commit package-lock.json so sdk-publish.yml `npm ci` is reproducible.",
-      "requestedBy": "Raymond Abiola",
-      "added": "2026-10-23",
-      "expires": "2027-04-01"
-    },
-    {
       "id": "SC-002",
       "rule": "lockfile-missing",
       "target": "examples/multisig-dapp",

@@ -6,7 +6,6 @@
 
 import {
   Account,
-  Address,
   Contract,
   Keypair,
   rpc,
@@ -31,7 +30,6 @@ import type {
   Transfer,
 } from "./types.js";
 import {
-  AccordContractError,
   AccordError,
   AccordRpcError,
   AccordValidationError,
@@ -40,7 +38,6 @@ import {
 import {
   addressToScVal,
   assetTransfersToScVal,
-  boolToScVal,
   bytes32ToScVal,
   categoryToScVal,
   createRecurringParamsToScVal,
@@ -61,7 +58,6 @@ import {
   scValToRecurringPayment,
   scValToSpendingLimits,
   scValToSpentTracker,
-  scValToString,
   stringToScVal,
   symbolToScVal,
   transfersToScVal,

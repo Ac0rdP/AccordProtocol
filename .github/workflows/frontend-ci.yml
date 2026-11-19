@@ -228,6 +228,7 @@ jobs:
           npm run typecheck
           npm run test
           npm run build
+          npm run size
 
       - name: Install Example dApp dependencies & build
         working-directory: examples/multisig-dapp

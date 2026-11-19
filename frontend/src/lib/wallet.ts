@@ -6,6 +6,10 @@ import {
   signTransaction,
   getNetworkDetails,
 } from "@stellar/freighter-api";
+import {
+  getActiveSigningSession,
+  signWithActiveSession,
+} from "./walletProviders";
 
 export type WalletResult<T> =
   | { ok: true; value: T }
@@ -47,6 +51,11 @@ export async function signTx(
   xdrStr: string,
   network: "TESTNET" | "PUBLIC" = "TESTNET"
 ): Promise<WalletResult<string>> {
+  const activeSession = getActiveSigningSession();
+  if (activeSession && activeSession.provider !== "freighter") {
+    return signWithActiveSession(activeSession, xdrStr, network);
+  }
+
   try {
     const passphrase =
       network === "TESTNET"

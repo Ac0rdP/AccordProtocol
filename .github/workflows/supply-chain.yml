@@ -25,6 +25,8 @@ jobs:
           node-version: 20
       - name: Check lockfiles, sources, action pins and exceptions
         run: node scripts/check-supply-chain.mjs
+      - name: Check merge-gate guardrails
+        run: node scripts/check-ci-guards.mjs
 
   npm-provenance:
     name: npm provenance (${{ matrix.dir }})

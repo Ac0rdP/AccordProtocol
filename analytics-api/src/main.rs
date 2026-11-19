@@ -21,12 +21,17 @@ use sqlx::{
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod admin;
+mod alert_rules;
 mod alerts;
+mod freshness;
+mod funnel;
 mod limits;
 mod mail;
 mod reports;
 mod schedule;
 mod scope;
+mod templates;
 
 #[cfg(test)]
 mod contract_tests;
@@ -60,6 +65,8 @@ struct AppState {
     transport: Option<Arc<dyn ReportTransport>>,
     limits: Arc<Limits>,
     alert_engine: Option<Arc<AlertEngine>>,
+    /// Bearer token the write endpoints require; `None` leaves them open.
+    admin_token: Option<Arc<str>>,
     schema: graphql::AccordSchema,
     graphql_timeout: Duration,
 }
@@ -85,6 +92,7 @@ impl AppState {
             transport,
             limits: Arc::new(Limits::disabled()),
             alert_engine: None,
+            admin_token: None,
             schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
             graphql_timeout: graphql::GraphqlConfig::default().timeout,
         }
@@ -97,6 +105,11 @@ impl AppState {
 
     fn with_alerts(mut self, engine: Option<Arc<AlertEngine>>) -> Self {
         self.alert_engine = engine;
+        self
+    }
+
+    fn with_admin_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.admin_token = token;
         self
     }
 
@@ -180,17 +193,47 @@ fn app(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/status", get(status))
         .route("/metrics", get(metrics_endpoint))
+        .route("/freshness", get(freshness::get))
         .route(
             "/graphql",
             post(graphql::handler).layer(DefaultBodyLimit::max(graphql::MAX_BODY_BYTES)),
         )
         .route("/proposals", get(proposals::list))
+        .route("/proposals/funnel", get(funnel::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
+        .route(
+            "/report-templates",
+            get(templates::list)
+                .put(templates::put)
+                .delete(templates::delete)
+                .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
+        .route(
+            "/alert-rules",
+            get(alert_rules::list)
+                .post(alert_rules::create)
+                .layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/alert-rules/test",
+            post(alert_rules::test_draft).layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/alert-rules/{id}",
+            get(alert_rules::get_one)
+                .put(alert_rules::replace)
+                .delete(alert_rules::remove)
+                .layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route("/alert-rules/{id}/pause", post(alert_rules::pause))
+        .route("/alert-rules/{id}/resume", post(alert_rules::resume))
+        .route("/alert-rules/{id}/test", post(alert_rules::test_saved))
+        .route("/owners/participation", get(owner_participation::list))
         .layer(middleware::from_fn_with_state(state.clone(), limits::guard))
         .layer(middleware::from_fn(metrics::track))
         .with_state(state)
@@ -768,21 +811,26 @@ mod alert_api {
 
     /// `GET /alerts/rules` — the configured rules and storm protection.
     pub(super) async fn rules(State(state): State<AppState>) -> Json<RulesResponse> {
-        Json(match &state.alert_engine {
-            Some(engine) => {
-                let StormSettings {
+        let active = state
+            .alert_engine
+            .as_ref()
+            .map(|engine| (engine.rules(), engine.settings().clone()))
+            .filter(|(rules, _)| !rules.is_empty());
+        Json(match active {
+            Some((
+                rules,
+                StormSettings {
                     cooldown,
                     max_alerts,
                     window,
-                } = engine.settings().clone();
-                RulesResponse {
-                    enabled: true,
-                    rules: engine.rules().to_vec(),
-                    cooldown_secs: Some(cooldown.as_secs()),
-                    max_alerts_per_window: Some(max_alerts),
-                    storm_window_secs: Some(window.as_secs()),
-                }
-            }
+                },
+            )) => RulesResponse {
+                enabled: true,
+                rules,
+                cooldown_secs: Some(cooldown.as_secs()),
+                max_alerts_per_window: Some(max_alerts),
+                storm_window_secs: Some(window.as_secs()),
+            },
             None => RulesResponse {
                 enabled: false,
                 rules: Vec::new(),
@@ -1028,6 +1076,131 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, metrics::CONTENT_TYPE)], body)
 }
 
+mod owner_participation {
+    use super::*;
+
+    pub(super) const QUERY_PARAMS: &[&str] = &[
+        "limit",
+        "offset",
+        "startDate",
+        "endDate",
+        "contractId",
+        "network",
+    ];
+
+    #[derive(Debug, Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct OwnerParticipationRow {
+        pub owner: String,
+        pub network: String,
+        pub contract_id: String,
+        pub total_proposals: i64,
+        pub approved_proposals: i64,
+        pub participation_rate: f64,
+        pub avg_latency_seconds: Option<f64>,
+        pub is_inactive: bool,
+        pub last_approved_at: Option<DateTime<Utc>>,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct OwnerParticipationPage {
+        pub items: Vec<OwnerParticipationRow>,
+        pub total: i64,
+        pub limit: i64,
+        pub offset: i64,
+    }
+
+    pub(super) async fn list(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<OwnerParticipationPage>, (StatusCode, Json<proposals::ApiError>)> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !QUERY_PARAMS.contains(&key.as_str()) {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+
+        let limit = proposals::parse_integer(&raw, "limit", 20, 1, 100, &mut details);
+        let offset = proposals::parse_integer(&raw, "offset", 0, 0, i64::MAX, &mut details);
+        let start_date = proposals::parse_date(&raw, "startDate", false, &mut details);
+        let end_date = proposals::parse_date(&raw, "endDate", true, &mut details);
+
+        if matches!((start_date, end_date), (Some(start), Some(end)) if start > end) {
+            details.push(proposals::detail(
+                "startDate",
+                "must be before or equal to endDate",
+                "INVALID_DATE_RANGE",
+            ));
+        }
+
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            ));
+        }
+
+        let mut total_query = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(DISTINCT a.owner) FROM proposal_approvals a WHERE TRUE",
+        );
+        push_scope(&mut total_query, "a.", &scope);
+        if let Some(start) = start_date {
+            total_query.push(" AND a.occurred_at >= ").push_bind(start);
+        }
+        if let Some(end) = end_date {
+            total_query.push(" AND a.occurred_at <= ").push_bind(end);
+        }
+
+        let total: i64 = total_query
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+
+        let mut data_query = QueryBuilder::<Postgres>::new(
+            "SELECT a.owner, a.network, a.contract_id, \
+             COUNT(DISTINCT p.proposal_id) AS total_proposals, \
+             COUNT(DISTINCT a.proposal_id) AS approved_proposals, \
+             ROUND((COUNT(DISTINCT a.proposal_id)::numeric / NULLIF(COUNT(DISTINCT p.proposal_id), 0) * 100)::numeric, 2)::float8 AS participation_rate, \
+             AVG(EXTRACT(EPOCH FROM (a.occurred_at - p.created_at)))::float8 AS avg_latency_seconds, \
+             (MAX(a.occurred_at) < NOW() - INTERVAL '30 days') AS is_inactive, \
+             MAX(a.occurred_at) AS last_approved_at \
+             FROM proposal_approvals a \
+             JOIN proposals p ON a.network = p.network AND a.contract_id = p.contract_id \
+             WHERE TRUE",
+        );
+        push_scope(&mut data_query, "a.", &scope);
+        if let Some(start) = start_date {
+            data_query.push(" AND a.occurred_at >= ").push_bind(start);
+        }
+        if let Some(end) = end_date {
+            data_query.push(" AND a.occurred_at <= ").push_bind(end);
+        }
+        data_query.push(" GROUP BY a.owner, a.network, a.contract_id ORDER BY a.owner ASC");
+        data_query.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
+
+        let items: Vec<OwnerParticipationRow> = data_query
+            .build_query_as()
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+
+        Ok(Json(OwnerParticipationPage {
+            items,
+            total,
+            limit,
+            offset,
+        }))
+    }
+}
+
 mod proposals {
     use super::*;
 
@@ -1235,6 +1408,17 @@ mod proposals {
                     code: "VALIDATION_ERROR",
                     message: "Invalid query parameters",
                     details,
+                },
+            }
+        }
+
+        /// An error with a fixed code and message and no per-field details.
+        pub(super) fn new(code: &'static str, message: &'static str) -> Self {
+            Self {
+                error: ErrorBody {
+                    code,
+                    message,
+                    details: Vec::new(),
                 },
             }
         }
@@ -1731,35 +1915,35 @@ async fn main() -> Result<()> {
 
     let limits = Arc::new(Limits::new(&config.limits));
 
-    // Alerting is off unless rules are configured; the watcher still runs so
-    // new indexed events clear the response cache.
+    // The engine always runs: it evaluates the rules from `ALERT_RULES` plus
+    // the active ones managed through `/alert-rules`. With no rules at all it
+    // only advances its cursors and clears the response cache.
     let alert_config = alerts::AlertConfig::from_env()?;
-    let (alert_engine, alert_channels, alert_interval) = match &alert_config {
-        Some(alert_config) => (
-            Some(Arc::new(AlertEngine::new(
-                alert_config.rules.clone(),
-                alert_config.settings.clone(),
-            ))),
-            alert_config.build_channels(transport.clone())?,
-            alert_config.poll_interval,
-        ),
-        None => {
-            tracing::info!("no ALERT_RULES configured; alerting is off");
-            (None, Vec::new(), Duration::from_secs(15))
-        }
-    };
+    let alert_engine = Arc::new(AlertEngine::new(
+        alert_config.rules.clone(),
+        alert_config.settings.clone(),
+    ));
+    alert_engine.replace_managed(
+        alert_rules::load_active(&pool)
+            .await
+            .context("failed to load the managed alert rules")?,
+    );
+    if alert_engine.rules().is_empty() {
+        tracing::info!("no alert rules configured or managed; alerting is idle");
+    }
+    let alert_channels = alert_config.build_channels(transport.clone())?;
     let watcher = alerts::spawn(
         alerts::Watcher {
             pool: pool.clone(),
             pairs: config.scope.pairs(),
             limits: Arc::clone(&limits),
-            alerts: alert_engine.as_ref().map(|engine| alerts::AlertRuntime {
-                engine: Arc::clone(engine),
+            alerts: Some(alerts::AlertRuntime {
+                engine: Arc::clone(&alert_engine),
                 channels: alert_channels,
-                backfill: alert_config.as_ref().is_some_and(|config| config.backfill),
+                backfill: alert_config.backfill,
             }),
         },
-        alert_interval,
+        alert_config.poll_interval,
     );
 
     let address: SocketAddr = format!("{}:{}", config.listen_host, config.listen_port)
@@ -1775,12 +1959,19 @@ async fn main() -> Result<()> {
         networks = config.scope.networks.len(),
         rate_limit = config.limits.rate_limit_requests,
         cache_ttl_secs = config.limits.cache_ttl.as_secs(),
-        alert_rules = alert_engine.as_ref().map_or(0, |engine| engine.rules().len()),
+        alert_rules = alert_engine.rules().len(),
         "analytics API listening"
     );
     let state = AppState::with_scope(pool, config.scope.clone(), reports, transport)
         .with_limits(limits)
-        .with_alerts(alert_engine)
+        .with_alerts(Some(alert_engine))
+        .with_admin_token(
+            env::var("ADMIN_TOKEN")
+                .ok()
+                .map(|token| token.trim().to_owned())
+                .filter(|token| !token.is_empty())
+                .map(Arc::from),
+        )
         .with_graphql(graphql_config);
     axum::serve(
         listener,

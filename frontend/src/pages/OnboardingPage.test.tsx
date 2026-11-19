@@ -1,13 +1,13 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import {
   OnboardingPage,
   ONBOARDING_STORAGE_KEY,
-  loadOnboardingProgress,
 } from "./OnboardingPage";
 import type { WalletState } from "../hooks/useWallet";
+import i18n from "../i18n";
 
 const mockWallet: WalletState = {
   installed: true,
@@ -21,7 +21,7 @@ const mockWallet: WalletState = {
 describe("OnboardingPage", () => {
   let store: Record<string, string> = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     store = {};
     const mockStorage = {
       getItem: (key: string) => store[key] ?? null,
@@ -40,7 +40,12 @@ describe("OnboardingPage", () => {
       writable: true,
       configurable: true,
     });
+    await i18n.changeLanguage("en");
     vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
   });
 
   it("renders step 1 (Wallet Connect) and detects connected wallet", () => {
@@ -160,5 +165,107 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Multisig Setup Complete!")).toBeTruthy();
     expect(onComplete).toHaveBeenCalled();
     expect(store["accord_onboarding_completed"]).toBe("true");
+  });
+
+  it("renders loading state correctly", () => {
+    render(
+      <MemoryRouter>
+        <OnboardingPage wallet={mockWallet} loading={true} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("onboarding-loading")).toBeTruthy();
+    expect(screen.getByRole("status")).toBeTruthy();
+    expect(screen.getByText("Loading setup wizard…")).toBeTruthy();
+  });
+
+  it("renders error state correctly and handles retry", () => {
+    const onRetry = vi.fn();
+    render(
+      <MemoryRouter>
+        <OnboardingPage
+          wallet={mockWallet}
+          error="Failed to load configuration"
+          onRetry={onRetry}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("onboarding-error")).toBeTruthy();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getByText("Could not load onboarding setup")).toBeTruthy();
+    expect(screen.getByText("Failed to load configuration")).toBeTruthy();
+
+    const retryBtn = screen.getByRole("button", { name: /retry/i });
+    fireEvent.click(retryBtn);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders Arabic translations and sets RTL document direction", async () => {
+    await i18n.changeLanguage("ar");
+
+    render(
+      <MemoryRouter>
+        <OnboardingPage wallet={mockWallet} />
+      </MemoryRouter>,
+    );
+
+    expect(document.documentElement.dir).toBe("rtl");
+    expect(document.documentElement.lang).toBe("ar");
+
+    // Arabic wizard header
+    expect(screen.getByText("معالج إعداد متعدد التوقيع")).toBeTruthy();
+    expect(screen.getByText("ربط المحفظة")).toBeTruthy();
+    expect(screen.getByText("المحفظة المتصلة")).toBeTruthy();
+
+    // Arabic navigation button
+    const nextBtn = screen.getByRole("button", { name: /التالي/i });
+    expect(nextBtn).toBeTruthy();
+
+    fireEvent.click(nextBtn);
+    expect(screen.getByText("ملاك متعدد التوقيع وأوزان التصويت")).toBeTruthy();
+  });
+
+  it("supports keyboard-only navigation across wizard steps", () => {
+    render(
+      <MemoryRouter>
+        <OnboardingPage wallet={mockWallet} />
+      </MemoryRouter>,
+    );
+
+    const nextBtn = screen.getByRole("button", { name: /next/i });
+    nextBtn.focus();
+    expect(document.activeElement).toBe(nextBtn);
+
+    // Press Enter to go to step 2
+    fireEvent.keyDown(nextBtn, { key: "Enter", code: "Enter" });
+    fireEvent.click(nextBtn);
+    expect(screen.getByTestId("step-owners")).toBeTruthy();
+
+    // Back button
+    const backBtn = screen.getByRole("button", { name: /back/i });
+    backBtn.focus();
+    expect(document.activeElement).toBe(backBtn);
+    fireEvent.keyDown(backBtn, { key: "Enter", code: "Enter" });
+    fireEvent.click(backBtn);
+    expect(screen.getByTestId("step-wallet")).toBeTruthy();
+  });
+
+  it("renders cleanly across 375px, 768px, and 1440px viewports", () => {
+    const viewports = [375, 768, 1440];
+
+    for (const width of viewports) {
+      window.innerWidth = width;
+      window.dispatchEvent(new Event("resize"));
+
+      const { container, unmount } = render(
+        <MemoryRouter>
+          <OnboardingPage wallet={mockWallet} />
+        </MemoryRouter>,
+      );
+
+      expect(container.querySelector("[data-testid='onboarding-wizard']")).toBeTruthy();
+      unmount();
+    }
   });
 });

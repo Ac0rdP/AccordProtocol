@@ -988,49 +988,30 @@ lychee --config lychee.toml --ignore-path .lycheeignore "**/*.md"
 
 ## Dependency updates
 
-The project uses [Dependabot](https://docs.github.com/en/code-security/dependabot) to keep dependencies current across Cargo crates, npm packages, and GitHub Actions. The automation is configured in [`.github/dependabot.yml`](./.github/dependabot.yml).
+Dependabot is disabled for this repository: there is no
+`.github/dependabot.yml`, and Dependabot security updates are turned off in
+repository settings. Dependency updates are opened manually as pull requests so
+maintainers control when they land.
 
-### Cadence and limits
+### Review requirements
 
-- **Schedule**: Weekly on Mondays at 09:00 UTC (proposed default; maintainers to confirm).
-- **Open pull request limits**: Bounded to at most 10 open pull requests per package ecosystem to avoid notification fatigue.
+- **Review policy**: All dependency pull requests must be manually reviewed and
+  approved by repository maintainers. Auto-merge is disabled.
+- **CI requirements**: Every dependency PR must pass the required status checks
+  on `main` — secret and malware scans, supply-chain policy, contract build,
+  tests, coverage and benchmarks. See
+  [`docs/CI.md`](./docs/CI.md#required-status-checks).
+- **Lockfile changes**: Commit the updated lockfile (`Cargo.lock`,
+  `frontend/package-lock.json`, `indexer/package-lock.json`) with the manifest
+  change; the supply-chain workflow rejects stale lockfiles.
 
-### Grouping and lockstep dependency families
+### Handling security updates
 
-To reduce PR noise without hiding risk, Dependabot is configured with grouped updates:
-- **Minor and patch updates**: Grouped together within each ecosystem so routine maintenance arrives in single, consolidated PRs.
-- **Major updates**: Excluded from groups and opened as separate, isolated pull requests to ensure individual review, migration notes, and compatibility verification.
-- **Lockstep dependency families**:
-  - **Soroban ecosystem (`Cargo.toml`)**: `soroban-*` crates are grouped together to prevent version skew across SDK packages.
-  - **Stellar JavaScript SDKs (`frontend/package.json`, `indexer/package.json`)**: `@stellar/*` packages (`@stellar/stellar-sdk`, `@stellar/freighter-api`) are grouped so protocol bindings stay aligned.
-  - **React ecosystem (`frontend/package.json`)**: `react`, `react-dom`, and `@types/react*` packages are grouped to move in lockstep.
-  - **GitHub Actions (`.github/workflows`)**: Workflow action minor and patch updates are grouped.
-
-### Review, assignment, and auto-merge policy
-
-- **Review policy**: All dependency pull requests must be manually reviewed and approved by repository maintainers. Auto-merge is explicitly disabled.
-- **Reviewers and CODEOWNERS**: GitHub has deprecated the `reviewers` option in `dependabot.yml` in favor of `CODEOWNERS`. When a `CODEOWNERS` file is established with maintainer handles, Dependabot will automatically request reviews according to ownership rules.
-- **CI requirements**: Every Dependabot PR must pass all standard CI workflows before merge:
-  - Contract build, unit tests, coverage gate, and benchmarks (`.github/workflows/contract.yml`)
-  - Frontend lint, typecheck, unit tests, contract types currency check, and bundle budgets (`.github/workflows/frontend-ci.yml`)
-  - Indexer tests and analytics checks (`.github/workflows/indexer-analytics.yml`)
-  Dependabot branches run with a read-only `GITHUB_TOKEN` and no access to repository secrets; no required CI check depends on repository secrets or uses `pull_request_target`.
-
-### Handling major and security updates
-
-- **Security updates**: When a vulnerability advisory is published for a dependency, Dependabot or maintainers submit a targeted PR addressing the advisory. Security updates take precedence over routine weekly batches.
-- **Major upgrades**: Major version bumps represent breaking changes. The PR description must note the breaking API changes, required code adaptations, and testing evidence.
-
-### Adding a new manifest directory
-
-When adding a new service, crate, or application with its own manifest:
-1. Open [`.github/dependabot.yml`](./.github/dependabot.yml).
-2. Add a new entry under `updates:` specifying:
-   - `package-ecosystem`: `"npm"`, `"cargo"`, etc.
-   - `directory`: The relative path to the manifest directory (e.g. `"/services/new-service"`).
-   - `schedule`: The standard weekly cadence matching existing entries.
-   - `groups`: Ecosystem-specific grouping configuration.
-3. Commit the configuration change alongside the new manifest.
+When a vulnerability advisory is published for a dependency, open a targeted PR
+addressing the advisory and note the advisory in the description. Security
+updates take precedence over routine upgrades, and a major version bump must
+document the breaking API changes, required code adaptations, and testing
+evidence.
 
 ---
 

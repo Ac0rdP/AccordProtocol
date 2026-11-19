@@ -50,6 +50,14 @@ const FAMILIES: &[Family] = &[
     ALERTS,
 ];
 
+/// See [`Registry::latency_summary`].
+#[derive(Debug, PartialEq)]
+pub(crate) struct LatencySummary {
+    pub requests: u64,
+    pub p50_seconds: Option<f64>,
+    pub p95_seconds: Option<f64>,
+}
+
 pub(crate) type Family = (&'static str, &'static str, &'static str);
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -117,6 +125,45 @@ impl Registry {
             .entry((method.to_owned(), route.to_owned()))
             .or_default()
             .observe(seconds);
+    }
+
+    /// Request count and latency percentiles (seconds) across every route except
+    /// the probes and the freshness report itself, since process start. A
+    /// percentile is the upper bound of the bucket it falls in, so it never
+    /// understates latency; `None` means no requests yet.
+    pub(crate) fn latency_summary(&self) -> LatencySummary {
+        const EXCLUDED: &[&str] = &["/metrics", "/health", "/livez", "/readyz", "/status", "/freshness"];
+        let mut buckets = vec![0u64; LATENCY_BUCKETS.len()];
+        let mut count = 0u64;
+        for ((_, route), histogram) in lock(&self.durations).iter() {
+            if EXCLUDED.contains(&route.as_str()) {
+                continue;
+            }
+            count += histogram.count;
+            for (index, value) in histogram.buckets.iter().enumerate() {
+                buckets[index] += value;
+            }
+        }
+        let percentile = |quantile: f64| -> Option<f64> {
+            if count == 0 {
+                return None;
+            }
+            let target = (count as f64 * quantile).ceil().max(1.0) as u64;
+            let mut cumulative = 0;
+            for (index, bound) in LATENCY_BUCKETS.iter().enumerate() {
+                cumulative += buckets[index];
+                if cumulative >= target {
+                    return Some(*bound);
+                }
+            }
+            // Slower than the largest bucket.
+            LATENCY_BUCKETS.last().copied()
+        };
+        LatencySummary {
+            requests: count,
+            p50_seconds: percentile(0.5),
+            p95_seconds: percentile(0.95),
+        }
     }
 
     pub(crate) fn inc_error(&self, kind: &str) {
@@ -237,7 +284,29 @@ pub(crate) async fn track(request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::Registry;
+    use super::{LatencySummary, Registry};
+
+    #[test]
+    fn summarises_latency_percentiles_without_the_probes() {
+        let registry = Registry::default();
+        assert_eq!(registry.latency_summary().requests, 0);
+        for _ in 0..19 {
+            registry.observe_request("GET", "/proposals", 200, 0.004);
+        }
+        registry.observe_request("GET", "/proposals", 200, 0.4);
+        registry.observe_request("GET", "/livez", 200, 9.0);
+
+        assert_eq!(
+            registry.latency_summary(),
+            LatencySummary {
+                requests: 20,
+                p50_seconds: Some(0.005),
+                p95_seconds: Some(0.005),
+            }
+        );
+        registry.observe_request("GET", "/proposals", 200, 0.4);
+        assert_eq!(registry.latency_summary().p95_seconds, Some(0.5));
+    }
 
     #[test]
     fn renders_cumulative_histogram_buckets() {

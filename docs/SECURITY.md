@@ -136,6 +136,171 @@ Accord relies on several explicit assumptions for its security properties to hol
 3. **Asset Integrity**: Token contracts passed to the multisig are non-malicious and do not contain backdoors or non-standard callback logic.
 4. **Soroban Platform**: The underlying Soroban runtime correctly enforces `require_auth` and handles cryptographic verification.
 
+## Operational Security Controls
+
+The repository includes `scripts/security-controls.mjs`, an additive off-chain
+control for operator workflows. It does not replace contract authorization: the
+Accord contract remains the enforcement point for owner quorum, RBAC, guardian
+pause, and treasury execution. The control is owned by the Security and
+Compliance operator, applies to privileged workspace actions and every planned
+treasury transfer, and fails closed when policy, authorization, allowlist, or
+screening evidence is missing.
+
+### Workspace roles and tamper-evident audit
+
+The policy file maps actors to roles and actions to required roles. At minimum,
+deployments should separate `treasury_operator`, `privacy_admin`,
+`policy_admin`, and `security_auditor`; an actor with no matching role cannot
+append a privileged record, change an allow/deny list, or pass treasury
+preflight. Audit records are JSON Lines records chained
+with SHA-256 hashes. Each record contains `previousHash`, and its `hash` covers
+all unsigned fields. Operators must run:
+
+```bash
+node scripts/security-controls.mjs audit verify --log=./data/security-audit.jsonl
+```
+
+Any gap, modified record, malformed line, or missing log is an incident and
+blocks approval until the log is restored from protected evidence. Store the
+audit file with restricted permissions and copy it to write-once or otherwise
+access-controlled evidence storage at the end of each operating period. The
+hash chain is tamper-evident, not a substitute for access controls or an
+independent backup.
+
+This control addresses the existing RBAC risks of role concentration,
+unreviewed privileged operations, and incomplete incident evidence described in
+the [RBAC threat model](THREAT_MODEL_RBAC_DELEGATION_RECURRING.md). It does not
+grant roles or voting power and does not handle private keys.
+
+### Treasury recipient controls
+
+Before a transfer is submitted, the `treasury_operator` must run the
+`treasury preflight` command with the destination contract, recipient, and
+policy. A non-empty recipient or contract allowlist is restrictive; any deny
+list match wins. Screening is required by default and only a provider result of
+`clear` permits the transfer. Provider name, query time, request ID, and result
+must be included in the corresponding audit record. A provider outage,
+ambiguous response, stale result, or missing result is a denial, never an
+automatic approval. The contract's owner quorum and `Executor` role checks
+still apply after preflight.
+
+### Personal-data export, deletion, and retention
+
+The `privacy_admin` owns subject access exports and deletion requests. Export
+copies matching subject records to a new mode-`0600` file without changing the
+source. Deletion replaces personal-data fields with `[REDACTED]` while retaining
+stable record metadata and an audit record containing the actor, subject, and
+redaction count. A valid, unexpired retention exception (for example, a legal
+hold or reconciliation requirement) blocks deletion and must state its reason,
+subject, and `retainUntil` timestamp. Once the exception expires, the request
+must be retried; exceptions are not permission to retain data indefinitely.
+
+### API key lifecycle, least privilege, and rotation
+
+Machine-to-machine integrations, indexing services, and compliance tooling must
+authenticate using least-privilege API keys managed via `scripts/security-controls.mjs`.
+
+- **Owner**: Security Administrator (`apikey_admin`).
+- **Scope**: All automated service credentials, background indexers, telemetry ingestors, and analytics query integrations.
+- **Threat Model**:
+  - Unscoped, immortal credentials compromised via logs, source control, or dev machines leading to unauthorized administrative actions.
+  - Abrupt credential expiration causing production outages during key replacement.
+  - Stale credentials remaining valid indefinitely after an operator or service deprecation.
+  - Storing plaintext tokens in data files or logs allowing secondary theft.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Any request presenting an unrecognized, revoked, expired, or scope-deficient token is rejected immediately.
+  - **Secret protection**: Plaintext tokens are returned exactly once upon issuance or rotation; only their cryptographic SHA-256 hash is persisted in `api-keys.json`. Plaintext tokens are never logged or stored.
+  - **Least-privilege scoping**: Keys specify explicit permitted actions (e.g., `audit:read`, `audit:append`, `treasury:preflight`, `indexer:ingest`, `metrics:read`).
+  - **Overlap grace windows**: During key rotation, the prior key transitions to `rotating` status and remains valid during a defined overlap window (default 7 days) to enable zero-downtime client cutover before hard expiration.
+  - **Rotation reminders**: Automated checks flag active keys approaching expiration within the reminder window (default 14 days).
+  - **Revocation**: Keys can be immediately revoked by administrators with a recorded justification, instantaneously barring authentication.
+- **Link to Existing Risks**:
+  - Directly mitigates the **Role Concentration Risk** and **Workstation Single Point of Failure (SPOF)** documented in the [RBAC threat model addendum](#role-concentration-risk) and the credential exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md).
+
+### SIEM streaming and security event forwarding
+
+Operational audit logs, authorization decisions, and contract governance events
+can be streamed to enterprise SIEM endpoints (Splunk, Datadog, or generic SIEM/HTTP endpoints).
+
+- **Owner**: SOC Lead / Security Operations (`security_operator`).
+- **Scope**: All authentication events, authorization checks, treasury preflight decisions, policy modifications, privacy actions, and contract emergency pause events.
+- **Threat Model**:
+  - Security incidents or compromised credentials escaping detection due to audit logs remaining isolated on local filesystems.
+  - An attacker tampering with local JSONL logs to conceal malicious activity.
+  - Transmission of plaintext tokens, passwords, or private keys to third-party log aggregation services.
+  - Downstream SIEM outages causing service degradation or blocking operational processes.
+- **Enforcement and Failure Behavior**:
+  - **Automated sanitization**: Payloads are scrubbed before serialization. Fields containing tokens, secrets, private keys, or passwords are automatically redacted to `[REDACTED_SECRET]`.
+  - **Categorization and severity**: Events are classified into functional categories (`authentication`, `authorization`, `governance`, `privacy`, `compliance`) and assigned security severities (`INFO`, `WARN`, `CRITICAL` for freezes or unauthorized attempts).
+  - **Fail-safe forwarding**: SIEM streaming failures log errors without interrupting on-chain execution or local operational preflight. Dry-run export enables offline verification.
+- **Link to Existing Risks**:
+  - Addresses the **Role-Revocation Lockout Risk** and **Incomplete Incident Evidence** highlighted in the [threat model](#attack-surfaces) by guaranteeing external real-time event correlation and tamper protection.
+
+### SOC 2 Trust Services Criteria mapping and auditor evidence
+
+Accord's operational and protocol security controls are formally mapped to SOC 2 Trust Services Criteria (Security, Availability, Confidentiality, and Privacy).
+
+- **Owner**: Compliance Officer / Security Auditor (`compliance_export`, `security_auditor`).
+- **Scope**: All repository security controls, CI scanning mechanisms, smart contract invariants, and data management workflows.
+- **Threat Model**:
+  - Failure to demonstrate compliance during SOC 2 audits due to manual, ad-hoc, or incomplete evidence collection.
+  - Retroactive modification of compliance evidence or audit chains.
+  - Inadvertent disclosure of operational secrets or confidential user data during auditor handoff.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Evidence package generation verifies audit log hash chains, active policy definitions, and residency configurations. If the audit log is broken or missing, the package flags the control non-compliant or fails.
+  - **Tamper-evident manifest**: Generates an auditor evidence package containing SHA-256 digests for all evaluated evidence files (`security-audit.jsonl`, `security-policy.json`, etc.).
+  - **Mapped criteria**: Maps operational controls to CC6.1 (Access Security), CC6.2 (User Credentials), CC6.3 (Least Privilege), CC6.6 (Boundary Protection), CC6.7 (Data Integrity), CC6.8 (Software Invariants), CC7.1 (Vulnerability Scanning), CC7.2 (Security Monitoring), CC7.3 (Incident Containment), CC8.1 (Change Management), A1.2 (Availability & Backups), C1.1 (Confidentiality & Secret Protection), P1.1 (Privacy Rights), and P4.1 (Data Sovereignty).
+- **Link to Existing Risks**:
+  - Resolves governance and auditability gaps identified in the [Audit Preparation Pack](./AUDIT_PREP.md).
+
+### Data residency pinning, regional backups, exports, and deletion
+
+Workspace data, indexing databases, backups, and exports are pinned to specific geographic and cloud regions.
+
+- **Owner**: Infrastructure Operator (`infra_operator`) and Privacy Administrator (`privacy_admin`).
+- **Scope**: Workspace data repositories, persistent database snapshots, export packages, and tenant deletion routines.
+- **Threat Model**:
+  - Unintended cross-border data transfer or regulatory breach under sovereignty frameworks (GDPR, regional data protection mandates).
+  - Silent backup data corruption or unverified recovery snapshots.
+  - Inadvertent deletion of data subject to mandatory retention holds or regulatory preservation notices.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Operations attempting to access, back up, or export workspace data in an unapproved region or a region mismatched with the workspace's pinned region are rejected with an explicit error.
+  - **Verified backups**: Backup archives include SHA-256 checksums and regional metadata headers to guarantee integrity and geographic provenance.
+  - **Retention hold gates**: Workspace deletion validates active retention exceptions before purging data. Any unexpired legal hold or compliance exception hard-blocks deletion.
+- **Link to Existing Risks**:
+  - Mitigates multi-tenant data exfiltration risks and regulatory penalties associated with cross-border transfer violations and improper record destruction.
+
+### Enterprise SSO (SAML / OIDC), just-in-time provisioning, and session policy
+
+Team accounts can sign in through an enterprise identity provider (IdP) using
+SAML 2.0 or OpenID Connect. `scripts/sso-controls.mjs` is the enforcement point
+between the IdP and the workspace roles that `scripts/security-controls.mjs`
+authorizes against. It is an off-chain operator control: it never holds wallet
+keys, and SSO roles cannot satisfy or bypass on-chain owner quorum, RBAC, or
+guardian checks.
+
+- **Owner**: Security Administrator (`sso_admin` for deprovisioning, `policy_admin` for projecting SSO roles into the policy).
+- **Scope**: Every interactive sign-in to a team workspace through a configured IdP, the resulting workspace roles, and the session used for privileged off-chain actions (treasury preflight, privacy, policy, key management).
+- **Threat Model**:
+  - Forged or tampered assertions/ID tokens, including `alg: none`, HMAC key-confusion against a published JWKS, or an assertion signed by a certificate the IdP did not intend.
+  - Assertions or tokens issued for another service (wrong audience/issuer), or captured and replayed.
+  - Sign-in by accounts outside the organization (unverified or off-domain email), or without MFA.
+  - IdP compromise or misconfiguration granting roles through group membership, in particular control-plane roles.
+  - Stale access after an employee leaves or changes teams: lingering roles or long-lived sessions.
+  - Session token theft from the session store.
+- **Enforcement and Failure Behavior** (all checks **fail closed** and are audited as `sso_login_denied` where applicable):
+  - **Pinned trust**: OIDC tokens are verified with Node's crypto against a pinned JWKS (asymmetric `RS*`/`ES*`/`PS256` only; `none` and `HS*` are rejected; JWKs containing private or symmetric material are rejected at config load). SAML XML-DSig is verified by the SAML gateway library, and the control additionally requires `signatureVerified: true` from it plus a SHA-256 signing-certificate fingerprint that matches the pinned list.
+  - **Claims**: exact issuer and audience (and `azp` for multi-audience tokens), validity window with bounded clock skew (default 120 s), nonce when the caller supplies one, verified email in an `allowedDomains` entry, and MFA (`amr` for OIDC, `AuthnContextClassRef` for SAML) when `session.requireMfa` is set.
+  - **Replay**: every assertion ID / `jti` is recorded until it expires; a second use is denied.
+  - **Just-in-time provisioning**: unknown users are created only when `jit.enabled` is true. Roles are recomputed from IdP groups on every login via `jit.groupRoles`, limited to `jit.allowedRoles`, so removing a group in the IdP removes the role at next login. A user with no mapped role is denied. Users are keyed by the stable IdP subject (`sso:<provider>:<subject>`), never by email, so a reassigned mailbox does not inherit access.
+  - **Protected roles**: `policy_admin`, `apikey_admin`, and `sso_admin` can never be granted through SSO; config validation rejects them in `jit.allowedRoles`, and role mapping filters them again at runtime.
+  - **Session policy**: absolute lifetime (`maxAgeMinutes`, further capped by the SAML `SessionNotOnOrAfter`), idle timeout, and step-up re-authentication windows per action (`reauthMinutesForActions`, for example 15 minutes for `treasury_transfer`). Session tokens are returned once; only their SHA-256 hash is stored.
+  - **Deprovisioning**: suspends the user, clears SSO roles, and revokes every active session immediately; a suspended user cannot sign in again until an administrator restores them.
+  - **No weakening of existing authorization**: `sync-policy` only adds or removes `sso:*` actors in the policy `roles` map. Manually managed actors and the `permissions` map are untouched, and `authorize()` remains the single authorization check.
+- **Link to Existing Risks**:
+  - Addresses the **Role Concentration Risk** and **Role-Revocation** concerns in the [RBAC threat model addendum](#role-based-access-control-rbac-threat-model-addendum) by tying off-chain roles to centrally managed IdP groups with prompt revocation, and the credential-exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md) by hashing session tokens and refusing secret key material in config.
+- **Residual risk**: a fully compromised IdP can still sign in as any user in an allowed domain and obtain that user's non-protected roles. Treasury movement still requires on-chain owner quorum. Keep `jit.allowedRoles` minimal, require MFA, and alert on `sso_role_sync` events in the SIEM.
+
 ### Mitigations
 
 Specific mechanisms are in place to enforce security boundaries:
