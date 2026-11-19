@@ -191,6 +191,7 @@ fn app(state: AppState) -> Router {
         .route("/reports/run", post(report_api::run_now))
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
+        .route("/owners/participation", get(owner_participation::list))
         .layer(middleware::from_fn_with_state(state.clone(), limits::guard))
         .layer(middleware::from_fn(metrics::track))
         .with_state(state)
@@ -1026,6 +1027,131 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
     }
 
     ([(header::CONTENT_TYPE, metrics::CONTENT_TYPE)], body)
+}
+
+mod owner_participation {
+    use super::*;
+
+    pub(super) const QUERY_PARAMS: &[&str] = &[
+        "limit",
+        "offset",
+        "startDate",
+        "endDate",
+        "contractId",
+        "network",
+    ];
+
+    #[derive(Debug, Serialize, sqlx::FromRow)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct OwnerParticipationRow {
+        pub owner: String,
+        pub network: String,
+        pub contract_id: String,
+        pub total_proposals: i64,
+        pub approved_proposals: i64,
+        pub participation_rate: f64,
+        pub avg_latency_seconds: Option<f64>,
+        pub is_inactive: bool,
+        pub last_approved_at: Option<DateTime<Utc>>,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct OwnerParticipationPage {
+        pub items: Vec<OwnerParticipationRow>,
+        pub total: i64,
+        pub limit: i64,
+        pub offset: i64,
+    }
+
+    pub(super) async fn list(
+        State(state): State<AppState>,
+        axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    ) -> Result<Json<OwnerParticipationPage>, (StatusCode, Json<proposals::ApiError>)> {
+        let mut details = Vec::new();
+        for key in raw.keys() {
+            if !QUERY_PARAMS.contains(&key.as_str()) {
+                details.push(proposals::detail(
+                    key,
+                    "is not a supported query parameter",
+                    "UNKNOWN_PARAMETER",
+                ));
+            }
+        }
+
+        let limit = proposals::parse_integer(&raw, "limit", 20, 1, 100, &mut details);
+        let offset = proposals::parse_integer(&raw, "offset", 0, 0, i64::MAX, &mut details);
+        let start_date = proposals::parse_date(&raw, "startDate", false, &mut details);
+        let end_date = proposals::parse_date(&raw, "endDate", true, &mut details);
+
+        if matches!((start_date, end_date), (Some(start), Some(end)) if start > end) {
+            details.push(proposals::detail(
+                "startDate",
+                "must be before or equal to endDate",
+                "INVALID_DATE_RANGE",
+            ));
+        }
+
+        let scope = state.scope.resolve(&raw, &mut details);
+        if !details.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(proposals::ApiError::invalid(details)),
+            ));
+        }
+
+        let mut total_query = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(DISTINCT a.owner) FROM proposal_approvals a WHERE TRUE",
+        );
+        push_scope(&mut total_query, "a.", &scope);
+        if let Some(start) = start_date {
+            total_query.push(" AND a.occurred_at >= ").push_bind(start);
+        }
+        if let Some(end) = end_date {
+            total_query.push(" AND a.occurred_at <= ").push_bind(end);
+        }
+
+        let total: i64 = total_query
+            .build_query_scalar()
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
+
+        let mut data_query = QueryBuilder::<Postgres>::new(
+            "SELECT a.owner, a.network, a.contract_id, \
+             COUNT(DISTINCT p.proposal_id) AS total_proposals, \
+             COUNT(DISTINCT a.proposal_id) AS approved_proposals, \
+             ROUND((COUNT(DISTINCT a.proposal_id)::numeric / NULLIF(COUNT(DISTINCT p.proposal_id), 0) * 100)::numeric, 2)::float8 AS participation_rate, \
+             AVG(EXTRACT(EPOCH FROM (a.occurred_at - p.created_at)))::float8 AS avg_latency_seconds, \
+             (MAX(a.occurred_at) < NOW() - INTERVAL '30 days') AS is_inactive, \
+             MAX(a.occurred_at) AS last_approved_at \
+             FROM proposal_approvals a \
+             JOIN proposals p ON a.network = p.network AND a.contract_id = p.contract_id \
+             WHERE TRUE",
+        );
+        push_scope(&mut data_query, "a.", &scope);
+        if let Some(start) = start_date {
+            data_query.push(" AND a.occurred_at >= ").push_bind(start);
+        }
+        if let Some(end) = end_date {
+            data_query.push(" AND a.occurred_at <= ").push_bind(end);
+        }
+        data_query.push(" GROUP BY a.owner, a.network, a.contract_id ORDER BY a.owner ASC");
+        data_query.push(" LIMIT ").push_bind(limit).push(" OFFSET ").push_bind(offset);
+
+        let items: Vec<OwnerParticipationRow> = data_query
+            .build_query_as()
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+
+        Ok(Json(OwnerParticipationPage {
+            items,
+            total,
+            limit,
+            offset,
+        }))
+    }
 }
 
 mod proposals {

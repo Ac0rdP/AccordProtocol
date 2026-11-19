@@ -165,7 +165,7 @@ try {
 
 ## Multi-language Code Generation
 
-Generate typed clients for other languages from the same contract ABI that the TypeScript SDK wraps. Supported languages: **Python** (dataclasses, `IntEnum`, typed client) and **Go** (structs, typed constants, `error`-implementing `ContractError`, typed client).
+Generate typed clients for other languages from the same contract ABI that the TypeScript SDK wraps. Supported languages: **Python** (dataclasses, `IntEnum`, typed client), **Go** (structs, typed constants, `error`-implementing `ContractError`, typed client), and **Rust** (structs, enums, `Invoker` trait, typed client).
 
 Generated clients are transport-agnostic: they own method names, argument order and types, and delegate the actual Soroban call to an `Invoker` you supply, so signing and secrets stay in your application.
 
@@ -181,24 +181,27 @@ writeFileSync(python.fileName, python.source); // accord_contract_client.py
 
 const go = generateClient(abi, { language: "go", clientName: "Treasury", packageName: "treasury" });
 writeFileSync(go.fileName, go.source); // treasury.go
+
+const rust = generateClient(abi, { language: "rust", clientName: "Treasury" });
+writeFileSync(rust.fileName, rust.source); // treasury.rs
 ```
 
 From a checkout, the same thing is available as a CLI:
 
 ```bash
 npm run build
-npm run codegen -- --spec=accord-spec.json --out=generated --lang=python,go
+npm run codegen -- --spec=accord-spec.json --out=generated --lang=python,go,rust
 ```
 
-| Soroban type | Python | Go |
-|---|---|---|
-| `u32` / `i32` / `u64` / `i64` | `int` | `uint32` / `int32` / `uint64` / `int64` |
-| `u128` / `i128` / `u256` / `i256` | `int` | `*big.Int` |
-| `address` / `string` / `symbol` | `str` | `string` |
-| `bytes` / `BytesN<N>` | `bytes` | `[]byte` / `[N]byte` |
-| `Vec<T>` / `Option<T>` / `Map<K, V>` | `List[T]` / `Optional[T]` / `Dict[K, V]` | `[]T` / `*T` / `map[K]V` |
-| `Result<T, E>` | `T` (errors raised by the invoker) | `(T, error)` |
-| `#[contracttype]` struct / enum / union | `@dataclass` / `IntEnum` / tagged dataclass | struct / typed consts / `Tag`+`Values` struct |
+| Soroban type | Python | Go | Rust |
+|---|---|---|---|
+| `u32` / `i32` / `u64` / `i64` | `int` | `uint32` / `int32` / `uint64` / `int64` | `u32` / `i32` / `u64` / `i64` |
+| `u128` / `i128` / `u256` / `i256` | `int` | `*big.Int` | `u128` / `i128` / `[u8; 32]` |
+| `address` / `string` / `symbol` | `str` | `string` | `String` |
+| `bytes` / `BytesN<N>` | `bytes` | `[]byte` / `[N]byte` | `Vec<u8>` / `[u8; N]` |
+| `Vec<T>` / `Option<T>` / `Map<K, V>` | `List[T]` / `Optional[T]` / `Dict[K, V]` | `[]T` / `*T` / `map[K]V` | `Vec<T>` / `Option<T>` / `BTreeMap<K, V>` |
+| `Result<T, E>` | `T` (errors raised by the invoker) | `(T, error)` | `Result<T, Box<dyn Error>>` |
+| `#[contracttype]` struct / enum / union | `@dataclass` / `IntEnum` / tagged dataclass | struct / typed consts / `Tag`+`Values` struct | struct / enum / tagged enum |
 
 `parseSorobanSpec` and `generateClient` throw `AccordValidationError` (with the offending field path) for malformed specs, undeclared type references, unsupported languages and invalid names.
 

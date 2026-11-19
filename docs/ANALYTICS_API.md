@@ -215,6 +215,35 @@ Spend aggregated by proposer/owner address, over executed transfers only.
 ]
 ```
 
+### `GET /owners/participation`
+
+Report owner response times, approval rates, and inactive-owner trends across proposals.
+
+**Query parameters:** `limit`, `offset`, `startDate`, `endDate`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)).
+
+**Response (`OwnerParticipationPage`):**
+
+```json
+{
+  "items": [
+    {
+      "owner": "GABC...OWNER",
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "totalProposals": 12,
+      "approvedProposals": 10,
+      "participationRate": 83.33,
+      "avgLatencySeconds": 3600.5,
+      "isInactive": false,
+      "lastApprovedAt": "2026-11-19T08:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
 ### `GET /treasury/balance`
 
 Current per-token treasury balance, with an optional historical time series.
