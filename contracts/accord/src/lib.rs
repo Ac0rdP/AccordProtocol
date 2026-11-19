@@ -5793,4 +5793,6 @@ mod bench;
 mod invariants;
 #[cfg(test)]
 mod differential;
+#[cfg(test)]
+mod spend_window_proptest;
 // TODO: Ensure tests verify event parsing and decoding into typed records

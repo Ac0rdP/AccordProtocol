@@ -63,6 +63,9 @@ jobs:
       - name: Run differential tests against reference model
         run: cargo test --locked -p accord --lib differential -- --nocapture
 
+      - name: Run property-based tests for spend-window policies
+        run: cargo test --locked -p accord --lib spend_window -- --nocapture
+
       - name: Generate wasm-manifest.json
         run: |
           python3 <<'PY'
