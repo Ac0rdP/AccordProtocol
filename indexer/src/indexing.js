@@ -31,6 +31,8 @@ export async function indexEventBatch({
   pageLimit = 1000,
   maxPages = 100,
   finalityLag = DEFAULT_FINALITY_LAG,
+  subscriptions = null,
+  onEvent = null,
 }) {
   const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
   const filters = buildContractFilters({ tokens, treasuryAddress });
@@ -99,10 +101,18 @@ export async function indexEventBatch({
       }
 
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-      if (transferEntry && (await store.recordTransfer(transferEntry))) indexed += 1;
+      if (transferEntry && (await store.recordTransfer(transferEntry))) {
+        indexed += 1;
+        subscriptions?.publish?.(transferEntry);
+        onEvent?.(transferEntry);
+      }
 
       const accordEntry = parseAccordEvent(event, treasuryAddress);
-      if (accordEntry && (await store.recordAccordEvent(accordEntry))) indexed += 1;
+      if (accordEntry && (await store.recordAccordEvent(accordEntry))) {
+        indexed += 1;
+        subscriptions?.publish?.(accordEntry);
+        onEvent?.(accordEntry);
+      }
     }
 
     if (response.events.length === pageLimit) {

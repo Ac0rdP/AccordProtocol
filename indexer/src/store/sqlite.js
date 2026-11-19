@@ -112,6 +112,33 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS notification_deliveries_due_idx
       ON notification_deliveries (status, next_attempt_at, id);
+    CREATE TABLE IF NOT EXISTS graphql_client_checkpoints (
+      client_id TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      last_event_id TEXT,
+      last_ledger INTEGER,
+      connected_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS graphql_client_checkpoints_updated_idx
+      ON graphql_client_checkpoints (updated_at);
+    CREATE TABLE IF NOT EXISTS stream_exporter_checkpoints (
+      exporter TEXT PRIMARY KEY,
+      last_event_id TEXT,
+      last_ledger INTEGER,
+      events_published INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS warehouse_export_checkpoints (
+      warehouse TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      last_exported_id INTEGER NOT NULL DEFAULT 0,
+      last_ledger INTEGER,
+      rows_exported INTEGER NOT NULL DEFAULT 0,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (warehouse, table_name)
+    );
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -654,6 +681,94 @@ export function openLedgerStore(databasePath) {
             WHERE status = 'dead'
           `).run(now, now);
       return Number(result.changes);
+    },
+
+    async setClientCheckpoint({ clientId, query, lastEventId = null, lastLedger = null, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO graphql_client_checkpoints (client_id, query, last_event_id, last_ledger, connected_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (client_id) DO UPDATE SET
+          query = excluded.query,
+          last_event_id = excluded.last_event_id,
+          last_ledger = excluded.last_ledger,
+          updated_at = excluded.updated_at
+      `).run(clientId, query, lastEventId, lastLedger, now, now);
+      return true;
+    },
+
+    async getClientCheckpoint(clientId) {
+      const row = database.prepare(`
+        SELECT client_id, query, last_event_id, last_ledger, connected_at, updated_at
+        FROM graphql_client_checkpoints WHERE client_id = ?
+      `).get(clientId);
+      if (!row) return null;
+      return {
+        clientId: row.client_id,
+        query: row.query,
+        lastEventId: row.last_event_id,
+        lastLedger: row.last_ledger,
+        connectedAt: row.connected_at,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async setStreamCheckpoint({ exporter, lastEventId = null, lastLedger = null, eventsPublished = 0, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO stream_exporter_checkpoints (exporter, last_event_id, last_ledger, events_published, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (exporter) DO UPDATE SET
+          last_event_id = excluded.last_event_id,
+          last_ledger = excluded.last_ledger,
+          events_published = excluded.events_published,
+          updated_at = excluded.updated_at
+      `).run(exporter, lastEventId, lastLedger, eventsPublished, now);
+      return true;
+    },
+
+    async getStreamCheckpoint(exporter) {
+      const row = database.prepare(`
+        SELECT exporter, last_event_id, last_ledger, events_published, updated_at
+        FROM stream_exporter_checkpoints WHERE exporter = ?
+      `).get(exporter);
+      if (!row) return null;
+      return {
+        exporter: row.exporter,
+        lastEventId: row.last_event_id,
+        lastLedger: row.last_ledger,
+        eventsPublished: row.events_published,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async setWarehouseCheckpoint({ warehouse, tableName, lastExportedId = 0, lastLedger = null, rowsExported = 0, schemaVersion = 1, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO warehouse_export_checkpoints (warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (warehouse, table_name) DO UPDATE SET
+          last_exported_id = excluded.last_exported_id,
+          last_ledger = excluded.last_ledger,
+          rows_exported = warehouse_export_checkpoints.rows_exported + excluded.rows_exported,
+          schema_version = excluded.schema_version,
+          updated_at = excluded.updated_at
+      `).run(warehouse, tableName, lastExportedId, lastLedger, rowsExported, schemaVersion, now);
+      return true;
+    },
+
+    async getWarehouseCheckpoint(warehouse, tableName) {
+      const row = database.prepare(`
+        SELECT warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at
+        FROM warehouse_export_checkpoints WHERE warehouse = ? AND table_name = ?
+      `).get(warehouse, tableName);
+      if (!row) return null;
+      return {
+        warehouse: row.warehouse,
+        tableName: row.table_name,
+        lastExportedId: row.last_exported_id,
+        lastLedger: row.last_ledger,
+        rowsExported: row.rows_exported,
+        schemaVersion: row.schema_version,
+        updatedAt: row.updated_at,
+      };
     },
 
     async close() {

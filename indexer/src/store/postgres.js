@@ -535,6 +535,100 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return rowCount;
     },
 
+    async setClientCheckpoint({ clientId, query, lastEventId = null, lastLedger = null, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO graphql_client_checkpoints (client_id, query, last_event_id, last_ledger, connected_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5)
+         ON CONFLICT (client_id) DO UPDATE SET
+           query = EXCLUDED.query,
+           last_event_id = EXCLUDED.last_event_id,
+           last_ledger = EXCLUDED.last_ledger,
+           updated_at = EXCLUDED.updated_at`,
+        [clientId, query, lastEventId, lastLedger, now]
+      );
+      return true;
+    },
+
+    async getClientCheckpoint(clientId) {
+      const { rows } = await pool.query(
+        `SELECT client_id, query, last_event_id, last_ledger, connected_at, updated_at
+         FROM graphql_client_checkpoints WHERE client_id = $1`,
+        [clientId]
+      );
+      if (!rows[0]) return null;
+      return {
+        clientId: rows[0].client_id,
+        query: rows[0].query,
+        lastEventId: rows[0].last_event_id,
+        lastLedger: rows[0].last_ledger,
+        connectedAt: rows[0].connected_at,
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
+    async setStreamCheckpoint({ exporter, lastEventId = null, lastLedger = null, eventsPublished = 0, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO stream_exporter_checkpoints (exporter, last_event_id, last_ledger, events_published, updated_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (exporter) DO UPDATE SET
+           last_event_id = EXCLUDED.last_event_id,
+           last_ledger = EXCLUDED.last_ledger,
+           events_published = EXCLUDED.events_published,
+           updated_at = EXCLUDED.updated_at`,
+        [exporter, lastEventId, lastLedger, eventsPublished, now]
+      );
+      return true;
+    },
+
+    async getStreamCheckpoint(exporter) {
+      const { rows } = await pool.query(
+        `SELECT exporter, last_event_id, last_ledger, events_published, updated_at
+         FROM stream_exporter_checkpoints WHERE exporter = $1`,
+        [exporter]
+      );
+      if (!rows[0]) return null;
+      return {
+        exporter: rows[0].exporter,
+        lastEventId: rows[0].last_event_id,
+        lastLedger: rows[0].last_ledger,
+        eventsPublished: Number(rows[0].events_published),
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
+    async setWarehouseCheckpoint({ warehouse, tableName, lastExportedId = 0, lastLedger = null, rowsExported = 0, schemaVersion = 1, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO warehouse_export_checkpoints (warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (warehouse, table_name) DO UPDATE SET
+           last_exported_id = EXCLUDED.last_exported_id,
+           last_ledger = EXCLUDED.last_ledger,
+           rows_exported = warehouse_export_checkpoints.rows_exported + EXCLUDED.rows_exported,
+           schema_version = EXCLUDED.schema_version,
+           updated_at = EXCLUDED.updated_at`,
+        [warehouse, tableName, lastExportedId, lastLedger, rowsExported, schemaVersion, now]
+      );
+      return true;
+    },
+
+    async getWarehouseCheckpoint(warehouse, tableName) {
+      const { rows } = await pool.query(
+        `SELECT warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at
+         FROM warehouse_export_checkpoints WHERE warehouse = $1 AND table_name = $2`,
+        [warehouse, tableName]
+      );
+      if (!rows[0]) return null;
+      return {
+        warehouse: rows[0].warehouse,
+        tableName: rows[0].table_name,
+        lastExportedId: Number(rows[0].last_exported_id),
+        lastLedger: rows[0].last_ledger,
+        rowsExported: Number(rows[0].rows_exported),
+        schemaVersion: rows[0].schema_version,
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
     async close() {
       await pool.end();
     },

@@ -598,16 +598,21 @@ export default function App() {
                 className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs text-emerald-200"
               >
                 <div>
-                  <p className="font-semibold text-emerald-300 text-sm">No multisig configured yet</p>
+                  <p className="font-semibold text-emerald-300 text-sm">
+                    {t("onboarding.bannerTitle", "No multisig configured yet")}
+                  </p>
                   <p className="text-zinc-400 mt-0.5">
-                    Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.
+                    {t(
+                      "onboarding.bannerDesc",
+                      "Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.",
+                    )}
                   </p>
                 </div>
                 <Link
                   to="/app/onboarding"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-black hover:bg-emerald-400 transition-colors shrink-0"
                 >
-                  Start Setup Wizard →
+                  {t("onboarding.bannerCta", "Start Setup Wizard →")}
                 </Link>
               </div>
             )}
