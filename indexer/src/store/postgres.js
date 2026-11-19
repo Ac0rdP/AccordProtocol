@@ -596,6 +596,39 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       };
     },
 
+    async setWarehouseCheckpoint({ warehouse, tableName, lastExportedId = 0, lastLedger = null, rowsExported = 0, schemaVersion = 1, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO warehouse_export_checkpoints (warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (warehouse, table_name) DO UPDATE SET
+           last_exported_id = EXCLUDED.last_exported_id,
+           last_ledger = EXCLUDED.last_ledger,
+           rows_exported = warehouse_export_checkpoints.rows_exported + EXCLUDED.rows_exported,
+           schema_version = EXCLUDED.schema_version,
+           updated_at = EXCLUDED.updated_at`,
+        [warehouse, tableName, lastExportedId, lastLedger, rowsExported, schemaVersion, now]
+      );
+      return true;
+    },
+
+    async getWarehouseCheckpoint(warehouse, tableName) {
+      const { rows } = await pool.query(
+        `SELECT warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at
+         FROM warehouse_export_checkpoints WHERE warehouse = $1 AND table_name = $2`,
+        [warehouse, tableName]
+      );
+      if (!rows[0]) return null;
+      return {
+        warehouse: rows[0].warehouse,
+        tableName: rows[0].table_name,
+        lastExportedId: Number(rows[0].last_exported_id),
+        lastLedger: rows[0].last_ledger,
+        rowsExported: Number(rows[0].rows_exported),
+        schemaVersion: rows[0].schema_version,
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
     async close() {
       await pool.end();
     },

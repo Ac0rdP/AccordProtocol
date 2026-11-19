@@ -98,6 +98,36 @@ The indexer can export normalized contract and treasury events to durable messag
 
 Stream exporters track durable published checkpoints in `stream_exporter_checkpoints`. Operators can replay historical ranges using `replayFrom(store, checkpointId)` without producing duplicate records.
 
+## Data warehouse export connectors (BigQuery & Snowflake)
+
+The indexer can export indexed tables (`ledger_entries`, `accord_events`, `reconciliation_results`) to cloud data warehouses on a schedule.
+
+### BigQuery configuration
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `BIGQUERY_EXPORT_ENABLED` | `false` | Enable BigQuery warehouse export connector. |
+| `BIGQUERY_PROJECT_ID` | `""` | GCP Project ID hosting the target dataset. |
+| `BIGQUERY_DATASET` | `accord_analytics` | BigQuery dataset name. |
+| `BIGQUERY_SCHEDULE` | `0 * * * *` | Cron schedule for batch exports (default hourly). |
+| `BIGQUERY_BATCH_SIZE` | `500` | Maximum rows per export chunk. |
+
+### Snowflake configuration
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `SNOWFLAKE_EXPORT_ENABLED` | `false` | Enable Snowflake warehouse export connector. |
+| `SNOWFLAKE_ACCOUNT` | `""` | Snowflake account identifier. |
+| `SNOWFLAKE_DATABASE` | `ACCORD_DB` | Target Snowflake database. |
+| `SNOWFLAKE_SCHEMA` | `PUBLIC` | Target Snowflake schema. |
+| `SNOWFLAKE_WAREHOUSE` | `COMPUTE_WH` | Snowflake virtual warehouse used for ingestion. |
+| `SNOWFLAKE_SCHEDULE` | `0 * * * *` | Cron schedule for batch exports. |
+| `SNOWFLAKE_BATCH_SIZE` | `500` | Maximum rows per batch. |
+
+### Warehouse checkpoint tracking
+
+Export progress is tracked in `warehouse_export_checkpoints` per warehouse and table name (`last_exported_id`, `last_ledger`, `rows_exported`, `schema_version`). Replaying from previous checkpoints is idempotent and prevents duplicate insertions.
+
 ## Analytics API metrics
 
 | Metric | Type | Labels | Meaning |

@@ -129,6 +129,16 @@ export function openLedgerStore(databasePath) {
       events_published INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS warehouse_export_checkpoints (
+      warehouse TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      last_exported_id INTEGER NOT NULL DEFAULT 0,
+      last_ledger INTEGER,
+      rows_exported INTEGER NOT NULL DEFAULT 0,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (warehouse, table_name)
+    );
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -726,6 +736,37 @@ export function openLedgerStore(databasePath) {
         lastEventId: row.last_event_id,
         lastLedger: row.last_ledger,
         eventsPublished: row.events_published,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async setWarehouseCheckpoint({ warehouse, tableName, lastExportedId = 0, lastLedger = null, rowsExported = 0, schemaVersion = 1, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO warehouse_export_checkpoints (warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (warehouse, table_name) DO UPDATE SET
+          last_exported_id = excluded.last_exported_id,
+          last_ledger = excluded.last_ledger,
+          rows_exported = warehouse_export_checkpoints.rows_exported + excluded.rows_exported,
+          schema_version = excluded.schema_version,
+          updated_at = excluded.updated_at
+      `).run(warehouse, tableName, lastExportedId, lastLedger, rowsExported, schemaVersion, now);
+      return true;
+    },
+
+    async getWarehouseCheckpoint(warehouse, tableName) {
+      const row = database.prepare(`
+        SELECT warehouse, table_name, last_exported_id, last_ledger, rows_exported, schema_version, updated_at
+        FROM warehouse_export_checkpoints WHERE warehouse = ? AND table_name = ?
+      `).get(warehouse, tableName);
+      if (!row) return null;
+      return {
+        warehouse: row.warehouse,
+        tableName: row.table_name,
+        lastExportedId: row.last_exported_id,
+        lastLedger: row.last_ledger,
+        rowsExported: row.rows_exported,
+        schemaVersion: row.schema_version,
         updatedAt: row.updated_at,
       };
     },
