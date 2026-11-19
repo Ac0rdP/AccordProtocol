@@ -566,6 +566,36 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       };
     },
 
+    async setStreamCheckpoint({ exporter, lastEventId = null, lastLedger = null, eventsPublished = 0, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO stream_exporter_checkpoints (exporter, last_event_id, last_ledger, events_published, updated_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (exporter) DO UPDATE SET
+           last_event_id = EXCLUDED.last_event_id,
+           last_ledger = EXCLUDED.last_ledger,
+           events_published = EXCLUDED.events_published,
+           updated_at = EXCLUDED.updated_at`,
+        [exporter, lastEventId, lastLedger, eventsPublished, now]
+      );
+      return true;
+    },
+
+    async getStreamCheckpoint(exporter) {
+      const { rows } = await pool.query(
+        `SELECT exporter, last_event_id, last_ledger, events_published, updated_at
+         FROM stream_exporter_checkpoints WHERE exporter = $1`,
+        [exporter]
+      );
+      if (!rows[0]) return null;
+      return {
+        exporter: rows[0].exporter,
+        lastEventId: rows[0].last_event_id,
+        lastLedger: rows[0].last_ledger,
+        eventsPublished: Number(rows[0].events_published),
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
     async close() {
       await pool.end();
     },

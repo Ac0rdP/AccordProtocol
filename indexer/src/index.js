@@ -23,7 +23,8 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveGraphQLConfig } from "./config.js";
+import { resolveGraphQLConfig, resolveStreamExportersConfig } from "./config.js";
+import { createStreamDispatcher } from "./stream-exporters.js";
 
 const HELP = `Accord treasury indexer
 
@@ -305,6 +306,14 @@ async function serve({ store, stellar }) {
       })
     : null;
 
+  const streamConfig = resolveStreamExportersConfig();
+  const streamDispatcher = createStreamDispatcher({
+    store,
+    config: streamConfig,
+    metrics,
+  });
+  void streamDispatcher.start();
+
   async function indexAvailableEvents() {
     if (indexing) return;
     indexing = true;
@@ -319,6 +328,7 @@ async function serve({ store, stellar }) {
         pageLimit,
         finalityLag,
         subscriptions: graphqlSubscriptions,
+        onEvent: (event) => streamDispatcher.publish(event),
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
@@ -416,6 +426,7 @@ async function serve({ store, stellar }) {
     webhooks.stop();
     notifications.stop();
     graphqlSubscriptions?.close?.();
+    streamDispatcher.close();
     api.close(() => {
       store.close().finally(() => process.exit(0));
     });

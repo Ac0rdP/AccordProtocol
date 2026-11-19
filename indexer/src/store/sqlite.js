@@ -122,6 +122,13 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS graphql_client_checkpoints_updated_idx
       ON graphql_client_checkpoints (updated_at);
+    CREATE TABLE IF NOT EXISTS stream_exporter_checkpoints (
+      exporter TEXT PRIMARY KEY,
+      last_event_id TEXT,
+      last_ledger INTEGER,
+      events_published INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -691,6 +698,34 @@ export function openLedgerStore(databasePath) {
         lastEventId: row.last_event_id,
         lastLedger: row.last_ledger,
         connectedAt: row.connected_at,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async setStreamCheckpoint({ exporter, lastEventId = null, lastLedger = null, eventsPublished = 0, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO stream_exporter_checkpoints (exporter, last_event_id, last_ledger, events_published, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (exporter) DO UPDATE SET
+          last_event_id = excluded.last_event_id,
+          last_ledger = excluded.last_ledger,
+          events_published = excluded.events_published,
+          updated_at = excluded.updated_at
+      `).run(exporter, lastEventId, lastLedger, eventsPublished, now);
+      return true;
+    },
+
+    async getStreamCheckpoint(exporter) {
+      const row = database.prepare(`
+        SELECT exporter, last_event_id, last_ledger, events_published, updated_at
+        FROM stream_exporter_checkpoints WHERE exporter = ?
+      `).get(exporter);
+      if (!row) return null;
+      return {
+        exporter: row.exporter,
+        lastEventId: row.last_event_id,
+        lastLedger: row.last_ledger,
+        eventsPublished: row.events_published,
         updatedAt: row.updated_at,
       };
     },

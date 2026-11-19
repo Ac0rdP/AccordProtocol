@@ -70,6 +70,34 @@ Clients reconnecting after network drops can pass a checkpoint via the `Last-Eve
 | `GRAPHQL_MAX_SUBS_PER_CLIENT` | `50` | Maximum subscriptions tracked per connection. |
 | `GRAPHQL_REPLAY_MAX_EVENTS` | `1000` | Maximum historical events replayed on reconnect. |
 
+## Event stream exporters (Kafka & NATS)
+
+The indexer can export normalized contract and treasury events to durable message streaming platforms (Apache Kafka and NATS) for external consumption and asynchronous pipelines.
+
+### Kafka configuration
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `KAFKA_EXPORTER_ENABLED` | `false` | Enable Kafka event stream exporter. |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Kafka broker host:port addresses. |
+| `KAFKA_TOPIC_PREFIX` | `accord.events` | Topic prefix; events are sent to `<prefix>.<topic>`. |
+| `KAFKA_CLIENT_ID` | `accord-indexer` | Client ID sent with Kafka producer requests. |
+| `KAFKA_BATCH_SIZE` | `100` | Maximum messages per batch. |
+| `KAFKA_FLUSH_INTERVAL_MS` | `1000` | Maximum wait time before flushing queued messages. |
+
+### NATS configuration
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `NATS_EXPORTER_ENABLED` | `false` | Enable NATS event stream exporter. |
+| `NATS_SERVERS` | `nats://localhost:4222` | Comma-separated list of NATS server URLs. |
+| `NATS_SUBJECT_PREFIX` | `accord.events` | Subject prefix; messages are published to `<prefix>.<topic>`. |
+| `NATS_CLIENT_ID` | `accord-indexer` | Client identification sent to NATS server. |
+
+### Replay & checkpoint tracking
+
+Stream exporters track durable published checkpoints in `stream_exporter_checkpoints`. Operators can replay historical ranges using `replayFrom(store, checkpointId)` without producing duplicate records.
+
 ## Analytics API metrics
 
 | Metric | Type | Labels | Meaning |
