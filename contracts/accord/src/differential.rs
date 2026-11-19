@@ -228,7 +228,7 @@ pub struct DifferentialHarness {
 }
 
 impl DifferentialHarness {
-    pub fn new(owner_weights: &[(u32)], threshold: u32, timelock_delay: u64) -> Self {
+    pub fn new(owner_weights: &[u32], threshold: u32, timelock_delay: u64) -> Self {
         let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
             capture_snapshot_at_drop: false,
         });
