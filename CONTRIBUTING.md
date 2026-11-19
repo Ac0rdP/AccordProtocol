@@ -999,7 +999,7 @@ maintainers control when they land.
   approved by repository maintainers. Auto-merge is disabled.
 - **CI requirements**: Every dependency PR must pass the required status checks
   on `main` — secret and malware scans, supply-chain policy, contract build,
-  tests, coverage and benchmarks, and the documentation check. See
+  tests, coverage and benchmarks. See
   [`docs/CI.md`](./docs/CI.md#required-status-checks).
 - **Lockfile changes**: Commit the updated lockfile (`Cargo.lock`,
   `frontend/package-lock.json`, `indexer/package-lock.json`) with the manifest

@@ -163,11 +163,14 @@ regardless of which paths it touches:
 | Contract Coverage | `contract.yml` |
 | Contract Benchmarks | `contract.yml` |
 | Detect testnet upgrade paths | `contract.yml` |
-| Docs build & link validation | `docs.yml` |
 
 `Testnet Upgrade Simulation` is intentionally not required: it only runs when
 the upgrade-path detector marks a pull request as relevant, and GitHub treats a
 skipped job as passing.
+
+`Docs build & link validation` is also not required while the lychee action's
+`output` configuration is being fixed; the documentation build still runs and
+reports on every pull request.
 
 Path-filtered workflows (`frontend-ci.yml`, `frontend-storybook.yml`,
 `indexer-analytics.yml`, `launch-checklist.yml`, `sbom.yml`, `pages.yml`,
@@ -201,8 +204,7 @@ gh api -X PUT repos/Ac0rdP/AccordProtocol/branches/main/protection \
       "Contract Snapshot Verification",
       "Contract Coverage",
       "Contract Benchmarks",
-      "Detect testnet upgrade paths",
-      "Docs build & link validation"
+      "Detect testnet upgrade paths"
     ]
   },
   "enforce_admins": true,
