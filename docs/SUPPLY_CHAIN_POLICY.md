@@ -46,13 +46,14 @@ Verification is applied wherever the ecosystem supports it:
 - **Release binaries** — the Gitleaks binary is checked against the checksum
   file published with its release before it runs.
 - **Advisories and licenses** — `cargo audit` and `cargo deny check` run in
-  [`contract.yml`](../.github/workflows/contract.yml); Dependabot opens weekly
-  update PRs for Cargo, npm and GitHub Actions
-  ([`dependabot.yml`](../.github/dependabot.yml)).
+  [`contract.yml`](../.github/workflows/contract.yml).
 
 ## Updating dependencies
 
-1. Update through a PR (usually Dependabot). The lockfile diff is part of the review.
+Dependabot is disabled for this repository; dependency updates are opened
+manually.
+
+1. Update through a PR. The lockfile diff is part of the review.
 2. Review new or changed packages, especially new transitive packages and any
    that gained install scripts.
 3. CI must pass the supply-chain workflow before merge.
