@@ -17,7 +17,7 @@ use std::{
     env, fs,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -97,7 +97,7 @@ pub struct Rule {
 }
 
 impl Rule {
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.id.trim().is_empty() {
             bail!("an alert rule needs a non-empty id");
         }
@@ -146,7 +146,7 @@ impl Rule {
         Ok(())
     }
 
-    fn kind_name(&self) -> &'static str {
+    pub fn kind_name(&self) -> &'static str {
         match self.kind {
             RuleKind::SpendThreshold { .. } => "spend_threshold",
             RuleKind::ApprovalBurst { .. } => "approval_burst",
@@ -178,6 +178,15 @@ fn reject_unknown_fields(rule: &serde_json::Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Parses and validates one rule object: unknown fields and every setting are
+/// checked, exactly as for a rule from `ALERT_RULES`.
+pub fn parse_rule(value: serde_json::Value) -> Result<Rule> {
+    reject_unknown_fields(&value)?;
+    let rule: Rule = serde_json::from_value(value).context("the alert rule is malformed")?;
+    rule.validate()?;
+    Ok(rule)
 }
 
 /// Parses and validates a JSON array of rules. Ids must be unique.
@@ -244,13 +253,13 @@ pub enum AlertEvent {
 }
 
 impl AlertEvent {
-    fn key(&self) -> &str {
+    pub(crate) fn key(&self) -> &str {
         match self {
             Self::Transfer { key, .. } | Self::Approval { key, .. } => key,
         }
     }
 
-    fn occurred_at(&self) -> DateTime<Utc> {
+    pub(crate) fn occurred_at(&self) -> DateTime<Utc> {
         match self {
             Self::Transfer { occurred_at, .. } | Self::Approval { occurred_at, .. } => *occurred_at,
         }
@@ -282,7 +291,7 @@ pub struct Evaluation {
     pub suppressed: u32,
 }
 
-type SubjectKey = (usize, String, String, String);
+type SubjectKey = (String, String, String, String);
 
 #[derive(Default)]
 struct EngineState {
@@ -295,7 +304,10 @@ struct EngineState {
 }
 
 pub struct AlertEngine {
-    rules: Vec<Rule>,
+    /// Rules from the deployment's configuration; they cannot be edited at runtime.
+    base_rules: Vec<Rule>,
+    /// Everything currently evaluated: the base rules plus the active managed ones.
+    rules: RwLock<Vec<Rule>>,
     settings: StormSettings,
     state: Mutex<EngineState>,
 }
@@ -311,14 +323,64 @@ fn within(duration: Duration) -> chrono::Duration {
 impl AlertEngine {
     pub fn new(rules: Vec<Rule>, settings: StormSettings) -> Self {
         Self {
-            rules,
+            base_rules: rules.clone(),
+            rules: RwLock::new(rules),
             settings,
             state: Mutex::new(EngineState::default()),
         }
     }
 
-    pub fn rules(&self) -> &[Rule] {
-        &self.rules
+    /// The rules being evaluated right now.
+    pub fn rules(&self) -> Vec<Rule> {
+        self.rules
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The rules that come from configuration and cannot be changed through the API.
+    pub fn base_rules(&self) -> &[Rule] {
+        &self.base_rules
+    }
+
+    /// Makes the engine evaluate its configured rules plus `managed`, the active
+    /// rules stored through the management API. A managed rule whose id is
+    /// already taken by a configured rule is ignored. Windows and cooldowns of
+    /// a rule that was removed or edited are dropped, so a new threshold never
+    /// inherits samples counted under the old one. Returns whether anything changed.
+    pub fn replace_managed(&self, managed: Vec<Rule>) -> bool {
+        let mut next = self.base_rules.clone();
+        for rule in managed {
+            if !next.iter().any(|existing| existing.id == rule.id) {
+                next.push(rule);
+            }
+        }
+
+        let mut rules = self
+            .rules
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *rules == next {
+            return false;
+        }
+        let unchanged: HashSet<&str> = rules
+            .iter()
+            .filter(|old| next.iter().any(|new| new == *old))
+            .map(|rule| rule.id.as_str())
+            .collect();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .windows
+            .retain(|(rule_id, ..), _| unchanged.contains(rule_id.as_str()));
+        state
+            .last_fired
+            .retain(|(rule_id, ..), _| unchanged.contains(rule_id.as_str()));
+        drop(state);
+        *rules = next;
+        true
     }
 
     pub fn settings(&self) -> &StormSettings {
@@ -328,6 +390,9 @@ impl AlertEngine {
     /// Evaluates one event against every rule. An event the engine has already
     /// seen is ignored, so replaying events never produces a second alert.
     pub fn evaluate(&self, event: &AlertEvent) -> Evaluation {
+        // Read the rules before taking the state lock: `replace_managed` locks
+        // them in the other order, so holding both here could deadlock.
+        let rules = self.rules();
         let mut state = self
             .state
             .lock()
@@ -345,12 +410,12 @@ impl AlertEngine {
 
         let mut evaluation = Evaluation::default();
         let at = event.occurred_at();
-        for (index, rule) in self.rules.iter().enumerate() {
-            let Some(hit) = self.observe(&mut state, index, rule, event) else {
+        for rule in &rules {
+            let Some(hit) = self.observe(&mut state, rule, event) else {
                 continue;
             };
             let subject_key = (
-                index,
+                rule.id.clone(),
                 hit.network.clone(),
                 hit.contract_id.clone(),
                 hit.subject.clone(),
@@ -409,7 +474,6 @@ impl AlertEngine {
     fn observe(
         &self,
         state: &mut EngineState,
-        index: usize,
         rule: &Rule,
         event: &AlertEvent,
     ) -> Option<Hit> {
@@ -436,7 +500,7 @@ impl AlertEngine {
                 let total = push_sample(
                     state,
                     (
-                        index,
+                        rule.id.clone(),
                         network.clone(),
                         contract_id.clone(),
                         event_token.clone(),
@@ -476,7 +540,7 @@ impl AlertEngine {
             ) => {
                 let count = push_sample(
                     state,
-                    (index, network.clone(), contract_id.clone(), owner.clone()),
+                    (rule.id.clone(), network.clone(), contract_id.clone(), owner.clone()),
                     *occurred_at,
                     1,
                     secs(*window_secs),
@@ -704,8 +768,10 @@ fn split_list(value: &str) -> Vec<String> {
 }
 
 impl AlertConfig {
-    /// `None` when no rules are configured: alerting is then off entirely.
-    pub fn from_env() -> Result<Option<Self>> {
+    /// The alerting settings from the environment. Configured rules are
+    /// optional: with none the engine starts empty and evaluates only the rules
+    /// managed through `/alert-rules`.
+    pub fn from_env() -> Result<Self> {
         let json = match (env::var("ALERT_RULES_FILE"), env::var("ALERT_RULES")) {
             (Ok(path), _) if !path.trim().is_empty() => Some(
                 fs::read_to_string(path.trim())
@@ -714,13 +780,10 @@ impl AlertConfig {
             (_, Ok(inline)) if !inline.trim().is_empty() => Some(inline),
             _ => None,
         };
-        let Some(json) = json else {
-            return Ok(None);
+        let rules = match json {
+            Some(json) => parse_rules(&json)?,
+            None => Vec::new(),
         };
-        let rules = parse_rules(&json)?;
-        if rules.is_empty() {
-            return Ok(None);
-        }
 
         let defaults = StormSettings::default();
         let max_alerts = env_number("ALERT_MAX_PER_WINDOW", defaults.max_alerts)?;
@@ -733,7 +796,7 @@ impl AlertConfig {
             bail!("ALERT_POLL_SECS must be at least 1");
         }
 
-        Ok(Some(Self {
+        Ok(Self {
             rules,
             settings: StormSettings {
                 cooldown: Duration::from_secs(env_number(
@@ -747,7 +810,7 @@ impl AlertConfig {
             recipients: split_list(&env::var("ALERT_RECIPIENTS").unwrap_or_default()),
             poll_interval: Duration::from_secs(poll_secs),
             backfill: env_number("ALERT_BACKFILL", false)?,
-        }))
+        })
     }
 
     /// Builds the channels named by `ALERT_CHANNELS`.
@@ -1096,6 +1159,16 @@ impl Watcher {
 
         let mut fired = 0;
         if let Some(runtime) = &self.alerts {
+            // Pick up rules created, edited or paused through the API, possibly
+            // by another instance.
+            match crate::alert_rules::load_active(&self.pool).await {
+                Ok(managed) => {
+                    if runtime.engine.replace_managed(managed) {
+                        tracing::info!("alert rules reloaded");
+                    }
+                }
+                Err(error) => tracing::error!(%error, "failed to load managed alert rules"),
+            }
             for (network, contract_id) in &self.pairs {
                 fired += poll_pair(
                     &self.pool,
