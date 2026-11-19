@@ -1,0 +1,46 @@
+{
+  "budgets": [
+    {
+      "name": "errors",
+      "exports": ["parseContractError", "AccordContractError", "ContractError"],
+      "maxGzipBytes": "3 KB",
+      "forbiddenImports": ["@stellar/stellar-sdk", "dist/esm/client.js", "dist/esm/conversion.js"]
+    },
+    {
+      "name": "validation",
+      "exports": ["validateAddress", "validateDescription"],
+      "maxGzipBytes": "3 KB",
+      "forbiddenImports": ["dist/esm/client.js", "dist/esm/conversion.js"]
+    },
+    {
+      "name": "client",
+      "exports": ["AccordClient"],
+      "maxGzipBytes": "8 KB",
+      "forbiddenImports": ["dist/esm/abi.js", "dist/esm/codegen.js", "dist/esm/release.js", "dist/esm/bundle-budget.js"]
+    },
+    {
+      "name": "codegen",
+      "exports": ["parseSorobanSpec", "generateClient"],
+      "maxGzipBytes": "8 KB",
+      "forbiddenImports": ["@stellar/stellar-sdk", "dist/esm/client.js", "dist/esm/conversion.js"]
+    },
+    {
+      "name": "release",
+      "exports": ["planRelease"],
+      "maxGzipBytes": "4 KB",
+      "forbiddenImports": ["@stellar/stellar-sdk", "dist/esm/client.js", "dist/esm/codegen.js"]
+    },
+    {
+      "name": "bundle-budget",
+      "exports": ["evaluateBudgets", "validateBudgets"],
+      "maxGzipBytes": "4 KB",
+      "forbiddenImports": ["@stellar/stellar-sdk", "dist/esm/client.js"]
+    },
+    {
+      "name": "full",
+      "exports": "*",
+      "maxBytes": "52 KB",
+      "maxGzipBytes": "16 KB"
+    }
+  ]
+}

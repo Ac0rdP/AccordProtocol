@@ -15,6 +15,9 @@ Official TypeScript client SDK for **Accord Protocol** multisig treasury smart c
 - **Pre-flight Validation**: Addresses (G... and C...) and parameters are validated before any network dispatch.
 - **Typed Contract Errors**: Automatically maps on-chain Soroban error codes (1–57) to typed `AccordContractError` classes.
 - **Dual Bundle**: Ships ESM, CommonJS, and TypeScript declarations (`sideEffects: false`).
+- **Multi-language Codegen**: Generates typed Python and Go clients from the contract ABI ([details](#multi-language-code-generation)).
+- **Bundle Budgets**: Per-entry-point size limits and forbidden-import rules keep the package tree-shakeable ([details](#bundle-size-budgets)).
+- **Automated Releases**: Versions, changelog, and npm provenance derived from Conventional Commits ([details](#releases)).
 
 ---
 
@@ -157,6 +160,104 @@ try {
 - `enterRecovery(...)` / `exitRecovery(...)`: Outflow stop and resumption.
 - `setClassicAsset(...)`: Map classic asset to SAC address.
 - `upgrade(...)`: In-place contract WASM bytecode upgrade.
+
+---
+
+## Multi-language Code Generation
+
+Generate typed clients for other languages from the same contract ABI that the TypeScript SDK wraps. Supported languages: **Python** (dataclasses, `IntEnum`, typed client) and **Go** (structs, typed constants, `error`-implementing `ContractError`, typed client).
+
+Generated clients are transport-agnostic: they own method names, argument order and types, and delegate the actual Soroban call to an `Invoker` you supply, so signing and secrets stay in your application.
+
+```typescript
+import { readFileSync, writeFileSync } from "node:fs";
+import { generateClient, parseSorobanSpec } from "@accord-protocol/sdk";
+
+// Produced by: stellar contract info interface --wasm accord.wasm --output json > accord-spec.json
+const abi = parseSorobanSpec(readFileSync("accord-spec.json", "utf8"));
+
+const python = generateClient(abi, { language: "python" });
+writeFileSync(python.fileName, python.source); // accord_contract_client.py
+
+const go = generateClient(abi, { language: "go", clientName: "Treasury", packageName: "treasury" });
+writeFileSync(go.fileName, go.source); // treasury.go
+```
+
+From a checkout, the same thing is available as a CLI:
+
+```bash
+npm run build
+npm run codegen -- --spec=accord-spec.json --out=generated --lang=python,go
+```
+
+| Soroban type | Python | Go |
+|---|---|---|
+| `u32` / `i32` / `u64` / `i64` | `int` | `uint32` / `int32` / `uint64` / `int64` |
+| `u128` / `i128` / `u256` / `i256` | `int` | `*big.Int` |
+| `address` / `string` / `symbol` | `str` | `string` |
+| `bytes` / `BytesN<N>` | `bytes` | `[]byte` / `[N]byte` |
+| `Vec<T>` / `Option<T>` / `Map<K, V>` | `List[T]` / `Optional[T]` / `Dict[K, V]` | `[]T` / `*T` / `map[K]V` |
+| `Result<T, E>` | `T` (errors raised by the invoker) | `(T, error)` |
+| `#[contracttype]` struct / enum / union | `@dataclass` / `IntEnum` / tagged dataclass | struct / typed consts / `Tag`+`Values` struct |
+
+`parseSorobanSpec` and `generateClient` throw `AccordValidationError` (with the offending field path) for malformed specs, undeclared type references, unsupported languages and invalid names.
+
+---
+
+## Bundle Size Budgets
+
+The package is `sideEffects: false` and the developer-tooling modules (`codegen`, `release`, `bundle-budget`) never import `AccordClient` or `@stellar/stellar-sdk`, so importing `parseContractError` does not pull in the client. [`bundle-budgets.json`](./bundle-budgets.json) enforces this per entry point: each budget lists the exports to import, a minified and/or gzip limit, and `forbiddenImports` that must not appear in that bundle.
+
+```bash
+npm run build
+npm run size           # fails with exit code 1 on any violation
+npm run size -- --json # machine-readable report
+```
+
+The same checks are available programmatically, for example to gate your own app's bundles:
+
+```typescript
+import { evaluateBudgets, formatBudgetReport, validateBudgets } from "@accord-protocol/sdk";
+
+const budgets = validateBudgets([
+  { name: "errors", exports: ["parseContractError"], maxGzipBytes: "3 KB", forbiddenImports: ["@stellar/stellar-sdk"] },
+]);
+const report = evaluateBudgets(budgets, [
+  { name: "errors", bytes: 7600, gzipBytes: 2500, modules: ["dist/esm/errors.js"] },
+]);
+console.log(formatBudgetReport(report)); // PASS  errors ...
+```
+
+When a change legitimately grows an entry, raise its budget in the same PR and explain why in the description.
+
+---
+
+## Releases
+
+Releases are automated from [Conventional Commits](https://www.conventionalcommits.org/) by `.github/workflows/sdk-release.yml` on every push to `main` that touches `packages/sdk/`:
+
+| Commit | Release |
+|---|---|
+| `fix:`, `perf:`, `revert:` | patch |
+| `feat:` | minor |
+| `type!:` or a `BREAKING CHANGE:` footer | major (minor while on `0.x`) |
+| anything else (`docs:`, `chore:`, `test:`, ...) | no release |
+
+The workflow runs typecheck, tests, build and size budgets, then `scripts/release.mjs --publish` computes the next version, writes it and the new changelog section into the package, publishes to npm with **provenance attestations**, pushes an `sdk-v<version>` tag and creates a GitHub Release with the notes. The tag is the source of truth for the released version. Preview locally with:
+
+```bash
+npm run build && npm run release   # dry run: prints the next version and notes
+```
+
+The planner is exported for reuse:
+
+```typescript
+import { planRelease } from "@accord-protocol/sdk";
+
+const plan = planRelease("0.1.0", ["feat(sdk): add codegen", "fix: handle empty spec", "docs: typo"]);
+console.log(plan?.nextVersion); // "0.2.0"
+console.log(plan?.tag);         // "sdk-v0.2.0"
+```
 
 ---
 

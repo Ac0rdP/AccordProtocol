@@ -1,0 +1,77 @@
+[
+  { "udt_struct_v0": { "doc": "", "lib": "", "name": "Transfer", "fields": [
+    { "doc": "", "name": "to", "type_": "address" },
+    { "doc": "", "name": "token", "type_": "address" },
+    { "doc": "", "name": "amount", "type_": "i128" }
+  ] } },
+  { "udt_union_v0": { "doc": "", "lib": "", "name": "ProposalStatus", "cases": [
+    { "void_v0": { "doc": "", "name": "Pending" } },
+    { "void_v0": { "doc": "", "name": "Ready" } },
+    { "void_v0": { "doc": "", "name": "Executed" } },
+    { "void_v0": { "doc": "", "name": "Expired" } },
+    { "void_v0": { "doc": "", "name": "Revoked" } },
+    { "void_v0": { "doc": "", "name": "Cancelled" } }
+  ] } },
+  { "udt_union_v0": { "doc": "", "lib": "", "name": "ProposalCategory", "cases": [
+    { "void_v0": { "doc": "", "name": "Transfer" } },
+    { "void_v0": { "doc": "", "name": "Payroll" } },
+    { "void_v0": { "doc": "", "name": "Grant" } },
+    { "void_v0": { "doc": "", "name": "Ops" } },
+    { "void_v0": { "doc": "", "name": "Other" } }
+  ] } },
+  { "udt_union_v0": { "doc": "What a proposal does when executed.", "lib": "", "name": "ProposalKind", "cases": [
+    { "tuple_v0": { "doc": "", "name": "Transfer", "type_": [ { "vec": { "element_type": { "udt": { "name": "Transfer" } } } } ] } },
+    { "tuple_v0": { "doc": "", "name": "AddOwner", "type_": [ "address" ] } }
+  ] } },
+  { "udt_struct_v0": { "doc": "A treasury proposal.", "lib": "", "name": "Proposal", "fields": [
+    { "doc": "", "name": "id", "type_": "u64" },
+    { "doc": "", "name": "proposer", "type_": "address" },
+    { "doc": "", "name": "description", "type_": "string" },
+    { "doc": "", "name": "deadline", "type_": "u64" },
+    { "doc": "", "name": "approvals", "type_": "u32" },
+    { "doc": "", "name": "approval_weight", "type_": "u32" },
+    { "doc": "", "name": "status", "type_": { "udt": { "name": "ProposalStatus" } } },
+    { "doc": "", "name": "kind", "type_": { "udt": { "name": "ProposalKind" } } },
+    { "doc": "", "name": "ready_at", "type_": "u64" },
+    { "doc": "", "name": "quorum_weight", "type_": "u32" },
+    { "doc": "", "name": "category", "type_": { "udt": { "name": "ProposalCategory" } } },
+    { "doc": "", "name": "attachment_hash", "type_": { "option": { "value_type": { "bytes_n": { "n": 32 } } } } }
+  ] } },
+  { "udt_error_enum_v0": { "doc": "", "lib": "", "name": "ContractError", "cases": [
+    { "doc": "", "name": "AlreadyInitialized", "value": 1 },
+    { "doc": "", "name": "Unauthorized", "value": 3 },
+    { "doc": "", "name": "ProposalNotFound", "value": 6 },
+    { "doc": "", "name": "RecoveryActive", "value": 57 }
+  ] } },
+  { "function_v0": { "doc": "Returns the current approval threshold.", "name": "get_threshold", "inputs": [], "outputs": [
+    { "result": { "ok_type": "u32", "error_type": { "udt": { "name": "ContractError" } } } }
+  ] } },
+  { "function_v0": { "doc": "", "name": "get_owners", "inputs": [], "outputs": [
+    { "result": { "ok_type": { "vec": { "element_type": "address" } }, "error_type": { "udt": { "name": "ContractError" } } } }
+  ] } },
+  { "function_v0": { "doc": "", "name": "get_proposal", "inputs": [
+    { "doc": "", "name": "proposal_id", "type_": "u64" }
+  ], "outputs": [
+    { "result": { "ok_type": { "udt": { "name": "Proposal" } }, "error_type": { "udt": { "name": "ContractError" } } } }
+  ] } },
+  { "function_v0": { "doc": "Returns the spending limit for an (owner, token) pair, or `None` if no\nlimit is set.", "name": "get_spending_limit", "inputs": [
+    { "doc": "", "name": "owner", "type_": "address" },
+    { "doc": "", "name": "token", "type_": "address" }
+  ], "outputs": [ { "option": { "value_type": "i128" } } ] } },
+  { "function_v0": { "doc": "", "name": "approve", "inputs": [
+    { "doc": "", "name": "approver", "type_": "address" },
+    { "doc": "", "name": "proposal_id", "type_": "u64" }
+  ], "outputs": [
+    { "result": { "ok_type": "void", "error_type": { "udt": { "name": "ContractError" } } } }
+  ] } },
+  { "function_v0": { "doc": "", "name": "create_proposal", "inputs": [
+    { "doc": "", "name": "proposer", "type_": "address" },
+    { "doc": "", "name": "transfers", "type_": { "vec": { "element_type": { "udt": { "name": "Transfer" } } } } },
+    { "doc": "", "name": "description", "type_": "string" },
+    { "doc": "", "name": "deadline", "type_": "u64" },
+    { "doc": "", "name": "category", "type_": { "udt": { "name": "ProposalCategory" } } }
+  ], "outputs": [
+    { "result": { "ok_type": "u64", "error_type": { "udt": { "name": "ContractError" } } } }
+  ] } },
+  { "event_v0": { "doc": "", "lib": "", "name": "ProposalCreated", "prefix_topics": [ "created" ], "params": [], "data_format": "map" } }
+]
