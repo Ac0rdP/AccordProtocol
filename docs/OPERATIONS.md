@@ -378,6 +378,108 @@ node scripts/security-controls.mjs workspace delete \
   --audit=./data/security-audit.jsonl --actor=privacy-team
 ```
 
+### SSO operations (SAML / OIDC)
+
+`scripts/sso-controls.mjs` verifies IdP sign-ins, provisions team users just in
+time, and enforces session policy (see
+[docs/SECURITY.md](./SECURITY.md#enterprise-sso-saml--oidc-just-in-time-provisioning-and-session-policy)).
+Keep the SSO config, user store, session store, and replay cache in restricted
+(`0600`) files; the CLI writes them with that mode.
+
+#### Configuring a provider
+
+```json
+{
+  "clockSkewSeconds": 120,
+  "providers": [
+    {
+      "id": "acme-saml",
+      "team": "treasury-team",
+      "protocol": "saml",
+      "issuer": "http://www.okta.com/exk123",
+      "audience": "https://accord.example/saml/metadata",
+      "allowedDomains": ["acme.example"],
+      "signingCertFingerprints": ["<sha256 of the IdP signing certificate>"]
+    },
+    {
+      "id": "acme-oidc",
+      "team": "treasury-team",
+      "protocol": "oidc",
+      "issuer": "https://idp.acme.example",
+      "audience": "<client id>",
+      "allowedDomains": ["acme.example"],
+      "allowedAlgorithms": ["RS256"],
+      "jwks": { "keys": [{ "kty": "RSA", "kid": "...", "alg": "RS256", "n": "...", "e": "AQAB" }] }
+    }
+  ],
+  "jit": {
+    "enabled": true,
+    "allowedRoles": ["treasury_operator", "security_auditor"],
+    "groupRoles": { "accord-treasury": ["treasury_operator"], "accord-audit": ["security_auditor"] }
+  },
+  "session": {
+    "maxAgeMinutes": 480,
+    "idleTimeoutMinutes": 30,
+    "requireMfa": true,
+    "reauthMinutesForActions": { "treasury_transfer": 15, "policy_change": 15 }
+  }
+}
+```
+
+Add `"sso_admin": ["sso_admin"]` to the security policy `permissions` and grant
+`sso_admin` to the Security Administrator. Validate every config change before
+deploying it:
+
+```bash
+node scripts/sso-controls.mjs validate --config=./config/sso.json
+```
+
+**Key rotation**: when the IdP rotates its signing certificate or JWKS, add the
+new fingerprint/JWK alongside the old one, deploy, wait for the IdP cutover,
+then remove the old entry. Never paste a private key or client secret into the
+config; validation rejects JWKs with private (`d`) or symmetric (`k`) material.
+
+#### Sign-in, session checks, and role projection
+
+```bash
+# SAML: --assertion is the gateway's verified-assertion JSON. OIDC: --id-token is the raw JWT.
+node scripts/sso-controls.mjs login --config=./config/sso.json --provider=acme-oidc \
+  --id-token=./tmp/id_token.jwt --nonce="$NONCE" \
+  --users=./data/sso-users.json --sessions=./data/sso-sessions.json \
+  --replay=./data/sso-replay.json --audit=./data/security-audit.jsonl
+
+node scripts/sso-controls.mjs session-check --config=./config/sso.json \
+  --sessions=./data/sso-sessions.json --token="$SESSION" --action=treasury_transfer
+
+# Project active SSO users' roles into the security policy (policy_admin only).
+node scripts/sso-controls.mjs sync-policy --policy=./config/security-policy.json \
+  --actor=sec-admin --users=./data/sso-users.json --audit=./data/security-audit.jsonl
+```
+
+A `re-authentication required` result means the operator must sign in again
+through the IdP before the privileged action; do not extend the window.
+
+#### Deprovisioning (leaver or compromised account)
+
+Remove the user from the IdP groups first, then suspend them in Accord so
+active sessions end immediately rather than at next login:
+
+```bash
+node scripts/sso-controls.mjs deprovision --policy=./config/security-policy.json \
+  --actor=sec-admin --user=sso:acme-oidc:00u-alice --reason="leaver ticket SEC-123" \
+  --users=./data/sso-users.json --sessions=./data/sso-sessions.json \
+  --audit=./data/security-audit.jsonl
+```
+
+Then run `sync-policy` so the suspended actor is removed from the policy.
+
+#### Manual verification (quarterly and after IdP changes)
+
+1. Run `validate` against the deployed config and record the output.
+2. Compare `signingCertFingerprints` / JWKS `kid`s with the IdP's current metadata.
+3. Review `sso_jit_provision`, `sso_role_sync`, `sso_login_denied`, and `sso_deprovision` audit records against IdP group changes and HR leaver lists.
+4. Confirm no suspended user holds roles in the policy and no session for them is `active`.
+
 ### Verification record
 
 | Control | Owner | Scope | Failure Behavior | Automated Verification | Manual Evidence |
@@ -389,5 +491,6 @@ node scripts/security-controls.mjs workspace delete \
 | **SOC 2 Evidence Package** | Compliance Officer | All protocol and operational controls | Fails closed on broken evidence chain | `scripts/security-controls.mjs soc2 export` | Signed auditor package and SHA-256 manifest file |
 | **Data Residency Pinning** | Infrastructure Operator | Workspace storage, backups, and exports | Fails closed on region mismatch or unapproved region | `scripts/security-controls.mjs residency verify` | Regional cloud tagging and backup checksum log |
 | **Privacy Export & Deletion** | Privacy Administrator | User and tenant personal data | Fails closed on active retention exceptions | `node --test scripts/security-controls.test.mjs` | Retention exception filings and deletion receipts |
+| **SSO (SAML/OIDC), JIT & Session Policy** | Security Administrator | Team sign-in, SSO-managed roles, and privileged-action sessions | Fails closed on unpinned key, claim mismatch, replay, off-domain or non-MFA login, suspended user, or expired/idle/step-up session | `node --test scripts/sso-controls.test.mjs`; `scripts/sso-controls.mjs validate` | Quarterly IdP metadata comparison and leaver review of SSO audit records |
 
 The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.

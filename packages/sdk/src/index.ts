@@ -10,3 +10,10 @@ export * from "./types.js";
 export * from "./errors.js";
 export * from "./validation.js";
 export * from "./conversion.js";
+
+// Developer tooling. These modules do not import AccordClient or
+// @stellar/stellar-sdk, so they tree-shake independently (see bundle-budgets.json).
+export * from "./abi.js";
+export * from "./codegen.js";
+export * from "./release.js";
+export * from "./bundle-budget.js";

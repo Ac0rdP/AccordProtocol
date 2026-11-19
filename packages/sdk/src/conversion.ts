@@ -10,7 +10,6 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type {
-  AssetReference,
   AssetTransfer,
   CreateRecurringParams,
   Delegation,

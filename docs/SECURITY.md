@@ -270,6 +270,37 @@ Workspace data, indexing databases, backups, and exports are pinned to specific 
 - **Link to Existing Risks**:
   - Mitigates multi-tenant data exfiltration risks and regulatory penalties associated with cross-border transfer violations and improper record destruction.
 
+### Enterprise SSO (SAML / OIDC), just-in-time provisioning, and session policy
+
+Team accounts can sign in through an enterprise identity provider (IdP) using
+SAML 2.0 or OpenID Connect. `scripts/sso-controls.mjs` is the enforcement point
+between the IdP and the workspace roles that `scripts/security-controls.mjs`
+authorizes against. It is an off-chain operator control: it never holds wallet
+keys, and SSO roles cannot satisfy or bypass on-chain owner quorum, RBAC, or
+guardian checks.
+
+- **Owner**: Security Administrator (`sso_admin` for deprovisioning, `policy_admin` for projecting SSO roles into the policy).
+- **Scope**: Every interactive sign-in to a team workspace through a configured IdP, the resulting workspace roles, and the session used for privileged off-chain actions (treasury preflight, privacy, policy, key management).
+- **Threat Model**:
+  - Forged or tampered assertions/ID tokens, including `alg: none`, HMAC key-confusion against a published JWKS, or an assertion signed by a certificate the IdP did not intend.
+  - Assertions or tokens issued for another service (wrong audience/issuer), or captured and replayed.
+  - Sign-in by accounts outside the organization (unverified or off-domain email), or without MFA.
+  - IdP compromise or misconfiguration granting roles through group membership, in particular control-plane roles.
+  - Stale access after an employee leaves or changes teams: lingering roles or long-lived sessions.
+  - Session token theft from the session store.
+- **Enforcement and Failure Behavior** (all checks **fail closed** and are audited as `sso_login_denied` where applicable):
+  - **Pinned trust**: OIDC tokens are verified with Node's crypto against a pinned JWKS (asymmetric `RS*`/`ES*`/`PS256` only; `none` and `HS*` are rejected; JWKs containing private or symmetric material are rejected at config load). SAML XML-DSig is verified by the SAML gateway library, and the control additionally requires `signatureVerified: true` from it plus a SHA-256 signing-certificate fingerprint that matches the pinned list.
+  - **Claims**: exact issuer and audience (and `azp` for multi-audience tokens), validity window with bounded clock skew (default 120 s), nonce when the caller supplies one, verified email in an `allowedDomains` entry, and MFA (`amr` for OIDC, `AuthnContextClassRef` for SAML) when `session.requireMfa` is set.
+  - **Replay**: every assertion ID / `jti` is recorded until it expires; a second use is denied.
+  - **Just-in-time provisioning**: unknown users are created only when `jit.enabled` is true. Roles are recomputed from IdP groups on every login via `jit.groupRoles`, limited to `jit.allowedRoles`, so removing a group in the IdP removes the role at next login. A user with no mapped role is denied. Users are keyed by the stable IdP subject (`sso:<provider>:<subject>`), never by email, so a reassigned mailbox does not inherit access.
+  - **Protected roles**: `policy_admin`, `apikey_admin`, and `sso_admin` can never be granted through SSO; config validation rejects them in `jit.allowedRoles`, and role mapping filters them again at runtime.
+  - **Session policy**: absolute lifetime (`maxAgeMinutes`, further capped by the SAML `SessionNotOnOrAfter`), idle timeout, and step-up re-authentication windows per action (`reauthMinutesForActions`, for example 15 minutes for `treasury_transfer`). Session tokens are returned once; only their SHA-256 hash is stored.
+  - **Deprovisioning**: suspends the user, clears SSO roles, and revokes every active session immediately; a suspended user cannot sign in again until an administrator restores them.
+  - **No weakening of existing authorization**: `sync-policy` only adds or removes `sso:*` actors in the policy `roles` map. Manually managed actors and the `permissions` map are untouched, and `authorize()` remains the single authorization check.
+- **Link to Existing Risks**:
+  - Addresses the **Role Concentration Risk** and **Role-Revocation** concerns in the [RBAC threat model addendum](#role-based-access-control-rbac-threat-model-addendum) by tying off-chain roles to centrally managed IdP groups with prompt revocation, and the credential-exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md) by hashing session tokens and refusing secret key material in config.
+- **Residual risk**: a fully compromised IdP can still sign in as any user in an allowed domain and obtain that user's non-protected roles. Treasury movement still requires on-chain owner quorum. Keep `jit.allowedRoles` minimal, require MFA, and alert on `sso_role_sync` events in the SIEM.
+
 ### Mitigations
 
 Specific mechanisms are in place to enforce security boundaries:
