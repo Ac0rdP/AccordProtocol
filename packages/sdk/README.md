@@ -232,6 +232,98 @@ When a change legitimately grows an entry, raise its budget in the same PR and e
 
 ---
 
+## React Hooks
+
+Reusable hooks for building web applications and UI integrations:
+
+```typescript
+import { useAccordClient, useOwners, useProposal, useProposalActions } from "@accord-protocol/sdk";
+
+function ProposalView({ client, proposalId }: { client: AccordClient; proposalId: number }) {
+  const { data: proposal, loading, refetch } = useProposal(client, proposalId);
+  const { approve, execute } = useProposalActions(client);
+
+  if (loading) return <div>Loading...</div>;
+  return (
+    <div>
+      <h3>{proposal?.description}</h3>
+      <button onClick={() => approve(proposalId)}>Approve</button>
+      <button onClick={() => execute(proposalId)}>Execute</button>
+    </div>
+  );
+}
+```
+
+---
+
+## Accord CLI
+
+A machine-readable command-line interface for contract operations:
+
+```bash
+# Display help and available commands
+accord help
+
+# Propose a transfer with JSON output
+accord propose --to=GA... --amount=1000 --token=USDC --json
+
+# Approve and execute proposals
+accord approve --id=1
+accord execute --id=1
+```
+
+Programmatic CLI dispatcher is available via `runCli(argv)`:
+
+```typescript
+import { runCli } from "@accord-protocol/sdk";
+
+const result = await runCli(["query", "owners", "--json"]);
+console.log(result.output);
+```
+
+---
+
+## Event Subscriptions
+
+Typed event streams with cursor resumption, deduplication, and polling:
+
+```typescript
+import { subscribeEvents } from "@accord-protocol/sdk";
+
+const sub = subscribeEvents(async (cursor) => {
+  // Query indexed contract events from API or Horizon/Soroban RPC
+  return fetchEventsSince(cursor);
+}, { pollIntervalMs: 2500 });
+
+sub.on("proposal_created", (event) => {
+  console.log("New proposal created:", event.data);
+});
+
+sub.on("proposal_approved", (event) => {
+  console.log("Proposal approved:", event.data);
+});
+```
+
+---
+
+## Resilience & Circuit Breaker
+
+Automatic exponential backoff with jitter and circuit-breaker protection:
+
+```typescript
+import { CircuitBreaker, retryWithBackoff, withResilience } from "@accord-protocol/sdk";
+
+const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 15000 });
+
+// Wrap RPC queries with retry backoff and circuit protection
+const owners = await withResilience(
+  () => client.getOwners(),
+  { retry: { maxRetries: 3, baseDelayMs: 200 }, breaker }
+);
+```
+
+---
+
 ## Releases
 
 Releases are automated from [Conventional Commits](https://www.conventionalcommits.org/) by `.github/workflows/sdk-release.yml` on every push to `main` that touches `packages/sdk/`:
