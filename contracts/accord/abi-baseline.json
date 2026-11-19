@@ -1,0 +1,2940 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "package_version": "0.0.0",
+  "functions": [
+    {
+      "name": "approve",
+      "args": [
+        {
+          "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "approve_sponsored",
+      "args": [
+        {
+          "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "cancel_expired",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "ids",
+          "type": "Vec<u64>"
+        }
+      ],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "cancel_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "cancel_recurring_schedule",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "claim_stream",
+      "args": [
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "create_add_owner_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_approve_token_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_asset_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<AssetTransfer>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_asset_registry_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_cancel_recurring_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_change_guardian_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "new_guardian",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_change_threshold_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "new_threshold",
+          "type": "u32"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_change_weight_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "target_owner",
+          "type": "Address"
+        },
+        {
+          "name": "new_weight",
+          "type": "u32"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_escrow_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "params",
+          "type": "EscrowParams"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_grant_role_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "target",
+          "type": "Address"
+        },
+        {
+          "name": "role",
+          "type": "Symbol"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_modify_recurring_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "new_amount",
+          "type": "Option<i128>"
+        },
+        {
+          "name": "new_interval_secs",
+          "type": "Option<u64>"
+        },
+        {
+          "name": "new_end_time",
+          "type": "Option<u64>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_pause_recurring_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_proposal_with_attachment",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "attachment_hash",
+          "type": "Option<BytesN<32>>"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_recurring_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cliff_time",
+          "type": "u64"
+        },
+        {
+          "name": "total_cap",
+          "type": "i128"
+        },
+        {
+          "name": "kind",
+          "type": "RecurringKind"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_recurring_schedule",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "occurrences",
+          "type": "u32"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_remove_owner_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "owner_to_remove",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_resume_recurring_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_revoke_role_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "target",
+          "type": "Address"
+        },
+        {
+          "name": "role",
+          "type": "Symbol"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_spending_limit_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "limit",
+          "type": "i128"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_spending_window_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "limit",
+          "type": "i128"
+        },
+        {
+          "name": "window_secs",
+          "type": "u64"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "create_unapprove_token_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "disburse_recurring",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "disburse_recurring_schedule",
+      "args": [
+        {
+          "name": "id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "enter_recovery",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "execute",
+      "args": [
+        {
+          "name": "executor",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "exit_recovery",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "freeze",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "get_active_delegations",
+      "args": [],
+      "return_type": "Result<Vec<Delegation>, ContractError>"
+    },
+    {
+      "name": "get_active_recurring_count",
+      "args": [],
+      "return_type": "u32"
+    },
+    {
+      "name": "get_approvers",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<Vec<Address>, ContractError>"
+    },
+    {
+      "name": "get_asset_registry_enabled",
+      "args": [],
+      "return_type": "bool"
+    },
+    {
+      "name": "get_classic_asset",
+      "args": [
+        {
+          "name": "identifier",
+          "type": "Symbol"
+        }
+      ],
+      "return_type": "Option<Address>"
+    },
+    {
+      "name": "get_delegations",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<DelegationInfo, ContractError>"
+    },
+    {
+      "name": "get_effective_weight",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "get_escrow",
+      "args": [
+        {
+          "name": "escrow_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<EscrowRecord, ContractError>"
+    },
+    {
+      "name": "get_guardian",
+      "args": [],
+      "return_type": "Option<Address>"
+    },
+    {
+      "name": "get_max_single_owner_weight_pct",
+      "args": [],
+      "return_type": "u32"
+    },
+    {
+      "name": "get_next_disbursement_time",
+      "args": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "get_owner_spending_limits",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Vec<SpendingLimitEntry>"
+    },
+    {
+      "name": "get_owner_weight",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "get_owner_weights",
+      "args": [],
+      "return_type": "Result<Vec<OwnerWeight>, ContractError>"
+    },
+    {
+      "name": "get_owners",
+      "args": [],
+      "return_type": "Result<Vec<Address>, ContractError>"
+    },
+    {
+      "name": "get_proposal",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<Proposal, ContractError>"
+    },
+    {
+      "name": "get_proposal_approval_progress",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<ProposalApprovalProgress, ContractError>"
+    },
+    {
+      "name": "get_proposals_paged",
+      "args": [
+        {
+          "name": "offset",
+          "type": "u64"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "return_type": "Vec<Proposal>"
+    },
+    {
+      "name": "get_recurring_payment",
+      "args": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<RecurringPayment, ContractError>"
+    },
+    {
+      "name": "get_recurring_payments_paged",
+      "args": [
+        {
+          "name": "offset",
+          "type": "u64"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "return_type": "Vec<RecurringPayment>"
+    },
+    {
+      "name": "get_remaining_spending_limit",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Option<i128>"
+    },
+    {
+      "name": "get_required_quorum_weight",
+      "args": [],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "get_role_members",
+      "args": [
+        {
+          "name": "role",
+          "type": "Role"
+        }
+      ],
+      "return_type": "Vec<Address>"
+    },
+    {
+      "name": "get_role_version",
+      "args": [],
+      "return_type": "u32"
+    },
+    {
+      "name": "get_roles",
+      "args": [
+        {
+          "name": "address",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Vec<Role>"
+    },
+    {
+      "name": "get_spending_limit",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Option<i128>"
+    },
+    {
+      "name": "get_spending_window",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "u64"
+    },
+    {
+      "name": "get_spent_tracker",
+      "args": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "SpentTracker"
+    },
+    {
+      "name": "get_storage_version",
+      "args": [],
+      "return_type": "u32"
+    },
+    {
+      "name": "get_threshold",
+      "args": [],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "get_time_lock_delay",
+      "args": [],
+      "return_type": "u64"
+    },
+    {
+      "name": "get_total_proposals",
+      "args": [],
+      "return_type": "u64"
+    },
+    {
+      "name": "get_total_weight",
+      "args": [],
+      "return_type": "u32"
+    },
+    {
+      "name": "get_version",
+      "args": [
+        {
+          "name": "_env",
+          "type": "Env"
+        }
+      ],
+      "return_type": "u32"
+    },
+    {
+      "name": "has_approved",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "name": "has_role",
+      "args": [
+        {
+          "name": "address",
+          "type": "Address"
+        },
+        {
+          "name": "role",
+          "type": "Role"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "name": "initialize",
+      "args": [
+        {
+          "name": "owners",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "weights",
+          "type": "Vec<u32>"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        },
+        {
+          "name": "time_lock_delay",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "is_frozen",
+      "args": [],
+      "return_type": "bool"
+    },
+    {
+      "name": "is_governance_migrated",
+      "args": [],
+      "return_type": "bool"
+    },
+    {
+      "name": "is_in_recovery",
+      "args": [],
+      "return_type": "bool"
+    },
+    {
+      "name": "is_owner",
+      "args": [
+        {
+          "name": "address",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "name": "is_token_approved",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "name": "migrate_to_rbac",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "migrate_to_weighted_governance",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "refund_escrow",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "escrow_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "release_escrow",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "escrow_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "release_escrow_by_deadline",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "escrow_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "revoke",
+      "args": [
+        {
+          "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "set_classic_asset",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "identifier",
+          "type": "Symbol"
+        },
+        {
+          "name": "sac",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "set_guardian",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "new_guardian",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "set_max_single_owner_weight_pct",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "max_pct",
+          "type": "u32"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "sweep_expired",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "ids",
+          "type": "Vec<u64>"
+        }
+      ],
+      "return_type": "Result<u32, ContractError>"
+    },
+    {
+      "name": "unfreeze",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "upgrade",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "new_wasm_hash",
+          "type": "BytesN<32>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    }
+  ],
+  "types": [
+    {
+      "name": "AddOwnerExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "owner_count",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ApprovedTokenChangedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "approved",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "AssetReference",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Address",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "Classic",
+          "payload": [
+            "Symbol"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AssetRegistryEnabledEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "AssetTransfer",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "to",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "AssetReference"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "ChangeThresholdExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "previous_threshold",
+          "type": "u32"
+        },
+        {
+          "name": "new_threshold",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "CreateRecurringParams",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cliff_time",
+          "type": "u64"
+        },
+        {
+          "name": "total_cap",
+          "type": "i128"
+        },
+        {
+          "name": "kind",
+          "type": "RecurringKind"
+        }
+      ]
+    },
+    {
+      "name": "Delegation",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "delegator",
+          "type": "Address"
+        },
+        {
+          "name": "delegate",
+          "type": "Address"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "expiry",
+          "type": "Option<u64>"
+        }
+      ]
+    },
+    {
+      "name": "DelegationInfo",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "outgoing",
+          "type": "Vec<Delegation>"
+        },
+        {
+          "name": "incoming",
+          "type": "Vec<Delegation>"
+        }
+      ]
+    },
+    {
+      "name": "EscrowCreatedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "release_mode",
+          "type": "EscrowReleaseMode"
+        }
+      ]
+    },
+    {
+      "name": "EscrowParams",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "release_mode",
+          "type": "EscrowReleaseMode"
+        }
+      ]
+    },
+    {
+      "name": "EscrowRecord",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "release_mode",
+          "type": "EscrowReleaseMode"
+        }
+      ]
+    },
+    {
+      "name": "EscrowRefundedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "EscrowReleaseMode",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "OwnerQuorumUntil",
+          "payload": [
+            "u64"
+          ]
+        },
+        {
+          "name": "Deadline",
+          "payload": [
+            "u64"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "EscrowReleasedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "ExpiredProposalsSweptEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "swept",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "FrozenEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "GovernanceMigratedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner_count",
+          "type": "u32"
+        },
+        {
+          "name": "total_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "GuardianSetEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ModifyRecurringParams",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "new_amount",
+          "type": "Option<i128>"
+        },
+        {
+          "name": "new_interval_secs",
+          "type": "Option<u64>"
+        },
+        {
+          "name": "new_end_time",
+          "type": "Option<u64>"
+        }
+      ]
+    },
+    {
+      "name": "OwnerWeight",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "OwnerWeightChangedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "old_weight",
+          "type": "u32"
+        },
+        {
+          "name": "new_weight",
+          "type": "u32"
+        },
+        {
+          "name": "new_total_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "Proposal",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "approvals",
+          "type": "u32"
+        },
+        {
+          "name": "approval_weight",
+          "type": "u32"
+        },
+        {
+          "name": "status",
+          "type": "ProposalStatus"
+        },
+        {
+          "name": "kind",
+          "type": "ProposalKind"
+        },
+        {
+          "name": "ready_at",
+          "type": "u64"
+        },
+        {
+          "name": "quorum_weight",
+          "type": "u32"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "attachment_hash",
+          "type": "Option<BytesN<32>>"
+        }
+      ]
+    },
+    {
+      "name": "ProposalApprovalProgress",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "approval_weight",
+          "type": "u32"
+        },
+        {
+          "name": "quorum_weight",
+          "type": "u32"
+        },
+        {
+          "name": "total_weight",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalApprovedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "approvals",
+          "type": "u32"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalCancelledEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        }
+      ]
+    },
+    {
+      "name": "ProposalCategory",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Transfer"
+        },
+        {
+          "name": "Payroll"
+        },
+        {
+          "name": "Grant"
+        },
+        {
+          "name": "Ops"
+        },
+        {
+          "name": "Other"
+        }
+      ]
+    },
+    {
+      "name": "ProposalCreatedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "quorum_weight",
+          "type": "u32"
+        },
+        {
+          "name": "total_weight_at_creation",
+          "type": "u32"
+        },
+        {
+          "name": "attachment_hash",
+          "type": "Option<BytesN<32>>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "executor",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Transfer",
+          "payload": [
+            "Vec<Transfer>"
+          ]
+        },
+        {
+          "name": "AddOwner",
+          "payload": [
+            "Address",
+            "u32"
+          ]
+        },
+        {
+          "name": "RemoveOwner",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "ChangeThreshold",
+          "payload": [
+            "u32"
+          ]
+        },
+        {
+          "name": "SetSpendingLimit",
+          "payload": [
+            "Address",
+            "Address",
+            "i128"
+          ]
+        },
+        {
+          "name": "SetSpendingLimitWindow",
+          "payload": [
+            "Address",
+            "Address",
+            "i128",
+            "u64"
+          ]
+        },
+        {
+          "name": "ChangeOwnerWeight",
+          "payload": [
+            "Address",
+            "u32"
+          ]
+        },
+        {
+          "name": "CreateRecurringPayment",
+          "payload": [
+            "CreateRecurringParams"
+          ]
+        },
+        {
+          "name": "CancelRecurringPayment",
+          "payload": [
+            "u64"
+          ]
+        },
+        {
+          "name": "PauseRecurringPayment",
+          "payload": [
+            "u64"
+          ]
+        },
+        {
+          "name": "ResumeRecurringPayment",
+          "payload": [
+            "u64"
+          ]
+        },
+        {
+          "name": "ModifyRecurringPayment",
+          "payload": [
+            "ModifyRecurringParams"
+          ]
+        },
+        {
+          "name": "GrantRole",
+          "payload": [
+            "Address",
+            "Symbol"
+          ]
+        },
+        {
+          "name": "RevokeRole",
+          "payload": [
+            "Address",
+            "Symbol"
+          ]
+        },
+        {
+          "name": "SetAssetRegistryEnabled",
+          "payload": [
+            "bool"
+          ]
+        },
+        {
+          "name": "AddApprovedToken",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "RemoveApprovedToken",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "TransferGuardian",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "CreateEscrow",
+          "payload": [
+            "EscrowParams"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ProposalRevokedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "approvals",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalStatus",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Pending"
+        },
+        {
+          "name": "Ready"
+        },
+        {
+          "name": "Executed"
+        },
+        {
+          "name": "Expired"
+        },
+        {
+          "name": "Revoked"
+        },
+        {
+          "name": "Cancelled"
+        }
+      ]
+    },
+    {
+      "name": "RbacMigratedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner_count",
+          "type": "u32"
+        },
+        {
+          "name": "role_version",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecoveryEnteredEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecoveryExitedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "FixedAmountPerPeriod"
+        },
+        {
+          "name": "LinearVesting"
+        },
+        {
+          "name": "ContinuousStream"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPayment",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cliff_time",
+          "type": "u64"
+        },
+        {
+          "name": "total_cap",
+          "type": "i128"
+        },
+        {
+          "name": "total_disbursed",
+          "type": "i128"
+        },
+        {
+          "name": "last_disbursed_at",
+          "type": "u64"
+        },
+        {
+          "name": "periods_disbursed",
+          "type": "u32"
+        },
+        {
+          "name": "status",
+          "type": "RecurringStatus"
+        },
+        {
+          "name": "kind",
+          "type": "RecurringKind"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentCancelledEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentCreatedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cliff_time",
+          "type": "u64"
+        },
+        {
+          "name": "total_cap",
+          "type": "i128"
+        },
+        {
+          "name": "kind",
+          "type": "RecurringKind"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentDisbursedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "total_disbursed",
+          "type": "i128"
+        },
+        {
+          "name": "periods_disbursed",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentModifiedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "previous_amount",
+          "type": "i128"
+        },
+        {
+          "name": "new_amount",
+          "type": "i128"
+        },
+        {
+          "name": "previous_interval",
+          "type": "u64"
+        },
+        {
+          "name": "new_interval",
+          "type": "u64"
+        },
+        {
+          "name": "previous_end_time",
+          "type": "u64"
+        },
+        {
+          "name": "new_end_time",
+          "type": "u64"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentPausedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringPaymentResumedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RecurringSchedule",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "interval_secs",
+          "type": "u64"
+        },
+        {
+          "name": "last_disbursed_at",
+          "type": "u64"
+        },
+        {
+          "name": "remaining_occurrences",
+          "type": "u32"
+        },
+        {
+          "name": "status",
+          "type": "RecurringStatus"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "RecurringStatus",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Active"
+        },
+        {
+          "name": "Paused"
+        },
+        {
+          "name": "Completed"
+        },
+        {
+          "name": "Cancelled"
+        }
+      ]
+    },
+    {
+      "name": "RecurringStreamClaimedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "schedule_id",
+          "type": "u64"
+        },
+        {
+          "name": "recipient",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "total_disbursed",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "RemoveOwnerExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "removed_owner",
+          "type": "Address"
+        },
+        {
+          "name": "owner_count",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "Role",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Proposer"
+        },
+        {
+          "name": "Approver"
+        },
+        {
+          "name": "Executor"
+        },
+        {
+          "name": "Viewer"
+        }
+      ]
+    },
+    {
+      "name": "RoleGrantedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "target",
+          "type": "Address"
+        },
+        {
+          "name": "role",
+          "type": "Role"
+        },
+        {
+          "name": "before",
+          "type": "Vec<Role>"
+        },
+        {
+          "name": "after",
+          "type": "Vec<Role>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "RoleRevokedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "target",
+          "type": "Address"
+        },
+        {
+          "name": "role",
+          "type": "Role"
+        },
+        {
+          "name": "before",
+          "type": "Vec<Role>"
+        },
+        {
+          "name": "after",
+          "type": "Vec<Role>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SetSpendingLimitExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "previous_limit",
+          "type": "Option<i128>"
+        },
+        {
+          "name": "new_limit",
+          "type": "i128"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SpendingLimitEntry",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "limit",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "SpentTracker",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "spent",
+          "type": "i128"
+        },
+        {
+          "name": "epoch",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "Transfer",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "to",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "UnfrozenEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "UpgradeExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "new_wasm_hash",
+          "type": "BytesN<32>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "name": "ContractError",
+      "variants": [
+        {
+          "name": "AlreadyInitialized",
+          "discriminant": 1
+        },
+        {
+          "name": "NotInitialized",
+          "discriminant": 2
+        },
+        {
+          "name": "Unauthorized",
+          "discriminant": 3
+        },
+        {
+          "name": "InvalidThreshold",
+          "discriminant": 4
+        },
+        {
+          "name": "InvalidOwners",
+          "discriminant": 5
+        },
+        {
+          "name": "ProposalNotFound",
+          "discriminant": 6
+        },
+        {
+          "name": "ProposalNotActive",
+          "discriminant": 7
+        },
+        {
+          "name": "AlreadyApproved",
+          "discriminant": 8
+        },
+        {
+          "name": "NotApproved",
+          "discriminant": 9
+        },
+        {
+          "name": "ThresholdNotMet",
+          "discriminant": 10
+        },
+        {
+          "name": "ProposalExpired",
+          "discriminant": 11
+        },
+        {
+          "name": "InvalidAmount",
+          "discriminant": 12
+        },
+        {
+          "name": "InvalidDeadline",
+          "discriminant": 13
+        },
+        {
+          "name": "InvalidToken",
+          "discriminant": 14
+        },
+        {
+          "name": "TransferFailed",
+          "discriminant": 15
+        },
+        {
+          "name": "EmptyDescription",
+          "discriminant": 16
+        },
+        {
+          "name": "DescriptionTooLong",
+          "discriminant": 17
+        },
+        {
+          "name": "TooManyActiveProposals",
+          "discriminant": 18
+        },
+        {
+          "name": "DuplicateOwner",
+          "discriminant": 19
+        },
+        {
+          "name": "ArithmeticError",
+          "discriminant": 20
+        },
+        {
+          "name": "InvalidDuration",
+          "discriminant": 21
+        },
+        {
+          "name": "InvalidRecipient",
+          "discriminant": 22
+        },
+        {
+          "name": "TimeLockActive",
+          "discriminant": 23
+        },
+        {
+          "name": "WouldBreakThreshold",
+          "discriminant": 24
+        },
+        {
+          "name": "OwnerNotFound",
+          "discriminant": 25
+        },
+        {
+          "name": "ContractFrozen",
+          "discriminant": 26
+        },
+        {
+          "name": "NoGuardian",
+          "discriminant": 27
+        },
+        {
+          "name": "InvalidInterval",
+          "discriminant": 28
+        },
+        {
+          "name": "InvalidSchedule",
+          "discriminant": 29
+        },
+        {
+          "name": "InvalidCap",
+          "discriminant": 30
+        },
+        {
+          "name": "SpendingLimitExceeded",
+          "discriminant": 31
+        },
+        {
+          "name": "RecurringPaymentNotFound",
+          "discriminant": 32
+        },
+        {
+          "name": "RecurringPaymentNotDue",
+          "discriminant": 33
+        },
+        {
+          "name": "RecurringPaymentComplete",
+          "discriminant": 34
+        },
+        {
+          "name": "RecurringPaymentInactive",
+          "discriminant": 35
+        },
+        {
+          "name": "RecurringIntervalNotElapsed",
+          "discriminant": 36
+        },
+        {
+          "name": "TooManyActiveRecurring",
+          "discriminant": 37
+        },
+        {
+          "name": "ScheduleAlreadyCancelled",
+          "discriminant": 38
+        },
+        {
+          "name": "ScheduleAlreadyPaused",
+          "discriminant": 39
+        },
+        {
+          "name": "ScheduleNotPaused",
+          "discriminant": 40
+        },
+        {
+          "name": "ScheduleTerminal",
+          "discriminant": 41
+        },
+        {
+          "name": "InvalidWeightsLength",
+          "discriminant": 42
+        },
+        {
+          "name": "WeightBelowMinimum",
+          "discriminant": 43
+        },
+        {
+          "name": "InvalidWeight",
+          "discriminant": 44
+        },
+        {
+          "name": "AlreadyMigrated",
+          "discriminant": 45
+        },
+        {
+          "name": "SingleOwnerWeightCapExceeded",
+          "discriminant": 46
+        },
+        {
+          "name": "TargetOwnerNoLongerExists",
+          "discriminant": 47
+        },
+        {
+          "name": "WouldBreakQuorum",
+          "discriminant": 48
+        },
+        {
+          "name": "CannotRemoveLastOwner",
+          "discriminant": 49
+        },
+        {
+          "name": "ThresholdExceedsOwnerCount",
+          "discriminant": 50
+        },
+        {
+          "name": "ScheduleNotActive",
+          "discriminant": 51
+        },
+        {
+          "name": "MissingRole",
+          "discriminant": 52
+        },
+        {
+          "name": "RoleAlreadyGranted",
+          "discriminant": 53
+        },
+        {
+          "name": "RoleNotGranted",
+          "discriminant": 54
+        },
+        {
+          "name": "InvalidRole",
+          "discriminant": 55
+        },
+        {
+          "name": "DeprecatedEntrypoint",
+          "discriminant": 56
+        },
+        {
+          "name": "RecoveryActive",
+          "discriminant": 57
+        },
+        {
+          "name": "AssetNotApproved",
+          "discriminant": 61
+        },
+        {
+          "name": "AssetRegistryState",
+          "discriminant": 62
+        },
+        {
+          "name": "EscrowNotFound",
+          "discriminant": 63
+        },
+        {
+          "name": "EscrowConditionNotMet",
+          "discriminant": 64
+        },
+        {
+          "name": "EscrowFundsUnavailable",
+          "discriminant": 65
+        }
+      ]
+    }
+  ]
+}
