@@ -1,0 +1,140 @@
+name: Release Notes
+
+# Generates categorized release notes from merged PRs and commits.
+# Supports:
+#   - Dry-run mode via workflow_dispatch that previews notes without publishing
+#   - Deterministic categorization according to .github/release.yml and conventional commits
+#   - Idempotent draft release creation (never overwrites an existing release)
+#   - Least-privilege permissions and safe input handling (passed via env variables)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Target release tag (e.g. v1.0.0). Leave empty to use latest tag or HEAD.'
+        required: false
+        default: ''
+      previous_tag:
+        description: 'Previous tag to diff from (auto-detected if empty).'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run: generate and preview notes without creating a release'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag range
+        id: range
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_PREV_TAG: ${{ github.event.inputs.previous_tag }}
+        run: |
+          set -euo pipefail
+
+          current_tag="$INPUT_TAG"
+          if [ -z "$current_tag" ]; then
+            current_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          fi
+
+          prev_tag="$INPUT_PREV_TAG"
+          if [ -z "$prev_tag" ] && [ -n "$current_tag" ]; then
+            prev_tag="$(git describe --tags --abbrev=0 "${current_tag}^" 2>/dev/null || echo '')"
+          fi
+
+          if [ -n "$prev_tag" ] && [ -n "$current_tag" ]; then
+            commit_range="${prev_tag}..${current_tag}"
+          elif [ -n "$current_tag" ]; then
+            commit_range="${current_tag}"
+          else
+            commit_range="HEAD"
+          fi
+
+          echo "current_tag=$current_tag" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$prev_tag" >> "$GITHUB_OUTPUT"
+          echo "commit_range=$commit_range" >> "$GITHUB_OUTPUT"
+
+      - name: Run release notes generator
+        id: generate
+        env:
+          COMMIT_RANGE: ${{ steps.range.outputs.commit_range }}
+          CURRENT_TAG: ${{ steps.range.outputs.current_tag }}
+          PREV_TAG: ${{ steps.range.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/release-notes
+          python3 scripts/generate-release-notes.py \
+            --range "$COMMIT_RANGE" \
+            --current-tag "$CURRENT_TAG" \
+            --previous-tag "$PREV_TAG" \
+            --output target/release-notes/RELEASE_NOTES.md
+
+      - name: Run release notes unit tests
+        run: python3 scripts/generate-release-notes.test.py
+
+      - name: Publish summary to job log
+        if: always()
+        run: |
+          if [ -f target/release-notes/RELEASE_NOTES.md ]; then
+            {
+              echo "### Generated Release Notes Preview"
+              echo
+              cat target/release-notes/RELEASE_NOTES.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload release notes artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes-preview
+          path: target/release-notes/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Create or update draft release (non-dry-run only)
+        if: github.event.inputs.dry_run == 'false' && steps.range.outputs.current_tag != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.range.outputs.current_tag }}
+        run: |
+          set -euo pipefail
+
+          # Check if a release already exists for this tag to ensure idempotence
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release for $TAG already exists. Skipping creation to prevent duplicate or overwrite."
+            echo "::warning::Release for $TAG already exists. To re-generate, delete the release first."
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --draft \
+            --title "Release $TAG" \
+            --notes-file target/release-notes/RELEASE_NOTES.md
+
+          echo "Draft release created for $TAG."
+
+      - name: Report failure with run context
+        if: failure()
+        run: |
+          echo "::error::Release notes generation failed."
+          echo "View run logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

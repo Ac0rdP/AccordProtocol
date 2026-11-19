@@ -1,0 +1,80 @@
+# GitHub's built-in release notes category configuration.
+# See https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+#
+# This file configures the categories shown in auto-generated release notes
+# when a GitHub Release is created with `generate_release_notes: true`.
+# PRs are categorized by their labels; unlabeled PRs go to "Other Changes".
+
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+    authors:
+      - dependabot
+      - github-actions
+
+  categories:
+    - title: "🚀 New Features"
+      labels:
+        - enhancement
+        - feature
+        - feat
+
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+        - bugfix
+
+    - title: "🔒 Security"
+      labels:
+        - security
+        - vulnerability
+
+    - title: "📜 Smart Contract"
+      labels:
+        - contract
+        - soroban
+
+    - title: "🖥️ Frontend"
+      labels:
+        - frontend
+        - ui
+
+    - title: "🔧 CI & Infrastructure"
+      labels:
+        - ci
+        - infrastructure
+        - devops
+        - workflow
+
+    - title: "📚 Documentation"
+      labels:
+        - documentation
+        - docs
+
+    - title: "🧪 Testing"
+      labels:
+        - testing
+        - test
+
+    - title: "⚡ Performance"
+      labels:
+        - performance
+        - optimization
+
+    - title: "💥 Breaking Changes"
+      labels:
+        - breaking-change
+        - breaking
+
+    - title: "🏗️ Maintenance"
+      labels:
+        - chore
+        - maintenance
+        - refactor
+        - dependencies
+
+    - title: "🔀 Other Changes"
+      labels:
+        - "*"
