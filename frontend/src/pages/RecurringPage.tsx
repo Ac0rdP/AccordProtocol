@@ -4,6 +4,7 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { RecurringPaymentCard } from "../components/RecurringPaymentCard";
 import { RecurringForecastChart } from "../components/RecurringForecastChart";
+import { RecurringCalendar } from "../components/RecurringCalendar";
 import { PageState } from "../components/PageState";
 import {
   getRecurringPaymentsPaged,
@@ -124,6 +125,7 @@ export function RecurringPage({
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,7 +145,7 @@ export function RecurringPage({
           }
         }
       } catch {
-        // noop
+        if (!cancelled) setLoadError("Could not load recurring schedules.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -214,6 +216,8 @@ export function RecurringPage({
       </div>
 
       <RecurringForecastChart schedules={schedules} loading={loading} />
+
+      <RecurringCalendar schedules={schedules} loading={loading} error={loadError} />
 
       {!loading && activeSchedules.length > 0 && (
         <DisbursementTimeline schedules={activeSchedules} />

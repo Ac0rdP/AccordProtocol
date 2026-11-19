@@ -6,6 +6,9 @@ import { ErrorState } from "../components/ErrorState";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { PageState } from "../components/PageState";
+import { FiatValue } from "../components/FiatValue";
+import { ProposalRiskPanel } from "../components/ProposalRiskPanel";
+import { ShareQrCode } from "../components/ShareQrCode";
 import type { Proposal, ProposalEvent } from "../types/accord";
 import {
   getHistoricalWeightChangeEvents,
@@ -261,6 +264,7 @@ export function ProposalDetailPage({
             <p className="mt-1 text-2xl font-semibold text-white">
               {proposal.amount} {proposal.token}
             </p>
+            <FiatValue amount={proposal.amount} token={proposal.token} className="mt-1" />
           </div>
           <div className="sm:min-w-64">
             <ApprovalBar
@@ -292,6 +296,15 @@ export function ProposalDetailPage({
           <p className="break-all font-mono">{proposal.proposer}</p>
         </DetailRow>
       </section>
+
+      {proposal.status === "pending" && (
+        <ProposalRiskPanel proposal={proposal} history={proposals} />
+      )}
+
+      <ShareQrCode
+        url={typeof window === "undefined" ? "" : window.location.href}
+        name={`proposal-${proposal.id}`}
+      />
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5" aria-labelledby="timeline-diff-heading">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
