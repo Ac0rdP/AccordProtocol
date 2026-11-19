@@ -1,0 +1,66 @@
+name: Contract - Reproducible WASM Builds
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/verify-reproducible-build.sh'
+      - '.github/workflows/reproducible-builds.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify-reproducible:
+    name: Verify Byte-for-Byte Reproducibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: wasm32v1-none
+          cache: true
+
+      - name: Install stellar-cli
+        uses: stellar/stellar-cli@v28.1.0
+
+      - name: Run dry-run validation
+        run: DRY_RUN=1 bash scripts/verify-reproducible-build.sh
+
+      - name: Verify reproducible contract build
+        id: verify_build
+        run: bash scripts/verify-reproducible-build.sh
+
+      - name: Upload reproducible build report and artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-reproducible-build-report
+          path: target/reproducible-build/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report failure link
+        if: failure()
+        run: |
+          echo "::error::Reproducible build failed. Inspect artifacts and detailed run logs at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+          {
+            echo "### Reproducible Build Failed"
+            echo "A bytecode divergence was detected during verification."
+            echo "Review the uploaded report artifact at [Action Run Details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)."
+          } >> "$GITHUB_STEP_SUMMARY"

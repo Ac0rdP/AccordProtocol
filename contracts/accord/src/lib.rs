@@ -2802,12 +2802,10 @@ impl AccordContract {
 
         // Attribute each disbursement to the schedule's original proposer in the spent tracker
         let tracker = read_spent_tracker(&env, &schedule.proposer, &schedule.token);
-        let epoch = if tracker.epoch == 0 {
-            now
-        } else {
-            tracker.epoch
-        };
-        let spent = if now > epoch.saturating_add(read_spending_window(&env, &schedule.proposer, &schedule.token)) {
+        let expired = tracker.epoch == 0
+            || now > tracker.epoch.saturating_add(read_spending_window(&env, &schedule.proposer, &schedule.token));
+        let epoch = if expired { now } else { tracker.epoch };
+        let spent = if expired {
             actual_amount
         } else {
             tracker
@@ -3798,12 +3796,10 @@ impl AccordContract {
                     let token = tracked_tokens.get(j).unwrap();
                     let amount = tracked_amounts.get(j).unwrap();
                     let tracker = read_spent_tracker(&env, &proposer, &token);
-                    let epoch = if tracker.epoch == 0 {
-                        now
-                    } else {
-                        tracker.epoch
-                    };
-                    let spent = if now > epoch.saturating_add(read_spending_window(&env, &proposer, &token)) {
+                    let expired = tracker.epoch == 0
+                        || now > tracker.epoch.saturating_add(read_spending_window(&env, &proposer, &token));
+                    let epoch = if expired { now } else { tracker.epoch };
+                    let spent = if expired {
                         amount
                     } else {
                         tracker
@@ -5791,4 +5787,8 @@ mod test;
 mod bench;
 #[cfg(test)]
 mod invariants;
+#[cfg(test)]
+mod differential;
+#[cfg(test)]
+mod spend_window_proptest;
 // TODO: Ensure tests verify event parsing and decoding into typed records

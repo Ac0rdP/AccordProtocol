@@ -42,6 +42,24 @@ jobs:
       - name: Run visual regression tests
         run: npm run test:visual
 
+      - name: Upload visual snapshot artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-regression-snapshots
+          path: frontend/src/visual/__snapshots__/
+          retention-days: 14
+
+      - name: Report visual regression failure
+        if: failure()
+        run: |
+          echo "::error::Visual regression test failure detected across transaction preview, risk, or error state snapshots. See artifacts at ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+          {
+            echo "### Visual Regression Failure"
+            echo "One or more component visual regression snapshots drifted from the baseline without exposing secrets."
+            echo "Inspect snapshot diffs and artifacts at [Action Run Details](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build Storybook static site
         run: npm run build-storybook
 
