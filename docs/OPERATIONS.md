@@ -636,6 +636,77 @@ Automated tests cannot exercise real browser wallet extensions. Perform and reco
 - [ ] **Price feed & QR/PDF export**: Confirm CoinGecko fiat quotes load, QR codes render (`img-src data:`), and PDF export succeeds (`img-src blob:`).
 - [ ] **Response headers in DevTools Network tab**: Confirm `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and `Strict-Transport-Security: max-age=31536000` (without `includeSubDomains` or `preload`) are present and not duplicated.
 
+### HSM and MPC signer integration runbook
+
+This provider-neutral runbook defines how production Stellar owner keys for Accord (`contracts/accord/src/lib.rs`) are provisioned, used, rotated, and recovered with an HSM or MPC custody provider. **No real HSM or MPC provider has been tested in CI**; operators must complete and archive the manual drill below before mainnet launch.
+
+#### 1. Provider selection requirements
+
+Any HSM or MPC provider used for production owner keys must satisfy all of the following:
+
+- **Native Ed25519 (RFC 8032)**: Must sign raw 32-byte Stellar transaction digests with Ed25519 (or threshold EdDSA / FROST MPC emitting standard 64-byte Ed25519 signatures). Verify native support explicitly — many traditional HSMs support only RSA/ECDSA and cannot sign Stellar `G...` accounts directly.
+- **Non-exportable key material**: Private keys or MPC shards must be generated inside the HSM/MPC boundary and never exported to disk, CI secrets, environment variables, or shell history.
+- **Policy engine & quorum approval**: Out-of-band human approval policy (M-of-N approvers inside the custody platform or distinct physical signers across independent HSMs/hardware wallets).
+- **Tamper-evident audit log**: Immutable record of every signing request, approver identity, timestamp, and signed digest hash.
+
+#### 2. Signing payload construction & network domain separation
+
+Before submitting a transaction payload to an HSM or MPC signer:
+
+1. Build the unsigned Stellar transaction XDR offline or via `stellar contract invoke --build-only` targeting the explicit network (`testnet` or `mainnet`).
+2. Compute the Stellar signing digest with explicit network domain separation:
+   - `networkId = SHA-256(networkPassphrase)`
+     - Testnet: `Test SDF Network ; September 2015`
+     - Mainnet: `Public Global Stellar Network ; September 2015`
+   - `signingDigest = SHA-256(networkId || 0x00000002 || transactionBodyXdrBytes)`
+3. Every approving owner independently verifies the target `contract_id`, entrypoint (`upgrade`, `execute`, `create_add_owner_proposal`, etc.), `new_wasm_hash` (for upgrades), and `networkPassphrase` before approving the HSM/MPC signing prompt.
+
+#### 3. Separation of duties & key ceremony
+
+- **Roles**:
+  - **Build / Release Engineer**: Builds the reproducible WASM artifact (`scripts/verify-reproducible-build.sh`) and publishes the SHA-256 hash. Does **not** hold owner signing quorum.
+  - **Multisig Owners (Signers)**: Distinct individuals/entities operating independent HSM/MPC signers or hardware wallets. No single owner may hold `> 50%` weight (`MAX_SINGLE_OWNER_WEIGHT_PCT`).
+  - **Approver / Reviewer**: Independently verifies the WASM hash and transaction parameters before approving the custody policy request.
+- **Key ceremony**: Generate each owner key inside its HSM/MPC enclave with at least two witnesses, record only the resulting Stellar `G...` public key and attestation certificate, and seal backup recovery shares (M-of-N offline splits stored in geographically separated vaults).
+
+#### 4. Rotation, lockout prevention, and incident response
+
+- **Testnet rehearsal mandatory**: Before rotating any production owner key, rehearse the full two-step rotation (`AddOwner` proposal -> `RemoveOwner` proposal; see [`docs/runbooks/KEY_ROTATION.md`](./runbooks/KEY_ROTATION.md)) and its rollback (re-adding the prior key) on **Stellar Testnet**. Never remove an owner until the replacement HSM/MPC key has successfully signed and been verified on-chain.
+- **Lost or compromised key**:
+  1. Guardian immediately invokes `freeze(guardian)` to halt proposal creation and execution ([`docs/runbooks/INCIDENT_RESPONSE.md`](./runbooks/INCIDENT_RESPONSE.md)).
+  2. Remaining owners confirm remaining weight `>= threshold`.
+  3. Owners execute `AddOwner` (if needed to preserve quorum headroom) followed by `RemoveOwner` for the compromised key, revoke the key in the HSM/MPC provider, and preserve custody audit logs.
+  4. Owners co-sign `unfreeze(approvers)` only after confirming the compromised key is removed on-chain.
+
+#### 5. Manual HSM/MPC signing drill & evidence verification (not verified in CI)
+
+Before promoting a new HSM/MPC key to production (and quarterly thereafter):
+
+1. Build a throwaway Testnet payload hex and obtain a detached Ed25519 signature from the HSM/MPC signer.
+2. Record the drill evidence in a JSON file (containing **only** public metadata — never secret seeds or private keys):
+   ```json
+   {
+     "schemaVersion": 1,
+     "drillId": "drill-YYYY-MM-DD-testnet",
+     "providerType": "<hsm-or-mpc-provider-name>",
+     "keyLabel": "<hsm-key-id-or-vault-alias>",
+     "signerPublicKey": "G...",
+     "network": "testnet",
+     "payloadHex": "<hex-encoded-transaction-body>",
+     "signature": "<base64-or-hex-64-byte-ed25519-signature>",
+     "approvedBy": ["<reviewer-1>", "<reviewer-2>"],
+     "recordedAt": "YYYY-MM-DDTHH:MM:SSZ"
+   }
+   ```
+3. Verify the evidence offline (no private key required):
+   ```bash
+   node scripts/verify-signer-evidence.mjs verify-evidence \
+     --file=drill-evidence.json \
+     --expected-public-key=G... \
+     --expected-network=testnet
+   ```
+4. Archive the verified evidence JSON and HSM/MPC audit log export in the security evidence repository.
+
 ### Verification record
 
 | Control | Owner | Scope | Failure Behavior | Automated Verification | Manual Evidence |
@@ -649,5 +720,6 @@ Automated tests cannot exercise real browser wallet extensions. Perform and reco
 | **Privacy Export & Deletion** | Privacy Administrator | User and tenant personal data | Fails closed on active retention exceptions | `node --test scripts/security-controls.test.mjs` | Retention exception filings and deletion receipts |
 | **SSO (SAML/OIDC), JIT & Session Policy** | Security Administrator | Team sign-in, SSO-managed roles, and privileged-action sessions | Fails closed on unpinned key, claim mismatch, replay, off-domain or non-MFA login, suspended user, or expired/idle/step-up session | `node --test scripts/sso-controls.test.mjs`; `scripts/sso-controls.mjs validate` | Quarterly IdP metadata comparison and leaver review of SSO audit records |
 | **Frontend CSP & Security Headers** | Frontend Maintainer | Accord web frontend (`frontend/`) responses on Vercel and Vite | Fails closed in browser (blocked script/frame/connect); CI fails on policy drift or `'unsafe-inline'`/`'unsafe-eval'` in production `script-src` | `node scripts/check-frontend-headers.mjs`; `node --test scripts/check-frontend-headers.test.mjs` | Manual browser DevTools checklist (Freighter connect/sign, Analytics API, zero CSP console violations) |
+| **HSM / MPC Production Signer Custody** | Treasury Security Lead | Production Stellar owner and guardian keys | Fails closed on invalid `G...` StrKey, secret seed input, wrong network passphrase, tampered payload, or bad Ed25519 signature | `node --test scripts/verify-signer-evidence.test.mjs`; `node scripts/verify-signer-evidence.mjs verify-evidence` | Quarterly manual HSM/MPC Testnet signing drill evidence JSON + custody audit log export |
 
 The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.

@@ -317,6 +317,25 @@ guardian checks.
 - **Rollback**: Set `VITE_CSP_REPORT_ONLY=true` (or `CSP_REPORT_ONLY=true`) or switch `"key": "Content-Security-Policy"` to `"key": "Content-Security-Policy-Report-Only"` in `frontend/vercel.json` and redeploy. See [`docs/OPERATIONS.md`](./OPERATIONS.md#frontend-csp-and-security-headers) for operator steps and the manual browser wallet checklist.
 - **Link to Existing Risks**: Mitigates the frontend/contract integration attack surfaces in [Attack Surfaces](#attack-surfaces) (malicious script injection attempting to forge or alter transaction signing payloads before Freighter/hardware wallet confirmation). *(Note: the repository does not maintain a formal numbered risk register.)*
 
+### Production Owner Key Custody (HSM / MPC Signers)
+
+- **Control**: Production Accord multisig owner keys and guardian keys MUST reside in non-exportable Hardware Security Modules (HSMs) or threshold Multi-Party Computation (MPC) custody vaults — never in GitHub Actions secrets, CI environment variables, developer laptops, or repository files. Signing drill evidence is verified offline with zero private key access via [`scripts/verify-signer-evidence.mjs`](../scripts/verify-signer-evidence.mjs).
+- **Owner**: Treasury Security Lead & Multisig Owners.
+- **Scope**: All production (`Public Global Stellar Network ; September 2015`) owner keys registered in `contracts/accord/src/lib.rs` (used for `create_*_proposal`, `approve`, `execute`, `upgrade`, `set_guardian`, `unfreeze`, and `migrate_to_rbac`) and the emergency `guardian` key.
+- **Cryptographic Requirements (Provider-Neutral)**:
+  - Stellar `G...` accounts use **Ed25519 (RFC 8032)** over 32-byte raw public keys and 64-byte signatures.
+  - Before adopting any HSM or MPC provider, operators MUST verify that it natively supports **Ed25519 (RFC 8032)** (or threshold EdDSA / FROST MPC producing standard 64-byte Ed25519 signatures) over raw 32-byte Stellar transaction hashes. Legacy PKCS#11 HSMs that only support RSA or ECDSA (`secp256k1` / `P-256`) cannot sign Stellar `G...` transactions directly without an MPC or verified Ed25519 custody layer.
+  - No specific HSM or MPC vendor is endorsed or bundled in this repository; no vendor SDKs are added.
+- **Threat Model**:
+  - **Key Extraction / CI Compromise**: Compromise of CI runners, GitHub secrets, or a developer workstation must not yield production owner signing keys.
+  - **Cross-Network Replay**: Signing payloads MUST include the Stellar `networkId = SHA-256(networkPassphrase)` and `ENVELOPE_TYPE_TX (0x00000002)` domain prefix so a Testnet signing drill can never be replayed on Mainnet.
+  - **Single-Operator Collusion / Unauthorized Upgrade**: Separation of duties ensures the person who builds a WASM artifact or proposes an upgrade cannot unilaterally sign quorum threshold.
+  - **Owner Lockout**: Because `contracts/accord/src/lib.rs` has no atomic `rotate_owner` entrypoint and no SOS recovery if quorum is lost, every production owner change requires a two-step `AddOwner` -> `RemoveOwner` sequence rehearsed on Testnet with a verified rollback path first.
+- **Failure Behavior**:
+  - `scripts/verify-signer-evidence.mjs` fails closed on invalid `G...` StrKey checksums, secret seeds (`S...`, rejected without echoing key material), wrong network passphrase, tampered payload, wrong public key, or forbidden private-key fields in evidence JSON.
+  - CI deployment workflows MUST NOT possess production owner keys; promotion to production halts for out-of-band HSM/MPC co-signing.
+- **Link to Existing Risks**: Directly addresses [Key Management](#key-management), [No SOS Recovery](#residual-risks), [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md), and [`docs/runbooks/KEY_ROTATION.md`](./runbooks/KEY_ROTATION.md). *(Note: the repository does not maintain a formal numbered risk register.)*
+
 ### Mitigations
 
 Specific mechanisms are in place to enforce security boundaries:
