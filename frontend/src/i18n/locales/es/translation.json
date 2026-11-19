@@ -6,6 +6,10 @@
     "audit": "registro de auditoría",
     "analytics": "análisis",
     "owners": "propietarios",
+    "bulk": "acciones masivas",
+    "availability": "disponibilidad",
+    "templates": "plantillas",
+    "notifications": "notificaciones",
     "settings": "configuración",
     "docs": "documentación"
   },
