@@ -88,13 +88,44 @@ without a new issue every night.
 
 ## Release settings
 
-`release.yml` needs:
+`release.yml` and `release-notes.yml` need:
 
 - **Actions → General → Workflow permissions**: read and write, so the run can
-  create a release and publish to GitHub Packages.
-- No extra secrets: the SDK is published to GitHub Packages with the built-in
-  `GITHUB_TOKEN`. The published package name is scoped to the repository owner
-  (`@<owner>/accord-sdk`).
+  create a release, upload assets, and publish to GitHub Packages.
+- **No extra secrets**: operations use the built-in `GITHUB_TOKEN`. The published
+  package name is scoped to the repository owner (`@<owner>/accord-sdk`).
+
+### Automated release notes & dry run
+
+Automated release notes are generated using GitHub's built-in categorizer configured
+in [`.github/release.yml`](../.github/release.yml) and the custom categorization script
+`scripts/generate-release-notes.py`.
+
+- **Labels recognized**:
+  - `breaking`, `breaking-change` → 💥 Breaking Changes
+  - `security`, `vulnerability` → 🔒 Security
+  - `contract`, `soroban` → 📜 Smart Contract
+  - `feat`, `feature`, `enhancement` → 🚀 New Features
+  - `bug`, `fix`, `bugfix` → 🐛 Bug Fixes
+  - `frontend`, `ui` → 🖥️ Frontend
+  - `ci`, `infrastructure`, `devops`, `workflow` → 🔧 CI & Infrastructure
+  - `docs`, `documentation` → 📚 Documentation
+  - `test`, `testing` → 🧪 Testing
+  - `perf`, `performance`, `optimization` → ⚡ Performance
+  - `chore`, `maintenance`, `refactor`, `dependencies`, `build`, `style` → 🏗️ Maintenance
+  - Unlabeled / other → 🔀 Other Changes
+- **Dry run**: To preview release notes without publishing a release:
+  1. Go to **Actions** → **Release Notes** (`.github/workflows/release-notes.yml`).
+  2. Click **Run workflow**.
+  3. Specify the target `tag` (optional) and keep `dry_run: true`.
+  4. View the generated notes directly in the GitHub Actions step summary or download
+     the `release-notes-preview` artifact.
+- **Rollback steps (deleting or editing a bad release and re-running)**:
+  1. Delete the incorrect GitHub release via `gh release delete <tag> --yes` or in the GitHub Releases UI.
+  2. If the tag was pushed incorrectly, delete the tag locally and remotely:
+     `git tag -d <tag> && git push origin :refs/tags/<tag>`.
+  3. If release notes contained incorrect categorizations or entries, correct the PR labels or commit metadata.
+  4. Re-run `.github/workflows/release-notes.yml` (with `dry_run: false` or publish via tag push) to regenerate.
 
 Cut a release by following the *Release process* section of
 [CONTRIBUTING.md](../CONTRIBUTING.md), then push an annotated `v*` tag.
