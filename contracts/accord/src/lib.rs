@@ -5791,4 +5791,6 @@ mod test;
 mod bench;
 #[cfg(test)]
 mod invariants;
+#[cfg(test)]
+mod differential;
 // TODO: Ensure tests verify event parsing and decoding into typed records
