@@ -27,7 +27,7 @@ use sqlx::{
 use tower::ServiceExt;
 
 use crate::{
-    AppState, ReportConfig, ScopeConfig, alert_api,
+    AppState, ReportConfig, ScopeConfig, alert_api, alert_rules,
     alerts::{
         Alert, AlertChannel, AlertEngine, AlertRuntime, ChannelFuture, StormSettings, Watcher,
         parse_rules,
@@ -247,6 +247,9 @@ fn openapi_query_parameters_match_the_validators() {
         ("/report-templates", "get", templates::LIST_PARAMS),
         ("/report-templates", "put", templates::WRITE_PARAMS),
         ("/report-templates", "delete", templates::WRITE_PARAMS),
+        ("/alert-rules", "get", alert_rules::LIST_PARAMS),
+        ("/alert-rules/test", "post", alert_rules::TEST_PARAMS),
+        ("/alert-rules/{id}/test", "post", alert_rules::TEST_PARAMS),
         ("/alerts", "get", alert_api::QUERY_PARAMS),
     ] {
         let documented = names(&query_parameters(&spec, path, method));
@@ -301,6 +304,19 @@ fn openapi_enumerations_match_the_validators() {
         enum_of(&spec, "/alerts", "get", "severity"),
         alert_api::SEVERITIES
     );
+    for (parameter, implemented) in [
+        ("status", alert_rules::STATUSES),
+        ("type", alert_rules::KINDS),
+        ("category", alert_rules::CATEGORIES),
+        ("source", alert_rules::SOURCES),
+        ("severity", alert_rules::SEVERITIES),
+    ] {
+        assert_eq!(
+            enum_of(&spec, "/alert-rules", "get", parameter),
+            implemented,
+            "/alert-rules {parameter}"
+        );
+    }
 }
 
 #[test]
@@ -311,6 +327,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals/funnel", "get"),
         ("/reports", "get"),
         ("/report-templates", "get"),
+        ("/alert-rules", "get"),
         ("/alerts", "get"),
     ] {
         let parameters = query_parameters(&spec, path, method);
@@ -390,6 +407,15 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/report-templates"),
         ("PUT", "/report-templates"),
         ("DELETE", "/report-templates"),
+        ("GET", "/alert-rules"),
+        ("POST", "/alert-rules"),
+        ("POST", "/alert-rules/test"),
+        ("GET", "/alert-rules/x"),
+        ("PUT", "/alert-rules/x"),
+        ("DELETE", "/alert-rules/x"),
+        ("POST", "/alert-rules/x/pause"),
+        ("POST", "/alert-rules/x/resume"),
+        ("POST", "/alert-rules/x/test"),
         ("GET", "/alerts"),
         ("GET", "/owners/participation"),
     ] {
@@ -509,6 +535,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
         "/reports?format=x&status=x",
         "/report-templates?limit=0&offset=-1&contractId=x&network=x&bogus=1",
         "/alerts?severity=x",
+        "/alert-rules?limit=0&offset=-1&status=x&type=x&category=x&source=x&severity=x&bogus=1",
     ] {
         let (_, body) = get(&state, uri).await;
         for detail in body["error"]["details"].as_array().unwrap() {
@@ -1599,6 +1626,363 @@ async fn a_stored_template_brands_the_generated_report() {
     assert!(!csv.contains("token_total"));
     assert!(csv.trim_end().ends_with("footer,Confidential"));
     assert!(report.render(ReportFormat::Pdf).unwrap().starts_with(b"%PDF-"));
+
+    db.cleanup().await;
+}
+
+// --- alert rule management ------------------------------------------------------
+
+const RULE_SPEND: &str = r#"{"id":"big-spend","type":"spend_threshold","token":"USDC","threshold":"1000","windowSecs":3600,"severity":"critical"}"#;
+const RULE_BURST: &str = r#"{"id":"burst","type":"approval_burst","maxApprovals":3,"windowSecs":600}"#;
+
+fn configured_rule() -> crate::alerts::Rule {
+    parse_rules(r#"[{"id":"cfg-night","type":"off_hours_approval","startHour":22,"endHour":5}]"#)
+        .unwrap()
+        .remove(0)
+}
+
+fn engine_state(state: AppState) -> (AppState, Arc<AlertEngine>) {
+    let engine = Arc::new(AlertEngine::new(
+        vec![configured_rule()],
+        StormSettings::default(),
+    ));
+    (state.with_alerts(Some(Arc::clone(&engine))), engine)
+}
+
+fn rule_ids(page: &Value) -> Vec<&str> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["id"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn rule_writes_reject_bad_requests_before_touching_the_database() {
+    let state = lazy_state();
+    for (body, field, code) in [
+        ("not json", "body", "INVALID_BODY"),
+        ("[]", "body", "INVALID_BODY"),
+        (r#"{"id":"bad id","type":"approval_burst","maxApprovals":3,"windowSecs":60}"#, "id", "INVALID_RULE_ID"),
+        (r#"{"id":"test","type":"approval_burst","maxApprovals":3,"windowSecs":60}"#, "id", "INVALID_RULE_ID"),
+        (r#"{"id":"x","type":"nope"}"#, "type", "INVALID_RULE"),
+        (r#"{"id":"x","type":"spend_threshold","threshold":"-1","windowSecs":60}"#, "threshold", "INVALID_RULE"),
+        (r#"{"id":"x","type":"spend_threshold","threshold":"5","windowSecs":0}"#, "windowSecs", "INVALID_RULE"),
+        (r#"{"id":"x","type":"approval_burst","maxApprovals":0,"windowSecs":60}"#, "maxApprovals", "INVALID_RULE"),
+        (r#"{"id":"x","type":"off_hours_approval","startHour":4,"endHour":4}"#, "startHour", "INVALID_RULE"),
+        (r#"{"id":"x","type":"approval_burst","maxApprovals":1,"windowSecs":99999999}"#, "windowSecs", "INVALID_RULE"),
+        (r#"{"id":"x","type":"approval_burst","maxApprovals":1,"windowSecs":60,"colour":1}"#, "body", "INVALID_BODY"),
+        (r#"{"id":"x","type":"approval_burst","maxApprovals":1,"windowSecs":60,"enabled":"yes"}"#, "enabled", "INVALID_BODY"),
+    ] {
+        for (method, uri) in [
+            ("POST", "/alert-rules"),
+            ("PUT", "/alert-rules/x"),
+            ("POST", "/alert-rules/test"),
+        ] {
+            let (status, response) = send(&state, method, uri, body, None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri} {body}");
+            assert_eq!(first_detail(&response), (field, code), "{method} {uri} {body}");
+        }
+    }
+
+    // A create needs an id; a replace takes it from the path and a draft test
+    // fills one in.
+    let missing = r#"{"type":"approval_burst","maxApprovals":3,"windowSecs":60}"#;
+    let (status, response) = send(&state, "POST", "/alert-rules", missing, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&response), ("id", "INVALID_RULE_ID"));
+}
+
+#[tokio::test]
+async fn rule_paths_validate_the_id_and_the_body_must_agree_with_it() {
+    let state = lazy_state();
+    for (method, uri) in [
+        ("GET", "/alert-rules/bad$id"),
+        ("PUT", "/alert-rules/bad$id"),
+        ("DELETE", "/alert-rules/bad$id"),
+        ("POST", "/alert-rules/bad$id/pause"),
+        ("POST", "/alert-rules/bad$id/resume"),
+        ("POST", "/alert-rules/bad$id/test"),
+    ] {
+        let (status, body) = send(&state, method, uri, RULE_BURST, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {uri}");
+        assert_eq!(first_detail(&body), ("id", "INVALID_RULE_ID"), "{method} {uri}");
+    }
+
+    let (status, body) = send(&state, "PUT", "/alert-rules/other", RULE_BURST, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body), ("id", "INVALID_RULE_ID"));
+}
+
+#[tokio::test]
+async fn rule_test_parameters_are_validated_before_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/alert-rules/test?lookbackHours=0", "INVALID_LOOKBACK"),
+        ("/alert-rules/test?lookbackHours=169", "INVALID_LOOKBACK"),
+        ("/alert-rules/test?lookbackHours=soon", "INVALID_LOOKBACK"),
+        ("/alert-rules/test?limit=0", "INVALID_LIMIT"),
+        ("/alert-rules/test?network=nope", "INVALID_NETWORK"),
+        ("/alert-rules/big/test?lookbackHours=0", "INVALID_LOOKBACK"),
+    ] {
+        let (status, body) = send(&state, "POST", uri, RULE_BURST, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(first_detail(&body).1, code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn rule_writes_need_the_admin_token_but_tests_and_reads_do_not() {
+    let state = lazy_state().with_admin_token(Some(Arc::from("s3cret")));
+    for (method, uri) in [
+        ("POST", "/alert-rules"),
+        ("PUT", "/alert-rules/x"),
+        ("DELETE", "/alert-rules/x"),
+        ("POST", "/alert-rules/x/pause"),
+        ("POST", "/alert-rules/x/resume"),
+    ] {
+        for token in [None, Some("wrong")] {
+            let (status, body) = send(&state, method, uri, RULE_BURST, token).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} {token:?}");
+            assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+        }
+    }
+
+    // Authorised, the request reaches validation.
+    let (status, body) = send(&state, "POST", "/alert-rules", "{}", Some("s3cret")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body).0, "id");
+
+    // The dry-run changes nothing, so it is open: it is validated, not refused.
+    let (status, _) = send(&state, "POST", "/alert-rules/test?limit=0", RULE_BURST, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn rule_writes_reject_oversized_bodies() {
+    let huge = format!(r#"{{"id":"x","token":"{}"}}"#, "a".repeat(alert_rules::MAX_BODY_BYTES));
+    let (status, _) = send(&lazy_state(), "POST", "/alert-rules", &huge, None).await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn rules_can_be_created_listed_edited_paused_and_deleted() {
+    let Some(db) = TestDb::connect("alert_rules", true).await else {
+        return;
+    };
+    let (state, engine) = engine_state(db.state());
+    assert_eq!(engine.rules().len(), 1);
+
+    // The configured rule is listed and read-only.
+    let (status, page) = send(&state, "GET", "/alert-rules", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rule_ids(&page), ["cfg-night"]);
+    assert_eq!(page["items"][0]["source"], "config");
+    assert_eq!(page["items"][0]["category"], "anomaly");
+    assert_eq!(page["items"][0]["enabled"], true);
+
+    // Create: 201, active, evaluated right away.
+    let (status, created) = send(&state, "POST", "/alert-rules", RULE_SPEND, None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["id"], "big-spend");
+    assert_eq!(created["source"], "managed");
+    assert_eq!(created["category"], "threshold");
+    assert_eq!(created["enabled"], true);
+    assert_eq!(created["severity"], "critical");
+    assert_eq!(created["threshold"], "1000");
+    assert_eq!(engine.rules().len(), 2);
+
+    let (status, again) = send(&state, "POST", "/alert-rules", RULE_SPEND, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "ids are unique");
+    assert_eq!(again["error"]["code"], "CONFLICT");
+    let shadow = r#"{"id":"cfg-night","type":"approval_burst","maxApprovals":1,"windowSecs":60}"#;
+    let (status, _) = send(&state, "POST", "/alert-rules", shadow, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "a configured id cannot be reused");
+
+    // Created paused: stored but not evaluated.
+    let paused = r#"{"id":"burst","type":"approval_burst","maxApprovals":3,"windowSecs":600,"enabled":false}"#;
+    let (_, created) = send(&state, "POST", "/alert-rules", paused, None).await;
+    assert_eq!(created["enabled"], false);
+    assert_eq!(engine.rules().len(), 2, "a paused rule is not evaluated");
+
+    // List, filter, page.
+    let (_, all) = send(&state, "GET", "/alert-rules", "", None).await;
+    assert_eq!(rule_ids(&all), ["big-spend", "burst", "cfg-night"]);
+    assert_eq!(all["total"], 3);
+    for (filter, expected) in [
+        ("status=paused", vec!["burst"]),
+        ("status=active", vec!["big-spend", "cfg-night"]),
+        ("source=managed", vec!["big-spend", "burst"]),
+        ("source=config", vec!["cfg-night"]),
+        ("category=threshold", vec!["big-spend"]),
+        ("category=anomaly", vec!["burst", "cfg-night"]),
+        ("type=approval_burst", vec!["burst"]),
+        ("severity=critical", vec!["big-spend"]),
+        ("severity=warning", vec!["burst", "cfg-night"]),
+    ] {
+        let (status, page) = send(&state, "GET", &format!("/alert-rules?{filter}"), "", None).await;
+        assert_eq!(status, StatusCode::OK, "{filter}");
+        assert_eq!(rule_ids(&page), expected, "{filter}");
+        assert_eq!(page["total"], expected.len(), "{filter}");
+    }
+    let (_, second) = send(&state, "GET", "/alert-rules?limit=1&offset=1", "", None).await;
+    assert_eq!(rule_ids(&second), ["burst"]);
+    assert_eq!(second["total"], 3);
+
+    // Read one.
+    let (status, one) = send(&state, "GET", "/alert-rules/big-spend", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["windowSecs"], 3600);
+    let (status, _) = send(&state, "GET", "/alert-rules/cfg-night", "", None).await;
+    assert_eq!(status, StatusCode::OK, "configured rules can be read");
+    let (status, missing) = send(&state, "GET", "/alert-rules/nope", "", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(missing["error"]["code"], "NOT_FOUND");
+
+    // Edit: replaces the definition and keeps `enabled` when it is left out.
+    let edited = r#"{"type":"spend_threshold","token":"USDC","threshold":"2500","windowSecs":7200,"severity":"warning"}"#;
+    let (status, edited) = send(&state, "PUT", "/alert-rules/big-spend", edited, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(edited["threshold"], "2500");
+    assert_eq!(edited["severity"], "warning");
+    assert_eq!(edited["enabled"], true);
+    assert!(
+        engine
+            .rules()
+            .iter()
+            .any(|rule| rule.id == "big-spend" && matches!(&rule.kind, crate::alerts::RuleKind::SpendThreshold { threshold, .. } if threshold == "2500")),
+        "the engine runs the edited rule"
+    );
+    let (status, _) = send(&state, "PUT", "/alert-rules/ghost", r#"{"type":"approval_burst","maxApprovals":3,"windowSecs":600}"#, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Pause and resume.
+    let (status, paused) = send(&state, "POST", "/alert-rules/big-spend/pause", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(paused["enabled"], false);
+    assert_eq!(engine.rules().len(), 1, "a paused rule stops being evaluated");
+    let (_, resumed) = send(&state, "POST", "/alert-rules/big-spend/resume", "", None).await;
+    assert_eq!(resumed["enabled"], true);
+    assert_eq!(engine.rules().len(), 2);
+    let (status, _) = send(&state, "POST", "/alert-rules/ghost/pause", "", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Configured rules cannot be changed.
+    for (method, uri, body) in [
+        ("PUT", "/alert-rules/cfg-night", shadow),
+        ("DELETE", "/alert-rules/cfg-night", ""),
+        ("POST", "/alert-rules/cfg-night/pause", ""),
+        ("POST", "/alert-rules/cfg-night/resume", ""),
+    ] {
+        let (status, response) = send(&state, method, uri, body, None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}");
+        assert_eq!(response["error"]["code"], "CONFLICT");
+    }
+
+    // Delete.
+    let (status, _) = send(&state, "DELETE", "/alert-rules/big-spend", "", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(engine.rules().len(), 1);
+    let (status, _) = send(&state, "DELETE", "/alert-rules/big-spend", "", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_watcher_applies_rules_written_by_another_instance() {
+    let Some(db) = TestDb::connect("alert_rules_reload", true).await else {
+        return;
+    };
+    let (watcher, _sent) = watcher(&db, "[]", false, Arc::new(Limits::disabled()));
+    let engine = Arc::clone(&watcher.alerts.as_ref().unwrap().engine);
+    let before = engine.rules().len();
+
+    // Written straight to the table, as a second instance would.
+    sqlx::query(
+        "INSERT INTO alert_rules (id, kind, severity, definition) VALUES \
+         ('remote', 'approval_burst', 'warning', \
+          '{\"id\":\"remote\",\"type\":\"approval_burst\",\"maxApprovals\":2,\"windowSecs\":60}')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    watcher.tick(&mut None).await.unwrap();
+    assert_eq!(engine.rules().len(), before + 1);
+
+    sqlx::query("UPDATE alert_rules SET enabled = FALSE WHERE id = 'remote'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    watcher.tick(&mut None).await.unwrap();
+    assert_eq!(engine.rules().len(), before);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_rule_can_be_tested_against_recent_history_without_side_effects() {
+    let Some(db) = TestDb::connect("alert_rules_test", true).await else {
+        return;
+    };
+    let (state, _engine) = engine_state(db.state());
+    let now = chrono::Utc::now();
+    insert_transfer(&db.pool, 1, "600", "USDC", &(now - chrono::Duration::hours(2)).to_rfc3339()).await;
+    insert_transfer(&db.pool, 2, "600", "USDC", &(now - chrono::Duration::hours(1)).to_rfc3339()).await;
+    insert_transfer(&db.pool, 3, "5000", "XLM", &(now - chrono::Duration::minutes(5)).to_rfc3339()).await;
+    insert_transfer(&db.pool, 4, "9000", "USDC", &(now - chrono::Duration::hours(100)).to_rfc3339()).await;
+
+    // A draft that was never saved.
+    let (status, run) = send(
+        &state,
+        "POST",
+        "/alert-rules/test?contractId=test-contract",
+        RULE_SPEND,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["ruleId"], "big-spend");
+    assert_eq!(run["lookbackHours"], 24);
+    assert_eq!(run["eventsEvaluated"], 3, "the 100 hour old transfer is outside the window");
+    assert_eq!(run["wouldFire"], 0, "600 + 600 are 2 hours apart, outside the 1 hour window");
+    assert_eq!(run["truncated"], false);
+
+    let wide = RULE_SPEND.replace("3600", "86400");
+    let (_, run) = send(&state, "POST", "/alert-rules/test?contractId=test-contract", &wide, None).await;
+    assert_eq!(run["wouldFire"], 1);
+    assert_eq!(run["alerts"][0]["subject"], "USDC");
+    assert_eq!(run["alerts"][0]["severity"], "critical");
+    assert_eq!(run["alerts"][0]["details"]["total"], "1200");
+
+    // A longer look-back also replays the old 9000 transfer, which fires on its own.
+    let (_, long) = send(
+        &state,
+        "POST",
+        "/alert-rules/test?contractId=test-contract&lookbackHours=120",
+        &wide,
+        None,
+    )
+    .await;
+    assert_eq!(long["eventsEvaluated"], 4);
+    assert_eq!(long["wouldFire"], 2);
+
+    let (_, limited) = send(&state, "POST", "/alert-rules/test?contractId=test-contract&limit=1", &wide, None).await;
+    assert!(limited["alerts"].as_array().unwrap().len() <= 1);
+
+    // A saved rule, by id.
+    send(&state, "POST", "/alert-rules", &wide, None).await;
+    let (status, saved) = send(&state, "POST", "/alert-rules/big-spend/test?contractId=test-contract", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["wouldFire"], 1);
+    let (status, _) = send(&state, "POST", "/alert-rules/ghost/test", "", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Nothing was recorded or sent.
+    let (_, alerts) = send(&state, "GET", "/alerts", "", None).await;
+    assert_eq!(alerts["total"], 0);
 
     db.cleanup().await;
 }

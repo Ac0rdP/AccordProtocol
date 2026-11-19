@@ -12,7 +12,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 ## Conventions
 
 - **Base URL** — set by `VITE_API_BASE_URL` on the frontend; requests are same-origin (relative paths) when unset.
-- **Method** — every data endpoint is `GET`, except `POST /reports/run`, `POST /graphql` and the `PUT`/`DELETE` writes on `/report-templates`. Any other method returns `405 METHOD_NOT_ALLOWED`.
+- **Method** — every data endpoint is `GET`, except `POST /reports/run`, `POST /graphql` and the `PUT`/`DELETE` writes on `/report-templates` and the writes on `/alert-rules`. Any other method returns `405 METHOD_NOT_ALLOWED`.
 - **OpenAPI** — the machine-readable contract is [analytics-api.openapi.json](analytics-api.openapi.json) (see [OpenAPI specification](#openapi-specification)).
 - **Rate limits and caching** — every endpoint except the probes and `/metrics` is rate limited per client and the heavy reads are cached; see [Rate limiting and caching](#rate-limiting-and-caching).
 - **Amounts** — token amounts are decimal token-unit strings (for example `"1500.0000000"`), never JSON numbers and never raw stroops. See [ARCHITECTURE.md §9 — Token Handling](ARCHITECTURE.md#9-token-handling).
@@ -420,7 +420,7 @@ Reads are open like every other endpoint. When `ADMIN_TOKEN` is set, `PUT` and `
 
 ## Alerting
 
-The analytics API watches indexed data and raises alerts for **spend over a threshold** and **unusual approval patterns**. Alerting is off until rules are configured with `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` (a path to a JSON file): a JSON array of rules.
+The analytics API watches indexed data and raises alerts for **spend over a threshold** and **unusual approval patterns**. Rules come from two places: the deployment configuration, `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` (a path to a JSON file), a JSON array of rules; and the rules created, edited, paused and tested through the [alert rule management](#alert-rule-management) API, which the dashboard's alert rules page uses. With neither, alerting is idle: no rule is evaluated and no alert is raised.
 
 ```json
 [
@@ -439,7 +439,7 @@ The analytics API watches indexed data and raises alerts for **spend over a thre
 | `approval_burst` | one owner approves more than `maxApprovals` proposals within `windowSecs` | `maxApprovals`, `windowSecs` |
 | `off_hours_approval` | an approval lands in the UTC hours `[startHour, endHour)` (wraps past midnight when `startHour > endHour`) | `startHour`, `endHour` |
 
-Every rule also takes `id` (unique), `severity` (`info`, `warning` — the default — or `critical`) and an optional `cooldownSecs`. Invalid or unknown fields stop the service at startup with an error naming the rule.
+Every rule also takes `id` (unique), `severity` (`info`, `warning` — the default — or `critical`) and an optional `cooldownSecs`. Invalid or unknown fields in the configuration stop the service at startup with an error naming the rule. `spend_threshold` is a *threshold* rule; `approval_burst` and `off_hours_approval` are *anomaly* rules.
 
 **Evaluation.** A watcher polls the `transfers` and `proposal_approvals` tables every `ALERT_POLL_SECS` (default 15) seconds for rows past its saved cursor (`alert_cursors`), evaluates each against the rules in ledger order, and stores every alert in the `alerts` table. Windows and cooldowns use the *event* time, so replaying history behaves exactly like live indexing. The first time alerting runs it starts at the newest indexed ledger and does not replay old history; set `ALERT_BACKFILL=true` to evaluate it.
 
@@ -460,6 +460,46 @@ Raised alerts, newest first. **Query parameters:** `limit`, `offset`, `ruleId`, 
 ### `GET /alerts/rules`
 
 The configured rules and storm settings (`enabled: false` with no rules when alerting is off).
+
+### Alert rule management
+
+Rules from `ALERT_RULES` are read-only (`source: "config"`). Operators can add *managed* rules (`source: "managed"`), which are stored in the `alert_rules` table and evaluated alongside the configured ones. A change takes effect immediately on the instance that received it, and the watcher reloads the stored rules every `ALERT_POLL_SECS`, so other instances follow. Editing a rule discards the samples and cooldowns counted under its old definition, so a new threshold never inherits old totals. A paused rule is kept but not evaluated. Up to 200 managed rules may exist.
+
+A rule is the same object `ALERT_RULES` takes (see the table above), plus an optional `enabled`. The id is 1–64 letters, digits, `.`, `_` or `-` (`test` is reserved). A managed rule's `windowSecs` and `cooldownSecs` may not exceed 30 days. Rules are global, like configured ones: they apply to every contract and network the deployment serves.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /alert-rules` | Configured and managed rules by id. **Query parameters:** `limit`, `offset`, `status` (`active`, `paused`), `type`, `category` (`threshold`, `anomaly`), `source` (`config`, `managed`), `severity`. Not cached. |
+| `POST /alert-rules` | Create a rule: `201` with the rule, active unless `enabled` is `false`. `409 CONFLICT` when the id is taken by a managed *or configured* rule. |
+| `GET /alert-rules/{id}` | One rule. `404` when unknown. |
+| `PUT /alert-rules/{id}` | Replace a managed rule. `id` may be left out of the body (it must match the path if present); `enabled` keeps its value when left out. `404` when unknown. |
+| `DELETE /alert-rules/{id}` | Delete a managed rule: `204`. Alerts it already raised are kept. |
+| `POST /alert-rules/{id}/pause`, `POST /alert-rules/{id}/resume` | Stop or restart evaluating a managed rule; returns the rule. |
+| `POST /alert-rules/test` | Dry-run the draft rule in the body (not stored). |
+| `POST /alert-rules/{id}/test` | Dry-run a saved or configured rule. |
+
+Changing or deleting a configured rule answers `409 CONFLICT`. Validation reports one detail per problem as `400 VALIDATION_ERROR`: `INVALID_RULE_ID`, `INVALID_RULE` (the `field` names the setting, such as `threshold` or `windowSecs`), `INVALID_BODY` (malformed JSON, an unknown field or a wrong type) and, on the test endpoints, `INVALID_LOOKBACK`; a body over 8 KiB gets `413`. The writes (`POST`, `PUT`, `DELETE`, pause, resume) require `Authorization: Bearer <ADMIN_TOKEN>` when `ADMIN_TOKEN` is set, as for [report templates](#securing-the-writes), and otherwise `401 UNAUTHORIZED`. The test endpoints change nothing and need no token.
+
+**Testing a rule.** The test replays the indexed transfers and approvals of the last `lookbackHours` (1–168, default 24) for the scoped contracts (`contractId`, `network`) through a fresh engine holding only that rule, with the deployment's cooldown and storm settings. Nothing is stored and no channel is notified.
+
+```json
+{
+  "ruleId": "large-usdc-spend",
+  "lookbackHours": 24,
+  "eventsEvaluated": 128,
+  "truncated": false,
+  "wouldFire": 2,
+  "suppressed": 5,
+  "alerts": [
+    { "ruleId": "large-usdc-spend", "kind": "spend_threshold", "severity": "critical",
+      "network": "testnet", "contractId": "CD4Y…", "subject": "USDC",
+      "message": "Spend of 52000000000 USDC in the last 86400s reached the 50000000000 threshold on CD4Y… (testnet)",
+      "details": { "total": "52000000000" }, "firedAt": "2026-11-19T08:30:00Z" }
+  ]
+}
+```
+
+`wouldFire` counts every alert the rule would have raised, `alerts` lists the first `limit` (1–100, default 20) oldest first, and `suppressed` counts matches held back by the cooldown or storm cap. `truncated` is `true` when a source had more than 20 000 events in the window and the test read only the oldest ones.
 
 ## GraphQL
 

@@ -2143,6 +2143,1347 @@
         }
       }
     },
+    "/alert-rules": {
+      "get": {
+        "operationId": "listAlertRuleDefinitions",
+        "summary": "Alert rules, configured and managed",
+        "tags": [
+          "Alerts"
+        ],
+        "description": "Rules from `ALERT_RULES` (`source: config`, read-only) and rules managed through this API (`source: managed`), ordered by id. Threshold rules are `spend_threshold`; anomaly rules are `approval_burst` and `off_hours_approval`. Not cached, so an edit shows on the next read.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Rules per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of rules to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_OFFSET",
+            "x-invalid-example": "-1"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only active or only paused rules.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "paused"
+              ]
+            },
+            "x-error-code": "INVALID_STATUS",
+            "x-invalid-example": "bogus"
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "Only rules of this type.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "spend_threshold",
+                "approval_burst",
+                "off_hours_approval"
+              ]
+            },
+            "x-error-code": "INVALID_RULE_TYPE",
+            "x-invalid-example": "bogus"
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "Only threshold or only anomaly rules.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "threshold",
+                "anomaly"
+              ]
+            },
+            "x-error-code": "INVALID_CATEGORY",
+            "x-invalid-example": "bogus"
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "description": "Only configured or only managed rules.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "config",
+                "managed"
+              ]
+            },
+            "x-error-code": "INVALID_SOURCE",
+            "x-invalid-example": "bogus"
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "description": "Only rules of this severity.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "info",
+                "warning",
+                "critical"
+              ]
+            },
+            "x-error-code": "INVALID_SEVERITY",
+            "x-invalid-example": "bogus"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRulePage"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAlertRule",
+        "summary": "Create a managed alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "description": "The rule is active unless `enabled` is false, and starts being evaluated immediately. Requires `Authorization: Bearer <ADMIN_TOKEN>` when the deployment sets ADMIN_TOKEN.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The id is taken, by a managed or a configured rule, or 200 managed rules already exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 8 KiB."
+          }
+        }
+      }
+    },
+    "/alert-rules/test": {
+      "post": {
+        "operationId": "testAlertRuleDraft",
+        "summary": "Dry-run a draft alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "description": "Replays recent indexed transfers and approvals through the rule in the body, with the deployment's cooldown and storm settings, and reports what it would have raised. Nothing is stored and nobody is notified, so no administrator token is needed. The body is a rule; `id` may be left out.",
+        "parameters": [
+          {
+            "name": "lookbackHours",
+            "in": "query",
+            "required": false,
+            "description": "How far back to replay indexed events, in hours.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 168,
+              "default": 24
+            },
+            "x-error-code": "INVALID_LOOKBACK",
+            "x-invalid-example": "0"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Most alerts to return in the response.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "What the rule would have done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleTest"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A parameter or the rule is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 8 KiB."
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alert-rules/{id}": {
+      "get": {
+        "operationId": "getAlertRule",
+        "summary": "One alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceAlertRule",
+        "summary": "Replace a managed alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "description": "Replaces the rule's definition. `enabled` keeps its stored value when left out. Samples and cooldowns counted under the old definition are discarded. Configured rules cannot be changed.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRuleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such managed rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The rule comes from the deployment configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than 8 KiB."
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAlertRule",
+        "summary": "Delete a managed alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "description": "Alerts the rule already raised are kept.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The rule was deleted.",
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such managed rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The rule comes from the deployment configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alert-rules/{id}/pause": {
+      "post": {
+        "operationId": "pauseAlertRule",
+        "summary": "Pause a managed alert rule",
+        "description": "The rule is kept but no longer evaluated, so it raises no alerts until it is resumed.",
+        "tags": [
+          "Alerts"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The updated rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such managed rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The rule comes from the deployment configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alert-rules/{id}/resume": {
+      "post": {
+        "operationId": "resumeAlertRule",
+        "summary": "Resume a paused alert rule",
+        "description": "The rule is evaluated again from the next indexed event.",
+        "tags": [
+          "Alerts"
+        ],
+        "security": [
+          {
+            "adminBearer": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The updated rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the id is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ADMIN_TOKEN is configured and the bearer token is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such managed rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The rule comes from the deployment configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alert-rules/{id}/test": {
+      "post": {
+        "operationId": "testAlertRule",
+        "summary": "Dry-run a saved alert rule",
+        "tags": [
+          "Alerts"
+        ],
+        "description": "Like the draft test, for a rule already stored or configured. Nothing is stored and nobody is notified.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The rule id: 1-64 letters, digits, `.`, `_` or `-`; `test` is reserved.",
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            "x-error-code": "VALIDATION_ERROR",
+            "x-invalid-example": "bad$id"
+          },
+          {
+            "name": "lookbackHours",
+            "in": "query",
+            "required": false,
+            "description": "How far back to replay indexed events, in hours.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 168,
+              "default": 24
+            },
+            "x-error-code": "INVALID_LOOKBACK",
+            "x-invalid-example": "0"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Most alerts to return in the response.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the rule would have done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleTest"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id or a parameter is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/owners/participation": {
       "get": {
         "operationId": "getOwnerParticipation",
@@ -2270,6 +3611,7 @@
                   "INVALID_PARAMETER",
                   "UNAUTHORIZED",
                   "NOT_FOUND",
+                  "CONFLICT",
                   "RATE_LIMITED",
                   "INTERNAL_ERROR"
                 ]
@@ -2325,6 +3667,11 @@
               "INVALID_LOGO_URL",
               "INVALID_COLOR",
               "INVALID_SECTION",
+              "INVALID_RULE",
+              "INVALID_RULE_ID",
+              "INVALID_RULE_TYPE",
+              "INVALID_SOURCE",
+              "INVALID_LOOKBACK",
               "RATE_LIMITED"
             ]
           }
@@ -3120,6 +4467,238 @@
             }
           }
         ]
+      },
+      "AlertRuleInput": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false,
+        "description": "The same rule object `ALERT_RULES` takes, plus `enabled`. `id` is required on create and may be left out on a replace or a test.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "spend_threshold",
+              "approval_burst",
+              "off_hours_approval"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "default": "warning"
+          },
+          "cooldownSecs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2592000,
+            "description": "Overrides the deployment-wide cooldown for this rule."
+          },
+          "token": {
+            "type": "string",
+            "description": "`spend_threshold` only: limit the rule to one token."
+          },
+          "threshold": {
+            "type": "string",
+            "description": "`spend_threshold`: a positive integer in the token's smallest unit."
+          },
+          "windowSecs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000,
+            "description": "`spend_threshold` and `approval_burst`: the rolling window."
+          },
+          "maxApprovals": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "`approval_burst`: approvals by one owner within the window that trigger an alert."
+          },
+          "startHour": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23,
+            "description": "`off_hours_approval`: first UTC hour of the window; the window wraps past midnight when it is greater than endHour."
+          },
+          "endHour": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23,
+            "description": "`off_hours_approval`: UTC hour the window ends (exclusive); must differ from startHour."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the rule is evaluated. Defaults to true on create and keeps its value on replace."
+          }
+        }
+      },
+      "AlertRule": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "severity",
+          "category",
+          "source",
+          "enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "spend_threshold",
+              "approval_burst",
+              "off_hours_approval"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ],
+            "default": "warning"
+          },
+          "cooldownSecs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2592000,
+            "description": "Overrides the deployment-wide cooldown for this rule."
+          },
+          "token": {
+            "type": "string",
+            "description": "`spend_threshold` only: limit the rule to one token."
+          },
+          "threshold": {
+            "type": "string",
+            "description": "`spend_threshold`: a positive integer in the token's smallest unit."
+          },
+          "windowSecs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000,
+            "description": "`spend_threshold` and `approval_burst`: the rolling window."
+          },
+          "maxApprovals": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "`approval_burst`: approvals by one owner within the window that trigger an alert."
+          },
+          "startHour": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23,
+            "description": "`off_hours_approval`: first UTC hour of the window; the window wraps past midnight when it is greater than endHour."
+          },
+          "endHour": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23,
+            "description": "`off_hours_approval`: UTC hour the window ends (exclusive); must differ from startHour."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "threshold",
+              "anomaly"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "config",
+              "managed"
+            ],
+            "description": "`config` rules come from ALERT_RULES and are read-only."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AlertRulePage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Page"
+          },
+          {
+            "type": "object",
+            "required": [
+              "items"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AlertRule"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "AlertRuleTest": {
+        "type": "object",
+        "required": [
+          "ruleId",
+          "lookbackHours",
+          "eventsEvaluated",
+          "truncated",
+          "wouldFire",
+          "suppressed",
+          "alerts"
+        ],
+        "properties": {
+          "ruleId": {
+            "type": "string"
+          },
+          "lookbackHours": {
+            "type": "integer"
+          },
+          "eventsEvaluated": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "A source had more events than a test reads (20000 per contract and network)."
+          },
+          "wouldFire": {
+            "type": "integer",
+            "description": "How many alerts the rule would have raised."
+          },
+          "suppressed": {
+            "type": "integer",
+            "description": "Matches held back by the cooldown or storm cap."
+          },
+          "alerts": {
+            "type": "array",
+            "description": "The first `limit` alerts, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/Alert"
+            }
+          }
+        }
       }
     },
     "securitySchemes": {

@@ -10,6 +10,7 @@
     "availability": "disponibilidad",
     "templates": "plantillas",
     "notifications": "notificaciones",
+    "alerts": "reglas de alerta",
     "settings": "configuración",
     "docs": "documentación"
   },
