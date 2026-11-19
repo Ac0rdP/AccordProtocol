@@ -260,3 +260,46 @@ Dependabot version updates are disabled: the repository has no
 `.github/dependabot.yml` and Dependabot security updates are off in repository
 settings. Dependency upgrades are opened manually as pull requests and must pass
 the required checks above plus the supply-chain workflow before merge.
+
+## CI Time and Cost Budgets
+
+Workflow durations and runner resource costs are monitored and budgeted via
+`.github/workflows/ci-budgets.yml` using the central configuration file
+[`.github/ci-budgets.json`](../.github/ci-budgets.json).
+
+### Configuration & Runner Rates
+- **Thresholds**: Each workflow job defines a `warn_minutes` (soft breach reported as warning)
+  and a `fail_minutes` (hard breach failing the check).
+- **Runner Rates**: Per-minute billing rates are configured under `rates_per_minute_usd`
+  in `.github/ci-budgets.json` (e.g. `ubuntu-latest`: $0.008/min, `macos-latest`: $0.080/min).
+  > [!NOTE]
+  > Runner cost rates are configurable assumptions and must be checked against GitHub's
+  > active billing documentation. Public repositories frequently receive free standard GitHub-hosted
+  > runners ($0.00/min).
+
+### Required Settings & Permissions
+- **Workflow permissions**: Requires `actions: read` and `contents: read`.
+- **Secrets**: No custom secrets required; uses the standard `GITHUB_TOKEN`.
+- **Self-trigger prevention**: The budget workflow triggers on `workflow_run` of other suites
+  and explicitly avoids monitoring itself to prevent infinite execution loops.
+
+### Changing Budgets
+To adjust a job's time limit or update cost assumptions:
+1. Open `.github/ci-budgets.json`.
+2. Locate the job entry under `"jobs"` (e.g., `"Contract CI"` or `"Mutation Testing (cargo-mutants)"`).
+3. Update `warn_minutes` or `fail_minutes` with appropriate headroom for runner variance.
+4. Commit the change in a pull request.
+
+### Rollback & Emergency Disable
+If the budget check causes false-positive failures during runner degradation or outage:
+1. **Quick Disable**: Disable the workflow via GitHub CLI or UI:
+   ```bash
+   gh workflow disable "CI Time and Cost Budgets"
+   ```
+2. **Raise Thresholds**: Temporarily increase `fail_minutes` in `.github/ci-budgets.json`
+   to permit in-flight work.
+3. Re-enable the workflow once provider speeds normalize:
+   ```bash
+   gh workflow enable "CI Time and Cost Budgets"
+   ```
+
