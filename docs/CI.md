@@ -89,13 +89,44 @@ without a new issue every night.
 
 ## Release settings
 
-`release.yml` needs:
+`release.yml` and `release-notes.yml` need:
 
 - **Actions → General → Workflow permissions**: read and write, so the run can
-  create a release and publish to GitHub Packages.
-- No extra secrets: the SDK is published to GitHub Packages with the built-in
-  `GITHUB_TOKEN`. The published package name is scoped to the repository owner
-  (`@<owner>/accord-sdk`).
+  create a release, upload assets, and publish to GitHub Packages.
+- **No extra secrets**: operations use the built-in `GITHUB_TOKEN`. The published
+  package name is scoped to the repository owner (`@<owner>/accord-sdk`).
+
+### Automated release notes & dry run
+
+Automated release notes are generated using GitHub's built-in categorizer configured
+in [`.github/release.yml`](../.github/release.yml) and the custom categorization script
+`scripts/generate-release-notes.py`.
+
+- **Labels recognized**:
+  - `breaking`, `breaking-change` → 💥 Breaking Changes
+  - `security`, `vulnerability` → 🔒 Security
+  - `contract`, `soroban` → 📜 Smart Contract
+  - `feat`, `feature`, `enhancement` → 🚀 New Features
+  - `bug`, `fix`, `bugfix` → 🐛 Bug Fixes
+  - `frontend`, `ui` → 🖥️ Frontend
+  - `ci`, `infrastructure`, `devops`, `workflow` → 🔧 CI & Infrastructure
+  - `docs`, `documentation` → 📚 Documentation
+  - `test`, `testing` → 🧪 Testing
+  - `perf`, `performance`, `optimization` → ⚡ Performance
+  - `chore`, `maintenance`, `refactor`, `dependencies`, `build`, `style` → 🏗️ Maintenance
+  - Unlabeled / other → 🔀 Other Changes
+- **Dry run**: To preview release notes without publishing a release:
+  1. Go to **Actions** → **Release Notes** (`.github/workflows/release-notes.yml`).
+  2. Click **Run workflow**.
+  3. Specify the target `tag` (optional) and keep `dry_run: true`.
+  4. View the generated notes directly in the GitHub Actions step summary or download
+     the `release-notes-preview` artifact.
+- **Rollback steps (deleting or editing a bad release and re-running)**:
+  1. Delete the incorrect GitHub release via `gh release delete <tag> --yes` or in the GitHub Releases UI.
+  2. If the tag was pushed incorrectly, delete the tag locally and remotely:
+     `git tag -d <tag> && git push origin :refs/tags/<tag>`.
+  3. If release notes contained incorrect categorizations or entries, correct the PR labels or commit metadata.
+  4. Re-run `.github/workflows/release-notes.yml` (with `dry_run: false` or publish via tag push) to regenerate.
 
 Cut a release by following the *Release process* section of
 [CONTRIBUTING.md](../CONTRIBUTING.md), then push an annotated `v*` tag.
@@ -293,3 +324,46 @@ Dependabot version updates are disabled: the repository has no
 `.github/dependabot.yml` and Dependabot security updates are off in repository
 settings. Dependency upgrades are opened manually as pull requests and must pass
 the required checks above plus the supply-chain workflow before merge.
+
+## CI Time and Cost Budgets
+
+Workflow durations and runner resource costs are monitored and budgeted via
+`.github/workflows/ci-budgets.yml` using the central configuration file
+[`.github/ci-budgets.json`](../.github/ci-budgets.json).
+
+### Configuration & Runner Rates
+- **Thresholds**: Each workflow job defines a `warn_minutes` (soft breach reported as warning)
+  and a `fail_minutes` (hard breach failing the check).
+- **Runner Rates**: Per-minute billing rates are configured under `rates_per_minute_usd`
+  in `.github/ci-budgets.json` (e.g. `ubuntu-latest`: $0.008/min, `macos-latest`: $0.080/min).
+  > [!NOTE]
+  > Runner cost rates are configurable assumptions and must be checked against GitHub's
+  > active billing documentation. Public repositories frequently receive free standard GitHub-hosted
+  > runners ($0.00/min).
+
+### Required Settings & Permissions
+- **Workflow permissions**: Requires `actions: read` and `contents: read`.
+- **Secrets**: No custom secrets required; uses the standard `GITHUB_TOKEN`.
+- **Self-trigger prevention**: The budget workflow triggers on `workflow_run` of other suites
+  and explicitly avoids monitoring itself to prevent infinite execution loops.
+
+### Changing Budgets
+To adjust a job's time limit or update cost assumptions:
+1. Open `.github/ci-budgets.json`.
+2. Locate the job entry under `"jobs"` (e.g., `"Contract CI"` or `"Mutation Testing (cargo-mutants)"`).
+3. Update `warn_minutes` or `fail_minutes` with appropriate headroom for runner variance.
+4. Commit the change in a pull request.
+
+### Rollback & Emergency Disable
+If the budget check causes false-positive failures during runner degradation or outage:
+1. **Quick Disable**: Disable the workflow via GitHub CLI or UI:
+   ```bash
+   gh workflow disable "CI Time and Cost Budgets"
+   ```
+2. **Raise Thresholds**: Temporarily increase `fail_minutes` in `.github/ci-budgets.json`
+   to permit in-flight work.
+3. Re-enable the workflow once provider speeds normalize:
+   ```bash
+   gh workflow enable "CI Time and Cost Budgets"
+   ```
+
