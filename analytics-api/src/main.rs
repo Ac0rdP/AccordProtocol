@@ -21,12 +21,17 @@ use sqlx::{
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod admin;
+mod alert_rules;
 mod alerts;
+mod freshness;
+mod funnel;
 mod limits;
 mod mail;
 mod reports;
 mod schedule;
 mod scope;
+mod templates;
 
 #[cfg(test)]
 mod contract_tests;
@@ -60,6 +65,8 @@ struct AppState {
     transport: Option<Arc<dyn ReportTransport>>,
     limits: Arc<Limits>,
     alert_engine: Option<Arc<AlertEngine>>,
+    /// Bearer token the write endpoints require; `None` leaves them open.
+    admin_token: Option<Arc<str>>,
     schema: graphql::AccordSchema,
     graphql_timeout: Duration,
 }
@@ -85,6 +92,7 @@ impl AppState {
             transport,
             limits: Arc::new(Limits::disabled()),
             alert_engine: None,
+            admin_token: None,
             schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
             graphql_timeout: graphql::GraphqlConfig::default().timeout,
         }
@@ -97,6 +105,11 @@ impl AppState {
 
     fn with_alerts(mut self, engine: Option<Arc<AlertEngine>>) -> Self {
         self.alert_engine = engine;
+        self
+    }
+
+    fn with_admin_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.admin_token = token;
         self
     }
 
@@ -180,17 +193,46 @@ fn app(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/status", get(status))
         .route("/metrics", get(metrics_endpoint))
+        .route("/freshness", get(freshness::get))
         .route(
             "/graphql",
             post(graphql::handler).layer(DefaultBodyLimit::max(graphql::MAX_BODY_BYTES)),
         )
         .route("/proposals", get(proposals::list))
+        .route("/proposals/funnel", get(funnel::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
+        .route(
+            "/report-templates",
+            get(templates::list)
+                .put(templates::put)
+                .delete(templates::delete)
+                .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
+        .route(
+            "/alert-rules",
+            get(alert_rules::list)
+                .post(alert_rules::create)
+                .layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/alert-rules/test",
+            post(alert_rules::test_draft).layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/alert-rules/{id}",
+            get(alert_rules::get_one)
+                .put(alert_rules::replace)
+                .delete(alert_rules::remove)
+                .layer(DefaultBodyLimit::max(alert_rules::MAX_BODY_BYTES)),
+        )
+        .route("/alert-rules/{id}/pause", post(alert_rules::pause))
+        .route("/alert-rules/{id}/resume", post(alert_rules::resume))
+        .route("/alert-rules/{id}/test", post(alert_rules::test_saved))
         .route("/owners/participation", get(owner_participation::list))
         .layer(middleware::from_fn_with_state(state.clone(), limits::guard))
         .layer(middleware::from_fn(metrics::track))
@@ -769,21 +811,26 @@ mod alert_api {
 
     /// `GET /alerts/rules` — the configured rules and storm protection.
     pub(super) async fn rules(State(state): State<AppState>) -> Json<RulesResponse> {
-        Json(match &state.alert_engine {
-            Some(engine) => {
-                let StormSettings {
+        let active = state
+            .alert_engine
+            .as_ref()
+            .map(|engine| (engine.rules(), engine.settings().clone()))
+            .filter(|(rules, _)| !rules.is_empty());
+        Json(match active {
+            Some((
+                rules,
+                StormSettings {
                     cooldown,
                     max_alerts,
                     window,
-                } = engine.settings().clone();
-                RulesResponse {
-                    enabled: true,
-                    rules: engine.rules().to_vec(),
-                    cooldown_secs: Some(cooldown.as_secs()),
-                    max_alerts_per_window: Some(max_alerts),
-                    storm_window_secs: Some(window.as_secs()),
-                }
-            }
+                },
+            )) => RulesResponse {
+                enabled: true,
+                rules,
+                cooldown_secs: Some(cooldown.as_secs()),
+                max_alerts_per_window: Some(max_alerts),
+                storm_window_secs: Some(window.as_secs()),
+            },
             None => RulesResponse {
                 enabled: false,
                 rules: Vec::new(),
@@ -1365,6 +1412,17 @@ mod proposals {
             }
         }
 
+        /// An error with a fixed code and message and no per-field details.
+        pub(super) fn new(code: &'static str, message: &'static str) -> Self {
+            Self {
+                error: ErrorBody {
+                    code,
+                    message,
+                    details: Vec::new(),
+                },
+            }
+        }
+
         fn parameter(message: &'static str) -> Self {
             Self {
                 error: ErrorBody {
@@ -1857,35 +1915,35 @@ async fn main() -> Result<()> {
 
     let limits = Arc::new(Limits::new(&config.limits));
 
-    // Alerting is off unless rules are configured; the watcher still runs so
-    // new indexed events clear the response cache.
+    // The engine always runs: it evaluates the rules from `ALERT_RULES` plus
+    // the active ones managed through `/alert-rules`. With no rules at all it
+    // only advances its cursors and clears the response cache.
     let alert_config = alerts::AlertConfig::from_env()?;
-    let (alert_engine, alert_channels, alert_interval) = match &alert_config {
-        Some(alert_config) => (
-            Some(Arc::new(AlertEngine::new(
-                alert_config.rules.clone(),
-                alert_config.settings.clone(),
-            ))),
-            alert_config.build_channels(transport.clone())?,
-            alert_config.poll_interval,
-        ),
-        None => {
-            tracing::info!("no ALERT_RULES configured; alerting is off");
-            (None, Vec::new(), Duration::from_secs(15))
-        }
-    };
+    let alert_engine = Arc::new(AlertEngine::new(
+        alert_config.rules.clone(),
+        alert_config.settings.clone(),
+    ));
+    alert_engine.replace_managed(
+        alert_rules::load_active(&pool)
+            .await
+            .context("failed to load the managed alert rules")?,
+    );
+    if alert_engine.rules().is_empty() {
+        tracing::info!("no alert rules configured or managed; alerting is idle");
+    }
+    let alert_channels = alert_config.build_channels(transport.clone())?;
     let watcher = alerts::spawn(
         alerts::Watcher {
             pool: pool.clone(),
             pairs: config.scope.pairs(),
             limits: Arc::clone(&limits),
-            alerts: alert_engine.as_ref().map(|engine| alerts::AlertRuntime {
-                engine: Arc::clone(engine),
+            alerts: Some(alerts::AlertRuntime {
+                engine: Arc::clone(&alert_engine),
                 channels: alert_channels,
-                backfill: alert_config.as_ref().is_some_and(|config| config.backfill),
+                backfill: alert_config.backfill,
             }),
         },
-        alert_interval,
+        alert_config.poll_interval,
     );
 
     let address: SocketAddr = format!("{}:{}", config.listen_host, config.listen_port)
@@ -1901,12 +1959,19 @@ async fn main() -> Result<()> {
         networks = config.scope.networks.len(),
         rate_limit = config.limits.rate_limit_requests,
         cache_ttl_secs = config.limits.cache_ttl.as_secs(),
-        alert_rules = alert_engine.as_ref().map_or(0, |engine| engine.rules().len()),
+        alert_rules = alert_engine.rules().len(),
         "analytics API listening"
     );
     let state = AppState::with_scope(pool, config.scope.clone(), reports, transport)
         .with_limits(limits)
-        .with_alerts(alert_engine)
+        .with_alerts(Some(alert_engine))
+        .with_admin_token(
+            env::var("ADMIN_TOKEN")
+                .ok()
+                .map(|token| token.trim().to_owned())
+                .filter(|token| !token.is_empty())
+                .map(Arc::from),
+        )
         .with_graphql(graphql_config);
     axum::serve(
         listener,

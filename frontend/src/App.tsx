@@ -37,9 +37,11 @@ import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
+import { AlertRulesPage } from "./pages/AlertRulesPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
 import { BulkActionsPage } from "./pages/BulkActionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { FreshnessPage } from "./pages/FreshnessPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { NotificationSchedulePage } from "./pages/NotificationSchedulePage";
@@ -64,6 +66,8 @@ const NAV_ITEMS = [
   { key: "availability", to: "/app/availability" },
   { key: "templates", to: "/app/templates" },
   { key: "notifications", to: "/app/notifications" },
+  { key: "alerts", to: "/app/alerts" },
+  { key: "freshness", to: "/app/freshness" },
   { key: "settings", to: "/app/settings" },
   { key: "docs", to: "/docs" },
 ];
@@ -635,6 +639,8 @@ export default function App() {
               }
             />
             <Route path="notifications" element={<NotificationSchedulePage />} />
+            <Route path="alerts" element={<AlertRulesPage />} />
+            <Route path="freshness" element={<FreshnessPage />} />
             <Route
               path="owners"
               element={

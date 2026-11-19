@@ -10,6 +10,8 @@
     "availability": "availability",
     "templates": "templates",
     "notifications": "notifications",
+    "alerts": "alert rules",
+    "freshness": "data freshness",
     "settings": "settings",
     "docs": "docs"
   },

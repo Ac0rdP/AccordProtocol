@@ -552,6 +552,7 @@ mod tests {
     fn only_database_backed_reads_are_cacheable() {
         assert!(is_cacheable(&Method::GET, "/proposals"));
         assert!(is_cacheable(&Method::GET, "/proposals/7"));
+        assert!(is_cacheable(&Method::GET, "/proposals/funnel"));
         assert!(is_cacheable(&Method::GET, "/spend/by-category"));
         assert!(!is_cacheable(&Method::POST, "/proposals"));
         assert!(!is_cacheable(&Method::POST, "/reports/run"));

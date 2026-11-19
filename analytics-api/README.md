@@ -86,6 +86,15 @@ a burst from flooding the channels; `ALERT_POLL_SECS` sets the watcher interval
 and `ALERT_BACKFILL=true` evaluates already-indexed history on first start. Rule
 format and behaviour: [Alerting](../docs/ANALYTICS_API.md#alerting).
 
+## Branded report templates
+
+A workspace (one network + contract pair) can customise the header, footer, logo
+reference, accent colour and sections of its scheduled and manual CSV/PDF
+reports through `GET|PUT|DELETE /report-templates`. Without a template the
+default layout is used. Set `ADMIN_TOKEN` to require
+`Authorization: Bearer <token>` on the `PUT`/`DELETE` writes. Field reference:
+[Branded report templates](../docs/ANALYTICS_API.md#branded-report-templates).
+
 ## OpenAPI specification
 
 [`docs/analytics-api.openapi.json`](../docs/analytics-api.openapi.json) describes
