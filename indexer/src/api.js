@@ -1,10 +1,11 @@
 import { createServer } from "node:http";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
+import { createSubscriptionManager } from "./subscriptions.js";
 
 const ROUTES = new Set([
   "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
-  "/notifications/destinations", "/notifications/deliveries",
+  "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
 ]);
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
 const DESTINATION_PATH = /^\/notifications\/destinations\/([^/]+)$/;
@@ -105,8 +106,48 @@ async function buildStatus({ store, readiness, startLedger, finalityLag }) {
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null }) {
+  const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
+
   async function route(request, response, url) {
+    if (
+      url.pathname === "/graphql/subscriptions" ||
+      (url.pathname === "/graphql" && request.headers.accept?.includes("text/event-stream"))
+    ) {
+      return activeSubscriptions.handleSseRequest(request, response, url);
+    }
+
+    if (url.pathname === "/graphql") {
+      if (request.method === "POST") {
+        const body = await readJsonBody(request);
+        const query = body.query ?? "";
+        if (/^\s*subscription/i.test(query)) {
+          return sendJson(response, 400, {
+            error: "For GraphQL subscriptions, please connect to /graphql/subscriptions via GET or with Accept: text/event-stream",
+          });
+        }
+        if (/introspection|__schema/i.test(query)) {
+          return sendJson(response, 200, {
+            data: {
+              __schema: {
+                queryType: { name: "Query" },
+                mutationType: null,
+                subscriptionType: { name: "Subscription" },
+              },
+            },
+          });
+        }
+        return sendJson(response, 200, { data: { status: "ok" } });
+      }
+      if (request.method === "GET") {
+        return sendJson(response, 200, {
+          schema: "GraphQL Subscriptions available at /graphql/subscriptions",
+          types: ["Subscription"],
+          subscriptions: ["proposalEvents", "approvalEvents", "treasuryEvents", "liveEvents"],
+        });
+      }
+    }
+
     const destinationMatch = url.pathname.match(DESTINATION_PATH);
     const destinationTestMatch = url.pathname.match(DESTINATION_TEST_PATH);
 

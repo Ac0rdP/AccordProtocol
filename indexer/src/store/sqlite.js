@@ -112,6 +112,16 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS notification_deliveries_due_idx
       ON notification_deliveries (status, next_attempt_at, id);
+    CREATE TABLE IF NOT EXISTS graphql_client_checkpoints (
+      client_id TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      last_event_id TEXT,
+      last_ledger INTEGER,
+      connected_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS graphql_client_checkpoints_updated_idx
+      ON graphql_client_checkpoints (updated_at);
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -654,6 +664,35 @@ export function openLedgerStore(databasePath) {
             WHERE status = 'dead'
           `).run(now, now);
       return Number(result.changes);
+    },
+
+    async setClientCheckpoint({ clientId, query, lastEventId = null, lastLedger = null, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO graphql_client_checkpoints (client_id, query, last_event_id, last_ledger, connected_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (client_id) DO UPDATE SET
+          query = excluded.query,
+          last_event_id = excluded.last_event_id,
+          last_ledger = excluded.last_ledger,
+          updated_at = excluded.updated_at
+      `).run(clientId, query, lastEventId, lastLedger, now, now);
+      return true;
+    },
+
+    async getClientCheckpoint(clientId) {
+      const row = database.prepare(`
+        SELECT client_id, query, last_event_id, last_ledger, connected_at, updated_at
+        FROM graphql_client_checkpoints WHERE client_id = ?
+      `).get(clientId);
+      if (!row) return null;
+      return {
+        clientId: row.client_id,
+        query: row.query,
+        lastEventId: row.last_event_id,
+        lastLedger: row.last_ledger,
+        connectedAt: row.connected_at,
+        updatedAt: row.updated_at,
+      };
     },
 
     async close() {

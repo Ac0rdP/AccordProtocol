@@ -535,6 +535,37 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return rowCount;
     },
 
+    async setClientCheckpoint({ clientId, query, lastEventId = null, lastLedger = null, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO graphql_client_checkpoints (client_id, query, last_event_id, last_ledger, connected_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5)
+         ON CONFLICT (client_id) DO UPDATE SET
+           query = EXCLUDED.query,
+           last_event_id = EXCLUDED.last_event_id,
+           last_ledger = EXCLUDED.last_ledger,
+           updated_at = EXCLUDED.updated_at`,
+        [clientId, query, lastEventId, lastLedger, now]
+      );
+      return true;
+    },
+
+    async getClientCheckpoint(clientId) {
+      const { rows } = await pool.query(
+        `SELECT client_id, query, last_event_id, last_ledger, connected_at, updated_at
+         FROM graphql_client_checkpoints WHERE client_id = $1`,
+        [clientId]
+      );
+      if (!rows[0]) return null;
+      return {
+        clientId: rows[0].client_id,
+        query: rows[0].query,
+        lastEventId: rows[0].last_event_id,
+        lastLedger: rows[0].last_ledger,
+        connectedAt: rows[0].connected_at,
+        updatedAt: rows[0].updated_at,
+      };
+    },
+
     async close() {
       await pool.end();
     },

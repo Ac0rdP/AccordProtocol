@@ -45,6 +45,31 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 | `accord_indexer_webhook_delivery_duration_seconds` | histogram | `subscription` | Receiver latency. |
 | `accord_indexer_webhook_deliveries` | gauge | `status` = `pending`, `delivered`, `dead` | Outbox size. |
 
+## GraphQL live event subscriptions
+
+The indexer serves real-time GraphQL event subscriptions over HTTP Server-Sent Events (SSE) at `GET /graphql/subscriptions` (or `GET /graphql` with `Accept: text/event-stream`), pushing proposal, approval, and treasury events to clients without polling.
+
+### Subscribed channels
+
+- `proposalEvents`: Push notifications for `created`, `proposal_ready`, `executed`, and `rejected` events.
+- `approvalEvents`: Push notifications for `approved`, `revoked`, and `owner_weight_changed` events.
+- `treasuryEvents`: Token transfer entries (`inflow`, `outflow`) and recurring payment disbursements (`rpay`).
+- `liveEvents`: Unified event stream with optional `topics`, `proposalId`, `token`, or `direction` filters.
+
+### Replay & idempotence
+
+Clients reconnecting after network drops can pass a checkpoint via the `Last-Event-ID` header or `?fromEventId=<id>` query parameter. The indexer replays all events from the store starting after the checkpoint in strict order before seamlessly transitioning to live pushes. Subscriptions are idempotent and duplicates are filtered.
+
+### Configuration
+
+| Environment variable | Default | Description |
+| --- | --- | --- |
+| `GRAPHQL_SUBSCRIPTIONS_ENABLED` | `true` | Toggle GraphQL subscription serving. |
+| `GRAPHQL_SUBSCRIPTIONS_PATH` | `/graphql/subscriptions` | Endpoint path for SSE subscription connections. |
+| `GRAPHQL_KEEPALIVE_MS` | `15000` | Keep-alive ping interval to prevent proxy disconnects. |
+| `GRAPHQL_MAX_SUBS_PER_CLIENT` | `50` | Maximum subscriptions tracked per connection. |
+| `GRAPHQL_REPLAY_MAX_EVENTS` | `1000` | Maximum historical events replayed on reconnect. |
+
 ## Analytics API metrics
 
 | Metric | Type | Labels | Meaning |
