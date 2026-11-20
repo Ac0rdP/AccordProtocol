@@ -66,7 +66,7 @@ function parsePage(searchParams) {
  * A broken store is an outage, a store that answers while indexing lags is
  * degraded, everything else is operational.
  */
-async function buildStatus({ store, readiness, startLedger, finalityLag }) {
+async function buildStatus({ store, readiness, startLedger, finalityLag, election = null }) {
   const { checks } = await readiness.check();
   const status = !checks.store?.ok
     ? "outage"
@@ -92,6 +92,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag }) {
     nextLedger,
     latestLedger,
     finalityLag,
+    ...(election ? { leader: election.status() } : {}),
   };
 }
 
@@ -106,7 +107,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag }) {
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
 
   async function route(request, response, url) {
@@ -221,7 +222,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       }
 
       case "/status": {
-        const status = await buildStatus({ store, readiness, startLedger, finalityLag });
+        const status = await buildStatus({ store, readiness, startLedger, finalityLag, election });
         return sendJson(response, status.status === "outage" ? 503 : 200, status);
       }
 

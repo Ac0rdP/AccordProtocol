@@ -4,6 +4,16 @@ import { migratePostgres } from "./migrations.js";
 // Serializes writers that fold running balances, mirroring SQLite's BEGIN IMMEDIATE.
 const LEDGER_LOCK_ID = 7_243_002;
 
+const toLease = (row) => ({
+  name: row.name,
+  holderId: row.holder_id,
+  region: row.region,
+  fencingToken: Number(row.fencing_token),
+  acquiredAt: iso(row.acquired_at),
+  renewedAt: iso(row.renewed_at),
+  expiresAt: iso(row.expires_at),
+});
+
 const iso = (value) => (value === null || value === undefined ? null : new Date(value).toISOString());
 
 /**
@@ -46,6 +56,15 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
   } catch (error) {
     await pool.end();
     throw error;
+  }
+
+  async function selectLease(name) {
+    const { rows } = await pool.query(
+      `SELECT name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at
+       FROM indexer_leases WHERE name = $1`,
+      [name]
+    );
+    return rows[0] ? toLease(rows[0]) : null;
   }
 
   async function withTransaction(work, { lockLedger = false } = {}) {
@@ -627,6 +646,43 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         schemaVersion: rows[0].schema_version,
         updatedAt: rows[0].updated_at,
       };
+    },
+
+    /** Same contract as the SQLite store; the upsert is a single atomic statement. */
+    async acquireLease({ name, holderId, region = "", ttlMs, now = new Date().toISOString() }) {
+      const expiresAt = new Date(Date.parse(now) + ttlMs).toISOString();
+      const { rows } = await pool.query(
+        `INSERT INTO indexer_leases AS lease (name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at)
+         VALUES ($1, $2, $3, 1, $4, $4, $5)
+         ON CONFLICT (name) DO UPDATE SET
+           fencing_token = CASE
+             WHEN lease.holder_id = EXCLUDED.holder_id AND lease.expires_at > EXCLUDED.renewed_at
+             THEN lease.fencing_token ELSE lease.fencing_token + 1 END,
+           acquired_at = CASE
+             WHEN lease.holder_id = EXCLUDED.holder_id AND lease.expires_at > EXCLUDED.renewed_at
+             THEN lease.acquired_at ELSE EXCLUDED.acquired_at END,
+           holder_id = EXCLUDED.holder_id,
+           region = EXCLUDED.region,
+           renewed_at = EXCLUDED.renewed_at,
+           expires_at = EXCLUDED.expires_at
+         WHERE lease.holder_id = EXCLUDED.holder_id OR lease.expires_at <= EXCLUDED.renewed_at
+         RETURNING name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at`,
+        [name, holderId, region, now, expiresAt]
+      );
+      if (rows[0]) return { acquired: true, lease: toLease(rows[0]) };
+      return { acquired: false, lease: await selectLease(name) };
+    },
+
+    async getLease(name) {
+      return selectLease(name);
+    },
+
+    async releaseLease({ name, holderId, now = new Date().toISOString() }) {
+      const { rowCount } = await pool.query(
+        "UPDATE indexer_leases SET expires_at = $3 WHERE name = $1 AND holder_id = $2 AND expires_at > $3",
+        [name, holderId, now]
+      );
+      return rowCount > 0;
     },
 
     async close() {

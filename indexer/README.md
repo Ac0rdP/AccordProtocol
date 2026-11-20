@@ -199,6 +199,38 @@ After either event, the indexed state equals the chain state up to the final
 ledger — never ahead of it. `indexer/test/finality.test.js` asserts that
 invariant after both a not-yet-final ledger and a rollback.
 
+## Multi-region failover (leader election)
+
+Run the same indexer in several regions against one shared Postgres and let them elect a leader. The leader ingests events, reconciles balances and runs the outbound workers (webhooks, notifications, stream and warehouse exporters). Standbys keep serving the read API from the shared store and take over automatically when the leader stops.
+
+```bash
+STORE_BACKEND=postgres
+DATABASE_URL=postgres://...                  # the same database in every region
+INDEXER_LEADER_ELECTION_ENABLED=true
+INDEXER_REGION=us-east-1                     # label only
+```
+
+How it works:
+
+- Instances contend for one row in `indexer_leases` (migration `0009_indexer_leases.sql`) with a single atomic upsert. The holder renews every `INDEXER_LEASE_RENEW_MS`; if it stops, the lease lapses after `INDEXER_LEASE_TTL_MS` and the next instance to try wins. Worst-case takeover is the TTL plus one renewal interval.
+- Every change of ownership bumps a **fencing token**, reported by `GET /status` under `leader`.
+- A leader that cannot reach the store keeps leading only until its last successful renewal would have expired by its own clock, then steps down, so it never outlives the lease it holds.
+- Shutting down (`SIGTERM`/`SIGINT`) releases the lease first, so a standby takes over immediately instead of waiting out the TTL.
+- Failover is safe to replay from any checkpoint: events are deduplicated by chain position and the checkpoint only resumes from a ledger that was already covered. If two instances briefly overlap (clock skew, a slow leader), the extra writes are no-ops. Keep instance clocks NTP-synced and the TTL well above expected skew.
+- `/readyz` stays `200` on a healthy standby (it deliberately does not ingest); `/status` reports `checks.indexing.role = "standby"` and who the leader is.
+- Metrics: `accord_indexer_is_leader` (gauge) and `accord_indexer_leader_transitions_total{to}`.
+
+Failover is **off by default**: a single instance is always the leader and behaves exactly as before. It only coordinates instances that share the store, so use Postgres (a per-instance SQLite file elects a leader per file, not per fleet; the indexer logs a warning if you enable it on SQLite).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INDEXER_LEADER_ELECTION_ENABLED` | `false` | Turn leader election on |
+| `INDEXER_REGION` | empty | Region label shown in status output |
+| `INDEXER_INSTANCE_ID` | `region:host-pid-random` | Unique id of this instance |
+| `INDEXER_LEASE_NAME` | `indexer-leader` | Lease contended for; use distinct names for independent deployments sharing a database |
+| `INDEXER_LEASE_TTL_MS` | `15000` | Lease lifetime without renewal (3000-300000) |
+| `INDEXER_LEASE_RENEW_MS` | `5000` | Renewal cadence; clamped to at most half the TTL |
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.

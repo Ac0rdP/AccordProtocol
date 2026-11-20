@@ -6,6 +6,7 @@
  *   - GraphQL live event subscriptions (push updates without polling)
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
+ *   - Multi-region failover (leader election)
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -109,6 +110,35 @@ export function resolveWarehouseConfig(env = process.env) {
 }
 
 /**
+ * Resolves multi-region failover (leader election) configuration.
+ *
+ * Safe defaults:
+ *   - enabled: false (a single instance is always the leader)
+ *   - region: "" (label only)
+ *   - leaseName: indexer-leader
+ *   - leaseTtlMs: 15000 (a dead leader is replaced after at most this long)
+ *   - renewIntervalMs: 5000 (never more than half the TTL)
+ *
+ * Failover needs every instance to share one store, i.e. STORE_BACKEND=postgres.
+ */
+export function resolveLeaderElectionConfig(env = process.env) {
+  const enabled = parseBool(env.INDEXER_LEADER_ELECTION_ENABLED, false);
+  const leaseTtlMs = parseIntSafe(env.INDEXER_LEASE_TTL_MS, 15000, 3000, 300000);
+  let renewIntervalMs = parseIntSafe(env.INDEXER_LEASE_RENEW_MS, 5000, 500, 150000);
+  // A renewal slower than half the TTL would let a healthy leader lapse.
+  if (renewIntervalMs * 2 > leaseTtlMs) renewIntervalMs = Math.floor(leaseTtlMs / 3);
+
+  return {
+    enabled,
+    region: env.INDEXER_REGION?.trim() || "",
+    instanceId: env.INDEXER_INSTANCE_ID?.trim() || "",
+    leaseName: env.INDEXER_LEASE_NAME?.trim() || "indexer-leader",
+    leaseTtlMs,
+    renewIntervalMs,
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -116,6 +146,7 @@ export function loadIndexerConfig(env = process.env) {
     graphql: resolveGraphQLConfig(env),
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
+    leader: resolveLeaderElectionConfig(env),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

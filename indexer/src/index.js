@@ -23,7 +23,13 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import {
+  resolveGraphQLConfig,
+  resolveLeaderElectionConfig,
+  resolveStreamExportersConfig,
+  resolveWarehouseConfig,
+} from "./config.js";
+import { createHolderId, createLeaderElection, createStaticLeader } from "./leader-election.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
@@ -81,6 +87,13 @@ Environment:
   EMAIL_FROM           "From" address sent to EMAIL_API_URL
   NOTIFICATION_POLL_INTERVAL_MS  Notification worker poll interval (default 2000)
   NOTIFICATION_MAX_ATTEMPTS      Attempts before dead-lettering (default 8)
+  INDEXER_LEADER_ELECTION_ENABLED  Run redundant indexers with automatic
+                       failover (default false; needs STORE_BACKEND=postgres)
+  INDEXER_REGION       Region label shown in status output (default empty)
+  INDEXER_INSTANCE_ID  Unique id of this instance (default host-pid-random)
+  INDEXER_LEASE_NAME   Lease contended for (default indexer-leader)
+  INDEXER_LEASE_TTL_MS Lease lifetime without renewal (default 15000)
+  INDEXER_LEASE_RENEW_MS  Renewal cadence, at most half the TTL (default 5000)
 `;
 
 function required(name) {
@@ -313,7 +326,6 @@ async function serve({ store, stellar }) {
     config: streamConfig,
     metrics,
   });
-  void streamDispatcher.start();
 
   const warehouseConfig = resolveWarehouseConfig();
   const warehouseManager = createWarehouseExportManager({
@@ -321,10 +333,71 @@ async function serve({ store, stellar }) {
     config: warehouseConfig,
     metrics,
   });
-  void warehouseManager.start();
+
+  // Multi-region failover: one instance holds the lease and does all the
+  // writing (ingestion, reconciliation, outbound delivery); the rest stand by
+  // and take over when the lease lapses. With failover off, this instance is
+  // always the leader and nothing changes.
+  const leaderConfig = resolveLeaderElectionConfig();
+  const workerPollMs = {
+    webhooks: Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000),
+    notifications: Number(process.env.NOTIFICATION_POLL_INTERVAL_MS ?? 2000),
+  };
+  let workersRunning = false;
+
+  function startLeaderWorkers() {
+    if (workersRunning) return;
+    workersRunning = true;
+    void streamDispatcher.start();
+    void warehouseManager.start();
+    webhooks.start(workerPollMs.webhooks);
+    notifications.start(workerPollMs.notifications);
+  }
+
+  async function stopLeaderWorkers() {
+    if (!workersRunning) return;
+    workersRunning = false;
+    webhooks.stop();
+    notifications.stop();
+    await streamDispatcher.close();
+    await warehouseManager.close();
+  }
+
+  const election = leaderConfig.enabled
+    ? createLeaderElection({
+        store,
+        metrics,
+        holderId: leaderConfig.instanceId || createHolderId({ region: leaderConfig.region }),
+        region: leaderConfig.region,
+        name: leaderConfig.leaseName,
+        ttlMs: leaderConfig.leaseTtlMs,
+        renewIntervalMs: leaderConfig.renewIntervalMs,
+        onElected: ({ holderId, lease }) => {
+          console.log(`[leader] ${holderId} is now the leader (fencing token ${lease?.fencingToken})`);
+          readiness.clearStandby();
+          startLeaderWorkers();
+          void indexAvailableEvents()
+            .catch((error) => console.error("Treasury event indexing failed:", error))
+            .finally(() => void reconcileBalances());
+        },
+        onDemoted: async ({ holderId, lease }) => {
+          console.log(`[leader] ${holderId} stepped down; current leader: ${lease?.holderId ?? "none"}`);
+          readiness.markStandby(lease ? { holderId: lease.holderId, region: lease.region } : null);
+          await stopLeaderWorkers();
+        },
+      })
+    : createStaticLeader({ region: leaderConfig.region });
+  metrics.isLeader.set(leaderConfig.enabled ? 0 : 1);
+  if (leaderConfig.enabled) {
+    if (store.backend !== "postgres") {
+      console.warn("[leader] failover is enabled on a non-Postgres store; instances only coordinate if they share this database");
+    }
+    // Until the first election round resolves we are a standby, not a stale leader.
+    readiness.markStandby(null);
+  }
 
   async function indexAvailableEvents() {
-    if (indexing) return;
+    if (indexing || !election.isLeader()) return;
     indexing = true;
     const startedAt = performance.now();
     try {
@@ -341,7 +414,9 @@ async function serve({ store, stellar }) {
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
-      readiness.markSuccess();
+      // A batch that finished after the lease was lost is still safe (writes are
+      // idempotent), but it must not make a standby look like it is ingesting.
+      if (election.isLeader()) readiness.markSuccess();
     } catch (error) {
       metrics.errors.inc({ stage: "index" });
       metrics.batches.inc({ outcome: "error" });
@@ -373,7 +448,7 @@ async function serve({ store, stellar }) {
   }
 
   async function reconcileBalances() {
-    if (reconciling) return;
+    if (reconciling || !election.isLeader()) return;
     reconciling = true;
     try {
       const account = await stellar.getAccount(simulationSource);
@@ -410,6 +485,7 @@ async function serve({ store, stellar }) {
     finalityLag,
     tokenAddresses,
     subscriptions: graphqlSubscriptions,
+    election,
   });
 
   const host = process.env.HOST ?? "127.0.0.1";
@@ -417,26 +493,28 @@ async function serve({ store, stellar }) {
   api.listen(port, host, () => {
     console.log(`Treasury indexer API listening on http://${host}:${port} (${store.backend} store)`);
     if (subscriptions.length > 0) console.log(`Webhook delivery enabled for ${subscriptions.length} subscription(s)`);
-    void indexAvailableEvents()
-      .catch((error) => console.error("Treasury event indexing failed:", error))
-      .finally(() => void reconcileBalances());
+    if (leaderConfig.enabled) {
+      election.start();
+    } else {
+      startLeaderWorkers();
+      void indexAvailableEvents()
+        .catch((error) => console.error("Treasury event indexing failed:", error))
+        .finally(() => void reconcileBalances());
+    }
   });
-  webhooks.start(Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000));
-  notifications.start(Number(process.env.NOTIFICATION_POLL_INTERVAL_MS ?? 2000));
 
   const indexTimer = setInterval(() => {
     void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
   }, indexIntervalMs);
   const reconcileTimer = setInterval(() => void reconcileBalances(), Number(process.env.RECONCILE_INTERVAL_MS ?? 60000));
 
-  function shutdown() {
+  async function shutdown() {
     clearInterval(indexTimer);
     clearInterval(reconcileTimer);
-    webhooks.stop();
-    notifications.stop();
     graphqlSubscriptions?.close?.();
-    streamDispatcher.close();
-    warehouseManager.close();
+    // Release the lease first so a standby takes over without waiting for the TTL.
+    await election.stop().catch((error) => console.error("Leader release failed:", error));
+    await stopLeaderWorkers().catch((error) => console.error("Worker shutdown failed:", error));
     api.close(() => {
       store.close().finally(() => process.exit(0));
     });

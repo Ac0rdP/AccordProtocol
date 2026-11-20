@@ -51,6 +51,8 @@ export function resolveStoreConfig(env = process.env) {
  *   getNotificationDestination / deleteNotificationDestination
  *   enqueueNotificationDeliveries / claimDueNotificationDeliveries / completeNotificationDelivery
  *   countNotificationDeliveries / listNotificationDeliveries / requeueDeadNotificationDeliveries
+ *   acquireLease({name, holderId, region, ttlMs, now}) -> {acquired, lease}
+ *   getLease(name) / releaseLease({name, holderId, now})
  *   close()
  *
  * plus a `backend` string. Timestamps are ISO 8601 strings on both backends.

@@ -139,6 +139,15 @@ export function openLedgerStore(databasePath) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (warehouse, table_name)
     );
+    CREATE TABLE IF NOT EXISTS indexer_leases (
+      name TEXT PRIMARY KEY,
+      holder_id TEXT NOT NULL,
+      region TEXT NOT NULL DEFAULT '',
+      fencing_token INTEGER NOT NULL DEFAULT 1,
+      acquired_at TEXT NOT NULL,
+      renewed_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -156,6 +165,23 @@ export function openLedgerStore(databasePath) {
       database.exec(`ALTER TABLE ${table} ADD COLUMN dedupe_key TEXT`);
     }
     database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${table}_dedupe_key_idx ON ${table} (dedupe_key)`);
+  }
+
+  function selectLease(name) {
+    const row = database.prepare(`
+      SELECT name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at
+      FROM indexer_leases WHERE name = ?
+    `).get(name);
+    if (!row) return null;
+    return {
+      name: row.name,
+      holderId: row.holder_id,
+      region: row.region,
+      fencingToken: Number(row.fencing_token),
+      acquiredAt: row.acquired_at,
+      renewedAt: row.renewed_at,
+      expiresAt: row.expires_at,
+    };
   }
 
   const insertEntry = database.prepare(`
@@ -769,6 +795,48 @@ export function openLedgerStore(databasePath) {
         schemaVersion: row.schema_version,
         updatedAt: row.updated_at,
       };
+    },
+
+    /**
+     * Takes or renews a named lease in one atomic statement. The row is won when
+     * it is free, expired, or already ours; otherwise the current holder keeps it.
+     * `fencingToken` only increases when ownership changes (or a lapsed lease is
+     * re-taken), so a renewal never moves it.
+     *
+     * @returns {{acquired: boolean, lease: object|null}}
+     */
+    async acquireLease({ name, holderId, region = "", ttlMs, now = new Date().toISOString() }) {
+      const expiresAt = new Date(Date.parse(now) + ttlMs).toISOString();
+      const row = database.prepare(`
+        INSERT INTO indexer_leases (name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at)
+        VALUES (?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT (name) DO UPDATE SET
+          fencing_token = CASE
+            WHEN indexer_leases.holder_id = excluded.holder_id AND indexer_leases.expires_at > excluded.renewed_at
+            THEN indexer_leases.fencing_token ELSE indexer_leases.fencing_token + 1 END,
+          acquired_at = CASE
+            WHEN indexer_leases.holder_id = excluded.holder_id AND indexer_leases.expires_at > excluded.renewed_at
+            THEN indexer_leases.acquired_at ELSE excluded.acquired_at END,
+          holder_id = excluded.holder_id,
+          region = excluded.region,
+          renewed_at = excluded.renewed_at,
+          expires_at = excluded.expires_at
+        WHERE indexer_leases.holder_id = excluded.holder_id OR indexer_leases.expires_at <= excluded.renewed_at
+        RETURNING holder_id
+      `).get(name, holderId, region, now, now, expiresAt);
+      const lease = selectLease(name);
+      return { acquired: Boolean(row) && lease?.holderId === holderId, lease };
+    },
+
+    async getLease(name) {
+      return selectLease(name);
+    },
+
+    /** Gives a lease up early (graceful shutdown) so a standby takes over without waiting for the TTL. */
+    async releaseLease({ name, holderId, now = new Date().toISOString() }) {
+      return database.prepare(
+        "UPDATE indexer_leases SET expires_at = ? WHERE name = ? AND holder_id = ? AND expires_at > ?"
+      ).run(now, name, holderId, now).changes > 0;
     },
 
     async close() {

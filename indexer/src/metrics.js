@@ -159,6 +159,15 @@ export function createIndexerMetrics() {
       name: "accord_indexer_last_successful_batch_timestamp_seconds",
       help: "Unix time of the last indexing batch that completed without error.",
     }),
+    isLeader: registry.gauge({
+      name: "accord_indexer_is_leader",
+      help: "1 while this instance holds the leader lease (always 1 when failover is disabled), else 0.",
+    }),
+    leaderTransitions: registry.counter({
+      name: "accord_indexer_leader_transitions_total",
+      help: "Leadership changes seen by this instance, by the role it moved to.",
+      labelNames: ["to"],
+    }),
     httpRequests: registry.counter({
       name: "accord_indexer_http_requests_total",
       help: "HTTP requests served by the indexer API.",
