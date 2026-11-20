@@ -139,6 +139,22 @@ export function openLedgerStore(databasePath) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (warehouse, table_name)
     );
+    CREATE TABLE IF NOT EXISTS backfill_shards (
+      job_id TEXT NOT NULL,
+      shard_index INTEGER NOT NULL,
+      start_ledger INTEGER NOT NULL,
+      end_ledger INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'failed')),
+      cursor TEXT NOT NULL DEFAULT '',
+      last_ledger INTEGER,
+      pages INTEGER NOT NULL DEFAULT 0,
+      events_indexed INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (job_id, shard_index)
+    );
+    CREATE INDEX IF NOT EXISTS backfill_shards_status_idx ON backfill_shards (job_id, status);
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -481,6 +497,8 @@ export function openLedgerStore(databasePath) {
       return inTransaction(() => {
         const removedEntries = deleteEntriesAbove.run(target).changes;
         const removedEvents = deleteEventsAbove.run(target).changes;
+        // Shards that reached past the rewind point no longer describe indexed data.
+        database.prepare("DELETE FROM backfill_shards WHERE end_ledger > ?").run(target);
         replayBalances();
         return { removedEntries, removedEvents };
       });
@@ -504,6 +522,8 @@ export function openLedgerStore(databasePath) {
         clearTokenBalances.run();
         database.prepare("DELETE FROM indexer_state WHERE key LIKE 'webhook_cursor:%'").run();
         database.prepare("DELETE FROM indexer_state WHERE key LIKE 'notification_cursor:%'").run();
+        // Shards marked done describe data that no longer exists.
+        database.prepare("DELETE FROM backfill_shards").run();
         return { removedEntries, removedEvents, removedReconciliations };
       });
     },
@@ -771,8 +791,72 @@ export function openLedgerStore(databasePath) {
       };
     },
 
+    async registerBackfillJob({ jobId, shards, now = new Date().toISOString() }) {
+      return inTransaction(() => {
+        // A different job's shards describe a different range; keep only this job's.
+        database.prepare("DELETE FROM backfill_shards WHERE job_id != ?").run(jobId);
+        const insert = database.prepare(`
+          INSERT INTO backfill_shards (job_id, shard_index, start_ledger, end_ledger, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (job_id, shard_index) DO UPDATE SET
+            status = CASE WHEN excluded.end_ledger > backfill_shards.end_ledger THEN 'pending' ELSE backfill_shards.status END,
+            end_ledger = MAX(backfill_shards.end_ledger, excluded.end_ledger)
+        `);
+        for (const shard of shards) insert.run(jobId, shard.index, shard.start, shard.end, now);
+        // A crashed worker leaves its shard 'running'; nobody owns it now.
+        database.prepare(
+          "UPDATE backfill_shards SET status = 'pending', updated_at = ? WHERE job_id = ? AND status = 'running'"
+        ).run(now, jobId);
+        return true;
+      });
+    },
+
+    async listBackfillShards(jobId) {
+      return database.prepare(`
+        SELECT job_id, shard_index, start_ledger, end_ledger, status, cursor, last_ledger,
+          pages, events_indexed, attempts, last_error, updated_at
+        FROM backfill_shards WHERE job_id = ? ORDER BY shard_index ASC
+      `).all(jobId).map(mapShardRow);
+    },
+
+    async updateBackfillShard({ jobId, shardIndex, status, cursor, lastLedger, pages, eventsIndexed, attempts, lastError, now = new Date().toISOString() }) {
+      database.prepare(`
+        UPDATE backfill_shards SET
+          status = COALESCE(?, status),
+          cursor = COALESCE(?, cursor),
+          last_ledger = COALESCE(?, last_ledger),
+          pages = COALESCE(?, pages),
+          events_indexed = COALESCE(?, events_indexed),
+          attempts = COALESCE(?, attempts),
+          last_error = ?,
+          updated_at = ?
+        WHERE job_id = ? AND shard_index = ?
+      `).run(
+        status ?? null, cursor ?? null, lastLedger ?? null, pages ?? null,
+        eventsIndexed ?? null, attempts ?? null, lastError ?? null, now, jobId, shardIndex
+      );
+      return true;
+    },
+
     async close() {
       database.close();
     },
+  };
+}
+
+function mapShardRow(row) {
+  return {
+    jobId: row.job_id,
+    index: row.shard_index,
+    start: row.start_ledger,
+    end: row.end_ledger,
+    status: row.status,
+    cursor: row.cursor,
+    lastLedger: row.last_ledger,
+    pages: row.pages,
+    eventsIndexed: row.events_indexed,
+    attempts: row.attempts,
+    lastError: row.last_error,
+    updatedAt: row.updated_at,
   };
 }

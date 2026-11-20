@@ -6,6 +6,7 @@
  *   - GraphQL live event subscriptions (push updates without polling)
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
+ *   - Parallel backfill (workers, shard size, retries)
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -109,6 +110,27 @@ export function resolveWarehouseConfig(env = process.env) {
 }
 
 /**
+ * Resolves the parallel backfill configuration.
+ *
+ * Safe defaults:
+ *   - workers: 1 (sequential; the original single-cursor backfill is used)
+ *   - shardSize: 50000 ledgers per shard
+ *   - maxShardRetries: 3 in-run retries per shard before it is left `failed`
+ *   - retryBaseDelayMs: 1000 (doubles each retry, capped at 60000)
+ *
+ * Set BACKFILL_WORKERS above 1 to split the range into shards that are walked
+ * concurrently, each with its own checkpoint.
+ */
+export function resolveBackfillConfig(env = process.env) {
+  return {
+    workers: parseIntSafe(env.BACKFILL_WORKERS, 1, 1, 32),
+    shardSize: parseIntSafe(env.BACKFILL_SHARD_SIZE, 50000, 1, 10_000_000),
+    maxShardRetries: parseIntSafe(env.BACKFILL_SHARD_MAX_RETRIES, 3, 0, 20),
+    retryBaseDelayMs: parseIntSafe(env.BACKFILL_SHARD_RETRY_DELAY_MS, 1000, 0, 60000),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -116,6 +138,7 @@ export function loadIndexerConfig(env = process.env) {
     graphql: resolveGraphQLConfig(env),
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
+    backfill: resolveBackfillConfig(env),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

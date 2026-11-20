@@ -23,7 +23,7 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import { resolveBackfillConfig, resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
@@ -206,6 +206,7 @@ async function runHistoryCommand({ command, args, store, stellar }) {
     // When no --from is given, the first ledger the RPC retains is the
     // practical genesis; a configured INDEXER_START_LEDGER takes precedence.
     fallbackStart: startLedgerFromEnv({ optional: true }) ?? 1,
+    parallel: command === "backfill" ? resolveBackfillConfig() : null,
   });
   if (result.nothingToDo) {
     console.log(`[${command}] nothing to do`);
@@ -213,7 +214,10 @@ async function runHistoryCommand({ command, args, store, stellar }) {
   }
   if (!result.complete) {
     // maxPages guard tripped; the checkpoint on disk makes this resumable.
-    console.error(`[${command}] stopped early after ${result.pages} pages; re-run to resume`);
+    const failed = result.failedShards?.length
+      ? ` (${result.failedShards.length} shard(s) failed: ${result.failedShards.map((shard) => `#${shard.index} ${shard.start}-${shard.end}`).join(", ")})`
+      : "";
+    console.error(`[${command}] stopped early after ${result.pages} pages${failed}; re-run to resume`);
   }
   return result;
 }

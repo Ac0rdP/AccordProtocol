@@ -102,6 +102,34 @@ of *older* events into a store that already holds *newer* ones correct.
 After a completed backfill the live indexer's checkpoint is advanced to the
 first ledger after the covered range, never backwards.
 
+#### Parallel backfill
+
+Set `BACKFILL_WORKERS` above `1` to split the range into shards of
+`BACKFILL_SHARD_SIZE` ledgers that are walked concurrently. The default is `1`,
+which keeps the single-cursor walk above and changes nothing for existing
+deployments.
+
+```bash
+BACKFILL_WORKERS=4 BACKFILL_SHARD_SIZE=50000 npm run backfill
+```
+
+- Every shard has its own checkpoint in `backfill_shards` (Postgres migration
+  `0009_backfill_shards.sql`): status, RPC cursor, last ledger, pages, events and
+  attempts. The checkpoint is written *after* the page's events, so replaying a
+  shard from any checkpoint is safe — inserts are keyed by event id.
+- A shard that fails is retried from its own cursor up to
+  `BACKFILL_SHARD_MAX_RETRIES` times (exponential backoff from
+  `BACKFILL_SHARD_RETRY_DELAY_MS`). If it still fails it stays `failed` with its
+  checkpoint while the other shards finish; re-running `backfill` resumes only
+  the unfinished shards.
+- The live indexer's checkpoint and the running balances are only updated once
+  **every** shard is done, so a partially covered range never hands over to the
+  live indexer.
+- Shard boundaries are anchored at the range start, so a later run whose chain
+  tip moved forward keeps finished shards and only extends the last one. A
+  different start ledger or shard size begins a new job.
+- `reindex` (and any rewind past a shard) discards shard checkpoints.
+
 ### Reindex
 
 Clears the store (entries, protocol events, balances, reconciliation results)
@@ -223,6 +251,10 @@ invariant after both a not-yet-final ledger and a rollback.
 | `SOROBAN_RPC_URL` | no | Soroban RPC endpoint |
 | `NETWORK_PASSPHRASE` | no | Stellar network passphrase |
 | `LEDGER_FINALITY_LAG` | no | Ledgers to hold back before treating one as final (default 2) |
+| `BACKFILL_WORKERS` | no | Shards walked concurrently by `backfill` (default 1 = sequential, max 32) |
+| `BACKFILL_SHARD_SIZE` | no | Ledgers per backfill shard (default 50000) |
+| `BACKFILL_SHARD_MAX_RETRIES` | no | In-run retries per failed shard before it is left `failed` (default 3) |
+| `BACKFILL_SHARD_RETRY_DELAY_MS` | no | Base retry delay, doubled each retry, capped at 60000 (default 1000) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |
