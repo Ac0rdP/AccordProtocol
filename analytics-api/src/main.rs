@@ -1,5 +1,9 @@
 use std::{
-    collections::BTreeMap, collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration,
+    collections::{BTreeMap, HashMap},
+    env,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};

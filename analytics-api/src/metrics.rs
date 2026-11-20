@@ -132,7 +132,14 @@ impl Registry {
     /// percentile is the upper bound of the bucket it falls in, so it never
     /// understates latency; `None` means no requests yet.
     pub(crate) fn latency_summary(&self) -> LatencySummary {
-        const EXCLUDED: &[&str] = &["/metrics", "/health", "/livez", "/readyz", "/status", "/freshness"];
+        const EXCLUDED: &[&str] = &[
+            "/metrics",
+            "/health",
+            "/livez",
+            "/readyz",
+            "/status",
+            "/freshness",
+        ];
         let mut buckets = vec![0u64; LATENCY_BUCKETS.len()];
         let mut count = 0u64;
         for ((_, route), histogram) in lock(&self.durations).iter() {

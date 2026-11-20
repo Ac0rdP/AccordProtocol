@@ -53,7 +53,7 @@ jobs:
 
       - name: Type-check frontend and analytics modules
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npx tsc -b
 
       - name: Run indexer & analytics test suites
         run: npm --prefix frontend run test:analytics
