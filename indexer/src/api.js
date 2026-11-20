@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
+import { resolveRunwayConfig } from "./config.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
+import { computeRunway } from "./runway.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 
 const ROUTES = new Set([
-  "/health", "/healthz", "/readyz", "/status", "/lag", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/health", "/healthz", "/readyz", "/status", "/lag", "/runway", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
 ]);
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
@@ -130,7 +132,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, lagMoni
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, lagMonitor = null }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, lagMonitor = null, runwayConfig = resolveRunwayConfig({}) }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
 
   async function route(request, response, url) {
@@ -279,6 +281,12 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
           ...parsePage(url.searchParams),
         });
         return sendJson(response, 200, { entries });
+      }
+
+      case "/runway": {
+        const token = (url.searchParams.get("token") ?? "USDC").toUpperCase();
+        if (!tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
+        return sendJson(response, 200, await computeRunway({ store, token, config: runwayConfig }));
       }
 
       case "/events": {

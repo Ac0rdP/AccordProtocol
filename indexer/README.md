@@ -239,6 +239,20 @@ Metrics: `accord_indexer_chain_tip_lag_ledgers`, `..._chain_tip_lag_seconds`, `.
 
 The monitor is idempotent: it only records *when the indexed ledger changed*, so replaying an observation changes nothing. Its state persists in `lag_monitor_state` (Postgres migration `0010_lag_monitor_state.sql`), so a restart keeps the checkpoint age and does not re-fire an active alert. It is on by default (`LAG_MONITOR_ENABLED=false` disables it).
 
+## Cash-runway forecast
+
+`GET /runway?token=USDC` (default `USDC`; `XLM` also works) forecasts how long the treasury balance lasts from its indexed flows:
+
+```
+net burn/day = (outflow - inflow) over the window / window days
+               + RUNWAY_RECURRING_OUTFLOW_PER_DAY - RUNWAY_RECURRING_INFLOW_PER_DAY
+runway days  = balance / net burn/day
+```
+
+The window is `RUNWAY_LOOKBACK_DAYS` (default 90), shortened to the age of the first entry when history is younger. The response gives `status` (`burning`, `sustainable`, `beyond_horizon`, `depleted` or `no_data`), `runwayDays` and `depletionDate` (both `null` when not burning), plus the inputs used. Recurring amounts are base units per day and default to `0`, so by default the forecast rests on history alone; `RUNWAY_HORIZON_DAYS` (default 3650) caps the answer.
+
+The forecast is computed on demand from the already-deduplicated ledger entries and persists nothing, so it is idempotent and identical after any replay, backfill or reindex.
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
@@ -246,6 +260,7 @@ The monitor is idempotent: it only records *when the indexed ledger changed*, so
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
 - `GET /lag` - Chain-tip lag, finality depth and checkpoint age with their alert levels (`503` until the first batch is observed).
+- `GET /runway?token=USDC` - Treasury cash-runway forecast from indexed flows.
 - `GET /metrics` - Prometheus metrics.
 - `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
@@ -273,6 +288,9 @@ The monitor is idempotent: it only records *when the indexed ledger changed*, so
 | `CHECKPOINT_AGE_WARN_SECONDS` / `CHECKPOINT_AGE_CRITICAL_SECONDS` | no | Checkpoint age that warns / is critical (defaults 120 / 600) |
 | `FINALITY_MIN_DEPTH` | no | Minimum confirmations on the newest indexed ledger (default `LEDGER_FINALITY_LAG`) |
 | `LEDGER_CLOSE_SECONDS` | no | Seconds per ledger for the lag-in-seconds estimate (default 5) |
+| `RUNWAY_LOOKBACK_DAYS` | no | History window for the runway forecast (default 90) |
+| `RUNWAY_RECURRING_OUTFLOW_PER_DAY` / `RUNWAY_RECURRING_INFLOW_PER_DAY` | no | Assumed recurring flows in base units per day (default 0) |
+| `RUNWAY_HORIZON_DAYS` | no | Longest runway reported (default 3650) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |

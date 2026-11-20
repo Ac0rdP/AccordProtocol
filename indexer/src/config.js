@@ -160,6 +160,23 @@ export function resolveLagMonitorConfig(env = process.env, finalityLag = DEFAULT
 }
 
 /**
+ * Resolves the cash-runway forecast assumptions.
+ *
+ * Safe defaults: a 90-day lookback, no recurring flows (the forecast then rests
+ * on history alone) and a 3650-day horizon. Recurring amounts are base units
+ * per day and must be non-negative integers; invalid values fall back to 0.
+ */
+export function resolveRunwayConfig(env = process.env) {
+  const amount = (value) => (/^\d{1,30}$/.test(String(value ?? "").trim()) ? String(value).trim() : "0");
+  return {
+    lookbackDays: parseIntSafe(env.RUNWAY_LOOKBACK_DAYS, 90, 1, 3650),
+    recurringOutflowPerDay: amount(env.RUNWAY_RECURRING_OUTFLOW_PER_DAY),
+    recurringInflowPerDay: amount(env.RUNWAY_RECURRING_INFLOW_PER_DAY),
+    horizonDays: parseIntSafe(env.RUNWAY_HORIZON_DAYS, 3650, 1, 36500),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -168,6 +185,7 @@ export function loadIndexerConfig(env = process.env) {
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
     backfill: resolveBackfillConfig(env),
+    runway: resolveRunwayConfig(env),
     lagMonitor: resolveLagMonitorConfig(env, parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000)),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
