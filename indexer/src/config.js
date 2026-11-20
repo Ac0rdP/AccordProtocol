@@ -7,6 +7,7 @@
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
  *   - Parallel backfill (workers, shard size, retries)
+ *   - Chain-tip lag / finality-depth monitoring and alert thresholds
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -131,6 +132,34 @@ export function resolveBackfillConfig(env = process.env) {
 }
 
 /**
+ * Resolves the chain-tip lag / finality-depth monitor configuration.
+ *
+ * Safe defaults (every threshold is on lag *above* the finality floor, so a
+ * larger LEDGER_FINALITY_LAG never raises an alert by itself):
+ *   - enabled: true
+ *   - ledgerCloseSeconds: 5 (converts ledgers to an estimated lag in seconds)
+ *   - tipLagWarnLedgers / tipLagCriticalLedgers: 20 / 100 (~100s / ~8min)
+ *   - checkpointAgeWarnSeconds / checkpointAgeCriticalSeconds: 120 / 600
+ *   - minFinalityDepth: the finality lag; the newest indexed ledger must be at
+ *     least this many ledgers below the chain tip
+ *
+ * A critical threshold below its warn threshold is raised to match it.
+ */
+export function resolveLagMonitorConfig(env = process.env, finalityLag = DEFAULT_FINALITY_LAG) {
+  const tipLagWarnLedgers = parseIntSafe(env.LAG_WARN_LEDGERS, 20, 1, 1_000_000);
+  const checkpointAgeWarnSeconds = parseIntSafe(env.CHECKPOINT_AGE_WARN_SECONDS, 120, 1, 604_800);
+  return {
+    enabled: parseBool(env.LAG_MONITOR_ENABLED, true),
+    ledgerCloseSeconds: parseIntSafe(env.LEDGER_CLOSE_SECONDS, 5, 1, 60),
+    tipLagWarnLedgers,
+    tipLagCriticalLedgers: Math.max(tipLagWarnLedgers, parseIntSafe(env.LAG_CRITICAL_LEDGERS, 100, 1, 1_000_000)),
+    checkpointAgeWarnSeconds,
+    checkpointAgeCriticalSeconds: Math.max(checkpointAgeWarnSeconds, parseIntSafe(env.CHECKPOINT_AGE_CRITICAL_SECONDS, 600, 1, 604_800)),
+    minFinalityDepth: parseIntSafe(env.FINALITY_MIN_DEPTH, finalityLag, 0, 1000),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -139,6 +168,7 @@ export function loadIndexerConfig(env = process.env) {
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
     backfill: resolveBackfillConfig(env),
+    lagMonitor: resolveLagMonitorConfig(env, parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000)),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

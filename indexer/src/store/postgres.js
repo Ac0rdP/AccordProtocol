@@ -699,6 +699,38 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return true;
     },
 
+    async setLagMonitorState({ monitor, latestLedger = null, indexedLedger = null, checkpointAdvancedAt = null, levels = {}, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO lag_monitor_state (monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (monitor) DO UPDATE SET
+           latest_ledger = EXCLUDED.latest_ledger,
+           indexed_ledger = EXCLUDED.indexed_ledger,
+           checkpoint_advanced_at = EXCLUDED.checkpoint_advanced_at,
+           levels = EXCLUDED.levels,
+           updated_at = EXCLUDED.updated_at`,
+        [monitor, latestLedger, indexedLedger, checkpointAdvancedAt, JSON.stringify(levels), now]
+      );
+      return true;
+    },
+
+    async getLagMonitorState(monitor) {
+      const { rows } = await pool.query(
+        `SELECT monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at
+         FROM lag_monitor_state WHERE monitor = $1`,
+        [monitor]
+      );
+      if (!rows[0]) return null;
+      return {
+        monitor: rows[0].monitor,
+        latestLedger: rows[0].latest_ledger,
+        indexedLedger: rows[0].indexed_ledger,
+        checkpointAdvancedAt: iso(rows[0].checkpoint_advanced_at),
+        levels: JSON.parse(rows[0].levels),
+        updatedAt: iso(rows[0].updated_at),
+      };
+    },
+
     async close() {
       await pool.end();
     },

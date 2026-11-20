@@ -227,12 +227,25 @@ After either event, the indexed state equals the chain state up to the final
 ledger — never ahead of it. `indexer/test/finality.test.js` asserts that
 invariant after both a not-yet-final ledger and a rollback.
 
+## Chain-tip lag and finality-depth monitoring
+
+The indexer tracks how far it trails the chain and alerts on it. Three checks each report `ok`, `warn` or `critical`:
+
+- **`tip_lag`** — ledgers behind the tip *above* the `LEDGER_FINALITY_LAG` floor (warn 20, critical 100), so a larger finality lag never alerts by itself.
+- **`checkpoint_age`** — seconds since the checkpoint last advanced (warn 120, critical 600). It keeps growing while batches fail.
+- **`finality_depth`** — confirmations on the newest indexed ledger; critical when below `FINALITY_MIN_DEPTH` (default `LEDGER_FINALITY_LAG`), i.e. non-final data was indexed.
+
+Metrics: `accord_indexer_chain_tip_lag_ledgers`, `..._chain_tip_lag_seconds`, `..._finality_depth_ledgers`, `..._checkpoint_age_seconds`, `..._lag_alert_level{check}`, `..._lag_threshold{check,level}` and `..._lag_alerts_total{check,level}`. `GET /lag` returns the current evaluation and `/status` embeds it (a `critical` level reports `degraded`). Settings and suggested Prometheus alerts are in [docs/OPERATIONS.md](../docs/OPERATIONS.md); response steps are in the [runbook](../docs/RUNBOOK.md#chain-tip-lag).
+
+The monitor is idempotent: it only records *when the indexed ledger changed*, so replaying an observation changes nothing. Its state persists in `lag_monitor_state` (Postgres migration `0010_lag_monitor_state.sql`), so a restart keeps the checkpoint age and does not re-fire an active alert. It is on by default (`LAG_MONITOR_ENABLED=false` disables it).
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
 - `GET /healthz` - Liveness: `200` whenever the process can answer.
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
+- `GET /lag` - Chain-tip lag, finality depth and checkpoint age with their alert levels (`503` until the first batch is observed).
 - `GET /metrics` - Prometheus metrics.
 - `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
@@ -255,6 +268,11 @@ invariant after both a not-yet-final ledger and a rollback.
 | `BACKFILL_SHARD_SIZE` | no | Ledgers per backfill shard (default 50000) |
 | `BACKFILL_SHARD_MAX_RETRIES` | no | In-run retries per failed shard before it is left `failed` (default 3) |
 | `BACKFILL_SHARD_RETRY_DELAY_MS` | no | Base retry delay, doubled each retry, capped at 60000 (default 1000) |
+| `LAG_MONITOR_ENABLED` | no | Chain-tip lag monitor (default `true`) |
+| `LAG_WARN_LEDGERS` / `LAG_CRITICAL_LEDGERS` | no | Lag above the finality floor that warns / is critical (defaults 20 / 100) |
+| `CHECKPOINT_AGE_WARN_SECONDS` / `CHECKPOINT_AGE_CRITICAL_SECONDS` | no | Checkpoint age that warns / is critical (defaults 120 / 600) |
+| `FINALITY_MIN_DEPTH` | no | Minimum confirmations on the newest indexed ledger (default `LEDGER_FINALITY_LAG`) |
+| `LEDGER_CLOSE_SECONDS` | no | Seconds per ledger for the lag-in-seconds estimate (default 5) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |

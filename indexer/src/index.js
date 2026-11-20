@@ -8,6 +8,7 @@ import {
 import { createApi } from "./api.js";
 import { backfill, reindex, resolveFirstLedger } from "./commands.js";
 import { DEFAULT_FINALITY_LAG, resolveFinalityLag } from "./finality.js";
+import { createLagMonitor } from "./lag-monitor.js";
 import { createReadiness, DEFAULT_READY_MAX_STALENESS_MS } from "./health.js";
 import { indexEventBatch } from "./indexing.js";
 import {
@@ -23,7 +24,7 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveBackfillConfig, resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import { resolveBackfillConfig, resolveGraphQLConfig, resolveLagMonitorConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
@@ -282,6 +283,16 @@ async function serve({ store, stellar }) {
       process.env.READY_MAX_STALENESS_MS ?? Math.max(DEFAULT_READY_MAX_STALENESS_MS, indexIntervalMs * 6)
     ),
   });
+  const lagMonitor = createLagMonitor({
+    store,
+    metrics,
+    config: resolveLagMonitorConfig(process.env, finalityLag),
+    finalityLag,
+    onAlert: ({ check, level, previous, value, threshold }) => {
+      const log = level === "ok" ? console.log : console.warn;
+      log(`[lag] ${check} ${previous} -> ${level} (value ${value}, threshold ${threshold})`);
+    },
+  });
   const subscriptions = loadSubscriptions();
   const webhooks = createWebhookDispatcher({
     store,
@@ -328,6 +339,8 @@ async function serve({ store, stellar }) {
   void warehouseManager.start();
 
   async function indexAvailableEvents() {
+    // Keeps checkpoint age growing even while a batch is failing or hung.
+    await lagMonitor.refresh();
     if (indexing) return;
     indexing = true;
     const startedAt = performance.now();
@@ -345,6 +358,7 @@ async function serve({ store, stellar }) {
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
+      await lagMonitor.observe({ latestLedger: result.latestLedger, indexedLedger });
       readiness.markSuccess();
     } catch (error) {
       metrics.errors.inc({ stage: "index" });
@@ -414,6 +428,7 @@ async function serve({ store, stellar }) {
     finalityLag,
     tokenAddresses,
     subscriptions: graphqlSubscriptions,
+    lagMonitor,
   });
 
   const host = process.env.HOST ?? "127.0.0.1";

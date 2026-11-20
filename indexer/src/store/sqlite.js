@@ -155,6 +155,14 @@ export function openLedgerStore(databasePath) {
       PRIMARY KEY (job_id, shard_index)
     );
     CREATE INDEX IF NOT EXISTS backfill_shards_status_idx ON backfill_shards (job_id, status);
+    CREATE TABLE IF NOT EXISTS lag_monitor_state (
+      monitor TEXT PRIMARY KEY,
+      latest_ledger INTEGER,
+      indexed_ledger INTEGER,
+      checkpoint_advanced_at TEXT,
+      levels TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Databases created before the event-schema version existed lack the column.
@@ -836,6 +844,36 @@ export function openLedgerStore(databasePath) {
         eventsIndexed ?? null, attempts ?? null, lastError ?? null, now, jobId, shardIndex
       );
       return true;
+    },
+
+    async setLagMonitorState({ monitor, latestLedger = null, indexedLedger = null, checkpointAdvancedAt = null, levels = {}, now = new Date().toISOString() }) {
+      database.prepare(`
+        INSERT INTO lag_monitor_state (monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (monitor) DO UPDATE SET
+          latest_ledger = excluded.latest_ledger,
+          indexed_ledger = excluded.indexed_ledger,
+          checkpoint_advanced_at = excluded.checkpoint_advanced_at,
+          levels = excluded.levels,
+          updated_at = excluded.updated_at
+      `).run(monitor, latestLedger, indexedLedger, checkpointAdvancedAt, JSON.stringify(levels), now);
+      return true;
+    },
+
+    async getLagMonitorState(monitor) {
+      const row = database.prepare(`
+        SELECT monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at
+        FROM lag_monitor_state WHERE monitor = ?
+      `).get(monitor);
+      if (!row) return null;
+      return {
+        monitor: row.monitor,
+        latestLedger: row.latest_ledger,
+        indexedLedger: row.indexed_ledger,
+        checkpointAdvancedAt: row.checkpoint_advanced_at,
+        levels: JSON.parse(row.levels),
+        updatedAt: row.updated_at,
+      };
     },
 
     async close() {

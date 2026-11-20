@@ -4,7 +4,7 @@ import { parseDestination, sendTestNotification } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 
 const ROUTES = new Set([
-  "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/health", "/healthz", "/readyz", "/status", "/lag", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
 ]);
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
@@ -58,6 +58,22 @@ function parsePage(searchParams) {
   return { limit, offset };
 }
 
+/** The monitor's evaluation as served by `/lag` and embedded in `/status`. */
+function lagSummary(lag) {
+  return {
+    level: lag.level,
+    latestLedger: lag.latestLedger,
+    indexedLedger: lag.indexedLedger,
+    tipLagLedgers: lag.tipLagLedgers,
+    tipLagSeconds: lag.tipLagSeconds,
+    finalityDepth: lag.finalityDepth,
+    finalityLag: lag.finalityLag,
+    checkpointAgeSeconds: lag.checkpointAgeSeconds,
+    checks: lag.checks,
+    observedAt: lag.observedAt,
+  };
+}
+
 /**
  * Structured status for the public status page.
  *
@@ -66,8 +82,15 @@ function parsePage(searchParams) {
  * A broken store is an outage, a store that answers while indexing lags is
  * degraded, everything else is operational.
  */
-async function buildStatus({ store, readiness, startLedger, finalityLag }) {
+async function buildStatus({ store, readiness, startLedger, finalityLag, lagMonitor = null }) {
   const { checks } = await readiness.check();
+  // Lag is reported once the monitor has seen a batch; a critical level degrades the service.
+  const lag = lagMonitor?.current() ?? null;
+  if (lag) {
+    checks.lag = lag.level === "critical"
+      ? { ok: false, level: lag.level, detail: "indexer is behind the chain tip beyond the critical threshold" }
+      : { ok: true, level: lag.level };
+  }
   const status = !checks.store?.ok
     ? "outage"
     : Object.values(checks).every((check) => check.ok)
@@ -92,6 +115,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag }) {
     nextLedger,
     latestLedger,
     finalityLag,
+    ...(lag ? { lag: lagSummary(lag) } : {}),
   };
 }
 
@@ -106,7 +130,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag }) {
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, lagMonitor = null }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
 
   async function route(request, response, url) {
@@ -221,8 +245,16 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       }
 
       case "/status": {
-        const status = await buildStatus({ store, readiness, startLedger, finalityLag });
+        const status = await buildStatus({ store, readiness, startLedger, finalityLag, lagMonitor });
         return sendJson(response, status.status === "outage" ? 503 : 200, status);
+      }
+
+      case "/lag": {
+        if (lagMonitor && !lagMonitor.enabled) return sendJson(response, 200, { status: "disabled" });
+        const lag = lagMonitor?.current() ?? null;
+        // 200 even when behind: the level is the answer. 503 only before the first observation.
+        if (!lag) return sendJson(response, 503, { status: "unknown", detail: "no indexing batch observed yet" });
+        return sendJson(response, 200, { status: lag.level, ...lagSummary(lag) });
       }
 
       case "/metrics":
