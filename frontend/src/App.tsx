@@ -36,9 +36,11 @@ import { FeedbackWidget } from "./components/FeedbackWidget";
 import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
+import { resolvePublicDeepLink } from "./lib/shareLinks";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AlertRulesPage } from "./pages/AlertRulesPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { BulkActionsPage } from "./pages/BulkActionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { FreshnessPage } from "./pages/FreshnessPage";
@@ -124,22 +126,14 @@ export default function App() {
 
   // Deep-link handling: ensure direct proposal URLs or query params open the correct page
   useEffect(() => {
-    const directMatch = location.pathname.match(/^\/proposals\/(\d+)/);
-    if (directMatch) {
-      const id = directMatch[1];
-      navigate(`/app/proposals/${id}`, { replace: true });
-      return;
-    }
-
     if (location.pathname === "/onboarding" || location.pathname === "/onboarding/") {
       navigate("/app/onboarding", { replace: true });
       return;
     }
 
-    const params = new URLSearchParams(location.search);
-    const proposalParam = params.get("proposal");
-    if (proposalParam) {
-      navigate(`/app/proposals/${proposalParam}`, { replace: true });
+    const deepLinkTarget = resolvePublicDeepLink(location.pathname, location.search);
+    if (deepLinkTarget && deepLinkTarget !== location.pathname) {
+      navigate(deepLinkTarget, { replace: true });
     }
   }, [location.pathname, location.search, navigate]);
 

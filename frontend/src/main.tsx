@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import "./index.css";
 import "./i18n";
 import App from "./App.tsx";
+import { EmbedWidget } from "./components/EmbedWidget.tsx";
 import { DocsPage } from "./pages/DocsPage.tsx";
 import { LandingPage } from "./pages/LandingPage.tsx";
 
@@ -24,6 +25,8 @@ void (async () => {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/docs" element={<DocsPage />} />
+          <Route path="/embed/proposals/:id" element={<EmbedWidget mode="proposal" />} />
+          <Route path="/embed/treasury" element={<EmbedWidget mode="treasury" />} />
           <Route path="/onboarding" element={<App />} />
           <Route path="/proposals/:id" element={<App />} />
           <Route path="/app/*" element={<App />} />
