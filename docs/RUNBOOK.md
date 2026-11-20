@@ -126,6 +126,15 @@ Alert `AccordReorgDetected`: the chain head moved backwards and the store was re
 3. If `LEDGER_FINALITY_LAG` is smaller than the reorg depth you see, raise it.
 4. Verify balances afterwards ([drift recovery](#recover-from-balance-drift)).
 
+### events-quarantined
+
+Alert `AccordEventsQuarantined`: contract events failed schema validation and are parked in quarantine; nothing was lost and ingestion kept going.
+
+1. `curl 'localhost:8787/quarantine?raw=true'` for the reason and the violations. `GET /schemas` shows what the indexer accepts.
+2. `unknown_version` / `unknown_topic` usually means the contract was upgraded: update `catalog.json`, `CURRENT_EVENT_SCHEMA_VERSION` and `SCHEMA_CHANGES` ([docs/EVENTS.md](EVENTS.md#event-versioning-policy)), then deploy the indexer.
+3. `invalid_payload` / `undecodable` on a known version is a contract or RPC problem: escalate before releasing anything.
+4. Run `node src/index.js quarantine-reprocess` (optionally `--topic` / `--reason`) to index everything that is valid now. Use `quarantine-discard --id <n>` for events that should never be indexed.
+
 ### webhook-dead-letters
 
 Alert `AccordWebhookDeadLetters`: deliveries exhausted `WEBHOOK_MAX_ATTEMPTS`.

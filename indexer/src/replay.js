@@ -90,7 +90,7 @@ export function openReplayStore({ path = IN_MEMORY_STORE, liveDatabasePath } = {
 }
 
 /** One human-readable line describing what a replayed event decoded to. */
-export function formatReplayEvent({ event, ledger, transfer, accord, transferRecorded, accordRecorded }) {
+export function formatReplayEvent({ event, ledger, transfer, accord, transferRecorded, accordRecorded, quarantined = null, quarantineErrors = [] }) {
   const id = event.id ?? event.pagingToken ?? "?";
   const tx = event.txHash ? ` tx=${event.txHash}` : "";
   const parts = [];
@@ -102,12 +102,13 @@ export function formatReplayEvent({ event, ledger, transfer, accord, transferRec
   if (accord) {
     parts.push(`accord:${accord.topic} ${JSON.stringify(accord.payload)}${accordRecorded ? "" : " (duplicate)"}`);
   }
+  if (quarantined) parts.push(`QUARANTINED (${quarantined}): ${quarantineErrors.join("; ")}`);
   if (parts.length === 0) parts.push("ignored (not a treasury transfer or catalogued Accord event)");
   return `ledger ${ledger} event ${id}${tx} :: ${parts.join(" | ")}`;
 }
 
 /** The same detail as a JSON-serialisable object, for `--json` output. */
-export function replayEventRecord({ event, ledger, transfer, accord, transferRecorded, accordRecorded }) {
+export function replayEventRecord({ event, ledger, transfer, accord, transferRecorded, accordRecorded, quarantined = null, quarantineErrors = [] }) {
   return {
     kind: "event",
     ledger,
@@ -117,6 +118,7 @@ export function replayEventRecord({ event, ledger, transfer, accord, transferRec
     transferRecorded,
     accord: accord ?? null,
     accordRecorded,
+    ...(quarantined ? { quarantined, quarantineErrors } : {}),
   };
 }
 
@@ -140,6 +142,7 @@ export async function replay({
   pageLimit = DEFAULT_PAGE_LIMIT,
   onEvent = () => {},
   onProgress = () => {},
+  validator = undefined,
 }) {
   const range = await resolveHistoryRange({ stellar, from, to, finalityLag, fallbackStart: from });
   if (range.start > range.end) {
@@ -157,6 +160,7 @@ export async function replay({
     stateKey: "replay",
     pageLimit,
     onProgress,
+    validator,
     onEvent: (detail) => {
       eventsSeen += 1;
       onEvent(detail);

@@ -44,6 +44,9 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 | `accord_indexer_webhook_deliveries_total` | counter | `subscription`, `result` = `delivered`, `retry`, `dead` | Delivery attempts. |
 | `accord_indexer_webhook_delivery_duration_seconds` | histogram | `subscription` | Receiver latency. |
 | `accord_indexer_webhook_deliveries` | gauge | `status` = `pending`, `delivered`, `dead` | Outbox size. |
+| `accord_indexer_events_quarantined_total` | counter | `reason` = `unknown_topic`, `unknown_version`, `invalid_payload`, `undecodable` | Contract events that failed schema validation. |
+| `accord_indexer_quarantined_events` | gauge | `reason` | Events currently held in quarantine. |
+| `accord_indexer_event_validation_warnings_total` | counter | | Events indexed despite violations (`EVENT_VALIDATION_MODE=warn`). |
 | `accord_indexer_webhook_replays_total` | counter | `scope` = `single`, `bulk` | Deliveries an operator replayed from the dashboard or API. |
 
 ## GraphQL live event subscriptions
@@ -167,6 +170,10 @@ groups:
       - alert: AccordReorgDetected
         expr: increase(accord_indexer_reorgs_total[1h]) > 0
         annotations: { summary: "Chain view rolled back; check the RPC node", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#reorg-detected" }
+      - alert: AccordEventsQuarantined
+        expr: sum(accord_indexer_quarantined_events) > 0
+        for: 15m
+        annotations: { summary: "Contract events failed schema validation; see GET /quarantine", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#events-quarantined" }
       - alert: AccordWebhookDeadLetters
         expr: accord_indexer_webhook_deliveries{status="dead"} > 0
         annotations: { summary: "Webhook deliveries exhausted retries; see GET /webhooks/deliveries?status=dead", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#webhook-dead-letters" }

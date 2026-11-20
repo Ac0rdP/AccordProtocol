@@ -24,12 +24,14 @@ import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 import {
+  resolveEventValidationConfig,
   resolveGraphQLConfig,
   resolveLeaderElectionConfig,
   resolveStreamExportersConfig,
   resolveWarehouseConfig,
   resolveWebhookDashboardConfig,
 } from "./config.js";
+import { createEventValidator, QUARANTINE_REASONS, reprocessQuarantine } from "./event-validation.js";
 import { createHolderId, createLeaderElection, createStaticLeader } from "./leader-election.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
@@ -46,6 +48,9 @@ Commands:
                    event; the live store is never written
   webhooks-requeue Move dead-lettered webhook deliveries back to pending
   notifications-requeue  Move dead-lettered notification deliveries back to pending
+  quarantine-reprocess   Re-validate quarantined contract events and release the
+                   ones that are valid now (--topic / --reason narrow it)
+  quarantine-discard     Mark one quarantined event as discarded (--id <n>)
 
 Options:
   --from <ledger>  First ledger to cover. Defaults to the oldest ledger the
@@ -61,6 +66,9 @@ Options:
                    (default: in memory, discarded on exit). Never the live DB.
   --subscription <id>  Limit webhooks-requeue to one subscription
   --destination <id>   Limit notifications-requeue to one destination
+  --id <n>         quarantine-discard: the quarantined event to discard
+  --topic <name>   quarantine-reprocess: only this event topic
+  --reason <code>  quarantine-reprocess: only this quarantine reason
   -h, --help       Show this message
 
 Environment:
@@ -93,6 +101,10 @@ Environment:
   OPS_ADMIN_TOKEN      Bearer token (16+ chars) that enables the dashboard's
                        replay/retry controls (default unset = controls disabled)
   WEBHOOK_DASHBOARD_PAGE_SIZE  Deliveries per dashboard page (default 50)
+  EVENT_VALIDATION_MODE  enforce (default: quarantine events that fail schema
+                       validation), warn (index but report) or off
+  EVENT_SCHEMA_STRICT  Treat fields outside the schema as violations (default true)
+  EVENT_ALLOW_UNVERSIONED  Accept events from pre-versioning deployments (default true)
   INDEXER_LEADER_ELECTION_ENABLED  Run redundant indexers with automatic
                        failover (default false; needs STORE_BACKEND=postgres)
   INDEXER_REGION       Region label shown in status output (default empty)
@@ -117,6 +129,9 @@ function parseArgs(argv) {
     help: false,
     subscription: undefined,
     destination: undefined,
+    topic: undefined,
+    reason: undefined,
+    id: undefined,
     beforeCheckpoint: undefined,
     afterCheckpoint: undefined,
     checkpoint: undefined,
@@ -128,6 +143,7 @@ function parseArgs(argv) {
     "--before-checkpoint": "beforeCheckpoint",
     "--after-checkpoint": "afterCheckpoint",
     "--checkpoint": "checkpoint",
+    "--id": "id",
   };
   const positionals = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -140,6 +156,10 @@ function parseArgs(argv) {
       args.subscription = argv[(index += 1)];
     } else if (arg === "--destination") {
       args.destination = argv[(index += 1)];
+    } else if (arg === "--topic") {
+      args.topic = argv[(index += 1)];
+    } else if (arg === "--reason") {
+      args.reason = argv[(index += 1)];
     } else if (arg === "--replay-store") {
       args.replayStore = argv[(index += 1)];
     } else if (arg in numericOptions) {
@@ -159,7 +179,7 @@ function parseArgs(argv) {
       throw new Error(`${flag} must be a positive integer`);
     }
   }
-  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue", "notifications-requeue"].includes(args.command)) {
+  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue", "notifications-requeue", "quarantine-reprocess", "quarantine-discard"].includes(args.command)) {
     throw new Error(`unknown command ${args.command}`);
   }
   return args;
@@ -169,6 +189,12 @@ const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.o
 const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
 const treasuryAddress = required("ACCORD_CONTRACT_ID");
 const finalityLag = resolveFinalityLag(process.env.LEDGER_FINALITY_LAG);
+
+const validationConfig = resolveEventValidationConfig();
+if (validationConfig.modeRejected) {
+  console.warn(`[validation] EVENT_VALIDATION_MODE=${process.env.EVENT_VALIDATION_MODE} is not one of off, warn, enforce; using enforce`);
+}
+const validator = createEventValidator(validationConfig);
 
 const tokens = [
   { name: "XLM", address: required("XLM_TOKEN_ADDRESS") },
@@ -222,6 +248,7 @@ async function runHistoryCommand({ command, args, store, stellar }) {
     to: args.to,
     finalityLag,
     onProgress,
+    validator,
     // When no --from is given, the first ledger the RPC retains is the
     // practical genesis; a configured INDEXER_START_LEDGER takes precedence.
     fallbackStart: startLedgerFromEnv({ optional: true }) ?? 1,
@@ -260,6 +287,7 @@ async function runReplay({ args, stellar, storeConfig }) {
       from: window.from,
       to: window.to,
       finalityLag,
+      validator,
       onEvent: (detail) => print(args.json ? replayEventRecord(detail) : formatReplayEvent(detail)),
     });
     const summary = {
@@ -416,10 +444,12 @@ async function serve({ store, stellar }) {
         pageLimit,
         finalityLag,
         subscriptions: graphqlSubscriptions,
+        validator,
         onEvent: (event) => streamDispatcher.publish(event),
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
+      await refreshQuarantineBacklog();
       // A batch that finished after the lease was lost is still safe (writes are
       // idempotent), but it must not make a standby look like it is ingesting.
       if (election.isLeader()) readiness.markSuccess();
@@ -432,6 +462,11 @@ async function serve({ store, stellar }) {
       metrics.batchDuration.observe((performance.now() - startedAt) / 1000);
       indexing = false;
     }
+  }
+
+  async function refreshQuarantineBacklog() {
+    const { byReason } = await store.countQuarantinedEvents();
+    for (const reason of QUARANTINE_REASONS) metrics.quarantineBacklog.set({ reason }, byReason[reason] ?? 0);
   }
 
   async function readTokenBalance(account, tokenAddress) {
@@ -498,6 +533,7 @@ async function serve({ store, stellar }) {
     election,
     webhookDashboard,
     webhookSubscriptions: subscriptions,
+    validator,
   });
 
   const host = process.env.HOST ?? "127.0.0.1";
@@ -570,6 +606,26 @@ async function main() {
       now: new Date().toISOString(),
     });
     console.log(`Requeued ${requeued} dead-lettered notification deliveries`);
+    await store.close();
+    return;
+  }
+
+  if (args.command === "quarantine-reprocess") {
+    if (args.reason && !QUARANTINE_REASONS.includes(args.reason)) {
+      throw new Error(`--reason must be one of: ${QUARANTINE_REASONS.join(", ")}`);
+    }
+    const result = await reprocessQuarantine({
+      store, treasuryAddress, validator, topic: args.topic, reason: args.reason,
+    });
+    console.log(`Examined ${result.examined} quarantined event(s): released ${result.released}, still quarantined ${result.stillQuarantined}`);
+    await store.close();
+    return;
+  }
+
+  if (args.command === "quarantine-discard") {
+    if (args.id === undefined) throw new Error("quarantine-discard needs --id <n>");
+    const discarded = await store.resolveQuarantinedEvent({ id: args.id, status: "discarded", now: new Date().toISOString() });
+    console.log(discarded ? `Discarded quarantined event ${args.id}` : `No quarantined event ${args.id} to discard`);
     await store.close();
     return;
   }

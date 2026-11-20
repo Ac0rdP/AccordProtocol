@@ -159,6 +159,20 @@ export function createIndexerMetrics() {
       name: "accord_indexer_last_successful_batch_timestamp_seconds",
       help: "Unix time of the last indexing batch that completed without error.",
     }),
+    eventsQuarantined: registry.counter({
+      name: "accord_indexer_events_quarantined_total",
+      help: "Contract events that failed schema validation and were quarantined, by reason.",
+      labelNames: ["reason"],
+    }),
+    eventValidationWarnings: registry.counter({
+      name: "accord_indexer_event_validation_warnings_total",
+      help: "Events indexed despite schema violations (EVENT_VALIDATION_MODE=warn).",
+    }),
+    quarantineBacklog: registry.gauge({
+      name: "accord_indexer_quarantined_events",
+      help: "Events currently held in quarantine, by reason.",
+      labelNames: ["reason"],
+    }),
     isLeader: registry.gauge({
       name: "accord_indexer_is_leader",
       help: "1 while this instance holds the leader lease (always 1 when failover is disabled), else 0.",
@@ -221,6 +235,10 @@ export function recordBatchSuccess(metrics, result, indexedLedger, nowSeconds = 
   metrics.eventsProcessed.inc({}, result.indexed);
   metrics.eventsHeldBack.inc({}, result.heldBack);
   if (result.reorg) metrics.reorgs.inc();
+  for (const [reason, count] of Object.entries(result.quarantineReasons ?? {})) {
+    metrics.eventsQuarantined.inc({ reason }, count);
+  }
+  if (result.validationWarnings) metrics.eventValidationWarnings.inc({}, result.validationWarnings);
   metrics.latestLedger.set(result.latestLedger);
   metrics.finalLedger.set(result.finalLedger);
   metrics.indexedLedger.set(indexedLedger);

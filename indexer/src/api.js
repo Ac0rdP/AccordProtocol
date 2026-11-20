@@ -1,13 +1,16 @@
 import { createServer } from "node:http";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
+import { defaultValidator, QUARANTINE_REASONS } from "./event-validation.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
 
 const ROUTES = new Set([
   "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
+  "/schemas", "/quarantine",
 ]);
+const QUARANTINE_STATUSES = ["quarantined", "released", "discarded"];
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
 const DESTINATION_PATH = /^\/notifications\/destinations\/([^/]+)$/;
 const DESTINATION_TEST_PATH = /^\/notifications\/destinations\/([^/]+)\/test$/;
@@ -104,6 +107,8 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *
  *   /health /healthz /readyz /status /metrics   operations
  *   /ledger /events /reconciliation     indexed data
+ *   /schemas                             the event schema registry (topics, versions, fields) and validation mode
+ *   /quarantine                          events that failed validation (?status=, ?reason=, ?topic=, ?raw=true)
  *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue,
  *                                        ?subscription=, ?event=, ?order=desc)
  *   /ops/webhooks and /webhooks/deliveries/...  delivery dashboard, attempt history and retry controls (see webhook-ops.js)
@@ -112,7 +117,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [] }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
   const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
 
@@ -266,6 +271,34 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
           ...parsePage(url.searchParams),
         });
         return sendJson(response, 200, { events });
+      }
+
+      case "/schemas":
+        return sendJson(response, 200, {
+          mode: validator.mode,
+          strict: validator.strict,
+          allowUnversioned: validator.allowUnversioned,
+          currentVersion: validator.registry.currentVersion,
+          schemas: validator.registry.describe(),
+        });
+
+      case "/quarantine": {
+        const status = url.searchParams.get("status") ?? undefined;
+        if (status && !QUARANTINE_STATUSES.includes(status)) {
+          throw new Error(`status must be one of: ${QUARANTINE_STATUSES.join(", ")}`);
+        }
+        const reason = url.searchParams.get("reason") ?? undefined;
+        if (reason && !QUARANTINE_REASONS.includes(reason)) {
+          throw new Error(`reason must be one of: ${QUARANTINE_REASONS.join(", ")}`);
+        }
+        const events = await store.listQuarantinedEvents({
+          status,
+          reason,
+          topic: url.searchParams.get("topic") ?? undefined,
+          includeRaw: url.searchParams.get("raw") === "true",
+          ...parsePage(url.searchParams),
+        });
+        return sendJson(response, 200, { counts: await store.countQuarantinedEvents(), events });
       }
 
       case "/reconciliation":

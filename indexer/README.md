@@ -171,6 +171,29 @@ the column from migration `0004_event_dedupe_key`; SQLite adds it on open.
 `test/dedupe.test.js` re-runs ingestion, backfill and reindex on both backends
 and asserts no duplicates.
 
+## Event schema registry, validation and quarantine
+
+Every event the treasury contract emits is checked against a **versioned schema registry** ([schema-registry.js](src/schema-registry.js)) before it reaches `accord_events`. Events that do not fit are **quarantined**, not dropped, and never stall ingestion.
+
+- **Schemas** are `(topic, version)` pairs built from `src/catalog.json` (the current version) plus the recorded version history, so version `1` (`executed` still carried `transfers`) and pre-versioning events (no `version` field) stay valid. See [docs/EVENTS.md](../docs/EVENTS.md#event-versioning-policy). `GET /schemas` lists every topic, version and field.
+- **Checks:** known topic, known version, every field present with the right type and range (`u32`, `u64`, `i128`, addresses, `Vec`, `Option`, `BytesN`, the `Transfer` struct), and no fields outside the schema.
+- **Quarantine reasons:** `unknown_topic`, `unknown_version` (e.g. a newer contract), `invalid_payload`, `undecodable`. Each row keeps the reasons, the ledger and transaction, and the raw event (topic and value as base64 XDR) in `quarantined_events` (migration `0011_quarantined_events.sql`).
+- **Inspect:** `GET /quarantine` (`status`, `reason`, `topic`, `raw=true`, `limit`, `offset`; the response includes counts). Metrics: `accord_indexer_events_quarantined_total{reason}` and `accord_indexer_quarantined_events{reason}`.
+- **Recover:** after fixing the cause (register the new schema, ship a catalog update), run `npm run start -- quarantine-reprocess [--topic <name>] [--reason <code>]`. Every quarantined event that is valid now is indexed and marked `released`; the rest stay. `quarantine-discard --id <n>` retires one for good. Re-ingesting a range (backfill, replay) releases fixed events too.
+
+Safe to replay from any checkpoint:
+
+- Quarantine is keyed by the event's chain position (`ledger:transaction:eventIndex`), the same key that dedupes accepted events, so replaying a range quarantines each event once and the first verdict stands.
+- A store failure mid-batch leaves the checkpoint where it was; the retry finds the already-stored events deduped and finishes the rest.
+- A reorg rewind (and `reindex`) also removes quarantined events above the rewind point, so they are re-judged with the rest of the range.
+- Previously, an undecodable treasury event failed the whole batch on every retry; it is now quarantined and ingestion moves on.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EVENT_VALIDATION_MODE` | `enforce` | `enforce`: quarantine events that fail validation. `warn`: index invalid payloads anyway and count them in `accord_indexer_event_validation_warnings_total` (unknown topics and versions are still quarantined). `off`: previous behaviour, no validation and unknown topics ignored. An unrecognised value falls back to `enforce` with a warning. |
+| `EVENT_SCHEMA_STRICT` | `true` | Treat fields outside the schema as violations. Set `false` to tolerate additive fields |
+| `EVENT_ALLOW_UNVERSIONED` | `true` | Accept events from deployments that predate the `version` field |
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two
@@ -243,6 +266,8 @@ Failover is **off by default**: a single instance is always the leader and behav
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
 - `GET /events?topic=created&limit=100` - Query decoded Accord Protocol events.
 - `GET /reconciliation` - View latest token balance reconciliation checks.
+- `GET /schemas` - The event schema registry (topics, versions, fields) and the validation mode in effect.
+- `GET /quarantine` - Events that failed schema validation, with counts; see [Event schema registry](#event-schema-registry-validation-and-quarantine).
 
 ## Environment
 

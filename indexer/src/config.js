@@ -8,6 +8,7 @@
  *   - Data warehouse connectors (BigQuery, Snowflake)
  *   - Multi-region failover (leader election)
  *   - Webhook delivery dashboard and retry controls
+ *   - Contract event schema validation and quarantine
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -162,6 +163,29 @@ export function resolveWebhookDashboardConfig(env = process.env) {
 }
 
 /**
+ * Resolves contract event schema validation.
+ *
+ * Safe defaults:
+ *   - mode: enforce. Events that do not match a registered schema are
+ *     quarantined (kept, with the reason, and re-checkable), never dropped.
+ *     `warn` indexes invalid payloads anyway and reports them; `off` restores
+ *     the previous behaviour (no validation, unknown topics ignored).
+ *   - strict: true (fields outside the schema are violations)
+ *   - allowUnversioned: true (deployments that predate the `version` field)
+ */
+export const EVENT_VALIDATION_MODES = ["off", "warn", "enforce"];
+
+export function resolveEventValidationConfig(env = process.env) {
+  const requested = env.EVENT_VALIDATION_MODE?.trim().toLowerCase();
+  return {
+    mode: EVENT_VALIDATION_MODES.includes(requested) ? requested : "enforce",
+    modeRejected: Boolean(requested) && !EVENT_VALIDATION_MODES.includes(requested),
+    strict: parseBool(env.EVENT_SCHEMA_STRICT, true),
+    allowUnversioned: parseBool(env.EVENT_ALLOW_UNVERSIONED, true),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -171,6 +195,7 @@ export function loadIndexerConfig(env = process.env) {
     warehouse: resolveWarehouseConfig(env),
     leader: resolveLeaderElectionConfig(env),
     webhookDashboard: resolveWebhookDashboardConfig(env),
+    eventValidation: resolveEventValidationConfig(env),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

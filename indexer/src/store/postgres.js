@@ -343,6 +343,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return withTransaction(async (client) => {
         const entries = await client.query("DELETE FROM ledger_entries WHERE ledger > $1", [target]);
         const events = await client.query("DELETE FROM accord_events WHERE ledger > $1", [target]);
+        // Re-ingested (and re-quarantined if still invalid) together with the rewound range.
+        await client.query("DELETE FROM quarantined_events WHERE ledger > $1", [target]);
         await replayBalances(client);
         return { removedEntries: entries.rowCount, removedEvents: events.rowCount };
       }, { lockLedger: true });
@@ -352,6 +354,7 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return withTransaction(async (client) => {
         const entries = await client.query("DELETE FROM ledger_entries");
         const events = await client.query("DELETE FROM accord_events");
+        await client.query("DELETE FROM quarantined_events");
         const reconciliations = await client.query("DELETE FROM reconciliation_results");
         await client.query("DELETE FROM token_balances");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'webhook\\_cursor:%'");
@@ -724,6 +727,84 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         schemaVersion: rows[0].schema_version,
         updatedAt: rows[0].updated_at,
       };
+    },
+
+    /** Same contract as the SQLite store. */
+    async quarantineEvent(record) {
+      const now = record.now ?? new Date().toISOString();
+      const { rowCount } = await pool.query(
+        `INSERT INTO quarantined_events (
+           dedupe_key, event_id, contract_id, topic, schema_version, reason, errors, raw,
+           ledger, transaction_hash, occurred_at, status, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'quarantined', $12, $12)
+         ON CONFLICT (dedupe_key) DO NOTHING`,
+        [
+          record.dedupeKey, record.eventId, record.contractId ?? null, record.topic ?? null,
+          record.schemaVersion ?? null, record.reason, JSON.stringify(record.errors ?? []),
+          JSON.stringify(record.raw ?? {}), record.ledger, record.transactionHash ?? null,
+          record.occurredAt, now,
+        ]
+      );
+      return rowCount > 0;
+    },
+
+    async listQuarantinedEvents({ status, reason, topic, afterId, order = "desc", limit, offset = 0, includeRaw = false }) {
+      const values = [];
+      const where = filterClause([["status", "=", status], ["reason", "=", reason], ["topic", "=", topic]], values);
+      let condition = where;
+      if (afterId) {
+        values.push(afterId);
+        condition = `${where ? `${where} AND` : "WHERE"} id > $${values.length}`;
+      }
+      const { rows } = await pool.query(
+        `SELECT id, dedupe_key, event_id, contract_id, topic, schema_version, reason, errors, raw, ledger,
+           transaction_hash, occurred_at, status, created_at, resolved_at
+         FROM quarantined_events ${condition} ORDER BY id ${order === "asc" ? "ASC" : "DESC"}
+         LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+        [...values, limit, offset]
+      );
+      return rows.map((row) => ({
+        id: Number(row.id),
+        dedupeKey: row.dedupe_key,
+        eventId: row.event_id,
+        contractId: row.contract_id,
+        topic: row.topic,
+        schemaVersion: row.schema_version === null ? null : Number(row.schema_version),
+        reason: row.reason,
+        errors: JSON.parse(row.errors),
+        ...(includeRaw ? { raw: JSON.parse(row.raw) } : {}),
+        ledger: row.ledger,
+        transactionHash: row.transaction_hash,
+        occurredAt: iso(row.occurred_at),
+        status: row.status,
+        createdAt: iso(row.created_at),
+        resolvedAt: iso(row.resolved_at),
+      }));
+    },
+
+    async countQuarantinedEvents() {
+      const counts = { quarantined: 0, released: 0, discarded: 0, byReason: {} };
+      const byStatus = await pool.query("SELECT status, COUNT(*) AS count FROM quarantined_events GROUP BY status");
+      for (const row of byStatus.rows) counts[row.status] = Number(row.count);
+      const byReason = await pool.query(
+        "SELECT reason, COUNT(*) AS count FROM quarantined_events WHERE status = 'quarantined' GROUP BY reason"
+      );
+      for (const row of byReason.rows) counts.byReason[row.reason] = Number(row.count);
+      return counts;
+    },
+
+    async resolveQuarantinedEvent({ id, dedupeKey, status, now = new Date().toISOString() }) {
+      if (!["released", "discarded"].includes(status)) throw new Error("status must be released or discarded");
+      const { rowCount } = id !== undefined
+        ? await pool.query(
+            "UPDATE quarantined_events SET status = $1, updated_at = $2, resolved_at = $2 WHERE id = $3 AND status = 'quarantined'",
+            [status, now, id]
+          )
+        : await pool.query(
+            "UPDATE quarantined_events SET status = $1, updated_at = $2, resolved_at = $2 WHERE dedupe_key = $3 AND status = 'quarantined'",
+            [status, now, dedupeKey]
+          );
+      return rowCount > 0;
     },
 
     /** Same contract as the SQLite store; the upsert is a single atomic statement. */

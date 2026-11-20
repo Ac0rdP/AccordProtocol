@@ -52,6 +52,8 @@ export function resolveStoreConfig(env = process.env) {
  *   getNotificationDestination / deleteNotificationDestination
  *   enqueueNotificationDeliveries / claimDueNotificationDeliveries / completeNotificationDelivery
  *   countNotificationDeliveries / listNotificationDeliveries / requeueDeadNotificationDeliveries
+ *   quarantineEvent(record) -> boolean          false when that event was already quarantined
+ *   listQuarantinedEvents / countQuarantinedEvents / resolveQuarantinedEvent
  *   acquireLease({name, holderId, region, ttlMs, now}) -> {acquired, lease}
  *   getLease(name) / releaseLease({name, holderId, now})
  *   close()

@@ -169,6 +169,26 @@ export function openLedgerStore(databasePath) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (warehouse, table_name)
     );
+    CREATE TABLE IF NOT EXISTS quarantined_events (
+      id INTEGER PRIMARY KEY,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      event_id TEXT NOT NULL,
+      contract_id TEXT,
+      topic TEXT,
+      schema_version INTEGER,
+      reason TEXT NOT NULL CHECK (reason IN ('unknown_topic', 'unknown_version', 'invalid_payload', 'undecodable')),
+      errors TEXT NOT NULL,
+      raw TEXT NOT NULL,
+      ledger INTEGER NOT NULL,
+      transaction_hash TEXT,
+      occurred_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'quarantined' CHECK (status IN ('quarantined', 'released', 'discarded')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS quarantined_events_status_idx ON quarantined_events (status, id);
+    CREATE INDEX IF NOT EXISTS quarantined_events_ledger_idx ON quarantined_events (ledger);
     CREATE TABLE IF NOT EXISTS indexer_leases (
       name TEXT PRIMARY KEY,
       holder_id TEXT NOT NULL,
@@ -231,6 +251,8 @@ export function openLedgerStore(databasePath) {
   `);
   const deleteEntriesAbove = database.prepare("DELETE FROM ledger_entries WHERE ledger > ?");
   const deleteEventsAbove = database.prepare("DELETE FROM accord_events WHERE ledger > ?");
+  // Quarantined events above a rewind are re-ingested (and re-quarantined if still bad) with the range.
+  const deleteQuarantinedAbove = database.prepare("DELETE FROM quarantined_events WHERE ledger > ?");
   const selectEntriesForReplay = database.prepare(
     "SELECT id, token, direction, amount FROM ledger_entries ORDER BY ledger ASC, id ASC"
   );
@@ -549,6 +571,7 @@ export function openLedgerStore(databasePath) {
       return inTransaction(() => {
         const removedEntries = deleteEntriesAbove.run(target).changes;
         const removedEvents = deleteEventsAbove.run(target).changes;
+        deleteQuarantinedAbove.run(target);
         replayBalances();
         return { removedEntries, removedEvents };
       });
@@ -568,6 +591,7 @@ export function openLedgerStore(databasePath) {
       return inTransaction(() => {
         const removedEntries = database.prepare("DELETE FROM ledger_entries").run().changes;
         const removedEvents = database.prepare("DELETE FROM accord_events").run().changes;
+        database.prepare("DELETE FROM quarantined_events").run();
         const removedReconciliations = database.prepare("DELETE FROM reconciliation_results").run().changes;
         clearTokenBalances.run();
         database.prepare("DELETE FROM indexer_state WHERE key LIKE 'webhook_cursor:%'").run();
@@ -902,6 +926,80 @@ export function openLedgerStore(databasePath) {
         schemaVersion: row.schema_version,
         updatedAt: row.updated_at,
       };
+    },
+
+    /**
+     * Parks an event that failed validation. Keyed by the chain-position dedupe
+     * key, so quarantining the same event twice is a no-op.
+     *
+     * @returns {boolean} false when it was already quarantined
+     */
+    async quarantineEvent(record) {
+      const now = record.now ?? new Date().toISOString();
+      return database.prepare(`
+        INSERT INTO quarantined_events (
+          dedupe_key, event_id, contract_id, topic, schema_version, reason, errors, raw,
+          ledger, transaction_hash, occurred_at, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', ?, ?)
+        ON CONFLICT (dedupe_key) DO NOTHING
+      `).run(
+        record.dedupeKey, record.eventId, record.contractId ?? null, record.topic ?? null,
+        record.schemaVersion ?? null, record.reason, JSON.stringify(record.errors ?? []),
+        JSON.stringify(record.raw ?? {}), record.ledger, record.transactionHash ?? null,
+        record.occurredAt, now, now
+      ).changes > 0;
+    },
+
+    async listQuarantinedEvents({ status, reason, topic, afterId, order = "desc", limit, offset = 0, includeRaw = false }) {
+      const clauses = [];
+      const values = [];
+      for (const [column, value] of [["status", status], ["reason", reason], ["topic", topic]]) {
+        if (value) {
+          clauses.push(`${column} = ?`);
+          values.push(value);
+        }
+      }
+      if (afterId) {
+        clauses.push("id > ?");
+        values.push(afterId);
+      }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      return database.prepare(`
+        SELECT id, dedupe_key AS dedupeKey, event_id AS eventId, contract_id AS contractId, topic,
+          schema_version AS schemaVersion, reason, errors, raw, ledger, transaction_hash AS transactionHash,
+          occurred_at AS occurredAt, status, created_at AS createdAt, resolved_at AS resolvedAt
+        FROM quarantined_events ${where} ORDER BY id ${order === "asc" ? "ASC" : "DESC"} LIMIT ? OFFSET ?
+      `).all(...values, limit, offset).map(({ errors, raw, ...row }) => ({
+        ...row,
+        errors: JSON.parse(errors),
+        ...(includeRaw ? { raw: JSON.parse(raw) } : {}),
+      }));
+    },
+
+    async countQuarantinedEvents() {
+      const counts = { quarantined: 0, released: 0, discarded: 0, byReason: {} };
+      for (const row of database.prepare("SELECT status, COUNT(*) AS count FROM quarantined_events GROUP BY status").all()) {
+        counts[row.status] = Number(row.count);
+      }
+      for (const row of database.prepare(
+        "SELECT reason, COUNT(*) AS count FROM quarantined_events WHERE status = 'quarantined' GROUP BY reason"
+      ).all()) {
+        counts.byReason[row.reason] = Number(row.count);
+      }
+      return counts;
+    },
+
+    /** Moves a still-quarantined event to `released` or `discarded`; anything else is left alone. */
+    async resolveQuarantinedEvent({ id, dedupeKey, status, now = new Date().toISOString() }) {
+      if (!["released", "discarded"].includes(status)) throw new Error("status must be released or discarded");
+      const result = id !== undefined
+        ? database.prepare(
+            "UPDATE quarantined_events SET status = ?, updated_at = ?, resolved_at = ? WHERE id = ? AND status = 'quarantined'"
+          ).run(status, now, now, id)
+        : database.prepare(
+            "UPDATE quarantined_events SET status = ?, updated_at = ?, resolved_at = ? WHERE dedupe_key = ? AND status = 'quarantined'"
+          ).run(status, now, now, dedupeKey);
+      return Number(result.changes) > 0;
     },
 
     /**
