@@ -321,6 +321,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return withTransaction(async (client) => {
         const entries = await client.query("DELETE FROM ledger_entries WHERE ledger > $1", [target]);
         const events = await client.query("DELETE FROM accord_events WHERE ledger > $1", [target]);
+        // Shards that reached past the rewind point no longer describe indexed data.
+        await client.query("DELETE FROM backfill_shards WHERE end_ledger > $1", [target]);
         await replayBalances(client);
         return { removedEntries: entries.rowCount, removedEvents: events.rowCount };
       }, { lockLedger: true });
@@ -334,6 +336,8 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         await client.query("DELETE FROM token_balances");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'webhook\\_cursor:%'");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'notification\\_cursor:%'");
+        // Shards marked done describe data that no longer exists.
+        await client.query("DELETE FROM backfill_shards");
         return {
           removedEntries: entries.rowCount,
           removedEvents: events.rowCount,
@@ -626,6 +630,104 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         rowsExported: Number(rows[0].rows_exported),
         schemaVersion: rows[0].schema_version,
         updatedAt: rows[0].updated_at,
+      };
+    },
+
+    async registerBackfillJob({ jobId, shards, now = new Date().toISOString() }) {
+      return withTransaction(async (client) => {
+        // A different job's shards describe a different range; keep only this job's.
+        await client.query("DELETE FROM backfill_shards WHERE job_id <> $1", [jobId]);
+        for (const shard of shards) {
+          await client.query(
+            `INSERT INTO backfill_shards (job_id, shard_index, start_ledger, end_ledger, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (job_id, shard_index) DO UPDATE SET
+               status = CASE WHEN EXCLUDED.end_ledger > backfill_shards.end_ledger THEN 'pending' ELSE backfill_shards.status END,
+               end_ledger = GREATEST(backfill_shards.end_ledger, EXCLUDED.end_ledger)`,
+            [jobId, shard.index, shard.start, shard.end, now]
+          );
+        }
+        // A crashed worker leaves its shard 'running'; nobody owns it now.
+        await client.query(
+          "UPDATE backfill_shards SET status = 'pending', updated_at = $2 WHERE job_id = $1 AND status = 'running'",
+          [jobId, now]
+        );
+        return true;
+      });
+    },
+
+    async listBackfillShards(jobId) {
+      const { rows } = await pool.query(
+        `SELECT job_id, shard_index, start_ledger, end_ledger, status, cursor, last_ledger,
+           pages, events_indexed, attempts, last_error, updated_at
+         FROM backfill_shards WHERE job_id = $1 ORDER BY shard_index ASC`,
+        [jobId]
+      );
+      return rows.map((row) => ({
+        jobId: row.job_id,
+        index: row.shard_index,
+        start: row.start_ledger,
+        end: row.end_ledger,
+        status: row.status,
+        cursor: row.cursor,
+        lastLedger: row.last_ledger,
+        pages: row.pages,
+        eventsIndexed: Number(row.events_indexed),
+        attempts: row.attempts,
+        lastError: row.last_error,
+        updatedAt: iso(row.updated_at),
+      }));
+    },
+
+    async updateBackfillShard({ jobId, shardIndex, status, cursor, lastLedger, pages, eventsIndexed, attempts, lastError, now = new Date().toISOString() }) {
+      await pool.query(
+        `UPDATE backfill_shards SET
+           status = COALESCE($1, status),
+           cursor = COALESCE($2, cursor),
+           last_ledger = COALESCE($3, last_ledger),
+           pages = COALESCE($4, pages),
+           events_indexed = COALESCE($5, events_indexed),
+           attempts = COALESCE($6, attempts),
+           last_error = $7,
+           updated_at = $8
+         WHERE job_id = $9 AND shard_index = $10`,
+        [
+          status ?? null, cursor ?? null, lastLedger ?? null, pages ?? null,
+          eventsIndexed ?? null, attempts ?? null, lastError ?? null, now, jobId, shardIndex,
+        ]
+      );
+      return true;
+    },
+
+    async setLagMonitorState({ monitor, latestLedger = null, indexedLedger = null, checkpointAdvancedAt = null, levels = {}, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO lag_monitor_state (monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (monitor) DO UPDATE SET
+           latest_ledger = EXCLUDED.latest_ledger,
+           indexed_ledger = EXCLUDED.indexed_ledger,
+           checkpoint_advanced_at = EXCLUDED.checkpoint_advanced_at,
+           levels = EXCLUDED.levels,
+           updated_at = EXCLUDED.updated_at`,
+        [monitor, latestLedger, indexedLedger, checkpointAdvancedAt, JSON.stringify(levels), now]
+      );
+      return true;
+    },
+
+    async getLagMonitorState(monitor) {
+      const { rows } = await pool.query(
+        `SELECT monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at
+         FROM lag_monitor_state WHERE monitor = $1`,
+        [monitor]
+      );
+      if (!rows[0]) return null;
+      return {
+        monitor: rows[0].monitor,
+        latestLedger: rows[0].latest_ledger,
+        indexedLedger: rows[0].indexed_ledger,
+        checkpointAdvancedAt: iso(rows[0].checkpoint_advanced_at),
+        levels: JSON.parse(rows[0].levels),
+        updatedAt: iso(rows[0].updated_at),
       };
     },
 
