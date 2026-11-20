@@ -3,6 +3,7 @@ import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
 import { defaultValidator, QUARANTINE_REASONS } from "./event-validation.js";
 import { createSubscriptionManager } from "./subscriptions.js";
+import { apiKeyOpsRouteLabel, createApiKeyOps, extractApiKey } from "./api-keys.js";
 import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
 
 const ROUTES = new Set([
@@ -41,7 +42,7 @@ function redactDestination(destination) {
 
 function routeLabelFor(pathname) {
   if (ROUTES.has(pathname)) return pathname;
-  const webhookOpsLabel = webhookOpsRouteLabel(pathname);
+  const webhookOpsLabel = webhookOpsRouteLabel(pathname) ?? apiKeyOpsRouteLabel(pathname);
   if (webhookOpsLabel) return webhookOpsLabel;
   if (DESTINATION_TEST_PATH.test(pathname)) return "/notifications/destinations/:id/test";
   if (DESTINATION_PATH.test(pathname)) return "/notifications/destinations/:id";
@@ -107,6 +108,8 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *
  *   /health /healthz /readyz /status /metrics   operations
  *   /ledger /events /reconciliation     indexed data
+ *   /ledger /events /reconciliation and the subscriptions stream need an API key when API_KEYS_ENABLED (see api-keys.js);
+ *   /admin/api-keys...                   issue, list, rotate and revoke keys (OPS_ADMIN_TOKEN)
  *   /schemas                             the event schema registry (topics, versions, fields) and validation mode
  *   /quarantine                          events that failed validation (?status=, ?reason=, ?topic=, ?raw=true)
  *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue,
@@ -117,15 +120,41 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
   const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
+
+  const apiKeyOps = apiKeys
+    ? createApiKeyOps({ service: apiKeys, adminToken: webhookDashboard.adminToken, readJson: readJsonBody, parsePage })
+    : null;
+
+  /**
+   * Applies API-key auth, scope and quota to an analytics read. Does nothing
+   * unless API_KEYS_ENABLED. Answers the request itself when it refuses.
+   *
+   * @returns {Promise<boolean>} true when the request may proceed
+   */
+  async function enforceApiKey(request, response, scope) {
+    if (!apiKeysEnabled || !apiKeys) return true;
+    const result = await apiKeys.check(extractApiKey(request), scope);
+    if (result.quota) {
+      response.setHeader("x-ratelimit-limit", String(result.quota.limit));
+      response.setHeader("x-ratelimit-remaining", String(result.quota.remaining));
+      response.setHeader("x-ratelimit-reset", String(result.quota.resetAt));
+    }
+    if (result.ok) return true;
+    if (result.status === 401) response.setHeader("www-authenticate", 'Bearer realm="accord-indexer-api"');
+    if (result.status === 429) response.setHeader("retry-after", String(result.retryAfterSeconds));
+    sendJson(response, result.status, { error: result.error });
+    return false;
+  }
 
   async function route(request, response, url) {
     if (
       url.pathname === "/graphql/subscriptions" ||
       (url.pathname === "/graphql" && request.headers.accept?.includes("text/event-stream"))
     ) {
+      if (!(await enforceApiKey(request, response, "subscriptions"))) return;
       return activeSubscriptions.handleSseRequest(request, response, url);
     }
 
@@ -161,6 +190,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
     }
 
     if (await webhookOps.handle(request, response, url)) return;
+    if (apiKeyOps && (await apiKeyOps.handle(request, response, url))) return;
 
     const destinationMatch = url.pathname.match(DESTINATION_PATH);
     const destinationTestMatch = url.pathname.match(DESTINATION_TEST_PATH);
@@ -252,6 +282,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         });
 
       case "/ledger": {
+        if (!(await enforceApiKey(request, response, "ledger"))) return;
         const token = url.searchParams.get("token")?.toUpperCase();
         if (token && !tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
         const entries = await store.getEntries({
@@ -264,6 +295,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       }
 
       case "/events": {
+        if (!(await enforceApiKey(request, response, "events"))) return;
         const events = await store.getAccordEvents({
           topic: url.searchParams.get("topic"),
           from: parseDateParam(url.searchParams.get("from"), "from"),
@@ -302,6 +334,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       }
 
       case "/reconciliation":
+        if (!(await enforceApiKey(request, response, "reconciliation"))) return;
         return sendJson(response, 200, { results: await store.getLatestReconciliations() });
 
       case "/webhooks/deliveries": {

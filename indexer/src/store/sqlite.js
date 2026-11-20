@@ -189,6 +189,31 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS quarantined_events_status_idx ON quarantined_events (status, id);
     CREATE INDEX IF NOT EXISTS quarantined_events_ledger_idx ON quarantined_events (ledger);
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      secret_hash TEXT NOT NULL,
+      previous_secret_hash TEXT,
+      previous_expires_at TEXT,
+      scopes TEXT NOT NULL,
+      quota_limit INTEGER NOT NULL CHECK (quota_limit >= 1),
+      quota_window_seconds INTEGER NOT NULL CHECK (quota_window_seconds >= 1),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      rotated_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS api_keys_status_idx ON api_keys (status, created_at);
+    CREATE TABLE IF NOT EXISTS api_key_usage (
+      key_id TEXT NOT NULL,
+      window_start INTEGER NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (key_id, window_start)
+    );
+    CREATE INDEX IF NOT EXISTS api_key_usage_window_idx ON api_key_usage (window_start);
     CREATE TABLE IF NOT EXISTS indexer_leases (
       name TEXT PRIMARY KEY,
       holder_id TEXT NOT NULL,
@@ -241,6 +266,25 @@ export function openLedgerStore(databasePath) {
       renewedAt: row.renewed_at,
       expiresAt: row.expires_at,
     };
+  }
+
+  const apiKeyColumns = `
+    id, name, scopes, quota_limit AS quotaLimit, quota_window_seconds AS quotaWindowSeconds, status,
+    created_at AS createdAt, updated_at AS updatedAt, expires_at AS expiresAt, rotated_at AS rotatedAt,
+    revoked_at AS revokedAt, previous_expires_at AS previousExpiresAt,
+    previous_secret_hash IS NOT NULL AS hasPreviousSecret
+  `;
+
+  function toApiKey(row) {
+    return { ...row, scopes: JSON.parse(row.scopes), hasPreviousSecret: Boolean(row.hasPreviousSecret) };
+  }
+
+  function selectApiKey(id) {
+    const row = database.prepare(`
+      SELECT ${apiKeyColumns}, secret_hash AS secretHash, previous_secret_hash AS previousSecretHash
+      FROM api_keys WHERE id = ?
+    `).get(id);
+    return row ? toApiKey(row) : null;
   }
 
   const insertEntry = database.prepare(`
@@ -1000,6 +1044,83 @@ export function openLedgerStore(databasePath) {
             "UPDATE quarantined_events SET status = ?, updated_at = ?, resolved_at = ? WHERE dedupe_key = ? AND status = 'quarantined'"
           ).run(status, now, now, dedupeKey);
       return Number(result.changes) > 0;
+    },
+
+    /**
+     * Stores a new key. Only the secret's hash is ever persisted.
+     *
+     * @returns {boolean} false when a key with that id already exists
+     */
+    async createApiKey({ id, name, secretHash, scopes, quotaLimit, quotaWindowSeconds, expiresAt = null, now }) {
+      return database.prepare(`
+        INSERT INTO api_keys (id, name, secret_hash, scopes, quota_limit, quota_window_seconds, status,
+          created_at, updated_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+        ON CONFLICT (id) DO NOTHING
+      `).run(id, name, secretHash, JSON.stringify(scopes), quotaLimit, quotaWindowSeconds, now, now, expiresAt).changes > 0;
+    },
+
+    /** One key, including the secret hashes the service needs to authenticate with. Never sent to clients. */
+    async getApiKey(id) {
+      return selectApiKey(id);
+    },
+
+    async listApiKeys({ status, limit, offset }) {
+      return database.prepare(`
+        SELECT ${apiKeyColumns} FROM api_keys ${status ? "WHERE status = ?" : ""}
+        ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?
+      `).all(...(status ? [status] : []), limit, offset).map(toApiKey);
+    },
+
+    /**
+     * Replaces the secret. The old one stays valid until `graceUntil` (null drops it at once).
+     * @returns {object|null} the updated key, or null when it does not exist or is revoked
+     */
+    async rotateApiKey({ id, secretHash, graceUntil = null, now }) {
+      const changed = database.prepare(`
+        UPDATE api_keys SET
+          previous_secret_hash = CASE WHEN ? IS NULL THEN NULL ELSE secret_hash END,
+          previous_expires_at = ?,
+          secret_hash = ?, rotated_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'active'
+      `).run(graceUntil, graceUntil, secretHash, now, now, id).changes > 0;
+      return changed ? selectApiKey(id) : null;
+    },
+
+    /** @returns {{found: boolean, changed: boolean}} revoking twice is a harmless no-op */
+    async revokeApiKey({ id, now }) {
+      const changed = database.prepare(`
+        UPDATE api_keys SET status = 'revoked', revoked_at = ?, updated_at = ?,
+          previous_secret_hash = NULL, previous_expires_at = NULL
+        WHERE id = ? AND status = 'active'
+      `).run(now, now, id).changes > 0;
+      const found = changed || Boolean(database.prepare("SELECT 1 FROM api_keys WHERE id = ?").get(id));
+      return { found, changed };
+    },
+
+    /**
+     * Counts one request against a key's window in a single atomic statement.
+     * The counter never passes `limit`, so a burst of concurrent requests (even
+     * across instances sharing the store) cannot overshoot the quota.
+     *
+     * @returns {{allowed: boolean, used: number}}
+     */
+    async consumeApiKeyQuota({ keyId, windowStart, limit, now }) {
+      const row = database.prepare(`
+        INSERT INTO api_key_usage (key_id, window_start, request_count, updated_at) VALUES (?, ?, 1, ?)
+        ON CONFLICT (key_id, window_start) DO UPDATE SET
+          request_count = api_key_usage.request_count + 1, updated_at = excluded.updated_at
+        WHERE api_key_usage.request_count < ?
+        RETURNING request_count
+      `).get(keyId, windowStart, now, limit);
+      if (row) return { allowed: true, used: Number(row.request_count) };
+      const current = database.prepare("SELECT request_count FROM api_key_usage WHERE key_id = ? AND window_start = ?").get(keyId, windowStart);
+      return { allowed: false, used: Number(current?.request_count ?? limit) };
+    },
+
+    /** Drops usage counters for windows that started before `before` (epoch seconds). */
+    async pruneApiKeyUsage({ before }) {
+      return Number(database.prepare("DELETE FROM api_key_usage WHERE window_start < ?").run(before).changes);
     },
 
     /**

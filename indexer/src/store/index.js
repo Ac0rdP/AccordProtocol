@@ -54,6 +54,8 @@ export function resolveStoreConfig(env = process.env) {
  *   countNotificationDeliveries / listNotificationDeliveries / requeueDeadNotificationDeliveries
  *   quarantineEvent(record) -> boolean          false when that event was already quarantined
  *   listQuarantinedEvents / countQuarantinedEvents / resolveQuarantinedEvent
+ *   createApiKey / getApiKey / listApiKeys / rotateApiKey / revokeApiKey
+ *   consumeApiKeyQuota({keyId, windowStart, limit, now}) -> {allowed, used} / pruneApiKeyUsage({before})
  *   acquireLease({name, holderId, region, ttlMs, now}) -> {acquired, lease}
  *   getLease(name) / releaseLease({name, holderId, now})
  *   close()

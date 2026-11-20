@@ -37,6 +37,27 @@ export function tokenMatches(expected, provided) {
   return timingSafeEqual(digest(expected), digest(provided));
 }
 
+/**
+ * Shared admin check for state-changing operations: a bearer `OPS_ADMIN_TOKEN`.
+ * Answers the request itself (403 while no token is configured, 401 on a bad one).
+ *
+ * @returns {boolean} true when the caller may proceed
+ */
+export function authorizeAdmin(request, response, adminToken, what = "retry controls") {
+  if (!adminToken) {
+    sendJson(response, 403, { error: `${what} are disabled: set OPS_ADMIN_TOKEN (16+ characters) to enable them` });
+    return false;
+  }
+  const header = request.headers.authorization ?? "";
+  const provided = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!tokenMatches(adminToken, provided)) {
+    response.setHeader("www-authenticate", 'Bearer realm="accord-indexer-ops"');
+    sendJson(response, 401, { error: "a valid admin token is required" });
+    return false;
+  }
+  return true;
+}
+
 /** Route label for metrics, so ids never become label values. */
 export function webhookOpsRouteLabel(pathname) {
   if (pathname === DASHBOARD_PATH || pathname === SUMMARY_PATH || pathname === RETRY_DEAD_PATH) return pathname;
@@ -67,21 +88,7 @@ export function createWebhookOps({ store, metrics = null, config, subscriptions 
   const enabled = config?.enabled ?? true;
   const controlsEnabled = Boolean(config?.adminToken);
 
-  /** @returns {boolean} true once the request has been answered */
-  function authorize(request, response) {
-    if (!controlsEnabled) {
-      sendJson(response, 403, { error: "retry controls are disabled: set OPS_ADMIN_TOKEN (16+ characters) to enable them" });
-      return false;
-    }
-    const header = request.headers.authorization ?? "";
-    const provided = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-    if (!tokenMatches(config.adminToken, provided)) {
-      response.setHeader("www-authenticate", 'Bearer realm="accord-indexer-ops"');
-      sendJson(response, 401, { error: "a valid admin token is required" });
-      return false;
-    }
-    return true;
-  }
+  const authorize = (request, response) => authorizeAdmin(request, response, config?.adminToken, "retry controls");
 
   async function handle(request, response, url) {
     if (!enabled) return false;

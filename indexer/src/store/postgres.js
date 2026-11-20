@@ -59,6 +59,36 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
     throw error;
   }
 
+  const apiKeyColumns = `id, name, scopes, quota_limit, quota_window_seconds, status, created_at, updated_at,
+    expires_at, rotated_at, revoked_at, previous_expires_at, previous_secret_hash IS NOT NULL AS has_previous_secret`;
+
+  function toApiKey(row, withSecrets) {
+    return {
+      id: row.id,
+      name: row.name,
+      scopes: JSON.parse(row.scopes),
+      quotaLimit: row.quota_limit,
+      quotaWindowSeconds: row.quota_window_seconds,
+      status: row.status,
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+      expiresAt: iso(row.expires_at),
+      rotatedAt: iso(row.rotated_at),
+      revokedAt: iso(row.revoked_at),
+      previousExpiresAt: iso(row.previous_expires_at),
+      hasPreviousSecret: Boolean(row.has_previous_secret),
+      ...(withSecrets ? { secretHash: row.secret_hash, previousSecretHash: row.previous_secret_hash } : {}),
+    };
+  }
+
+  async function selectApiKey(id) {
+    const { rows } = await pool.query(
+      `SELECT ${apiKeyColumns}, secret_hash, previous_secret_hash FROM api_keys WHERE id = $1`,
+      [id]
+    );
+    return rows[0] ? toApiKey(rows[0], true) : null;
+  }
+
   async function selectLease(name) {
     const { rows } = await pool.query(
       `SELECT name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at
@@ -805,6 +835,77 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
             [status, now, dedupeKey]
           );
       return rowCount > 0;
+    },
+
+    /** The API-key methods below follow the SQLite store's contract. */
+    async createApiKey({ id, name, secretHash, scopes, quotaLimit, quotaWindowSeconds, expiresAt = null, now }) {
+      const { rowCount } = await pool.query(
+        `INSERT INTO api_keys (id, name, secret_hash, scopes, quota_limit, quota_window_seconds, status,
+           created_at, updated_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, name, secretHash, JSON.stringify(scopes), quotaLimit, quotaWindowSeconds, now, expiresAt]
+      );
+      return rowCount > 0;
+    },
+
+    async getApiKey(id) {
+      return selectApiKey(id);
+    },
+
+    async listApiKeys({ status, limit, offset }) {
+      const values = [];
+      const where = filterClause([["status", "=", status]], values);
+      const { rows } = await pool.query(
+        `SELECT ${apiKeyColumns} FROM api_keys ${where}
+         ORDER BY created_at ASC, id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+        [...values, limit, offset]
+      );
+      return rows.map((row) => toApiKey(row, false));
+    },
+
+    async rotateApiKey({ id, secretHash, graceUntil = null, now }) {
+      const { rowCount } = await pool.query(
+        `UPDATE api_keys SET
+           previous_secret_hash = CASE WHEN $2::timestamptz IS NULL THEN NULL ELSE secret_hash END,
+           previous_expires_at = $2, secret_hash = $3, rotated_at = $4, updated_at = $4
+         WHERE id = $1 AND status = 'active'`,
+        [id, graceUntil, secretHash, now]
+      );
+      return rowCount > 0 ? selectApiKey(id) : null;
+    },
+
+    async revokeApiKey({ id, now }) {
+      const { rowCount } = await pool.query(
+        `UPDATE api_keys SET status = 'revoked', revoked_at = $2, updated_at = $2,
+           previous_secret_hash = NULL, previous_expires_at = NULL
+         WHERE id = $1 AND status = 'active'`,
+        [id, now]
+      );
+      const found = rowCount > 0 || (await pool.query("SELECT 1 FROM api_keys WHERE id = $1", [id])).rowCount > 0;
+      return { found, changed: rowCount > 0 };
+    },
+
+    async consumeApiKeyQuota({ keyId, windowStart, limit, now }) {
+      const { rows } = await pool.query(
+        `INSERT INTO api_key_usage AS usage (key_id, window_start, request_count, updated_at) VALUES ($1, $2, 1, $3)
+         ON CONFLICT (key_id, window_start) DO UPDATE SET
+           request_count = usage.request_count + 1, updated_at = EXCLUDED.updated_at
+         WHERE usage.request_count < $4
+         RETURNING request_count`,
+        [keyId, windowStart, now, limit]
+      );
+      if (rows[0]) return { allowed: true, used: Number(rows[0].request_count) };
+      const current = await pool.query(
+        "SELECT request_count FROM api_key_usage WHERE key_id = $1 AND window_start = $2",
+        [keyId, windowStart]
+      );
+      return { allowed: false, used: Number(current.rows[0]?.request_count ?? limit) };
+    },
+
+    async pruneApiKeyUsage({ before }) {
+      const { rowCount } = await pool.query("DELETE FROM api_key_usage WHERE window_start < $1", [before]);
+      return rowCount;
     },
 
     /** Same contract as the SQLite store; the upsert is a single atomic statement. */

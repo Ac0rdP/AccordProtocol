@@ -24,6 +24,7 @@ import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 import {
+  resolveApiKeysConfig,
   resolveEventValidationConfig,
   resolveGraphQLConfig,
   resolveLeaderElectionConfig,
@@ -31,6 +32,7 @@ import {
   resolveWarehouseConfig,
   resolveWebhookDashboardConfig,
 } from "./config.js";
+import { createApiKeyService } from "./api-keys.js";
 import { createEventValidator, QUARANTINE_REASONS, reprocessQuarantine } from "./event-validation.js";
 import { createHolderId, createLeaderElection, createStaticLeader } from "./leader-election.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
@@ -101,6 +103,12 @@ Environment:
   OPS_ADMIN_TOKEN      Bearer token (16+ chars) that enables the dashboard's
                        replay/retry controls (default unset = controls disabled)
   WEBHOOK_DASHBOARD_PAGE_SIZE  Deliveries per dashboard page (default 50)
+  API_KEYS_ENABLED     Require an API key (with scope and quota) for /ledger, /events,
+                       /reconciliation and the subscriptions stream (default false)
+  API_KEYS_DEFAULT_QUOTA / API_KEYS_DEFAULT_WINDOW_SECONDS  Quota for new keys
+                       (default 1000 requests per 3600 seconds)
+  API_KEYS_ROTATION_GRACE_SECONDS  How long a rotated-out secret keeps working (default 86400)
+  API_KEYS_USAGE_RETENTION_DAYS  How long quota counters are kept (default 30)
   EVENT_VALIDATION_MODE  enforce (default: quarantine events that fail schema
                        validation), warn (index but report) or off
   EVENT_SCHEMA_STRICT  Treat fields outside the schema as violations (default true)
@@ -522,6 +530,11 @@ async function serve({ store, stellar }) {
   if (webhookDashboard.adminTokenRejected) {
     console.warn("[ops] OPS_ADMIN_TOKEN is shorter than 16 characters and was ignored; webhook retry controls are disabled");
   }
+  const apiKeyConfig = resolveApiKeysConfig();
+  const apiKeys = createApiKeyService({ store, config: apiKeyConfig, metrics });
+  if (apiKeyConfig.enabled && !webhookDashboard.adminToken) {
+    console.warn("[api-keys] API_KEYS_ENABLED is on but OPS_ADMIN_TOKEN is not set: keys cannot be issued over HTTP");
+  }
   const api = createApi({
     store,
     readiness,
@@ -534,6 +547,8 @@ async function serve({ store, stellar }) {
     webhookDashboard,
     webhookSubscriptions: subscriptions,
     validator,
+    apiKeys,
+    apiKeysEnabled: apiKeyConfig.enabled,
   });
 
   const host = process.env.HOST ?? "127.0.0.1";
@@ -554,11 +569,16 @@ async function serve({ store, stellar }) {
   const indexTimer = setInterval(() => {
     void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
   }, indexIntervalMs);
+  const pruneTimer = setInterval(() => {
+    void apiKeys.prune().catch((error) => console.error("API key usage cleanup failed:", error));
+  }, 3_600_000);
+  pruneTimer.unref?.();
   const reconcileTimer = setInterval(() => void reconcileBalances(), Number(process.env.RECONCILE_INTERVAL_MS ?? 60000));
 
   async function shutdown() {
     clearInterval(indexTimer);
     clearInterval(reconcileTimer);
+    clearInterval(pruneTimer);
     graphqlSubscriptions?.close?.();
     // Release the lease first so a standby takes over without waiting for the TTL.
     await election.stop().catch((error) => console.error("Leader release failed:", error));

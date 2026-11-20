@@ -44,6 +44,7 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 | `accord_indexer_webhook_deliveries_total` | counter | `subscription`, `result` = `delivered`, `retry`, `dead` | Delivery attempts. |
 | `accord_indexer_webhook_delivery_duration_seconds` | histogram | `subscription` | Receiver latency. |
 | `accord_indexer_webhook_deliveries` | gauge | `status` = `pending`, `delivered`, `dead` | Outbox size. |
+| `accord_indexer_api_key_requests_total` | counter | `key`, `result` = `ok`, `unauthorized`, `forbidden`, `quota_exceeded` | Analytics requests checked against API keys (`key` is `unknown` when unauthenticated). |
 | `accord_indexer_events_quarantined_total` | counter | `reason` = `unknown_topic`, `unknown_version`, `invalid_payload`, `undecodable` | Contract events that failed schema validation. |
 | `accord_indexer_quarantined_events` | gauge | `reason` | Events currently held in quarantine. |
 | `accord_indexer_event_validation_warnings_total` | counter | | Events indexed despite violations (`EVENT_VALIDATION_MODE=warn`). |

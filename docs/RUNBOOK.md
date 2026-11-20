@@ -126,6 +126,14 @@ Alert `AccordReorgDetected`: the chain head moved backwards and the store was re
 3. If `LEDGER_FINALITY_LAG` is smaller than the reorg depth you see, raise it.
 4. Verify balances afterwards ([drift recovery](#recover-from-balance-drift)).
 
+### rotate-or-revoke-an-api-key
+
+A consumer's analytics key leaked, or it is due for rotation (needs `OPS_ADMIN_TOKEN`; see the [indexer README](../indexer/README.md#api-keys-and-quotas-for-analytics-consumers)).
+
+1. Leaked: `POST /admin/api-keys/<id>/revoke` stops it immediately; issue a replacement with `POST /admin/api-keys`.
+2. Routine rotation: `POST /admin/api-keys/<id>/rotate` returns the new key (shown once). Hand it to the consumer; the old secret keeps working for the grace period (`graceSeconds`, default 24 h), so there is no downtime. Pass `{"graceSeconds":0}` to cut the old one off now.
+3. A consumer hitting `429`: check `accord_indexer_api_key_requests_total{key="<id>",result="quota_exceeded"}`; issue a key with a higher `limit` or longer `windowSeconds` if the usage is legitimate.
+
 ### events-quarantined
 
 Alert `AccordEventsQuarantined`: contract events failed schema validation and are parked in quarantine; nothing was lost and ingestion kept going.

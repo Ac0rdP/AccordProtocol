@@ -194,6 +194,44 @@ Safe to replay from any checkpoint:
 | `EVENT_SCHEMA_STRICT` | `true` | Treat fields outside the schema as violations. Set `false` to tolerate additive fields |
 | `EVENT_ALLOW_UNVERSIONED` | `true` | Accept events from deployments that predate the `version` field |
 
+## API keys and quotas for analytics consumers
+
+Turn on `API_KEYS_ENABLED=true` and the analytics reads (`/ledger`, `/events`, `/reconciliation`, and the GraphQL subscriptions stream) require a scoped API key with a request quota. Health, readiness, metrics and the ops endpoints are not affected. It is **off by default**, so existing consumers keep working until you enable it.
+
+- **Keys** look like `acck_<16 hex id>_<64 hex secret>`, are shown **once** when issued, and only a SHA-256 hash of the secret is stored. Send them as `Authorization: Bearer <key>` or `X-API-Key: <key>` (never in the query string).
+- **Scopes:** `ledger`, `events`, `reconciliation`, `subscriptions` (or `"*"`). A key outside its scope gets `403`.
+- **Quota:** `limit` requests per fixed `windowSeconds` window (default 1000 per 3600 s), counted atomically in the store, so concurrent requests, and instances sharing the database, cannot overshoot it. Over the limit is `429` with `Retry-After`. Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (epoch seconds). Refused requests (bad key, wrong scope, over quota) are never counted.
+- **Rotation:** `POST /admin/api-keys/:id/rotate` issues a new secret for the same key id (so its quota carries over). The old secret keeps working for `graceSeconds` (default `API_KEYS_ROTATION_GRACE_SECONDS`, 24 h; `0` cuts it off at once) so consumers can switch without downtime. Only one previous secret is honoured: rotating twice inside the grace period drops the oldest.
+- **Revocation** is immediate and idempotent (revoking twice is a no-op); a revoked key cannot be rotated back.
+- **Expiry:** an optional `expiresAt` when issuing.
+
+Managing keys needs `Authorization: Bearer <OPS_ADMIN_TOKEN>` (the same token as the [webhook retry controls](#delivery-dashboard-and-retry-controls)); without a configured token these endpoints answer `403`.
+
+```bash
+curl -X POST localhost:8787/admin/api-keys -H "authorization: Bearer $OPS_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"partner-dashboard","scopes":["ledger","events"],"limit":5000,"windowSeconds":3600}'
+# {"key":"acck_...","apiKey":{"id":"...","scopes":["events","ledger"],"quotaLimit":5000,...}}
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /admin/api-keys` | Issue a key: `name`, `scopes`, optional `limit`, `windowSeconds`, `expiresAt` (`201`, secret in the response only) |
+| `GET /admin/api-keys[?status=active\|revoked]` | List keys (never secrets) |
+| `GET /admin/api-keys/:id` | One key |
+| `POST /admin/api-keys/:id/rotate` | New secret; optional `graceSeconds` |
+| `POST /admin/api-keys/:id/revoke` | Revoke |
+
+Keys live in `api_keys` and quota counters in `api_key_usage` (migration `0012_api_keys.sql`, one counter row per key per window, pruned after `API_KEYS_USAGE_RETENTION_DAYS`). Counters are only shared between instances that share the store, so use Postgres when running several indexers. Metric: `accord_indexer_api_key_requests_total{key,result}`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `API_KEYS_ENABLED` | `false` | Require an API key for the analytics reads |
+| `API_KEYS_DEFAULT_QUOTA` | `1000` | Requests per window for a new key |
+| `API_KEYS_DEFAULT_WINDOW_SECONDS` | `3600` | Quota window for a new key |
+| `API_KEYS_ROTATION_GRACE_SECONDS` | `86400` | How long a rotated-out secret keeps working |
+| `API_KEYS_USAGE_RETENTION_DAYS` | `30` | How long quota counters are kept |
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two

@@ -159,6 +159,11 @@ export function createIndexerMetrics() {
       name: "accord_indexer_last_successful_batch_timestamp_seconds",
       help: "Unix time of the last indexing batch that completed without error.",
     }),
+    apiKeyRequests: registry.counter({
+      name: "accord_indexer_api_key_requests_total",
+      help: "Analytics requests checked against API keys, by key id (unknown when unauthenticated) and result (ok, unauthorized, forbidden, quota_exceeded).",
+      labelNames: ["key", "result"],
+    }),
     eventsQuarantined: registry.counter({
       name: "accord_indexer_events_quarantined_total",
       help: "Contract events that failed schema validation and were quarantined, by reason.",

@@ -9,6 +9,7 @@
  *   - Multi-region failover (leader election)
  *   - Webhook delivery dashboard and retry controls
  *   - Contract event schema validation and quarantine
+ *   - API keys with per-key quotas
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -186,6 +187,27 @@ export function resolveEventValidationConfig(env = process.env) {
 }
 
 /**
+ * Resolves API key configuration for analytics consumers.
+ *
+ * Safe defaults:
+ *   - enabled: false. Analytics reads stay open as before until you turn keys on.
+ *   - defaultQuota / defaultWindowSeconds: 1000 requests per hour for a new key
+ *   - rotationGraceSeconds: 86400 (the old secret keeps working for a day after a rotation)
+ *   - usageRetentionDays: 30 (how long per-window counters are kept)
+ *
+ * Managing keys over HTTP needs OPS_ADMIN_TOKEN.
+ */
+export function resolveApiKeysConfig(env = process.env) {
+  return {
+    enabled: parseBool(env.API_KEYS_ENABLED, false),
+    defaultQuota: parseIntSafe(env.API_KEYS_DEFAULT_QUOTA, 1000, 1, 10_000_000),
+    defaultWindowSeconds: parseIntSafe(env.API_KEYS_DEFAULT_WINDOW_SECONDS, 3600, 1, 2_592_000),
+    rotationGraceSeconds: parseIntSafe(env.API_KEYS_ROTATION_GRACE_SECONDS, 86400, 0, 2_592_000),
+    usageRetentionDays: parseIntSafe(env.API_KEYS_USAGE_RETENTION_DAYS, 30, 1, 365),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -196,6 +218,7 @@ export function loadIndexerConfig(env = process.env) {
     leader: resolveLeaderElectionConfig(env),
     webhookDashboard: resolveWebhookDashboardConfig(env),
     eventValidation: resolveEventValidationConfig(env),
+    apiKeys: resolveApiKeysConfig(env),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,
