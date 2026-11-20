@@ -17,6 +17,7 @@ import { StrKey } from "@stellar/stellar-sdk";
 import { PageState } from "../components/PageState";
 import { NotificationDestinationsPanel } from "../components/NotificationDestinationsPanel";
 import { WorkspaceBrandingPanel } from "../components/WorkspaceBrandingPanel";
+import { WorkspaceBillingPanel } from "../components/WorkspaceBillingPanel";
 import type { DashboardStat } from "../types/accord";
 
 const MAX_DESCRIPTION_LEN = 300;
@@ -549,6 +550,7 @@ export function SettingsPage({
 
       <NotificationDestinationsPanel />
       <WorkspaceBrandingPanel contractId={contractId} canEdit={Boolean(isOwner)} />
+      <WorkspaceBillingPanel contractId={contractId} canManageBilling={Boolean(isOwner)} />
     </div>
   );
 }

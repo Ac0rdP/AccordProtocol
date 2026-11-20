@@ -3841,6 +3841,69 @@
           }
         }
       }
+    },
+    "/billing": {
+      "get": {
+        "operationId": "getBillingPlan",
+        "summary": "Get current workspace billing plan, usage counters, and upgrade catalog",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace billing plan and usage summary"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      }
+    },
+    "/billing/plan": {
+      "put": {
+        "operationId": "updateBillingPlan",
+        "summary": "Upgrade or change workspace billing plan tier",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated workspace billing plan and limits"
+          },
+          "400": {
+            "description": "Invalid plan tier, email, or downgrade blocked by current usage"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3907,6 +3970,7 @@
               "INVALID_DATE",
               "INVALID_DATE_RANGE",
               "INVALID_DOMAIN",
+              "INVALID_EMAIL",
               "INVALID_FORMAT",
               "INVALID_GROUP_BY",
               "INVALID_LIMIT",
@@ -3916,6 +3980,7 @@
               "INVALID_OFFSET",
               "INVALID_ORDER",
               "INVALID_PERIOD_DAYS",
+              "INVALID_PLAN_TIER",
               "INVALID_RULE",
               "INVALID_RULE_ID",
               "INVALID_RULE_TYPE",
@@ -3926,6 +3991,7 @@
               "INVALID_STATUS",
               "INVALID_TEMPLATE_FIELD",
               "MISSING_PARAMETER",
+              "PLAN_LIMIT_EXCEEDED",
               "RATE_LIMITED",
               "UNKNOWN_PARAMETER"
             ]

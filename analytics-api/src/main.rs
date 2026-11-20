@@ -13,7 +13,7 @@ use axum::{
     http::{StatusCode, header},
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,7 @@ use tracing_subscriber::EnvFilter;
 mod admin;
 mod alert_rules;
 mod alerts;
+mod billing;
 mod branding;
 mod freshness;
 mod funnel;
@@ -222,6 +223,11 @@ fn app(state: AppState) -> Router {
                 .put(branding::put)
                 .delete(branding::delete)
                 .layer(DefaultBodyLimit::max(branding::MAX_BODY_BYTES)),
+        )
+        .route("/billing", get(billing::get_plan))
+        .route(
+            "/billing/plan",
+            put(billing::update_plan).layer(DefaultBodyLimit::max(billing::MAX_BODY_BYTES)),
         )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))

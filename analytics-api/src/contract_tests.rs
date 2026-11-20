@@ -33,6 +33,7 @@ use crate::{
         parse_rules,
     },
     app,
+    billing,
     branding,
     limits::{Limits, LimitsConfig},
     freshness, funnel, proposals, report_api, spend, templates,
@@ -251,6 +252,8 @@ fn openapi_query_parameters_match_the_validators() {
         ("/branding", "get", branding::LIST_PARAMS),
         ("/branding", "put", branding::WRITE_PARAMS),
         ("/branding", "delete", branding::WRITE_PARAMS),
+        ("/billing", "get", billing::QUERY_PARAMS),
+        ("/billing/plan", "put", billing::QUERY_PARAMS),
         ("/alert-rules", "get", alert_rules::LIST_PARAMS),
         ("/freshness", "get", freshness::QUERY_PARAMS),
         ("/alert-rules/test", "post", alert_rules::TEST_PARAMS),
@@ -417,6 +420,8 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/branding"),
         ("PUT", "/branding"),
         ("DELETE", "/branding"),
+        ("GET", "/billing"),
+        ("PUT", "/billing/plan"),
         ("GET", "/freshness"),
         ("GET", "/alert-rules"),
         ("POST", "/alert-rules"),
@@ -2111,6 +2116,47 @@ async fn branding_writes_require_the_admin_token_when_configured() {
         "PUT",
         "/branding?contractId=test-contract&network=testnet",
         r#"{"brandName":"Acme"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- workspace billing and usage plans --------------------------------------------
+
+#[tokio::test]
+async fn billing_rejects_bad_requests_before_the_database() {
+    let state = lazy_state();
+    let (status, body) = get(&state, "/billing?contractId=nope").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body).1, "INVALID_CONTRACT_ID");
+
+    let (status, _, body) = send(
+        &state,
+        "PUT",
+        "/billing/plan?contractId=test-contract&network=testnet",
+        r#"{"planTier":"gold","billingEmail":"not-an-email"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let codes: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"INVALID_PLAN_TIER"));
+    assert!(codes.contains(&"INVALID_EMAIL"));
+}
+
+#[tokio::test]
+async fn billing_plan_updates_require_admin_token_when_configured() {
+    let mut state = lazy_state();
+    state.admin_token = Some(Arc::from("secret-token"));
+    let (status, _, _) = send(
+        &state,
+        "PUT",
+        "/billing/plan?contractId=test-contract&network=testnet",
+        r#"{"planTier":"pro"}"#,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
