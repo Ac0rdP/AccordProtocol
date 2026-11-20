@@ -177,6 +177,22 @@ export function resolveRunwayConfig(env = process.env) {
 }
 
 /**
+ * Resolves the outflow anomaly detection settings.
+ *
+ * Safe defaults: a 30-day baseline, scoring the last 7 days, no flag until 10
+ * earlier outflows exist, and a robust z-score threshold of 6 (conservative).
+ */
+export function resolveAnomalyConfig(env = process.env) {
+  const threshold = Number(env.ANOMALY_THRESHOLD);
+  return {
+    lookbackDays: parseIntSafe(env.ANOMALY_LOOKBACK_DAYS, 30, 1, 3650),
+    reportDays: parseIntSafe(env.ANOMALY_REPORT_DAYS, 7, 1, 365),
+    minSamples: parseIntSafe(env.ANOMALY_MIN_SAMPLES, 10, 1, 100000),
+    threshold: Number.isFinite(threshold) && threshold > 0 && env.ANOMALY_THRESHOLD !== "" ? threshold : 6,
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -186,6 +202,7 @@ export function loadIndexerConfig(env = process.env) {
     warehouse: resolveWarehouseConfig(env),
     backfill: resolveBackfillConfig(env),
     runway: resolveRunwayConfig(env),
+    anomalies: resolveAnomalyConfig(env),
     lagMonitor: resolveLagMonitorConfig(env, parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000)),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(

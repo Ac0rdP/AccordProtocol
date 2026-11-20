@@ -253,6 +253,14 @@ The window is `RUNWAY_LOOKBACK_DAYS` (default 90), shortened to the age of the f
 
 The forecast is computed on demand from the already-deduplicated ledger entries and persists nothing, so it is idempotent and identical after any replay, backfill or reindex.
 
+## Outflow anomaly detection
+
+`GET /anomalies?token=USDC` scores the treasury's recent outflows against their own history and flags unusual ones. Transfers and recurring disbursements both settle as token outflows, so both are covered.
+
+Each outflow in the last `ANOMALY_REPORT_DAYS` is scored against the outflows that came *before it* in the preceding `ANOMALY_LOOKBACK_DAYS`, with a robust z-score: `(amount - median) / max(1.4826 * MAD, median / 10, 1)`. It is flagged when the score reaches `ANOMALY_THRESHOLD`, and never before `ANOMALY_MIN_SAMPLES` earlier outflows exist (the score is then `null`). The median/MAD baseline is not skewed by the outliers it hunts, and the floor stops a perfectly regular history from flagging tiny deviations.
+
+Safe defaults: 30-day baseline, 7-day report window, 10 minimum samples, threshold 6. Each score depends only on earlier ledger entries, so the result is deterministic and identical after any replay, backfill or reindex; nothing is persisted.
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
@@ -261,6 +269,7 @@ The forecast is computed on demand from the already-deduplicated ledger entries 
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
 - `GET /lag` - Chain-tip lag, finality depth and checkpoint age with their alert levels (`503` until the first batch is observed).
 - `GET /runway?token=USDC` - Treasury cash-runway forecast from indexed flows.
+- `GET /anomalies?token=USDC` - Recent treasury outflows scored against their historical baseline; `anomalies` lists the flagged ones.
 - `GET /metrics` - Prometheus metrics.
 - `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
@@ -291,6 +300,8 @@ The forecast is computed on demand from the already-deduplicated ledger entries 
 | `RUNWAY_LOOKBACK_DAYS` | no | History window for the runway forecast (default 90) |
 | `RUNWAY_RECURRING_OUTFLOW_PER_DAY` / `RUNWAY_RECURRING_INFLOW_PER_DAY` | no | Assumed recurring flows in base units per day (default 0) |
 | `RUNWAY_HORIZON_DAYS` | no | Longest runway reported (default 3650) |
+| `ANOMALY_LOOKBACK_DAYS` / `ANOMALY_REPORT_DAYS` | no | Baseline window / scored window for outflow anomalies (defaults 30 / 7) |
+| `ANOMALY_MIN_SAMPLES` / `ANOMALY_THRESHOLD` | no | Earlier outflows needed before flagging / robust z-score that flags (defaults 10 / 6) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |

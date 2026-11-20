@@ -24,7 +24,7 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveBackfillConfig, resolveGraphQLConfig, resolveLagMonitorConfig, resolveRunwayConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import { resolveBackfillConfig, resolveGraphQLConfig, resolveAnomalyConfig, resolveLagMonitorConfig, resolveRunwayConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
@@ -430,6 +430,7 @@ async function serve({ store, stellar }) {
     subscriptions: graphqlSubscriptions,
     lagMonitor,
     runwayConfig: resolveRunwayConfig(),
+    anomalyConfig: resolveAnomalyConfig(),
   });
 
   const host = process.env.HOST ?? "127.0.0.1";

@@ -210,6 +210,10 @@ Keep this table in step with the code: `indexer/test/ops-assets.test.js` fails i
 | `RUNWAY_RECURRING_OUTFLOW_PER_DAY` | `0` | Assumed recurring outflow (base units/day) added to the runway forecast. |
 | `RUNWAY_RECURRING_INFLOW_PER_DAY` | `0` | Assumed recurring inflow (base units/day) subtracted from the runway forecast. |
 | `RUNWAY_HORIZON_DAYS` | `3650` | Longest runway `GET /runway` reports. |
+| `ANOMALY_LOOKBACK_DAYS` | `30` | Baseline window for `GET /anomalies`. |
+| `ANOMALY_REPORT_DAYS` | `7` | How far back `GET /anomalies` scores outflows. |
+| `ANOMALY_MIN_SAMPLES` | `10` | Earlier outflows required before one can be flagged. |
+| `ANOMALY_THRESHOLD` | `6` | Robust z-score at or above which an outflow is flagged. |
 | `LEDGER_FINALITY_LAG` | see `--help` | Ledgers held back before indexing; the lag floor ([reorg-detected](#reorg-detected)). |
 | `INDEX_INTERVAL_MS` | `5000` | Poll interval; see [ingestion-lag-high](#ingestion-lag-high). |
 | `RECONCILE_INTERVAL_MS` | `60000` | Drift check cadence; see [drift recovery](#recover-from-balance-drift). |
