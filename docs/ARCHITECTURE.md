@@ -71,6 +71,10 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `TWGT`   | `u32`  | Cached total owner weight                  | 518,400 / 17,280                 |
 | `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
 | `STOVER` | `u32`  | Storage-schema version (see [Storage Schema Versioning](#storage-schema-versioning)) | 518,400 / 17,280                 |
+| `GUARDS` | `GuardianQuorumConfig` | Guardian set and quorum for social recovery | 518,400 / 17,280        |
+| `SRNEXT` | `u64`  | Monotonic social-recovery request ID counter | 518,400 / 17,280              |
+| `("AFRZ", token)` | `bool` | Scoped freeze for one asset      | 518,400 / 17,280                 |
+| `("KFRZ", kind)`  | `bool` | Scoped freeze for one proposal kind | 518,400 / 17,280              |
 
 **Instance entry cost**: all instance keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
 
@@ -83,6 +87,7 @@ Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 | `OWNERS`              | `Map<Address,u32>` | Owner address → voting weight map (max 20) | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("PROP", id)`        | `Proposal`         | Per-proposal state                         | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("APPR", id, owner)` | `u32`              | Per-owner approval weight per proposal     | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("SREC", id)`        | `SocialRecoveryRequest` | Guardian-quorum recovery request      | 518,400 / 17,280                 | ~0.052 XLM                   |
 
 ### Proposal Struct Fields
 
@@ -118,6 +123,8 @@ Accord uses two patterns:
 | `TLOCK`  | Time-lock delay in seconds          |
 | `TWGT`   | Cached total owner weight           |
 | `STOVER` | Storage-schema version              |
+| `GUARDS` | Guardian set and quorum for social recovery |
+| `SRNEXT` | Social-recovery request ID counter  |
 | `OWNERS` | Owner address → weight map          |
 
 **Tuple keys** — two- or three-part tuples for per-entity records, where the first element is a short symbol namespace:
@@ -138,13 +145,14 @@ The contract records an explicit **storage-schema version** in instance storage 
 | Version | Written by | Keys introduced in this version |
 | ------- | ---------- | ------------------------------- |
 | `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
-| `1` (current) | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+| `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+| `2` (current) | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `migrate_storage` | Guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. The new keys are optional: a version-1 layout reads correctly without them, so the `1` → `2` step only re-stamps `STOVER`. |
 
 **Upgrade path between versions:**
 
 - **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
 - **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
-- **`1` → `2` (future):** the release that bumps the version must list the keys it adds in the table above and ship a migration that re-stamps `STOVER`. Until such a migration exists, do not assume a contract reporting an older version is compatible with a newer WASM.
+- **`1` → `2`:** run `migrate_storage(approvers, 1, 2)`. The registry `SUPPORTED_STORAGE_VERSIONS` lists every readable layout; `migrate_storage` requires the caller's `from_version` to equal the recorded version, refuses unknown or newer targets, and refuses skipped, repeated, or backward steps. Legacy (`0`) deployments must finish the legacy migrations first. Read `get_supported_storage_versions` before scripting an upgrade.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
@@ -406,8 +414,10 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 | **Role: Executor** | `execute`, `cancel_expired` | Caller must hold `Executor` (may be a keeper that is not an owner). |
 | **Permissionless keeper** | `sweep_expired` | Any authenticated caller may sweep expired IDs; no role is required and the entrypoint remains callable while frozen. |
 | **Proposal proposer** | `cancel_proposal` | Only the original proposer may cancel a proposal that is still `Pending`. |
-| **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
-| **Guardian-only** | `freeze` (after guardian is set) | Guardian address must match; separate from RBAC roles. |
+| **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `configure_guardian_quorum`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `migrate_storage`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
+| **Guardian-only** | `freeze`, `freeze_asset`, `freeze_proposal_kind`, `enter_recovery` | Guardian address must match; separate from RBAC roles. |
+| **Guardian-quorum** | `propose_social_recovery`, `approve_social_recovery` | Caller must be in the configured guardian set; the ownership change executes after quorum plus `SOCIAL_RECOVERY_DELAY`. |
+| **Permissionless after quorum** | `execute_social_recovery`, `release_escrow_by_deadline` | Any authenticated caller may trigger once the on-chain condition is met. |
 | **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank. |
 
 ```text
