@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers deploying the Accord contract to Stellar testnet and wiring the frontend to it.
+This guide covers deploying the Accord contract to Stellar testnet and wiring the frontend to it. For production multi-service topology (Vercel frontend, treasury indexer, and analytics API), environment variables, health checks, upgrades, and rollbacks, see [`docs/DEPLOYMENT_TOPOLOGY.md`](./DEPLOYMENT_TOPOLOGY.md).
 
 ## Prerequisites
 
@@ -333,6 +333,7 @@ Run these checks after every deploy or upgrade to confirm the contract is live a
 
 For production operations, incident containment, rollback procedures, and key rotations, refer to the operational runbooks:
 
+- [Production Deployment Topology Guide](./DEPLOYMENT_TOPOLOGY.md) — production topology, environment variables, health checks, upgrades, and rollback procedures for Vercel, the treasury indexer, and the analytics API.
 - [Incident Response Runbook](./runbooks/INCIDENT_RESPONSE.md) — severity levels, detection, immediate containment (`freeze`, `enter_recovery`), escalation, and recovery.
 - [Upgrade Rollback Runbook](./runbooks/UPGRADE_ROLLBACK.md) — diagnosing flawed deployments, in-place WASM rollback via `upgrade`, bytecode TTL verification, and post-rollback state checks.
 - [Key Rotation Runbook](./runbooks/KEY_ROTATION.md) — step-by-step procedures for rotating multisig owner keys and replacing the guardian address.
