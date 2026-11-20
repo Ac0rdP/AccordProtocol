@@ -45,6 +45,87 @@ jobs:
       - name: Run RBAC tests
         run: cargo test --locked -p accord -- rbac -- --nocapture
 
+  contract_fuzz:
+    name: "Contract: nightly fuzzing & corpus minimization"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Restore cached fuzz corpus
+        uses: actions/cache@v6
+        with:
+          path: contracts/fuzz/corpus
+          key: contract-fuzz-corpus-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            contract-fuzz-corpus-${{ runner.os }}-
+
+      - name: Run fuzz corpus management test suite and preflight check
+        run: |
+          node --test scripts/fuzz-corpus.test.mjs
+          node scripts/fuzz-corpus.mjs validate --report-dir target/fuzz-nightly
+
+      - name: Install nightly Rust toolchain for cargo-fuzz
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: nightly
+          cache: true
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run extended nightly fuzzing and minimize corpus
+        run: |
+          set -euo pipefail
+          mkdir -p target/fuzz-nightly
+          for target in weight_arithmetic proposal_bookkeeping proposal_input_validation; do
+            echo "=== Fuzzing $target ==="
+            log_file="target/fuzz-nightly/${target}.log"
+            if ! cargo fuzz run --fuzz-dir contracts/fuzz "$target" "contracts/fuzz/corpus/${target}" -- -max_total_time=60 -max_len=4096 2>&1 | tee "$log_file"; then
+              artifact=$(ls -1t "contracts/fuzz/artifacts/${target}/"* 2>/dev/null | head -n 1 || true)
+              if [ -n "$artifact" ]; then
+                node scripts/fuzz-corpus.mjs record-crash --target "$target" --input "$artifact" --log-file "$log_file" --report-dir target/fuzz-nightly
+              else
+                node scripts/fuzz-corpus.mjs record-crash --target "$target" --log-file "$log_file" --report-dir target/fuzz-nightly
+              fi
+              exit 1
+            fi
+            cargo fuzz cmin --fuzz-dir contracts/fuzz "$target" "contracts/fuzz/corpus/${target}"
+          done
+          node scripts/fuzz-corpus.mjs minimize --report-dir target/fuzz-nightly
+
+      - name: Append fuzzing summary to job summary
+        if: always()
+        run: |
+          if [ -f target/fuzz-nightly/crash-report.md ]; then
+            cat target/fuzz-nightly/crash-report.md >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f target/fuzz-nightly/report.md ]; then
+            cat target/fuzz-nightly/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload nightly fuzzing report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-contract-fuzz-report
+          path: target/fuzz-nightly
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload minimized fuzz corpus artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-contract-fuzz-corpus
+          path: contracts/fuzz/corpus
+          retention-days: 30
+          if-no-files-found: ignore
+
   frontend:
     name: "Frontend: unit tests & coverage"
     runs-on: ubuntu-latest
@@ -205,7 +286,7 @@ jobs:
   # ---------------------------------------------------------------------------
   report-failure:
     name: Report nightly failures
-    needs: [contract, frontend, indexer, analytics_api, e2e]
+    needs: [contract, contract_fuzz, frontend, indexer, analytics_api, e2e]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     permissions:
@@ -215,6 +296,7 @@ jobs:
         uses: actions/github-script@v9
         env:
           CONTRACT: ${{ needs.contract.result }}
+          CONTRACT_FUZZ: ${{ needs.contract_fuzz.result }}
           FRONTEND: ${{ needs.frontend.result }}
           INDEXER: ${{ needs.indexer.result }}
           ANALYTICS_API: ${{ needs.analytics_api.result }}
@@ -225,6 +307,7 @@ jobs:
             const marker = '<!-- accord-nightly-failure -->';
             const components = {
               contract: process.env.CONTRACT,
+              'contract-fuzz': process.env.CONTRACT_FUZZ,
               frontend: process.env.FRONTEND,
               indexer: process.env.INDEXER,
               'analytics-api': process.env.ANALYTICS_API,
