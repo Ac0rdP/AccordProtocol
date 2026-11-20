@@ -239,6 +239,32 @@ jobs:
           TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
         run: cargo test --locked -p accord-analytics-api
 
+      - name: Setup Node.js for analytics API 10k RPS load budget gate
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run analytics API 10k RPS load test & budget gate
+        run: |
+          node --test scripts/analytics-load-test.test.mjs
+          node scripts/analytics-load-test.mjs --ci-gate --report-dir target/analytics-load-test
+
+      - name: Append analytics API load report to job summary
+        if: always()
+        run: |
+          if [ -f target/analytics-load-test/report.md ]; then
+            cat target/analytics-load-test/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload analytics API nightly load report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-analytics-api-load-report
+          path: target/analytics-load-test
+          retention-days: 14
+          if-no-files-found: ignore
+
   e2e:
     name: "Frontend: E2E (Playwright)"
     runs-on: ubuntu-latest

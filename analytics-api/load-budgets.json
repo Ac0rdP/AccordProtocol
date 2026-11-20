@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "service": "accord-analytics-api",
+  "profile": "production-10k-rps",
+  "throughputBudget": {
+    "targetRps": 10000,
+    "minSustainedRps": 10000,
+    "defaultDurationSeconds": 10
+  },
+  "latencyBudgetMs": {
+    "p50Ms": 12,
+    "p95Ms": 45,
+    "p99Ms": 120
+  },
+  "errorBudget": {
+    "max5xxRate": 0.001,
+    "maxUnexpectedErrorRate": 0.005
+  },
+  "queryMix": [
+    {
+      "id": "proposals_list",
+      "method": "GET",
+      "path": "/proposals?limit=20&offset=0&status=executed",
+      "openApiPath": "/proposals",
+      "weightPct": 35,
+      "cached": true,
+      "latencyBudgetMs": {
+        "p50Ms": 8,
+        "p95Ms": 30,
+        "p99Ms": 80
+      },
+      "maxErrorRate": 0.001
+    },
+    {
+      "id": "spend_by_category",
+      "method": "GET",
+      "path": "/spend/by-category?token=USDC",
+      "openApiPath": "/spend/by-category",
+      "weightPct": 25,
+      "cached": true,
+      "latencyBudgetMs": {
+        "p50Ms": 10,
+        "p95Ms": 35,
+        "p99Ms": 90
+      },
+      "maxErrorRate": 0.001
+    },
+    {
+      "id": "proposal_detail",
+      "method": "GET",
+      "path": "/proposals/1",
+      "openApiPath": "/proposals/{id}",
+      "weightPct": 15,
+      "cached": true,
+      "latencyBudgetMs": {
+        "p50Ms": 8,
+        "p95Ms": 30,
+        "p99Ms": 85
+      },
+      "maxErrorRate": 0.001
+    },
+    {
+      "id": "owner_participation",
+      "method": "GET",
+      "path": "/owners/participation?limit=20&offset=0",
+      "openApiPath": "/owners/participation",
+      "weightPct": 10,
+      "cached": false,
+      "latencyBudgetMs": {
+        "p50Ms": 18,
+        "p95Ms": 60,
+        "p99Ms": 140
+      },
+      "maxErrorRate": 0.002
+    },
+    {
+      "id": "graphql_proposals",
+      "method": "POST",
+      "path": "/graphql",
+      "openApiPath": "/graphql",
+      "body": {
+        "query": "{ proposals(first: 10) { nodes { id status amount token } totalCount } }"
+      },
+      "weightPct": 10,
+      "cached": false,
+      "latencyBudgetMs": {
+        "p50Ms": 20,
+        "p95Ms": 65,
+        "p99Ms": 150
+      },
+      "maxErrorRate": 0.002
+    },
+    {
+      "id": "health_readyz",
+      "method": "GET",
+      "path": "/readyz",
+      "openApiPath": null,
+      "weightPct": 5,
+      "cached": false,
+      "latencyBudgetMs": {
+        "p50Ms": 4,
+        "p95Ms": 15,
+        "p99Ms": 40
+      },
+      "maxErrorRate": 0.0
+    }
+  ]
+}
