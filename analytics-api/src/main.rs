@@ -13,7 +13,7 @@ use axum::{
     http::{StatusCode, header},
     middleware,
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,7 @@ mod reports;
 mod schedule;
 mod scope;
 mod templates;
+mod workflows;
 
 #[cfg(test)]
 mod contract_tests;
@@ -228,6 +229,17 @@ fn app(state: AppState) -> Router {
         .route(
             "/billing/plan",
             put(billing::update_plan).layer(DefaultBodyLimit::max(billing::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/workflows/webhooks",
+            get(workflows::list)
+                .post(workflows::create)
+                .layer(DefaultBodyLimit::max(workflows::MAX_BODY_BYTES)),
+        )
+        .route("/workflows/webhooks/{id}", delete(workflows::remove))
+        .route(
+            "/workflows/webhooks/{id}/test",
+            post(workflows::test_trigger),
         )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))

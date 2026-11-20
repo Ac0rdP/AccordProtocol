@@ -36,7 +36,7 @@ use crate::{
     billing,
     branding,
     limits::{Limits, LimitsConfig},
-    freshness, funnel, proposals, report_api, spend, templates,
+    freshness, funnel, proposals, report_api, spend, templates, workflows,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -254,6 +254,10 @@ fn openapi_query_parameters_match_the_validators() {
         ("/branding", "delete", branding::WRITE_PARAMS),
         ("/billing", "get", billing::QUERY_PARAMS),
         ("/billing/plan", "put", billing::QUERY_PARAMS),
+        ("/workflows/webhooks", "get", workflows::LIST_PARAMS),
+        ("/workflows/webhooks", "post", workflows::WRITE_PARAMS),
+        ("/workflows/webhooks/{id}", "delete", workflows::WRITE_PARAMS),
+        ("/workflows/webhooks/{id}/test", "post", workflows::WRITE_PARAMS),
         ("/alert-rules", "get", alert_rules::LIST_PARAMS),
         ("/freshness", "get", freshness::QUERY_PARAMS),
         ("/alert-rules/test", "post", alert_rules::TEST_PARAMS),
@@ -336,6 +340,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/reports", "get"),
         ("/report-templates", "get"),
         ("/branding", "get"),
+        ("/workflows/webhooks", "get"),
         ("/alert-rules", "get"),
         ("/freshness", "get"),
         ("/alerts", "get"),
@@ -422,6 +427,10 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("DELETE", "/branding"),
         ("GET", "/billing"),
         ("PUT", "/billing/plan"),
+        ("GET", "/workflows/webhooks"),
+        ("POST", "/workflows/webhooks"),
+        ("DELETE", "/workflows/webhooks/1"),
+        ("POST", "/workflows/webhooks/1/test"),
         ("GET", "/freshness"),
         ("GET", "/alert-rules"),
         ("POST", "/alert-rules"),
@@ -2157,6 +2166,48 @@ async fn billing_plan_updates_require_admin_token_when_configured() {
         "PUT",
         "/billing/plan?contractId=test-contract&network=testnet",
         r#"{"planTier":"pro"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- workflow automation with Zapier and generic webhooks -------------------------
+
+#[tokio::test]
+async fn workflow_webhooks_reject_bad_requests_before_the_database() {
+    let state = lazy_state();
+    let (status, body) = get(&state, "/workflows/webhooks?limit=0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body).1, "INVALID_LIMIT");
+
+    let (status, _, body) = send(
+        &state,
+        "POST",
+        "/workflows/webhooks?contractId=test-contract&network=testnet",
+        r#"{"name":"Hook","targetType":"bad","url":"http://127.0.0.1/x","events":["bad.evt"]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let codes: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"INVALID_TARGET_TYPE"));
+    assert!(codes.contains(&"INVALID_WEBHOOK_URL"));
+    assert!(codes.contains(&"INVALID_EVENT_TYPE"));
+}
+
+#[tokio::test]
+async fn workflow_webhook_writes_require_admin_token_when_configured() {
+    let mut state = lazy_state();
+    state.admin_token = Some(Arc::from("secret-token"));
+    let (status, _, _) = send(
+        &state,
+        "POST",
+        "/workflows/webhooks?contractId=test-contract&network=testnet",
+        r#"{"name":"Zapier","targetType":"zapier","url":"https://hooks.zapier.com/hooks/catch/1/2/","events":["proposal.created"]}"#,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

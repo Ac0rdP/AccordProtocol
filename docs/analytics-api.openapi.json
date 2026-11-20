@@ -3904,6 +3904,171 @@
           }
         }
       }
+    },
+    "/workflows/webhooks": {
+      "get": {
+        "operationId": "listWorkflowWebhooks",
+        "summary": "List Zapier and generic webhook subscriptions for scoped workspaces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated workflow webhook subscriptions (signing secrets redacted)"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createWorkflowWebhook",
+        "summary": "Register a Zapier or generic webhook trigger subscription",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created workflow webhook subscription"
+          },
+          "400": {
+            "description": "Invalid webhook URL, targetType, or trigger events"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/workflows/webhooks/{id}": {
+      "delete": {
+        "operationId": "deleteWorkflowWebhook",
+        "summary": "Delete a workflow webhook subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook deletion result"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/workflows/webhooks/{id}/test": {
+      "post": {
+        "operationId": "testWorkflowWebhook",
+        "summary": "Dispatch a sample proposal, approval, or treasury trigger payload to a webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sample trigger payload queued for delivery"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          },
+          "404": {
+            "description": "Webhook not found in workspace"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3971,6 +4136,7 @@
               "INVALID_DATE_RANGE",
               "INVALID_DOMAIN",
               "INVALID_EMAIL",
+              "INVALID_EVENT_TYPE",
               "INVALID_FORMAT",
               "INVALID_GROUP_BY",
               "INVALID_LIMIT",
@@ -3989,8 +4155,11 @@
               "INVALID_SORT",
               "INVALID_SOURCE",
               "INVALID_STATUS",
+              "INVALID_TARGET_TYPE",
               "INVALID_TEMPLATE_FIELD",
+              "INVALID_WEBHOOK_URL",
               "MISSING_PARAMETER",
+              "NOT_FOUND",
               "PLAN_LIMIT_EXCEEDED",
               "RATE_LIMITED",
               "UNKNOWN_PARAMETER"
