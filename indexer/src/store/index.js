@@ -47,6 +47,7 @@ export function resolveStoreConfig(env = process.env) {
  *   getLatestAccordEventId() / getAccordEventsAfter(id, limit)
  *   enqueueWebhookDeliveries / claimDueWebhookDeliveries / completeWebhookDelivery
  *   countWebhookDeliveries / listWebhookDeliveries / requeueDeadWebhookDeliveries
+ *   getWebhookDelivery / listWebhookDeliveryAttempts / summarizeWebhookDeliveries / replayWebhookDelivery
  *   upsertNotificationDestination / listNotificationDestinations
  *   getNotificationDestination / deleteNotificationDestination
  *   enqueueNotificationDeliveries / claimDueNotificationDeliveries / completeNotificationDelivery

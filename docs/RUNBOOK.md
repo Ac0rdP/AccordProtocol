@@ -130,9 +130,9 @@ Alert `AccordReorgDetected`: the chain head moved backwards and the store was re
 
 Alert `AccordWebhookDeadLetters`: deliveries exhausted `WEBHOOK_MAX_ATTEMPTS`.
 
-1. `curl 'localhost:8787/webhooks/deliveries?status=dead'` for the subscription and last error.
+1. Open `/ops/webhooks` (or `curl 'localhost:8787/webhooks/deliveries?status=dead'`) for the subscription, payload, last error and the full attempt history.
 2. Fix the receiver (or the subscription URL/secret in `WEBHOOK_SUBSCRIPTIONS_FILE`).
-3. Run `node src/index.js webhooks-requeue --subscription <id>`.
+3. Replay from the dashboard (one delivery, or "Retry dead" per subscription; needs `OPS_ADMIN_TOKEN`), or run `node src/index.js webhooks-requeue --subscription <id>`.
 
 ### webhook-backlog
 

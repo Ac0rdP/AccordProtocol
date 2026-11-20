@@ -8,6 +8,23 @@ import { DatabaseSync } from "node:sqlite";
  * `node:sqlite` is synchronous, but every method is `async` so callers treat
  * it exactly like the Postgres store; see `./index.js` for the shared contract.
  */
+/** Folds per-(subscription, status) rows into one object per subscription. */
+export function foldDeliverySummary(rows) {
+  const bySubscription = new Map();
+  for (const row of rows) {
+    if (!bySubscription.has(row.subscriptionId)) {
+      bySubscription.set(row.subscriptionId, {
+        subscriptionId: row.subscriptionId, pending: 0, delivered: 0, dead: 0, replays: 0, oldestPendingAt: null,
+      });
+    }
+    const entry = bySubscription.get(row.subscriptionId);
+    entry[row.status] = row.count;
+    entry.replays += row.replays;
+    if (row.status === "pending") entry.oldestPendingAt = row.oldestAt;
+  }
+  return [...bySubscription.values()].sort((a, b) => a.subscriptionId.localeCompare(b.subscriptionId));
+}
+
 export function openLedgerStore(databasePath) {
   // ":memory:" is SQLite's private in-memory database (used by replay); it
   // must not be resolved into a file path.
@@ -86,6 +103,19 @@ export function openLedgerStore(databasePath) {
     );
     CREATE INDEX IF NOT EXISTS webhook_deliveries_due_idx
       ON webhook_deliveries (status, next_attempt_at, id);
+    CREATE TABLE IF NOT EXISTS webhook_delivery_attempts (
+      id INTEGER PRIMARY KEY,
+      delivery_id INTEGER NOT NULL,
+      attempt INTEGER NOT NULL,
+      replay_round INTEGER NOT NULL DEFAULT 0,
+      outcome TEXT NOT NULL CHECK (outcome IN ('delivered', 'retry', 'dead')),
+      status_code INTEGER,
+      error TEXT,
+      duration_ms INTEGER,
+      attempted_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS webhook_delivery_attempts_delivery_idx
+      ON webhook_delivery_attempts (delivery_id, id);
     CREATE TABLE IF NOT EXISTS notification_destinations (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL CHECK (kind IN ('webhook', 'slack', 'discord', 'email')),
@@ -154,6 +184,15 @@ export function openLedgerStore(databasePath) {
   const eventColumns = database.prepare("PRAGMA table_info(accord_events)").all();
   if (!eventColumns.some((column) => column.name === "schema_version")) {
     database.exec("ALTER TABLE accord_events ADD COLUMN schema_version INTEGER");
+  }
+
+  // Replay bookkeeping arrived after the first release of the outbox.
+  const deliveryTableColumns = database.prepare("PRAGMA table_info(webhook_deliveries)").all();
+  if (!deliveryTableColumns.some((column) => column.name === "replay_count")) {
+    database.exec("ALTER TABLE webhook_deliveries ADD COLUMN replay_count INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!deliveryTableColumns.some((column) => column.name === "last_replayed_at")) {
+    database.exec("ALTER TABLE webhook_deliveries ADD COLUMN last_replayed_at TEXT");
   }
 
   // The chain-position dedupe key (`ledger:transaction:eventIndex`, see
@@ -285,13 +324,16 @@ export function openLedgerStore(databasePath) {
       lastStatusCode: row.lastStatusCode,
       createdAt: row.createdAt,
       deliveredAt: row.deliveredAt,
+      replayCount: row.replayCount,
+      lastReplayedAt: row.lastReplayedAt,
     };
   }
 
   const deliveryColumns = `
     id, subscription_id AS subscriptionId, event_id AS eventId, body, status, attempts,
     next_attempt_at AS nextAttemptAt, last_error AS lastError,
-    last_status_code AS lastStatusCode, created_at AS createdAt, delivered_at AS deliveredAt
+    last_status_code AS lastStatusCode, created_at AS createdAt, delivered_at AS deliveredAt,
+    replay_count AS replayCount, last_replayed_at AS lastReplayedAt
   `;
 
   function toNotificationDelivery(row) {
@@ -566,14 +608,23 @@ export function openLedgerStore(databasePath) {
       `).all(now, limit).map(toDelivery);
     },
 
-    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, now }) {
+    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, durationMs, now }) {
       const status = outcome === "delivered" ? "delivered" : outcome === "dead" ? "dead" : "pending";
-      database.prepare(`
-        UPDATE webhook_deliveries SET status = ?, attempts = ?, next_attempt_at = ?,
-          last_error = ?, last_status_code = ?, updated_at = ?,
-          delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
-        WHERE id = ?
-      `).run(status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, status, now, id);
+      inTransaction(() => {
+        database.prepare(`
+          UPDATE webhook_deliveries SET status = ?, attempts = ?, next_attempt_at = ?,
+            last_error = ?, last_status_code = ?, updated_at = ?,
+            delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END
+          WHERE id = ?
+        `).run(status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, status, now, id);
+        // One history row per attempt, written with the outcome so the two never disagree.
+        database.prepare(`
+          INSERT INTO webhook_delivery_attempts (
+            delivery_id, attempt, replay_round, outcome, status_code, error, duration_ms, attempted_at
+          ) SELECT id, ?, replay_count, ?, ?, ?, ?, ? FROM webhook_deliveries WHERE id = ?
+        `).run(attempts, outcome === "delivered" || outcome === "dead" ? outcome : "retry",
+          statusCode ?? null, error ?? null, durationMs ?? null, now, id);
+      });
     },
 
     async countWebhookDeliveries() {
@@ -584,7 +635,7 @@ export function openLedgerStore(databasePath) {
       return counts;
     },
 
-    async listWebhookDeliveries({ status, subscriptionId, limit, offset }) {
+    async listWebhookDeliveries({ status, subscriptionId, eventId, order = "asc", limit, offset }) {
       const clauses = [];
       const values = [];
       if (status) {
@@ -595,23 +646,79 @@ export function openLedgerStore(databasePath) {
         clauses.push("subscription_id = ?");
         values.push(subscriptionId);
       }
+      if (eventId) {
+        clauses.push("event_id = ?");
+        values.push(eventId);
+      }
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const direction = order === "desc" ? "DESC" : "ASC";
       return database.prepare(`
         SELECT ${deliveryColumns} FROM webhook_deliveries ${where}
-        ORDER BY id ASC LIMIT ? OFFSET ?
+        ORDER BY id ${direction} LIMIT ? OFFSET ?
       `).all(...values, limit, offset).map(toDelivery);
+    },
+
+    async getWebhookDelivery(id) {
+      const row = database.prepare(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = ?`).get(id);
+      return row ? toDelivery(row) : null;
+    },
+
+    async listWebhookDeliveryAttempts(deliveryId) {
+      return database.prepare(`
+        SELECT id, delivery_id AS deliveryId, attempt, replay_round AS replayRound, outcome,
+          status_code AS statusCode, error, duration_ms AS durationMs, attempted_at AS attemptedAt
+        FROM webhook_delivery_attempts WHERE delivery_id = ? ORDER BY id ASC
+      `).all(deliveryId).map((row) => ({ ...row }));
+    },
+
+    /** Outbox size per subscription and status, with the age of the oldest pending delivery. */
+    async summarizeWebhookDeliveries() {
+      const rows = database.prepare(`
+        SELECT subscription_id AS subscriptionId, status, COUNT(*) AS count,
+          MIN(created_at) AS oldestAt, SUM(replay_count) AS replays
+        FROM webhook_deliveries GROUP BY subscription_id, status
+      `).all();
+      return foldDeliverySummary(rows.map((row) => ({ ...row, count: Number(row.count), replays: Number(row.replays ?? 0) })));
+    },
+
+    /**
+     * Sends one delivery back through the dispatcher. A dead or delivered row
+     * starts a new replay round (attempts reset); a pending one is just made due
+     * now, so repeating the call never queues a second copy. Delivery is
+     * at-least-once: receivers dedupe on the stable `x-accord-event-id`.
+     *
+     * @returns {{found: boolean, previousStatus?: string, delivery?: object}}
+     */
+    async replayWebhookDelivery({ id, now }) {
+      return inTransaction(() => {
+        const current = database.prepare("SELECT status FROM webhook_deliveries WHERE id = ?").get(id);
+        if (!current) return { found: false };
+        if (current.status === "pending") {
+          database.prepare("UPDATE webhook_deliveries SET next_attempt_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
+        } else {
+          database.prepare(`
+            UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?,
+              replay_count = replay_count + 1, last_replayed_at = ?
+            WHERE id = ?
+          `).run(now, now, now, id);
+        }
+        const row = database.prepare(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = ?`).get(id);
+        return { found: true, previousStatus: current.status, delivery: toDelivery(row) };
+      });
     },
 
     async requeueDeadWebhookDeliveries({ subscriptionId, now }) {
       const result = subscriptionId
         ? database.prepare(`
-            UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?
+            UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?,
+              replay_count = replay_count + 1, last_replayed_at = ?
             WHERE status = 'dead' AND subscription_id = ?
-          `).run(now, now, subscriptionId)
+          `).run(now, now, now, subscriptionId)
         : database.prepare(`
-            UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?
+            UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = ?, updated_at = ?,
+              replay_count = replay_count + 1, last_replayed_at = ?
             WHERE status = 'dead'
-          `).run(now, now);
+          `).run(now, now, now);
       return Number(result.changes);
     },
 

@@ -193,6 +193,11 @@ export function createIndexerMetrics() {
       help: "Webhook deliveries in the outbox by status (pending, delivered, dead).",
       labelNames: ["status"],
     }),
+    webhookReplays: registry.counter({
+      name: "accord_indexer_webhook_replays_total",
+      help: "Webhook deliveries an operator sent back through the dispatcher, by scope (single, bulk).",
+      labelNames: ["scope"],
+    }),
     notificationDeliveries: registry.counter({
       name: "accord_indexer_notification_deliveries_total",
       help: "Notification delivery attempts by destination, channel kind, and result (delivered, retry, dead).",

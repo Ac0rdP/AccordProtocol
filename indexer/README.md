@@ -238,7 +238,8 @@ Failover is **off by default**: a single instance is always the leader and behav
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
 - `GET /metrics` - Prometheus metrics.
-- `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
+- `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `event`, `order`, `limit`, `offset`).
+- `GET /ops/webhooks` - Webhook delivery dashboard with replay controls; see [Delivery dashboard](#delivery-dashboard-and-retry-controls).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
 - `GET /events?topic=created&limit=100` - Query decoded Accord Protocol events.
 - `GET /reconciliation` - View latest token balance reconciliation checks.
@@ -374,7 +375,30 @@ Deliveries are kept in a durable outbox (`webhook_deliveries`), so a restart los
 - Subscriptions are independent: a slow or failing endpoint never delays another.
 - A `reindex` never resends: deliveries are unique per (subscription, event id).
 
-Run a single indexer instance per database: the outbox processor does not lock rows between processes.
+Run a single outbox processor per database: it does not lock rows between processes. With [leader election](#multi-region-failover-leader-election) enabled only the leader runs it.
+
+### Delivery dashboard and retry controls
+
+`GET /ops/webhooks` serves a self-contained operations page (no external requests, strict CSP) for the webhook outbox:
+
+- **Inspect:** outbox size per subscription, a filterable and paged delivery list (status, subscription, event id; newest first), and for each delivery the exact payload, the receiver's origin, and **every attempt** (round, outcome, HTTP status, latency, time, error). Attempt history is stored in `webhook_delivery_attempts` (migration `0010_webhook_delivery_attempts.sql`).
+- **Replay:** send one delivery through the dispatcher again (`POST /webhooks/deliveries/:id/replay`), or requeue every dead letter (`POST /webhooks/deliveries/retry-dead[?subscription=<id>]`).
+
+Replay is idempotent and safe to repeat:
+
+- It only flips the outbox row back to `pending`; the dispatcher then re-sends the **stored body byte for byte** with a fresh signature timestamp and the same `x-accord-event-id`, so receivers can deduplicate. Delivery stays at-least-once.
+- A dead or delivered delivery starts a new *replay round* (attempt count resets, history is kept). Replaying one that is already queued just makes it due now and is not counted again, so a double click or a retried request never queues a second copy.
+- Replays only take effect on the leader, because only the leader runs the dispatcher.
+
+Reading is open like the rest of the API. **Replay needs `Authorization: Bearer <OPS_ADMIN_TOKEN>`** and is disabled (`403`) until a token of at least 16 characters is configured; the dashboard hides the controls in that case. Put the indexer behind your usual network controls, since the read endpoints expose payloads.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WEBHOOK_DASHBOARD_ENABLED` | `true` | Serve the dashboard and its inspection endpoints (`false` returns `404`) |
+| `OPS_ADMIN_TOKEN` | unset | Bearer token that enables replay/retry. Unset or shorter than 16 characters keeps the dashboard read-only |
+| `WEBHOOK_DASHBOARD_PAGE_SIZE` | `50` | Deliveries per page (1-200) |
+
+Inspection endpoints: `GET /webhooks/deliveries` (adds `event` and `order=desc`), `GET /webhooks/deliveries/summary`, `GET /webhooks/deliveries/:id`. Replays are counted in `accord_indexer_webhook_replays_total{scope}`.
 
 ## Monitoring
 

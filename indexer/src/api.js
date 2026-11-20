@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
+import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
 
 const ROUTES = new Set([
   "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
@@ -37,6 +38,8 @@ function redactDestination(destination) {
 
 function routeLabelFor(pathname) {
   if (ROUTES.has(pathname)) return pathname;
+  const webhookOpsLabel = webhookOpsRouteLabel(pathname);
+  if (webhookOpsLabel) return webhookOpsLabel;
   if (DESTINATION_TEST_PATH.test(pathname)) return "/notifications/destinations/:id/test";
   if (DESTINATION_PATH.test(pathname)) return "/notifications/destinations/:id";
   return "unmatched";
@@ -101,14 +104,17 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *
  *   /health /healthz /readyz /status /metrics   operations
  *   /ledger /events /reconciliation     indexed data
- *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue)
+ *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue,
+ *                                        ?subscription=, ?event=, ?order=desc)
+ *   /ops/webhooks and /webhooks/deliveries/...  delivery dashboard, attempt history and retry controls (see webhook-ops.js)
  *   GET/PUT/POST /notifications/destinations          list / create / upsert destinations
  *   GET/PUT/POST/DELETE /notifications/destinations/:id  read / upsert / delete one destination
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [] }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
+  const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
 
   async function route(request, response, url) {
     if (
@@ -148,6 +154,8 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         });
       }
     }
+
+    if (await webhookOps.handle(request, response, url)) return;
 
     const destinationMatch = url.pathname.match(DESTINATION_PATH);
     const destinationTestMatch = url.pathname.match(DESTINATION_TEST_PATH);
@@ -268,9 +276,13 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         if (status && !DELIVERY_STATUSES.includes(status)) {
           throw new Error(`status must be one of: ${DELIVERY_STATUSES.join(", ")}`);
         }
+        const order = url.searchParams.get("order") ?? "asc";
+        if (!["asc", "desc"].includes(order)) throw new Error("order must be asc or desc");
         const deliveries = await store.listWebhookDeliveries({
           status,
           subscriptionId: url.searchParams.get("subscription") ?? undefined,
+          eventId: url.searchParams.get("event") ?? undefined,
+          order,
           ...parsePage(url.searchParams),
         });
         return sendJson(response, 200, { deliveries });

@@ -28,6 +28,7 @@ import {
   resolveLeaderElectionConfig,
   resolveStreamExportersConfig,
   resolveWarehouseConfig,
+  resolveWebhookDashboardConfig,
 } from "./config.js";
 import { createHolderId, createLeaderElection, createStaticLeader } from "./leader-election.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
@@ -87,6 +88,11 @@ Environment:
   EMAIL_FROM           "From" address sent to EMAIL_API_URL
   NOTIFICATION_POLL_INTERVAL_MS  Notification worker poll interval (default 2000)
   NOTIFICATION_MAX_ATTEMPTS      Attempts before dead-lettering (default 8)
+  WEBHOOK_DASHBOARD_ENABLED  Serve the webhook delivery dashboard at /ops/webhooks
+                       (default true; read-only)
+  OPS_ADMIN_TOKEN      Bearer token (16+ chars) that enables the dashboard's
+                       replay/retry controls (default unset = controls disabled)
+  WEBHOOK_DASHBOARD_PAGE_SIZE  Deliveries per dashboard page (default 50)
   INDEXER_LEADER_ELECTION_ENABLED  Run redundant indexers with automatic
                        failover (default false; needs STORE_BACKEND=postgres)
   INDEXER_REGION       Region label shown in status output (default empty)
@@ -477,6 +483,10 @@ async function serve({ store, stellar }) {
     }
   }
 
+  const webhookDashboard = resolveWebhookDashboardConfig();
+  if (webhookDashboard.adminTokenRejected) {
+    console.warn("[ops] OPS_ADMIN_TOKEN is shorter than 16 characters and was ignored; webhook retry controls are disabled");
+  }
   const api = createApi({
     store,
     readiness,
@@ -486,6 +496,8 @@ async function serve({ store, stellar }) {
     tokenAddresses,
     subscriptions: graphqlSubscriptions,
     election,
+    webhookDashboard,
+    webhookSubscriptions: subscriptions,
   });
 
   const host = process.env.HOST ?? "127.0.0.1";

@@ -7,6 +7,7 @@
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
  *   - Multi-region failover (leader election)
+ *   - Webhook delivery dashboard and retry controls
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -139,6 +140,28 @@ export function resolveLeaderElectionConfig(env = process.env) {
 }
 
 /**
+ * Resolves the webhook delivery dashboard configuration.
+ *
+ * Safe defaults:
+ *   - enabled: true (read-only: the page and the inspection endpoints)
+ *   - adminToken: "" - retry controls are OFF until OPS_ADMIN_TOKEN is set; a
+ *     token shorter than 16 characters is rejected rather than accepted weak
+ *   - pageSize: 50 deliveries per page
+ */
+export const MIN_ADMIN_TOKEN_LENGTH = 16;
+
+export function resolveWebhookDashboardConfig(env = process.env) {
+  const rawToken = env.OPS_ADMIN_TOKEN?.trim() || "";
+  const adminTokenRejected = rawToken !== "" && rawToken.length < MIN_ADMIN_TOKEN_LENGTH;
+  return {
+    enabled: parseBool(env.WEBHOOK_DASHBOARD_ENABLED, true),
+    adminToken: adminTokenRejected ? "" : rawToken,
+    adminTokenRejected,
+    pageSize: parseIntSafe(env.WEBHOOK_DASHBOARD_PAGE_SIZE, 50, 1, 200),
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -147,6 +170,7 @@ export function loadIndexerConfig(env = process.env) {
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
     leader: resolveLeaderElectionConfig(env),
+    webhookDashboard: resolveWebhookDashboardConfig(env),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

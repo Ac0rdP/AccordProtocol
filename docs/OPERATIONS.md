@@ -44,6 +44,7 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 | `accord_indexer_webhook_deliveries_total` | counter | `subscription`, `result` = `delivered`, `retry`, `dead` | Delivery attempts. |
 | `accord_indexer_webhook_delivery_duration_seconds` | histogram | `subscription` | Receiver latency. |
 | `accord_indexer_webhook_deliveries` | gauge | `status` = `pending`, `delivered`, `dead` | Outbox size. |
+| `accord_indexer_webhook_replays_total` | counter | `scope` = `single`, `bulk` | Deliveries an operator replayed from the dashboard or API. |
 
 ## GraphQL live event subscriptions
 

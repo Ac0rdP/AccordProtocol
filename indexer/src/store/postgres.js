@@ -1,5 +1,6 @@
 import pg from "pg";
 import { migratePostgres } from "./migrations.js";
+import { foldDeliverySummary } from "./sqlite.js";
 
 // Serializes writers that fold running balances, mirroring SQLite's BEGIN IMMEDIATE.
 const LEDGER_LOCK_ID = 7_243_002;
@@ -129,11 +130,13 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       lastStatusCode: row.last_status_code,
       createdAt: iso(row.created_at),
       deliveredAt: iso(row.delivered_at),
+      replayCount: row.replay_count,
+      lastReplayedAt: iso(row.last_replayed_at),
     };
   }
 
   const deliveryColumns = `id, subscription_id, event_id, body, status, attempts, next_attempt_at,
-    last_error, last_status_code, created_at, delivered_at`;
+    last_error, last_status_code, created_at, delivered_at, replay_count, last_replayed_at`;
 
   function toNotificationDelivery(row) {
     return {
@@ -415,15 +418,25 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return rows.map(toDelivery);
     },
 
-    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, now }) {
+    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, durationMs, now }) {
       const status = outcome === "delivered" ? "delivered" : outcome === "dead" ? "dead" : "pending";
-      await pool.query(
-        `UPDATE webhook_deliveries SET status = $1, attempts = $2, next_attempt_at = $3,
-           last_error = $4, last_status_code = $5, updated_at = $6,
-           delivered_at = CASE WHEN $1 = 'delivered' THEN $6::timestamptz ELSE delivered_at END
-         WHERE id = $7`,
-        [status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, id]
-      );
+      await withTransaction(async (client) => {
+        await client.query(
+          `UPDATE webhook_deliveries SET status = $1, attempts = $2, next_attempt_at = $3,
+             last_error = $4, last_status_code = $5, updated_at = $6,
+             delivered_at = CASE WHEN $1 = 'delivered' THEN $6::timestamptz ELSE delivered_at END
+           WHERE id = $7`,
+          [status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, id]
+        );
+        // One history row per attempt, written with the outcome so the two never disagree.
+        await client.query(
+          `INSERT INTO webhook_delivery_attempts (
+             delivery_id, attempt, replay_round, outcome, status_code, error, duration_ms, attempted_at
+           ) SELECT id, $2, replay_count, $3, $4, $5, $6, $7 FROM webhook_deliveries WHERE id = $1`,
+          [id, attempts, outcome === "delivered" || outcome === "dead" ? outcome : "retry",
+            statusCode ?? null, error ?? null, durationMs ?? null, now]
+        );
+      });
     },
 
     async countWebhookDeliveries() {
@@ -433,20 +446,85 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return counts;
     },
 
-    async listWebhookDeliveries({ status, subscriptionId, limit, offset }) {
+    async listWebhookDeliveries({ status, subscriptionId, eventId, order = "asc", limit, offset }) {
       const values = [];
-      const where = filterClause([["status", "=", status], ["subscription_id", "=", subscriptionId]], values);
+      const where = filterClause(
+        [["status", "=", status], ["subscription_id", "=", subscriptionId], ["event_id", "=", eventId]],
+        values
+      );
+      const direction = order === "desc" ? "DESC" : "ASC";
       const { rows } = await pool.query(
         `SELECT ${deliveryColumns} FROM webhook_deliveries ${where}
-         ORDER BY id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+         ORDER BY id ${direction} LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
         [...values, limit, offset]
       );
       return rows.map(toDelivery);
     },
 
+    async getWebhookDelivery(id) {
+      const { rows } = await pool.query(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = $1`, [id]);
+      return rows[0] ? toDelivery(rows[0]) : null;
+    },
+
+    async listWebhookDeliveryAttempts(deliveryId) {
+      const { rows } = await pool.query(
+        `SELECT id, delivery_id, attempt, replay_round, outcome, status_code, error, duration_ms, attempted_at
+         FROM webhook_delivery_attempts WHERE delivery_id = $1 ORDER BY id ASC`,
+        [deliveryId]
+      );
+      return rows.map((row) => ({
+        id: Number(row.id),
+        deliveryId: Number(row.delivery_id),
+        attempt: row.attempt,
+        replayRound: row.replay_round,
+        outcome: row.outcome,
+        statusCode: row.status_code,
+        error: row.error,
+        durationMs: row.duration_ms,
+        attemptedAt: iso(row.attempted_at),
+      }));
+    },
+
+    async summarizeWebhookDeliveries() {
+      const { rows } = await pool.query(
+        `SELECT subscription_id, status, COUNT(*) AS count, MIN(created_at) AS oldest_at,
+           COALESCE(SUM(replay_count), 0) AS replays
+         FROM webhook_deliveries GROUP BY subscription_id, status`
+      );
+      return foldDeliverySummary(rows.map((row) => ({
+        subscriptionId: row.subscription_id,
+        status: row.status,
+        count: Number(row.count),
+        oldestAt: iso(row.oldest_at),
+        replays: Number(row.replays),
+      })));
+    },
+
+    /** Same contract as the SQLite store; the row lock keeps concurrent replays from double-counting. */
+    async replayWebhookDelivery({ id, now }) {
+      return withTransaction(async (client) => {
+        const current = await client.query("SELECT status FROM webhook_deliveries WHERE id = $1 FOR UPDATE", [id]);
+        if (!current.rows[0]) return { found: false };
+        const previousStatus = current.rows[0].status;
+        if (previousStatus === "pending") {
+          await client.query("UPDATE webhook_deliveries SET next_attempt_at = $2, updated_at = $2 WHERE id = $1", [id, now]);
+        } else {
+          await client.query(
+            `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $2, updated_at = $2,
+               replay_count = replay_count + 1, last_replayed_at = $2
+             WHERE id = $1`,
+            [id, now]
+          );
+        }
+        const { rows } = await client.query(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = $1`, [id]);
+        return { found: true, previousStatus, delivery: toDelivery(rows[0]) };
+      });
+    },
+
     async requeueDeadWebhookDeliveries({ subscriptionId, now }) {
       const { rowCount } = await pool.query(
-        `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1
+        `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1,
+           replay_count = replay_count + 1, last_replayed_at = $1
          WHERE status = 'dead' AND ($2::text IS NULL OR subscription_id = $2)`,
         [now, subscriptionId ?? null]
       );
