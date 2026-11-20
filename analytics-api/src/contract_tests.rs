@@ -33,6 +33,7 @@ use crate::{
         parse_rules,
     },
     app,
+    branding,
     limits::{Limits, LimitsConfig},
     freshness, funnel, proposals, report_api, spend, templates,
 };
@@ -247,6 +248,9 @@ fn openapi_query_parameters_match_the_validators() {
         ("/report-templates", "get", templates::LIST_PARAMS),
         ("/report-templates", "put", templates::WRITE_PARAMS),
         ("/report-templates", "delete", templates::WRITE_PARAMS),
+        ("/branding", "get", branding::LIST_PARAMS),
+        ("/branding", "put", branding::WRITE_PARAMS),
+        ("/branding", "delete", branding::WRITE_PARAMS),
         ("/alert-rules", "get", alert_rules::LIST_PARAMS),
         ("/freshness", "get", freshness::QUERY_PARAMS),
         ("/alert-rules/test", "post", alert_rules::TEST_PARAMS),
@@ -328,6 +332,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals/funnel", "get"),
         ("/reports", "get"),
         ("/report-templates", "get"),
+        ("/branding", "get"),
         ("/alert-rules", "get"),
         ("/freshness", "get"),
         ("/alerts", "get"),
@@ -409,6 +414,9 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/report-templates"),
         ("PUT", "/report-templates"),
         ("DELETE", "/report-templates"),
+        ("GET", "/branding"),
+        ("PUT", "/branding"),
+        ("DELETE", "/branding"),
         ("GET", "/freshness"),
         ("GET", "/alert-rules"),
         ("POST", "/alert-rules"),
@@ -2065,4 +2073,45 @@ async fn freshness_reports_each_pair_against_its_objectives() {
     assert_eq!(page["total"], 2);
 
     db.cleanup().await;
+}
+
+// --- white-label branding and custom domains --------------------------------------
+
+#[tokio::test]
+async fn branding_rejects_bad_requests_before_the_database() {
+    let state = lazy_state();
+    let (status, body) = get(&state, "/branding?limit=0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(first_detail(&body).1, "INVALID_LIMIT");
+
+    let (status, _, body) = send(
+        &state,
+        "PUT",
+        "/branding?contractId=test-contract&network=testnet",
+        r#"{"primaryColor":"not-hex","customDomain":"bad domain"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let codes: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"INVALID_COLOR"));
+    assert!(codes.contains(&"INVALID_DOMAIN"));
+}
+
+#[tokio::test]
+async fn branding_writes_require_the_admin_token_when_configured() {
+    let mut state = lazy_state();
+    state.admin_token = Some(Arc::from("secret-token"));
+    let (status, _, _) = send(
+        &state,
+        "PUT",
+        "/branding?contractId=test-contract&network=testnet",
+        r#"{"brandName":"Acme"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

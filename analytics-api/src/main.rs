@@ -28,6 +28,7 @@ use tracing_subscriber::EnvFilter;
 mod admin;
 mod alert_rules;
 mod alerts;
+mod branding;
 mod freshness;
 mod funnel;
 mod limits;
@@ -214,6 +215,13 @@ fn app(state: AppState) -> Router {
                 .put(templates::put)
                 .delete(templates::delete)
                 .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/branding",
+            get(branding::list)
+                .put(branding::put)
+                .delete(branding::delete)
+                .layer(DefaultBodyLimit::max(branding::MAX_BODY_BYTES)),
         )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))

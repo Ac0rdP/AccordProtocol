@@ -991,7 +991,7 @@
             }
           }
         },
-        "description": "Follows every proposal created in the window through created → approved → executed, with cancelled (revoked) and expired proposals counted as the ways out. Each row is a cohort of proposals created in the window; rates are percentages (0–100). A proposal is approved once it reached its approval threshold, whatever became of it afterwards."
+        "description": "Follows every proposal created in the window through created \u2192 approved \u2192 executed, with cancelled (revoked) and expired proposals counted as the ways out. Each row is a cohort of proposals created in the window; rates are percentages (0\u2013100). A proposal is approved once it reached its approval threshold, whatever became of it afterwards."
       }
     },
     "/proposals/{id}": {
@@ -3730,6 +3730,117 @@
           }
         }
       }
+    },
+    "/branding": {
+      "get": {
+        "operationId": "listBranding",
+        "summary": "List white-label branding configurations for scoped workspaces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated workspace branding records"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      },
+      "put": {
+        "operationId": "upsertBranding",
+        "summary": "Create or update white-label branding and custom domain for a workspace",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated branding record with DNS verification token"
+          },
+          "400": {
+            "description": "Invalid branding payload or query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "resetBranding",
+        "summary": "Reset workspace branding to shared Accord defaults",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Branding reset result"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3789,33 +3900,34 @@
           "code": {
             "type": "string",
             "enum": [
-              "UNKNOWN_PARAMETER",
-              "INVALID_LIMIT",
-              "INVALID_OFFSET",
-              "INVALID_SORT",
-              "INVALID_ORDER",
-              "INVALID_STATUS",
+              "INVALID_BODY",
               "INVALID_CATEGORY",
+              "INVALID_COLOR",
+              "INVALID_CONTRACT_ID",
               "INVALID_DATE",
               "INVALID_DATE_RANGE",
-              "INVALID_CONTRACT_ID",
-              "INVALID_NETWORK",
+              "INVALID_DOMAIN",
               "INVALID_FORMAT",
-              "INVALID_PERIOD_DAYS",
-              "INVALID_SEVERITY",
               "INVALID_GROUP_BY",
-              "MISSING_PARAMETER",
-              "INVALID_BODY",
-              "INVALID_TEMPLATE_FIELD",
+              "INVALID_LIMIT",
               "INVALID_LOGO_URL",
-              "INVALID_COLOR",
-              "INVALID_SECTION",
+              "INVALID_LOOKBACK",
+              "INVALID_NETWORK",
+              "INVALID_OFFSET",
+              "INVALID_ORDER",
+              "INVALID_PERIOD_DAYS",
               "INVALID_RULE",
               "INVALID_RULE_ID",
               "INVALID_RULE_TYPE",
+              "INVALID_SECTION",
+              "INVALID_SEVERITY",
+              "INVALID_SORT",
               "INVALID_SOURCE",
-              "INVALID_LOOKBACK",
-              "RATE_LIMITED"
+              "INVALID_STATUS",
+              "INVALID_TEMPLATE_FIELD",
+              "MISSING_PARAMETER",
+              "RATE_LIMITED",
+              "UNKNOWN_PARAMETER"
             ]
           }
         }
@@ -4398,19 +4510,19 @@
           },
           "approvalRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "executionRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "cancellationRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "approvalToExecutionRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "avgSecondsToExecute": {
             "type": "number",
