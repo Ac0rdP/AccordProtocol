@@ -1,6 +1,7 @@
 {
   "nav": {
     "dashboard": "panel",
+    "portfolio": "cartera",
     "recurring": "recurrentes",
     "history": "historial",
     "audit": "registro de auditoría",

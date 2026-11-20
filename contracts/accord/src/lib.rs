@@ -224,6 +224,11 @@ pub struct ProposalApprovalProgress {
     pub approval_weight: u32,
     pub quorum_weight: u32,
     pub total_weight: u32,
+    pub abstention_count: u32,
+    pub abstention_weight: u32,
+    pub participation_weight: u32,
+    pub soft_approval_count: u32,
+    pub soft_approval_weight: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,6 +334,58 @@ pub struct ProposalRevokedEvent {
     pub approvals: u32,
     pub weight: u32,
     pub cumulative_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalAbstainedEvent {
+    pub id: u64,
+    pub abstainer: Address,
+    pub abstention_count: u32,
+    pub weight: u32,
+    pub cumulative_abstention_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalAbstentionRevokedEvent {
+    pub id: u64,
+    pub abstainer: Address,
+    pub abstention_count: u32,
+    pub weight: u32,
+    pub cumulative_abstention_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalSoftApprovedEvent {
+    pub id: u64,
+    pub supporter: Address,
+    pub soft_approval_count: u32,
+    pub weight: u32,
+    pub cumulative_soft_approval_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalSoftApprovalRevokedEvent {
+    pub id: u64,
+    pub supporter: Address,
+    pub soft_approval_count: u32,
+    pub weight: u32,
+    pub cumulative_soft_approval_weight: u32,
+    pub participation_weight: u32,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
 }
@@ -706,6 +763,10 @@ pub enum ContractError {
     EscrowNotFound = 63,
     EscrowConditionNotMet = 64,
     EscrowFundsUnavailable = 65,
+    AlreadyAbstained = 66,
+    NotAbstained = 67,
+    AlreadySoftApproved = 68,
+    NotSoftApproved = 69,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -741,6 +802,19 @@ fn recurring_key(id: u64) -> (Symbol, u64) {
 
 fn approval_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
     (symbol_short!("APPR"), proposal_id, owner.clone())
+}
+
+/// Per-owner abstention weight for a proposal. A positive value means the
+/// owner recorded an abstention. It contributes to participation metrics only
+/// and is never added to Proposal.approvals or Proposal.approval_weight.
+fn abstention_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("ABST"), proposal_id, owner.clone())
+}
+
+/// Per-owner soft-approval weight for a proposal. Positive participation support
+/// is recorded here, but it is never added to approval/quorum weight.
+fn soft_approval_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("SOFT"), proposal_id, owner.clone())
 }
 
 fn active_count_key() -> Symbol {
@@ -820,7 +894,7 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// migrations that bring a legacy layout up to the current schema, so a
 /// deployed contract can always report the layout it actually uses. A missing
 /// key reads as `0`, meaning a pre-versioning (legacy) deployment.
-const STORAGE_SCHEMA_VERSION: u32 = 1;
+const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -834,7 +908,9 @@ const STORAGE_SCHEMA_VERSION: u32 = 1;
 ///       contract-event payload past the network's 16 KiB limit, so the
 ///       executed event now carries only `id` and `executor`; the transfer
 ///       list remains available in `ProposalCreatedEvent` and on-chain state.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
+///   3 — adds abstention events and participation fields to the abstention
+///       views. Abstentions are participation records and never approval weight.
+pub const EVENT_SCHEMA_VERSION: u32 = 3;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -958,7 +1034,7 @@ fn bump_escrow_persistent<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
 // ─── Validation Constants ────────────────────────────────────────────────────
 
 /// Contract version, bumped on each release. Queried via `get_version`.
-const CONTRACT_VERSION: u32 = 1;
+const CONTRACT_VERSION: u32 = 2;
 /// Minimum amount: 0.1 stroops of whatever token is used.
 const MIN_AMOUNT: i128 = 1;
 /// Max description: 300 characters.
@@ -1537,6 +1613,95 @@ fn write_approval_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u
         env.storage().persistent().set(&key, &weight);
         bump_persistent(env, &key);
     }
+}
+
+fn read_abstention_weight(env: &Env, proposal_id: u64, owner: &Address) -> u32 {
+    let key = abstention_key(proposal_id, owner);
+    let weight: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    if weight > 0 {
+        bump_persistent(env, &key);
+    }
+    weight
+}
+
+fn write_abstention_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u32) {
+    let key = abstention_key(proposal_id, owner);
+    if weight == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &weight);
+        bump_persistent(env, &key);
+    }
+}
+
+fn has_abstention_weight(env: &Env, proposal_id: u64, owner: &Address) -> bool {
+    read_abstention_weight(env, proposal_id, owner) > 0
+}
+
+fn read_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address) -> u32 {
+    let key = soft_approval_key(proposal_id, owner);
+    let weight: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    if weight > 0 {
+        bump_persistent(env, &key);
+    }
+    weight
+}
+
+fn write_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u32) {
+    let key = soft_approval_key(proposal_id, owner);
+    if weight == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &weight);
+        bump_persistent(env, &key);
+    }
+}
+
+fn has_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address) -> bool {
+    read_soft_approval_weight(env, proposal_id, owner) > 0
+}
+
+fn participation_progress(
+    env: &Env,
+    proposal_id: u64,
+) -> Result<(u32, u32, u32, u32, u32), ContractError> {
+    let owners = read_owners_map(env)?;
+    let mut abstention_count = 0_u32;
+    let mut abstention_weight = 0_u32;
+    let mut participation_weight = 0_u32;
+    let mut soft_approval_count = 0_u32;
+    let mut soft_approval_weight = 0_u32;
+
+    for owner in owners.keys().iter() {
+        let approved = read_approval_weight(env, proposal_id, &owner) > 0;
+        let abstained_weight = read_abstention_weight(env, proposal_id, &owner);
+        let soft_weight = read_soft_approval_weight(env, proposal_id, &owner);
+        if abstained_weight > 0 {
+            abstention_count = checked_weight_add(abstention_count, 1)?;
+            abstention_weight = checked_weight_add(abstention_weight, abstained_weight)?;
+        }
+        if soft_weight > 0 {
+            soft_approval_count = checked_weight_add(soft_approval_count, 1)?;
+            soft_approval_weight = checked_weight_add(soft_approval_weight, soft_weight)?;
+        }
+        if approved {
+            participation_weight = checked_weight_add(
+                participation_weight,
+                read_approval_weight(env, proposal_id, &owner),
+            )?;
+        } else if abstained_weight > 0 {
+            participation_weight = checked_weight_add(participation_weight, abstained_weight)?;
+        } else if soft_weight > 0 {
+            participation_weight = checked_weight_add(participation_weight, soft_weight)?;
+        }
+    }
+    Ok((
+        abstention_count,
+        abstention_weight,
+        participation_weight,
+        soft_approval_count,
+        soft_approval_weight,
+    ))
 }
 
 fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128) {
@@ -2415,6 +2580,36 @@ impl AccordContract {
                 version: EVENT_SCHEMA_VERSION,
                 owner_count: owners.len(),
                 role_version: RBAC_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    /// One-time migration to the abstention/soft-approval storage layout.
+    /// Existing approvals remain unchanged; the new per-proposal/per-owner
+    /// `ABST` and `SOFT` entries are absent until an owner first records that
+    /// vote. This migration only stamps the layout version and is therefore
+    /// safe for existing proposals.
+    pub fn migrate_to_abstention_storage(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= STORAGE_SCHEMA_VERSION {
+            return Err(ContractError::AlreadyMigrated);
+        }
+        require_weighted_approvers(&env, &approvers)?;
+        require_not_frozen(&env)?;
+        write_storage_version(&env);
+
+        env.events().publish(
+            (symbol_short!("migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
             },
         );
         Ok(())
@@ -3536,6 +3731,7 @@ impl AccordContract {
             require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
+        require_not_frozen(&env)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         // Refresh derived status so an already-expired proposal is caught here.
@@ -3550,6 +3746,12 @@ impl AccordContract {
 
         if read_approval_weight(&env, proposal_id, &approver) > 0 {
             return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &approver) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &approver) {
+            return Err(ContractError::AlreadySoftApproved);
         }
 
         // Count the approver's effective (delegation-aware) weight, not just
@@ -3598,6 +3800,238 @@ impl AccordContract {
         Self::approve(env, approver, proposal_id)
     }
 
+    /// Records an owner's positive but non-binding support for a proposal.
+    /// Soft approval contributes to participation/support views only; it adds
+    /// no proposal approval weight and can never make a proposal Ready.
+    pub fn soft_approve(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        supporter.require_auth();
+        let raw_weight = {
+            require_role(&env, &supporter, Role::Approver)?;
+            require_owner_and_weight(&env, &supporter)?
+        };
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let proposal = proposal;
+        let mut status = proposal.status;
+        status = derive_status(&env, &proposal);
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        if read_approval_weight(&env, proposal_id, &supporter) > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &supporter) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &supporter) {
+            return Err(ContractError::AlreadySoftApproved);
+        }
+
+        let owners = read_owners_map(&env)?;
+        let weight =
+            compute_effective_weight(&env, &owners, &supporter, raw_weight)?;
+        write_soft_approval_weight(&env, proposal_id, &supporter, weight);
+
+        let (
+            _abstention_count,
+            _abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("softapr"),),
+            ProposalSoftApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                supporter,
+                soft_approval_count,
+                weight,
+                cumulative_soft_approval_weight: soft_approval_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Relayer entrypoint for an owner-authorized soft approval.
+    pub fn soft_approve_sponsored(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::soft_approve(env, supporter, proposal_id)
+    }
+
+    /// Revokes the caller's soft approval. This never changes binding approval
+    /// weight or proposal Ready/Pending status.
+    pub fn revoke_soft_approval(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        supporter.require_auth();
+        require_role(&env, &supporter, Role::Approver)?;
+        require_owner_and_weight(&env, &supporter)?;
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        let weight = read_soft_approval_weight(&env, proposal_id, &supporter);
+        if weight == 0 {
+            return Err(ContractError::NotSoftApproved);
+        }
+        write_soft_approval_weight(&env, proposal_id, &supporter, 0);
+
+        let (
+            _abstention_count,
+            _abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("unsftap"),),
+            ProposalSoftApprovalRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                supporter,
+                soft_approval_count,
+                weight,
+                cumulative_soft_approval_weight: soft_approval_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Records an owner's abstention on a proposal. Abstentions count toward
+    /// participation reporting and never increase approval weight or quorum.
+    pub fn abstain(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        abstainer.require_auth();
+        let raw_weight = {
+            require_role(&env, &abstainer, Role::Approver)?;
+            require_owner_and_weight(&env, &abstainer)?
+        };
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        if read_approval_weight(&env, proposal_id, &abstainer) > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &abstainer) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &abstainer) {
+            return Err(ContractError::AlreadySoftApproved);
+        }
+
+        let owners = read_owners_map(&env)?;
+        let weight =
+            compute_effective_weight(&env, &owners, &abstainer, raw_weight)?;
+        write_abstention_weight(&env, proposal_id, &abstainer, weight);
+
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            _soft_approval_count,
+            _soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("abstain"),),
+            ProposalAbstainedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                abstainer,
+                abstention_count,
+                weight,
+                cumulative_abstention_weight: abstention_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Relayer entrypoint for an owner-authorized abstention.
+    pub fn abstain_sponsored(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::abstain(env, abstainer, proposal_id)
+    }
+
+    /// Revokes the caller's abstention while leaving approval weight unchanged.
+    pub fn revoke_abstention(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        abstainer.require_auth();
+        require_role(&env, &abstainer, Role::Approver)?;
+        require_owner_and_weight(&env, &abstainer)?;
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        let weight = read_abstention_weight(&env, proposal_id, &abstainer);
+        if weight == 0 {
+            return Err(ContractError::NotAbstained);
+        }
+        write_abstention_weight(&env, proposal_id, &abstainer, 0);
+
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            _soft_approval_count,
+            _soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("unabst"),),
+            ProposalAbstentionRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                abstainer,
+                abstention_count,
+                weight,
+                cumulative_abstention_weight: abstention_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
     /// Revokes the caller's approval from a proposal that has not yet been executed.
     ///
     /// The proposal status is recalculated after the revoke: if approvals fall below
@@ -3606,6 +4040,7 @@ impl AccordContract {
         approver.require_auth();
         require_role(&env, &approver, Role::Approver)?;
         require_owner_and_weight(&env, &approver)?;
+        require_not_frozen(&env)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         proposal.status = derive_status(&env, &proposal);
@@ -5186,6 +5621,37 @@ impl AccordContract {
         Ok(approvers)
     }
 
+    /// Returns the addresses of owners who have currently recorded abstentions
+    /// for `proposal_id`. An abstention is never included in the approver list.
+    pub fn get_abstainers(env: Env, proposal_id: u64) -> Result<Vec<Address>, ContractError> {
+        let owners = read_owners_map(&env)?;
+        read_proposal(&env, proposal_id)?;
+
+        let mut abstainers = Vec::new(&env);
+        for owner in owners.keys().iter() {
+            if read_abstention_weight(&env, proposal_id, &owner) > 0 {
+                abstainers.push_back(owner);
+            }
+        }
+        Ok(abstainers)
+    }
+
+    /// Returns the addresses of owners who have recorded non-binding soft
+    /// approval for `proposal_id`. Soft supporters are never approvers and
+    /// never alter quorum or binding approval weight.
+    pub fn get_soft_approvers(env: Env, proposal_id: u64) -> Result<Vec<Address>, ContractError> {
+        let owners = read_owners_map(&env)?;
+        read_proposal(&env, proposal_id)?;
+
+        let mut supporters = Vec::new(&env);
+        for owner in owners.keys().iter() {
+            if read_soft_approval_weight(&env, proposal_id, &owner) > 0 {
+                supporters.push_back(owner);
+            }
+        }
+        Ok(supporters)
+    }
+
     /// Returns the contract version. Useful for frontends and upgrade scripts
     /// that need to know which version of the contract is deployed.
     pub fn get_version(_env: Env) -> u32 {
@@ -5455,6 +5921,16 @@ impl AccordContract {
         read_approval_weight(&env, proposal_id, &owner) > 0
     }
 
+    /// Returns whether `owner` has currently recorded an abstention.
+    pub fn has_abstained(env: Env, proposal_id: u64, owner: Address) -> bool {
+        read_abstention_weight(&env, proposal_id, &owner) > 0
+    }
+
+    /// Returns whether `owner` has currently recorded non-binding soft approval.
+    pub fn has_soft_approved(env: Env, proposal_id: u64, owner: Address) -> bool {
+        read_soft_approval_weight(&env, proposal_id, &owner) > 0
+    }
+
     /// Returns the current approval progress for a proposal: the cumulative
     /// approval weight, the required quorum weight, and the total weight of
     /// all owners.
@@ -5463,11 +5939,33 @@ impl AccordContract {
         proposal_id: u64,
     ) -> Result<ProposalApprovalProgress, ContractError> {
         let proposal = read_proposal(&env, proposal_id)?;
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
         Ok(ProposalApprovalProgress {
             approval_weight: proposal.approvals,
             quorum_weight: proposal.quorum_weight,
             total_weight: read_total_weight(&env),
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
         })
+    }
+
+    /// Participation-oriented alias for `get_proposal_approval_progress`.
+    /// Approval weight remains the source of quorum; abstention fields are
+    /// informational participation records.
+    pub fn get_proposal_participation_progress(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<ProposalApprovalProgress, ContractError> {
+        Self::get_proposal_approval_progress(env, proposal_id)
     }
 
     /// Registers the network-specific Stellar Asset Contract for a classic

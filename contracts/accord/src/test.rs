@@ -31,6 +31,130 @@ fn non_snapshot_env() -> Env {
 }
 
 #[test]
+fn abstention_counts_participation_but_never_approval_weight() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "abstention"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert!(client.has_abstained(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.abstention_count, 1);
+    assert_eq!(progress.abstention_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+
+    let abstainers = client.get_abstainers(&id);
+    assert_eq!(abstainers.len(), 1);
+    assert_eq!(abstainers.get(0), Some(owner_a.clone()));
+    assert_eq!(client.get_approvers(&id).unwrap_or(Vec::new(&env)).len(), 0);
+}
+
+#[test]
+fn abstention_and_approval_are_mutually_exclusive_and_typed() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "exclusive vote"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+
+    client.revoke_abstention(&owner_a, &id);
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_abstention(&owner_a, &id),
+        Err(Ok(ContractError::NotAbstained))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+#[test]
+fn soft_approval_is_support_only_and_mutually_exclusive() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "soft support"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.soft_approve(&owner_a, &id);
+    assert!(client.has_soft_approved(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.get_proposal(&id).status,
+        ProposalStatus::Pending
+    );
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.soft_approval_count, 1);
+    assert_eq!(progress.soft_approval_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+    assert_eq!(client.get_approvers(&id).unwrap_or(Vec::new(&env)).len(), 0);
+    assert_eq!(client.get_soft_approvers(&id).unwrap().len(), 1);
+
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+
+    client.revoke_soft_approval(&owner_a, &id);
+    assert!(!client.has_soft_approved(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_soft_approval(&owner_a, &id),
+        Err(Ok(ContractError::NotSoftApproved))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+
+    client.revoke(&owner_a, &id);
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+}
+
+#[test]
 fn recovery_blocks_value_but_allows_governance() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let guardian = Address::generate(&env);
@@ -2361,7 +2485,7 @@ fn expired_status_takes_priority_over_ready() {
 #[test]
 fn get_version_returns_current_version() {
     let (_, client, _, _, _, _, _) = setup(2);
-    assert_eq!(client.get_version(), 1);
+    assert_eq!(client.get_version(), 2);
 }
 
 // ─── Storage-schema version (#737) ────────────────────────────────────────────

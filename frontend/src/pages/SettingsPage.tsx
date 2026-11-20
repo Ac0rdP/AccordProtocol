@@ -24,6 +24,7 @@ type SettingsPageProps = {
   stats: DashboardStat[];
   walletAddress: string | null;
   ownerAddresses: string[];
+  contractId?: string;
   onProposalSubmitted: () => void;
   /** Forces the loading state (used by the page-state matrix tests). */
   loading?: boolean;
@@ -36,12 +37,16 @@ export function SettingsPage({
   stats,
   walletAddress,
   ownerAddresses,
+  contractId: selectedContractId,
   onProposalSubmitted,
   loading = false,
   error = null,
   onRetry,
 }: SettingsPageProps) {
-  const contractId = import.meta.env.VITE_CONTRACT_ADDRESS ?? "Unknown";
+  const contractId =
+    selectedContractId ??
+    (import.meta.env.VITE_CONTRACT_ADDRESS as string | undefined) ??
+    "Unknown";
   const network = import.meta.env.VITE_NETWORK_PASSPHRASE ?? "Unknown";
   const threshold = stats.find((stat) => stat.label === "Threshold")?.value ?? "Unknown";
 

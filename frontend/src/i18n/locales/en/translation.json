@@ -1,6 +1,7 @@
 {
   "nav": {
     "dashboard": "dashboard",
+    "portfolio": "portfolio",
     "recurring": "recurring",
     "history": "history",
     "audit": "audit log",

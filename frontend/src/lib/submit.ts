@@ -14,9 +14,9 @@ import {
   shortenAddr,
 } from "./soroban";
 import { signTx } from "./wallet";
+import { getActiveContractId } from "./activeContract";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
-const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
 const NETWORK_PASSPHRASE = import.meta.env.VITE_NETWORK_PASSPHRASE as string;
 // Any funded testnet account - used only to build simulation transactions (no signing).
 const SIM_SOURCE = import.meta.env.VITE_SIM_SOURCE as string;
@@ -60,7 +60,7 @@ async function submitTransaction(
 
   const execution = (async () => {
     const account = await server.getAccount(callerAddress);
-    const contract = new Contract(CONTRACT_ID);
+    const contract = new Contract(getActiveContractId());
 
     const tx = new TransactionBuilder(account, {
       fee: "100000",
@@ -186,7 +186,7 @@ async function simulateOnly(
   args: xdr.ScVal[]
 ): Promise<number> {
   const account = await server.getAccount(callerAddress);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
 
   const tx = new TransactionBuilder(account, {
     fee: "100000",
@@ -213,7 +213,7 @@ async function simulateView(
   args: xdr.ScVal[] = []
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
   const tx = new TransactionBuilder(account, {
     fee: "100",
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -442,7 +442,7 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,
@@ -627,7 +627,7 @@ export async function buildAndAssembleTx(
   args: xdr.ScVal[]
 ): Promise<string> {
   const account = await server.getAccount(callerAddress);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
 
   const tx = new TransactionBuilder(account, {
     fee: "100000",
