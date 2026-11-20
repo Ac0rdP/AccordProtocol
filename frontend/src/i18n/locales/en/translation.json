@@ -1,6 +1,7 @@
 {
   "nav": {
     "dashboard": "dashboard",
+    "inbox": "proposal inbox",
     "recurring": "recurring",
     "history": "history",
     "audit": "audit log",

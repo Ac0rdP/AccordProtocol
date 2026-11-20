@@ -45,6 +45,8 @@ export type Proposal = {
   amount: string;
   /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
   rawAmount?: string;
+  tokenAddress?: string;
+  recipientAddress?: string;
   token: string;
   description: string;
   approvals: number;
@@ -62,6 +64,8 @@ export type Proposal = {
   approverWeights?: Record<string, number>;
   executedAt?: string | null;
   category?: ProposalCategory;
+  /** SHA-256 digest stored by the contract for an off-chain IPFS attachment. */
+  attachmentHash?: string;
 };
 
 export type Owner = {
