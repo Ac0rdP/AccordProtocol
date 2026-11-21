@@ -1,6 +1,8 @@
 {
   "nav": {
     "dashboard": "dashboard",
+    "portfolio": "portfolio",
+    "inbox": "proposal inbox",
     "recurring": "recurring",
     "history": "history",
     "audit": "audit log",
@@ -9,6 +11,7 @@
     "bulk": "bulk actions",
     "availability": "availability",
     "templates": "templates",
+    "integrations": "integrations",
     "notifications": "notifications",
     "alerts": "alert rules",
     "freshness": "data freshness",

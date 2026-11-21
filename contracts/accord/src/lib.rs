@@ -147,6 +147,10 @@ pub enum ProposalKind {
     SetSpendingLimit(Address, Address, i128),
     /// SetSpendingLimitWindow(owner, token, limit, window_secs)
     SetSpendingLimitWindow(Address, Address, i128, u64),
+    /// SetTreasurySpendingLimit(token, limit, window_secs) — multisig-wide cap on the
+    /// cumulative rolling outflows of `token` from the treasury. A limit of 0 blocks
+    /// that token entirely from leaving the treasury.
+    SetTreasurySpendingLimit(Address, i128, u64),
     /// ChangeOwnerWeight(target_owner, new_weight) — updates an existing owner's
     /// voting weight. Zero is never valid: remove an owner instead of leaving a
     /// listed owner unable to participate in governance.
@@ -227,6 +231,11 @@ pub struct ProposalApprovalProgress {
     pub approval_weight: u32,
     pub quorum_weight: u32,
     pub total_weight: u32,
+    pub abstention_count: u32,
+    pub abstention_weight: u32,
+    pub participation_weight: u32,
+    pub soft_approval_count: u32,
+    pub soft_approval_weight: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -453,6 +462,58 @@ pub struct ProposalRevokedEvent {
     pub approvals: u32,
     pub weight: u32,
     pub cumulative_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalAbstainedEvent {
+    pub id: u64,
+    pub abstainer: Address,
+    pub abstention_count: u32,
+    pub weight: u32,
+    pub cumulative_abstention_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalAbstentionRevokedEvent {
+    pub id: u64,
+    pub abstainer: Address,
+    pub abstention_count: u32,
+    pub weight: u32,
+    pub cumulative_abstention_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalSoftApprovedEvent {
+    pub id: u64,
+    pub supporter: Address,
+    pub soft_approval_count: u32,
+    pub weight: u32,
+    pub cumulative_soft_weight: u32,
+    pub participation_weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalSoftApprovalRevokedEvent {
+    pub id: u64,
+    pub supporter: Address,
+    pub soft_approval_count: u32,
+    pub weight: u32,
+    pub cumulative_soft_weight: u32,
+    pub participation_weight: u32,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
 }
@@ -756,6 +817,46 @@ pub struct RoleRevokedEvent {
     pub version: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetTreasuryAccounting {
+    pub token: Address,
+    pub total_spent: i128,
+    pub window_spent: i128,
+    pub spend_limit: Option<i128>,
+    pub window_secs: u64,
+    pub epoch: u64,
+    pub available_limit: Option<i128>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalDependenciesSetEvent {
+    pub id: u64,
+    pub dependencies: Vec<u64>,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TreasurySpendingLimitExecutedEvent {
+    pub token: Address,
+    pub previous_limit: Option<i128>,
+    pub new_limit: i128,
+    pub window_secs: u64,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TreasurySpendTrackedEvent {
+    pub token: Address,
+    pub amount: i128,
+    pub total_spent_window: i128,
+    pub total_spent_lifetime: i128,
+    pub version: u32,
+}
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -830,32 +931,54 @@ pub enum ContractError {
     EscrowNotFound = 63,
     EscrowConditionNotMet = 64,
     EscrowFundsUnavailable = 65,
+    /// Thrown when a proposal's parent dependency has not yet executed.
+    DependencyNotExecuted = 66,
+    /// Thrown when a proposal's parent dependency was cancelled.
+    DependencyCancelled = 67,
+    /// Thrown when a proposal's parent dependency has expired.
+    DependencyExpired = 68,
+    /// Thrown when an invalid dependency is specified (e.g., self-reference, forward reference, or non-existent proposal).
+    InvalidDependency = 69,
+    /// Thrown when duplicate dependencies are declared.
+    DuplicateDependency = 70,
+    /// Thrown when a proposal declares more than the maximum permitted number of dependencies.
+    TooManyDependencies = 71,
+    /// Thrown when a treasury outflow would exceed the per-asset rolling treasury spending limit.
+    TreasurySpendingLimitExceeded = 72,
+    /// Thrown when an invalid treasury spending limit configuration is provided.
+    InvalidSpendingLimit = 73,
+    /// Thrown when attempting an action on a dependency that cannot be found.
+    DependencyNotFound = 74,
+    AlreadyAbstained = 75,
+    NotAbstained = 76,
+    AlreadySoftApproved = 77,
+    NotSoftApproved = 78,
     /// Thrown when a requested storage schema version is not in the registry
     /// or is newer than the running contract.
-    UnsupportedSchemaVersion = 66,
+    UnsupportedSchemaVersion = 79,
     /// Thrown when a migration would skip an intermediate schema version or
     /// move backwards.
-    SkippedSchemaVersion = 67,
+    SkippedSchemaVersion = 80,
     /// Thrown when the caller's expected current schema version is stale.
-    SchemaVersionMismatch = 68,
+    SchemaVersionMismatch = 81,
     /// Thrown when a legacy deployment must run its legacy migrations first.
-    LegacyMigrationRequired = 69,
+    LegacyMigrationRequired = 82,
     /// Thrown when an owner rotation is executed before its activation delay.
-    OwnerRotationDelayActive = 70,
+    OwnerRotationDelayActive = 83,
     /// Thrown when social recovery is attempted without a configured guardian
     /// quorum.
-    GuardianQuorumNotConfigured = 71,
+    GuardianQuorumNotConfigured = 84,
     /// Thrown when a guardian quorum is configured with invalid membership or
     /// threshold.
-    InvalidGuardianQuorum = 72,
+    InvalidGuardianQuorum = 85,
     /// Thrown when the caller is not a configured recovery guardian.
-    NotGuardian = 73,
+    NotGuardian = 86,
     /// Thrown when a social-recovery request does not exist.
-    RecoveryRequestNotFound = 74,
+    RecoveryRequestNotFound = 87,
     /// Thrown when a social-recovery request has not reached quorum yet.
-    RecoveryRequestNotReady = 75,
+    RecoveryRequestNotReady = 88,
     /// Thrown when social recovery is executed before its delay has elapsed.
-    RecoveryDelayActive = 76,
+    RecoveryDelayActive = 89,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -891,6 +1014,19 @@ fn recurring_key(id: u64) -> (Symbol, u64) {
 
 fn approval_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
     (symbol_short!("APPR"), proposal_id, owner.clone())
+}
+
+/// Per-owner abstention weight for a proposal. A positive value means the
+/// owner recorded an abstention. It contributes to participation metrics only
+/// and is never added to Proposal.approvals or Proposal.approval_weight.
+fn abstention_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("ABST"), proposal_id, owner.clone())
+}
+
+/// Per-owner soft-approval weight for a proposal. Positive participation support
+/// is recorded here, but it is never added to approval/quorum weight.
+fn soft_approval_key(proposal_id: u64, owner: &Address) -> (Symbol, u64, Address) {
+    (symbol_short!("SOFT"), proposal_id, owner.clone())
 }
 
 fn active_count_key() -> Symbol {
@@ -990,6 +1126,9 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// migrations that bring a legacy layout up to the current schema, so a
 /// deployed contract can always report the layout it actually uses. A missing
 /// key reads as `0`, meaning a pre-versioning (legacy) deployment.
+/// Version 2 introduces proposal dependency graphs, per-asset treasury accounting and
+/// spend limits, additive per-proposal abstention and soft-approval records,
+/// scoped freezes, guardian-quorum social recovery, and staged owner rotation.
 const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Every storage layout this contract can read or migrate to. `0` is the
@@ -1021,7 +1160,9 @@ const MAX_GUARDIANS: u32 = 10;
 ///       contract-event payload past the network's 16 KiB limit, so the
 ///       executed event now carries only `id` and `executor`; the transfer
 ///       list remains available in `ProposalCreatedEvent` and on-chain state.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
+///   3 — adds abstention events and participation fields to the abstention
+///       views. Abstentions are participation records and never approval weight.
+pub const EVENT_SCHEMA_VERSION: u32 = 3;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1049,6 +1190,26 @@ fn spent_tracking_key(owner: &Address, token: &Address) -> (Symbol, Address, Add
 
 fn spending_window_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
     (symbol_short!("SWIND"), owner.clone(), token.clone())
+}
+
+fn proposal_dependencies_key(proposal_id: u64) -> (Symbol, u64) {
+    (symbol_short!("PDEP"), proposal_id)
+}
+
+fn treasury_spending_limit_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("TRLIM"), token.clone())
+}
+
+fn treasury_spending_window_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("TRWIND"), token.clone())
+}
+
+fn treasury_spent_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("TRSPENT"), token.clone())
+}
+
+fn treasury_total_spent_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("TRTOT"), token.clone())
 }
 
 fn classic_asset_key(asset: &Symbol) -> (Symbol, Symbol) {
@@ -1145,13 +1306,15 @@ fn bump_escrow_persistent<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
 // ─── Validation Constants ────────────────────────────────────────────────────
 
 /// Contract version, bumped on each release. Queried via `get_version`.
-const CONTRACT_VERSION: u32 = 1;
+const CONTRACT_VERSION: u32 = 2;
 /// Minimum amount: 0.1 stroops of whatever token is used.
 const MIN_AMOUNT: i128 = 1;
 /// Max description: 300 characters.
 const MAX_DESCRIPTION_LEN: u32 = 300;
 /// Maximum active (Pending + Ready) proposals at once to bound storage cost.
 const MAX_ACTIVE_PROPOSALS: u32 = 50;
+/// Maximum dependencies a single proposal may declare.
+const MAX_PROPOSAL_DEPENDENCIES: u32 = 10;
 /// Maximum number of individual transfers in one proposal.
 const MAX_BATCH_TRANSFERS: u32 = 50;
 /// Maximum owners in a multisig wallet.
@@ -1769,6 +1932,95 @@ fn write_approval_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u
     }
 }
 
+fn read_abstention_weight(env: &Env, proposal_id: u64, owner: &Address) -> u32 {
+    let key = abstention_key(proposal_id, owner);
+    let weight: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    if weight > 0 {
+        bump_persistent(env, &key);
+    }
+    weight
+}
+
+fn write_abstention_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u32) {
+    let key = abstention_key(proposal_id, owner);
+    if weight == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &weight);
+        bump_persistent(env, &key);
+    }
+}
+
+fn has_abstention_weight(env: &Env, proposal_id: u64, owner: &Address) -> bool {
+    read_abstention_weight(env, proposal_id, owner) > 0
+}
+
+fn read_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address) -> u32 {
+    let key = soft_approval_key(proposal_id, owner);
+    let weight: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    if weight > 0 {
+        bump_persistent(env, &key);
+    }
+    weight
+}
+
+fn write_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address, weight: u32) {
+    let key = soft_approval_key(proposal_id, owner);
+    if weight == 0 {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &weight);
+        bump_persistent(env, &key);
+    }
+}
+
+fn has_soft_approval_weight(env: &Env, proposal_id: u64, owner: &Address) -> bool {
+    read_soft_approval_weight(env, proposal_id, owner) > 0
+}
+
+fn participation_progress(
+    env: &Env,
+    proposal_id: u64,
+) -> Result<(u32, u32, u32, u32, u32), ContractError> {
+    let owners = read_owners_map(env)?;
+    let mut abstention_count = 0_u32;
+    let mut abstention_weight = 0_u32;
+    let mut participation_weight = 0_u32;
+    let mut soft_approval_count = 0_u32;
+    let mut soft_approval_weight = 0_u32;
+
+    for owner in owners.keys().iter() {
+        let approved = read_approval_weight(env, proposal_id, &owner) > 0;
+        let abstained_weight = read_abstention_weight(env, proposal_id, &owner);
+        let soft_weight = read_soft_approval_weight(env, proposal_id, &owner);
+        if abstained_weight > 0 {
+            abstention_count = checked_weight_add(abstention_count, 1)?;
+            abstention_weight = checked_weight_add(abstention_weight, abstained_weight)?;
+        }
+        if soft_weight > 0 {
+            soft_approval_count = checked_weight_add(soft_approval_count, 1)?;
+            soft_approval_weight = checked_weight_add(soft_approval_weight, soft_weight)?;
+        }
+        if approved {
+            participation_weight = checked_weight_add(
+                participation_weight,
+                read_approval_weight(env, proposal_id, &owner),
+            )?;
+        } else if abstained_weight > 0 {
+            participation_weight = checked_weight_add(participation_weight, abstained_weight)?;
+        } else if soft_weight > 0 {
+            participation_weight = checked_weight_add(participation_weight, soft_weight)?;
+        }
+    }
+    Ok((
+        abstention_count,
+        abstention_weight,
+        participation_weight,
+        soft_approval_count,
+        soft_approval_weight,
+    ))
+}
+
 fn write_spending_limit(env: &Env, owner: &Address, token: &Address, limit: i128) {
     let key = spending_limit_key(owner, token);
     env.storage().persistent().set(&key, &limit);
@@ -1871,6 +2123,182 @@ fn effective_spent(env: &Env, owner: &Address, token: &Address) -> i128 {
         return 0;
     }
     tracker.spent
+}
+
+fn read_proposal_dependencies(env: &Env, proposal_id: u64) -> Vec<u64> {
+    let key = proposal_dependencies_key(proposal_id);
+    let deps: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    deps
+}
+
+fn write_proposal_dependencies(env: &Env, proposal_id: u64, dependencies: &Vec<u64>) {
+    let key = proposal_dependencies_key(proposal_id);
+    if dependencies.is_empty() {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, dependencies);
+        bump_persistent(env, &key);
+    }
+}
+
+fn validate_proposal_dependencies(
+    env: &Env,
+    proposal_id: u64,
+    dependencies: &Vec<u64>,
+) -> Result<(), ContractError> {
+    let count = dependencies.len();
+    if count > MAX_PROPOSAL_DEPENDENCIES {
+        return Err(ContractError::TooManyDependencies);
+    }
+    for i in 0..count {
+        let dep_id = dependencies.get(i).unwrap();
+        if dep_id == proposal_id || dep_id >= proposal_id {
+            return Err(ContractError::InvalidDependency);
+        }
+        for j in (i + 1)..count {
+            if dependencies.get(j).unwrap() == dep_id {
+                return Err(ContractError::DuplicateDependency);
+            }
+        }
+        let dep_prop = read_proposal(env, dep_id)?;
+        let status = if dep_prop.status == ProposalStatus::Executed
+            || dep_prop.status == ProposalStatus::Cancelled
+        {
+            dep_prop.status
+        } else {
+            derive_status(env, &dep_prop)
+        };
+        if status == ProposalStatus::Cancelled {
+            return Err(ContractError::DependencyCancelled);
+        }
+        if status == ProposalStatus::Expired {
+            return Err(ContractError::DependencyExpired);
+        }
+    }
+    Ok(())
+}
+
+fn read_treasury_spending_limit(env: &Env, token: &Address) -> Option<i128> {
+    let key = treasury_spending_limit_key(token);
+    let limit: Option<i128> = env.storage().persistent().get(&key);
+    if limit.is_some() {
+        bump_persistent(env, &key);
+    }
+    limit
+}
+
+fn write_treasury_spending_limit(env: &Env, token: &Address, limit: i128) {
+    let key = treasury_spending_limit_key(token);
+    env.storage().persistent().set(&key, &limit);
+    bump_persistent(env, &key);
+}
+
+fn read_treasury_spending_window(env: &Env, token: &Address) -> u64 {
+    let key = treasury_spending_window_key(token);
+    let window = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SPENDING_WINDOW);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    window
+}
+
+fn write_treasury_spending_window(env: &Env, token: &Address, window_secs: u64) {
+    let key = treasury_spending_window_key(token);
+    env.storage().persistent().set(&key, &window_secs);
+    bump_persistent(env, &key);
+}
+
+fn read_treasury_spent_tracker(env: &Env, token: &Address) -> SpentTracker {
+    let key = treasury_spent_key(token);
+    let tracker = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 });
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    tracker
+}
+
+fn write_treasury_spent_tracker(env: &Env, token: &Address, tracker: &SpentTracker) {
+    let key = treasury_spent_key(token);
+    env.storage().persistent().set(&key, tracker);
+    bump_persistent(env, &key);
+}
+
+fn read_treasury_total_spent(env: &Env, token: &Address) -> i128 {
+    let key = treasury_total_spent_key(token);
+    let total = env.storage().persistent().get(&key).unwrap_or(0_i128);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    total
+}
+
+fn write_treasury_total_spent(env: &Env, token: &Address, total: i128) {
+    let key = treasury_total_spent_key(token);
+    env.storage().persistent().set(&key, &total);
+    bump_persistent(env, &key);
+}
+
+fn effective_treasury_spent(env: &Env, token: &Address) -> i128 {
+    let tracker = read_treasury_spent_tracker(env, token);
+    if tracker.epoch == 0 {
+        return 0;
+    }
+    let now = env.ledger().timestamp();
+    let window = read_treasury_spending_window(env, token);
+    if now > tracker.epoch.saturating_add(window) {
+        return 0;
+    }
+    tracker.spent
+}
+
+fn record_treasury_spend(env: &Env, token: &Address, amount: i128) -> Result<(), ContractError> {
+    let now = env.ledger().timestamp();
+    let tracker = read_treasury_spent_tracker(env, token);
+    let window = read_treasury_spending_window(env, token);
+    let expired = tracker.epoch == 0 || now > tracker.epoch.saturating_add(window);
+    let epoch = if expired { now } else { tracker.epoch };
+    let spent = if expired {
+        amount
+    } else {
+        tracker
+            .spent
+            .checked_add(amount)
+            .ok_or(ContractError::ArithmeticError)?
+    };
+    write_treasury_spent_tracker(env, token, &SpentTracker { spent, epoch });
+
+    let current_total = read_treasury_total_spent(env, token);
+    let new_total = current_total
+        .checked_add(amount)
+        .ok_or(ContractError::ArithmeticError)?;
+    write_treasury_total_spent(env, token, new_total);
+
+    env.events().publish(
+        (symbol_short!("tr_spnt"),),
+        TreasurySpendTrackedEvent {
+            version: EVENT_SCHEMA_VERSION,
+            token: token.clone(),
+            amount,
+            total_spent_window: spent,
+            total_spent_lifetime: new_total,
+        },
+    );
+    Ok(())
 }
 
 /// Returns the current number of active proposals read directly from the persisted `ACTCNT` storage.
@@ -2030,6 +2458,7 @@ fn proposal_kind_tag(kind: &ProposalKind) -> ProposalKindTag {
         ProposalKind::ChangeThreshold(_)
         | ProposalKind::SetSpendingLimit(_, _, _)
         | ProposalKind::SetSpendingLimitWindow(_, _, _, _)
+        | ProposalKind::SetTreasurySpendingLimit(_, _, _)
         | ProposalKind::GrantRole(_, _)
         | ProposalKind::RevokeRole(_, _)
         | ProposalKind::SetAssetRegistryEnabled(_)
@@ -2818,6 +3247,16 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Compatibility entrypoint for deployments built from the abstention-only
+    /// branch. It stamps the current registry version through `migrate_storage`.
+    pub fn migrate_to_abstention_storage(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        let current = read_storage_version(&env);
+        Self::migrate_storage(env, approvers, current, STORAGE_SCHEMA_VERSION)
+    }
+
     /// Create a recurring schedule for periodic disbursements.
     pub fn create_recurring_schedule(
         env: Env,
@@ -3088,6 +3527,77 @@ impl AccordContract {
         Ok(id)
     }
 
+    /// Creates a transfer proposal with an explicit list of parent proposal dependencies.
+    /// The proposal cannot execute until all listed dependencies have reached `Executed` status.
+    /// If any dependency is cancelled or expired, execution is blocked.
+    pub fn create_proposal_with_deps(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+        dependencies: Vec<u64>,
+    ) -> Result<u64, ContractError> {
+        let id = Self::create_proposal(
+            env.clone(),
+            proposer.clone(),
+            transfers,
+            description,
+            deadline,
+            category,
+        )?;
+        validate_proposal_dependencies(&env, id, &dependencies)?;
+        write_proposal_dependencies(&env, id, &dependencies);
+        env.events().publish(
+            (symbol_short!("p_deps"),),
+            ProposalDependenciesSetEvent {
+                id,
+                dependencies,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Sets or updates the dependencies for an existing pending proposal.
+    /// The caller must be the proposal's original proposer and must hold the Proposer role.
+    /// Dependencies cannot be modified once approvals have begun.
+    pub fn set_proposal_dependencies(
+        env: Env,
+        proposer: Address,
+        proposal_id: u64,
+        dependencies: Vec<u64>,
+    ) -> Result<(), ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != proposer {
+            return Err(ContractError::Unauthorized);
+        }
+        if proposal.status != ProposalStatus::Pending {
+            return Err(ContractError::ProposalNotActive);
+        }
+        if proposal.approvals > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+
+        validate_proposal_dependencies(&env, proposal_id, &dependencies)?;
+        write_proposal_dependencies(&env, proposal_id, &dependencies);
+
+        env.events().publish(
+            (symbol_short!("p_deps"),),
+            ProposalDependenciesSetEvent {
+                id: proposal_id,
+                dependencies,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(())
+    }
+
 
     /// Disburses one due period for a recurring payment schedule.
     ///
@@ -3197,6 +3707,14 @@ impl AccordContract {
         if balance < disbursement_amount {
             return Err(ContractError::TransferFailed);
         }
+        if let Some(t_limit) = read_treasury_spending_limit(&env, &schedule.token) {
+            let cumulative = effective_treasury_spent(&env, &schedule.token)
+                .checked_add(actual_amount)
+                .ok_or(ContractError::ArithmeticError)?;
+            if cumulative > t_limit {
+                return Err(ContractError::TreasurySpendingLimitExceeded);
+            }
+        }
         if !transfer_succeeded(token_client.try_transfer(&treasury, &schedule.recipient, &actual_amount))
         {
             return Err(ContractError::TransferFailed);
@@ -3221,6 +3739,7 @@ impl AccordContract {
             &schedule.token,
             &SpentTracker { spent, epoch },
         );
+        record_treasury_spend(&env, &schedule.token, actual_amount)?;
 
         schedule.last_disbursed_at = now;
         // Store the checked new total — never exceeds total_cap.
@@ -3537,6 +4056,87 @@ impl AccordContract {
         let mut proposal = read_proposal(&env, id)?;
         proposal.kind = ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs);
         write_proposal(&env, &proposal);
+        Ok(id)
+    }
+
+    /// Creates a proposal to configure a rolling spending limit and window for a token in the treasury.
+    /// When executed, the total rolling outflows of `token` from the treasury across all proposals
+    /// cannot exceed `limit` within `window_secs`. A limit of 0 blocks all outflows for that token.
+    pub fn create_treasury_limit_proposal(
+        env: Env,
+        proposer: Address,
+        token: Address,
+        limit: i128,
+        window_secs: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        validate_token(&env, &token)?;
+        validate_asset_registry(&env, &token)?;
+
+        if limit < 0 {
+            return Err(ContractError::InvalidSpendingLimit);
+        }
+        if window_secs != 0 && (window_secs < MIN_SPENDING_WINDOW || window_secs > MAX_SPENDING_WINDOW) {
+            return Err(ContractError::InvalidInterval);
+        }
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::SetTreasurySpendingLimit(token, limit, window_secs),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+            attachment_hash: None,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+                attachment_hash: None,
+            },
+        );
         Ok(id)
     }
 
@@ -3974,6 +4574,7 @@ impl AccordContract {
             require_role(&env, &approver, Role::Approver)?;
             require_owner_and_weight(&env, &approver)?
         };
+        require_not_frozen(&env)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         // Refresh derived status so an already-expired proposal is caught here.
@@ -3988,6 +4589,12 @@ impl AccordContract {
 
         if read_approval_weight(&env, proposal_id, &approver) > 0 {
             return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &approver) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &approver) {
+            return Err(ContractError::AlreadySoftApproved);
         }
 
         // Count the approver's effective (delegation-aware) weight, not just
@@ -4036,6 +4643,236 @@ impl AccordContract {
         Self::approve(env, approver, proposal_id)
     }
 
+    /// Records an owner's positive but non-binding support for a proposal.
+    /// Soft approval contributes to participation/support views only; it adds
+    /// no proposal approval weight and can never make a proposal Ready.
+    pub fn soft_approve(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        supporter.require_auth();
+        let raw_weight = {
+            require_role(&env, &supporter, Role::Approver)?;
+            require_owner_and_weight(&env, &supporter)?
+        };
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let status = derive_status(&env, &proposal);
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        if read_approval_weight(&env, proposal_id, &supporter) > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &supporter) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &supporter) {
+            return Err(ContractError::AlreadySoftApproved);
+        }
+
+        let owners = read_owners_map(&env)?;
+        let weight =
+            compute_effective_weight(&env, &owners, &supporter, raw_weight)?;
+        write_soft_approval_weight(&env, proposal_id, &supporter, weight);
+
+        let (
+            _abstention_count,
+            _abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("softapr"),),
+            ProposalSoftApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                supporter,
+                soft_approval_count,
+                weight,
+                cumulative_soft_weight: soft_approval_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Relayer entrypoint for an owner-authorized soft approval.
+    pub fn soft_approve_sponsored(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::soft_approve(env, supporter, proposal_id)
+    }
+
+    /// Revokes the caller's soft approval. This never changes binding approval
+    /// weight or proposal Ready/Pending status.
+    pub fn revoke_soft_approval(
+        env: Env,
+        supporter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        supporter.require_auth();
+        require_role(&env, &supporter, Role::Approver)?;
+        require_owner_and_weight(&env, &supporter)?;
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        let weight = read_soft_approval_weight(&env, proposal_id, &supporter);
+        if weight == 0 {
+            return Err(ContractError::NotSoftApproved);
+        }
+        write_soft_approval_weight(&env, proposal_id, &supporter, 0);
+
+        let (
+            _abstention_count,
+            _abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("unsftap"),),
+            ProposalSoftApprovalRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                supporter,
+                soft_approval_count,
+                weight,
+                cumulative_soft_weight: soft_approval_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Records an owner's abstention on a proposal. Abstentions count toward
+    /// participation reporting and never increase approval weight or quorum.
+    pub fn abstain(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        abstainer.require_auth();
+        let raw_weight = {
+            require_role(&env, &abstainer, Role::Approver)?;
+            require_owner_and_weight(&env, &abstainer)?
+        };
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+        if read_approval_weight(&env, proposal_id, &abstainer) > 0 {
+            return Err(ContractError::AlreadyApproved);
+        }
+        if has_abstention_weight(&env, proposal_id, &abstainer) {
+            return Err(ContractError::AlreadyAbstained);
+        }
+        if has_soft_approval_weight(&env, proposal_id, &abstainer) {
+            return Err(ContractError::AlreadySoftApproved);
+        }
+
+        let owners = read_owners_map(&env)?;
+        let weight =
+            compute_effective_weight(&env, &owners, &abstainer, raw_weight)?;
+        write_abstention_weight(&env, proposal_id, &abstainer, weight);
+
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            _soft_approval_count,
+            _soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("abstain"),),
+            ProposalAbstainedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                abstainer,
+                abstention_count,
+                weight,
+                cumulative_abstention_weight: abstention_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
+    /// Relayer entrypoint for an owner-authorized abstention.
+    pub fn abstain_sponsored(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        Self::abstain(env, abstainer, proposal_id)
+    }
+
+    /// Revokes the caller's abstention while leaving approval weight unchanged.
+    pub fn revoke_abstention(
+        env: Env,
+        abstainer: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        abstainer.require_auth();
+        require_role(&env, &abstainer, Role::Approver)?;
+        require_owner_and_weight(&env, &abstainer)?;
+        require_not_frozen(&env)?;
+        let proposal = read_proposal(&env, proposal_id)?;
+        let mut proposal = proposal;
+        proposal.status = derive_status(&env, &proposal);
+        if !matches!(
+            proposal.status,
+            ProposalStatus::Pending | ProposalStatus::Ready
+        ) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        let weight = read_abstention_weight(&env, proposal_id, &abstainer);
+        if weight == 0 {
+            return Err(ContractError::NotAbstained);
+        }
+        write_abstention_weight(&env, proposal_id, &abstainer, 0);
+
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            _soft_approval_count,
+            _soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
+        env.events().publish(
+            (symbol_short!("unabst"),),
+            ProposalAbstentionRevokedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: proposal_id,
+                abstainer,
+                abstention_count,
+                weight,
+                cumulative_abstention_weight: abstention_weight,
+                participation_weight,
+            },
+        );
+        Ok(())
+    }
+
     /// Revokes the caller's approval from a proposal that has not yet been executed.
     ///
     /// The proposal status is recalculated after the revoke: if approvals fall below
@@ -4044,6 +4881,7 @@ impl AccordContract {
         approver.require_auth();
         require_role(&env, &approver, Role::Approver)?;
         require_owner_and_weight(&env, &approver)?;
+        require_not_frozen(&env)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         proposal.status = derive_status(&env, &proposal);
@@ -4155,6 +4993,25 @@ impl AccordContract {
             }
         }
 
+        // Proposal dependency graph ordered execution enforcement.
+        let deps = read_proposal_dependencies(&env, proposal_id);
+        for dep_id in deps.iter() {
+            let dep_prop = read_proposal(&env, dep_id)?;
+            let status = if dep_prop.status == ProposalStatus::Executed
+                || dep_prop.status == ProposalStatus::Cancelled
+            {
+                dep_prop.status
+            } else {
+                derive_status(&env, &dep_prop)
+            };
+            match status {
+                ProposalStatus::Executed => {},
+                ProposalStatus::Cancelled => return Err(ContractError::DependencyCancelled),
+                ProposalStatus::Expired => return Err(ContractError::DependencyExpired),
+                _ => return Err(ContractError::DependencyNotExecuted),
+            }
+        }
+
         // Dispatch on proposal kind.
         match &proposal.kind {
             ProposalKind::Transfer(transfers) => {
@@ -4206,6 +5063,14 @@ impl AccordContract {
                             return Err(ContractError::SpendingLimitExceeded);
                         }
                     }
+                    if let Some(t_limit) = read_treasury_spending_limit(&env, &token) {
+                        let cumulative = effective_treasury_spent(&env, &token)
+                            .checked_add(amount)
+                            .ok_or(ContractError::ArithmeticError)?;
+                        if cumulative > t_limit {
+                            return Err(ContractError::TreasurySpendingLimitExceeded);
+                        }
+                    }
                 }
                 // Check the treasury can cover the full per-token total before
                 // any funds move, so a shortfall is rejected up front rather
@@ -4251,6 +5116,7 @@ impl AccordContract {
                             .ok_or(ContractError::ArithmeticError)?
                     };
                     write_spent_tracker(&env, &proposer, &token, &SpentTracker { spent, epoch });
+                    record_treasury_spend(&env, &token, amount)?;
                 }
             }
             ProposalKind::AddOwner(new_owner, weight) => {
@@ -4498,6 +5364,35 @@ impl AccordContract {
                         token: token.clone(),
                         previous_limit: prev_limit,
                         new_limit: *limit,
+                    },
+                );
+            }
+            ProposalKind::SetTreasurySpendingLimit(token, limit, window_secs) => {
+                validate_asset_registry(&env, token)?;
+                if *limit < 0 {
+                    return Err(ContractError::InvalidSpendingLimit);
+                }
+                let actual_window = if *window_secs == 0 {
+                    SPENDING_WINDOW
+                } else {
+                    if *window_secs < MIN_SPENDING_WINDOW || *window_secs > MAX_SPENDING_WINDOW {
+                        return Err(ContractError::InvalidInterval);
+                    }
+                    *window_secs
+                };
+                let prev_limit = read_treasury_spending_limit(&env, token);
+                write_treasury_spending_limit(&env, token, *limit);
+                write_treasury_spending_window(&env, token, actual_window);
+                let now = env.ledger().timestamp();
+                write_treasury_spent_tracker(&env, token, &SpentTracker { spent: 0, epoch: now });
+                env.events().publish(
+                    (symbol_short!("tr_lim"),),
+                    TreasurySpendingLimitExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        token: token.clone(),
+                        previous_limit: prev_limit,
+                        new_limit: *limit,
+                        window_secs: actual_window,
                     },
                 );
             }
@@ -5675,6 +6570,37 @@ impl AccordContract {
         Ok(approvers)
     }
 
+    /// Returns the addresses of owners who have currently recorded abstentions
+    /// for `proposal_id`. An abstention is never included in the approver list.
+    pub fn get_abstainers(env: Env, proposal_id: u64) -> Result<Vec<Address>, ContractError> {
+        let owners = read_owners_map(&env)?;
+        read_proposal(&env, proposal_id)?;
+
+        let mut abstainers = Vec::new(&env);
+        for owner in owners.keys().iter() {
+            if read_abstention_weight(&env, proposal_id, &owner) > 0 {
+                abstainers.push_back(owner);
+            }
+        }
+        Ok(abstainers)
+    }
+
+    /// Returns the addresses of owners who have recorded non-binding soft
+    /// approval for `proposal_id`. Soft supporters are never approvers and
+    /// never alter quorum or binding approval weight.
+    pub fn get_soft_approvers(env: Env, proposal_id: u64) -> Result<Vec<Address>, ContractError> {
+        let owners = read_owners_map(&env)?;
+        read_proposal(&env, proposal_id)?;
+
+        let mut supporters = Vec::new(&env);
+        for owner in owners.keys().iter() {
+            if read_soft_approval_weight(&env, proposal_id, &owner) > 0 {
+                supporters.push_back(owner);
+            }
+        }
+        Ok(supporters)
+    }
+
     /// Returns the contract version. Useful for frontends and upgrade scripts
     /// that need to know which version of the contract is deployed.
     pub fn get_version(_env: Env) -> u32 {
@@ -5926,6 +6852,108 @@ impl AccordContract {
         read_spending_window(&env, &owner, &token)
     }
 
+    /// Returns the list of proposal IDs that `proposal_id` depends on.
+    pub fn get_proposal_dependencies(env: Env, proposal_id: u64) -> Vec<u64> {
+        read_proposal_dependencies(&env, proposal_id)
+    }
+
+    /// Checks whether all dependencies of `proposal_id` have executed.
+    /// Returns `Ok(true)` if all dependencies are `Executed`.
+    /// Returns `Ok(false)` if any dependency is pending or ready (not yet executed).
+    /// Returns `Err(ContractError::DependencyCancelled)` if any dependency was cancelled.
+    /// Returns `Err(ContractError::DependencyExpired)` if any dependency has expired.
+    /// Returns `Err(ContractError::ProposalNotFound)` if any dependency does not exist.
+    pub fn check_proposal_dependencies(env: Env, proposal_id: u64) -> Result<bool, ContractError> {
+        read_proposal(&env, proposal_id)?;
+        let deps = read_proposal_dependencies(&env, proposal_id);
+        if deps.is_empty() {
+            return Ok(true);
+        }
+        for dep_id in deps.iter() {
+            let dep_prop = read_proposal(&env, dep_id)?;
+            let status = if dep_prop.status == ProposalStatus::Executed
+                || dep_prop.status == ProposalStatus::Cancelled
+            {
+                dep_prop.status
+            } else {
+                derive_status(&env, &dep_prop)
+            };
+            match status {
+                ProposalStatus::Executed => {},
+                ProposalStatus::Cancelled => return Err(ContractError::DependencyCancelled),
+                ProposalStatus::Expired => return Err(ContractError::DependencyExpired),
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns the treasury-wide spending limit for `token`, or `None` if unrestricted.
+    pub fn get_treasury_spending_limit(env: Env, token: Address) -> Option<i128> {
+        read_treasury_spending_limit(&env, &token)
+    }
+
+    /// Returns the rolling treasury spending window in seconds for `token`.
+    pub fn get_treasury_spending_window(env: Env, token: Address) -> u64 {
+        read_treasury_spending_window(&env, &token)
+    }
+
+    /// Returns the cumulative rolling amount spent from the treasury for `token` within its window.
+    pub fn get_treasury_spent(env: Env, token: Address) -> i128 {
+        effective_treasury_spent(&env, &token)
+    }
+
+    /// Returns the remaining available treasury spending limit for `token`.
+    /// Returns `None` if unrestricted.
+    pub fn get_treasury_available_limit(env: Env, token: Address) -> Option<i128> {
+        let limit = read_treasury_spending_limit(&env, &token)?;
+        let spent = effective_treasury_spent(&env, &token);
+        Some(limit.saturating_sub(spent))
+    }
+
+    /// Returns a consolidated treasury accounting record for `token`.
+    pub fn get_asset_treasury_accounting(env: Env, token: Address) -> AssetTreasuryAccounting {
+        let limit = read_treasury_spending_limit(&env, &token);
+        let spent = effective_treasury_spent(&env, &token);
+        let tracker = read_treasury_spent_tracker(&env, &token);
+        let window = read_treasury_spending_window(&env, &token);
+        let total = read_treasury_total_spent(&env, &token);
+        let available = limit.map(|l| l.saturating_sub(spent));
+        AssetTreasuryAccounting {
+            token,
+            total_spent: total,
+            window_spent: spent,
+            spend_limit: limit,
+            window_secs: window,
+            epoch: tracker.epoch,
+            available_limit: available,
+        }
+    }
+
+    /// Returns the unreserved available treasury balance for `token`.
+    pub fn get_treasury_balance(env: Env, token: Address) -> Result<i128, ContractError> {
+        available_balance(&env, &token)
+    }
+
+    /// Upgrades the storage schema from version 1 (or 0) to version 2 (introducing
+    /// proposal dependency graphs and per-asset treasury accounting and spend limits).
+    /// Requires distinct registered owners whose combined weight reaches threshold.
+    pub fn migrate_to_v2(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 2 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+        require_weighted_approvers(&env, &approvers)?;
+        write_storage_version(&env);
+        env.events().publish(
+            (symbol_short!("v2_migr"),),
+            STORAGE_SCHEMA_VERSION,
+        );
+        Ok(())
+    }
+
     /// Returns the current approval threshold.
     pub fn get_threshold(env: Env) -> Result<u32, ContractError> {
         read_threshold(&env)
@@ -5956,6 +6984,16 @@ impl AccordContract {
         read_approval_weight(&env, proposal_id, &owner) > 0
     }
 
+    /// Returns whether `owner` has currently recorded an abstention.
+    pub fn has_abstained(env: Env, proposal_id: u64, owner: Address) -> bool {
+        read_abstention_weight(&env, proposal_id, &owner) > 0
+    }
+
+    /// Returns whether `owner` has currently recorded non-binding soft approval.
+    pub fn has_soft_approved(env: Env, proposal_id: u64, owner: Address) -> bool {
+        read_soft_approval_weight(&env, proposal_id, &owner) > 0
+    }
+
     /// Returns the current approval progress for a proposal: the cumulative
     /// approval weight, the required quorum weight, and the total weight of
     /// all owners.
@@ -5964,11 +7002,33 @@ impl AccordContract {
         proposal_id: u64,
     ) -> Result<ProposalApprovalProgress, ContractError> {
         let proposal = read_proposal(&env, proposal_id)?;
+        let (
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
+        ) = participation_progress(&env, proposal_id)?;
         Ok(ProposalApprovalProgress {
             approval_weight: proposal.approvals,
             quorum_weight: proposal.quorum_weight,
             total_weight: read_total_weight(&env),
+            abstention_count,
+            abstention_weight,
+            participation_weight,
+            soft_approval_count,
+            soft_approval_weight,
         })
+    }
+
+    /// Participation-oriented alias for `get_proposal_approval_progress`.
+    /// Approval weight remains the source of quorum; abstention fields are
+    /// informational participation records.
+    pub fn get_participation_progress(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<ProposalApprovalProgress, ContractError> {
+        Self::get_proposal_approval_progress(env, proposal_id)
     }
 
     /// Registers the network-specific Stellar Asset Contract for a classic

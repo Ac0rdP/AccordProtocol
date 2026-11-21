@@ -8,6 +8,7 @@ import {
 import { createApi } from "./api.js";
 import { backfill, reindex, resolveFirstLedger } from "./commands.js";
 import { DEFAULT_FINALITY_LAG, resolveFinalityLag } from "./finality.js";
+import { createLagMonitor } from "./lag-monitor.js";
 import { createReadiness, DEFAULT_READY_MAX_STALENESS_MS } from "./health.js";
 import { indexEventBatch } from "./indexing.js";
 import {
@@ -23,7 +24,22 @@ import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
-import { resolveGraphQLConfig, resolveStreamExportersConfig, resolveWarehouseConfig } from "./config.js";
+import {
+  resolveApiKeysConfig,
+  resolveEventValidationConfig,
+  resolveGraphQLConfig,
+  resolveLeaderElectionConfig,
+  resolveStreamExportersConfig,
+  resolveWarehouseConfig,
+  resolveWebhookDashboardConfig,
+  resolveBackfillConfig,
+  resolveAnomalyConfig,
+  resolveLagMonitorConfig,
+  resolveRunwayConfig,
+} from "./config.js";
+import { createApiKeyService } from "./api-keys.js";
+import { createEventValidator, QUARANTINE_REASONS, reprocessQuarantine } from "./event-validation.js";
+import { createHolderId, createLeaderElection, createStaticLeader } from "./leader-election.js";
 import { createStreamDispatcher } from "./stream-exporters.js";
 import { createWarehouseExportManager } from "./warehouse-connectors.js";
 
@@ -39,6 +55,9 @@ Commands:
                    event; the live store is never written
   webhooks-requeue Move dead-lettered webhook deliveries back to pending
   notifications-requeue  Move dead-lettered notification deliveries back to pending
+  quarantine-reprocess   Re-validate quarantined contract events and release the
+                   ones that are valid now (--topic / --reason narrow it)
+  quarantine-discard     Mark one quarantined event as discarded (--id <n>)
 
 Options:
   --from <ledger>  First ledger to cover. Defaults to the oldest ledger the
@@ -54,6 +73,9 @@ Options:
                    (default: in memory, discarded on exit). Never the live DB.
   --subscription <id>  Limit webhooks-requeue to one subscription
   --destination <id>   Limit notifications-requeue to one destination
+  --id <n>         quarantine-discard: the quarantined event to discard
+  --topic <name>   quarantine-reprocess: only this event topic
+  --reason <code>  quarantine-reprocess: only this quarantine reason
   -h, --help       Show this message
 
 Environment:
@@ -81,6 +103,28 @@ Environment:
   EMAIL_FROM           "From" address sent to EMAIL_API_URL
   NOTIFICATION_POLL_INTERVAL_MS  Notification worker poll interval (default 2000)
   NOTIFICATION_MAX_ATTEMPTS      Attempts before dead-lettering (default 8)
+  WEBHOOK_DASHBOARD_ENABLED  Serve the webhook delivery dashboard at /ops/webhooks
+                       (default true; read-only)
+  OPS_ADMIN_TOKEN      Bearer token (16+ chars) that enables the dashboard's
+                       replay/retry controls (default unset = controls disabled)
+  WEBHOOK_DASHBOARD_PAGE_SIZE  Deliveries per dashboard page (default 50)
+  API_KEYS_ENABLED     Require an API key (with scope and quota) for /ledger, /events,
+                       /reconciliation and the subscriptions stream (default false)
+  API_KEYS_DEFAULT_QUOTA / API_KEYS_DEFAULT_WINDOW_SECONDS  Quota for new keys
+                       (default 1000 requests per 3600 seconds)
+  API_KEYS_ROTATION_GRACE_SECONDS  How long a rotated-out secret keeps working (default 86400)
+  API_KEYS_USAGE_RETENTION_DAYS  How long quota counters are kept (default 30)
+  EVENT_VALIDATION_MODE  enforce (default: quarantine events that fail schema
+                       validation), warn (index but report) or off
+  EVENT_SCHEMA_STRICT  Treat fields outside the schema as violations (default true)
+  EVENT_ALLOW_UNVERSIONED  Accept events from pre-versioning deployments (default true)
+  INDEXER_LEADER_ELECTION_ENABLED  Run redundant indexers with automatic
+                       failover (default false; needs STORE_BACKEND=postgres)
+  INDEXER_REGION       Region label shown in status output (default empty)
+  INDEXER_INSTANCE_ID  Unique id of this instance (default host-pid-random)
+  INDEXER_LEASE_NAME   Lease contended for (default indexer-leader)
+  INDEXER_LEASE_TTL_MS Lease lifetime without renewal (default 15000)
+  INDEXER_LEASE_RENEW_MS  Renewal cadence, at most half the TTL (default 5000)
 `;
 
 function required(name) {
@@ -98,6 +142,9 @@ function parseArgs(argv) {
     help: false,
     subscription: undefined,
     destination: undefined,
+    topic: undefined,
+    reason: undefined,
+    id: undefined,
     beforeCheckpoint: undefined,
     afterCheckpoint: undefined,
     checkpoint: undefined,
@@ -109,6 +156,7 @@ function parseArgs(argv) {
     "--before-checkpoint": "beforeCheckpoint",
     "--after-checkpoint": "afterCheckpoint",
     "--checkpoint": "checkpoint",
+    "--id": "id",
   };
   const positionals = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -121,6 +169,10 @@ function parseArgs(argv) {
       args.subscription = argv[(index += 1)];
     } else if (arg === "--destination") {
       args.destination = argv[(index += 1)];
+    } else if (arg === "--topic") {
+      args.topic = argv[(index += 1)];
+    } else if (arg === "--reason") {
+      args.reason = argv[(index += 1)];
     } else if (arg === "--replay-store") {
       args.replayStore = argv[(index += 1)];
     } else if (arg in numericOptions) {
@@ -140,7 +192,7 @@ function parseArgs(argv) {
       throw new Error(`${flag} must be a positive integer`);
     }
   }
-  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue", "notifications-requeue"].includes(args.command)) {
+  if (!["serve", "backfill", "reindex", "replay", "webhooks-requeue", "notifications-requeue", "quarantine-reprocess", "quarantine-discard"].includes(args.command)) {
     throw new Error(`unknown command ${args.command}`);
   }
   return args;
@@ -150,6 +202,12 @@ const rpcUrl = process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.o
 const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
 const treasuryAddress = required("ACCORD_CONTRACT_ID");
 const finalityLag = resolveFinalityLag(process.env.LEDGER_FINALITY_LAG);
+
+const validationConfig = resolveEventValidationConfig();
+if (validationConfig.modeRejected) {
+  console.warn(`[validation] EVENT_VALIDATION_MODE=${process.env.EVENT_VALIDATION_MODE} is not one of off, warn, enforce; using enforce`);
+}
+const validator = createEventValidator(validationConfig);
 
 const tokens = [
   { name: "XLM", address: required("XLM_TOKEN_ADDRESS") },
@@ -203,9 +261,11 @@ async function runHistoryCommand({ command, args, store, stellar }) {
     to: args.to,
     finalityLag,
     onProgress,
+    validator,
     // When no --from is given, the first ledger the RPC retains is the
     // practical genesis; a configured INDEXER_START_LEDGER takes precedence.
     fallbackStart: startLedgerFromEnv({ optional: true }) ?? 1,
+    parallel: command === "backfill" ? resolveBackfillConfig() : null,
   });
   if (result.nothingToDo) {
     console.log(`[${command}] nothing to do`);
@@ -213,7 +273,10 @@ async function runHistoryCommand({ command, args, store, stellar }) {
   }
   if (!result.complete) {
     // maxPages guard tripped; the checkpoint on disk makes this resumable.
-    console.error(`[${command}] stopped early after ${result.pages} pages; re-run to resume`);
+    const failed = result.failedShards?.length
+      ? ` (${result.failedShards.length} shard(s) failed: ${result.failedShards.map((shard) => `#${shard.index} ${shard.start}-${shard.end}`).join(", ")})`
+      : "";
+    console.error(`[${command}] stopped early after ${result.pages} pages${failed}; re-run to resume`);
   }
   return result;
 }
@@ -241,6 +304,7 @@ async function runReplay({ args, stellar, storeConfig }) {
       from: window.from,
       to: window.to,
       finalityLag,
+      validator,
       onEvent: (detail) => print(args.json ? replayEventRecord(detail) : formatReplayEvent(detail)),
     });
     const summary = {
@@ -278,6 +342,16 @@ async function serve({ store, stellar }) {
       process.env.READY_MAX_STALENESS_MS ?? Math.max(DEFAULT_READY_MAX_STALENESS_MS, indexIntervalMs * 6)
     ),
   });
+  const lagMonitor = createLagMonitor({
+    store,
+    metrics,
+    config: resolveLagMonitorConfig(process.env, finalityLag),
+    finalityLag,
+    onAlert: ({ check, level, previous, value, threshold }) => {
+      const log = level === "ok" ? console.log : console.warn;
+      log(`[lag] ${check} ${previous} -> ${level} (value ${value}, threshold ${threshold})`);
+    },
+  });
   const subscriptions = loadSubscriptions();
   const webhooks = createWebhookDispatcher({
     store,
@@ -313,7 +387,6 @@ async function serve({ store, stellar }) {
     config: streamConfig,
     metrics,
   });
-  void streamDispatcher.start();
 
   const warehouseConfig = resolveWarehouseConfig();
   const warehouseManager = createWarehouseExportManager({
@@ -321,10 +394,73 @@ async function serve({ store, stellar }) {
     config: warehouseConfig,
     metrics,
   });
-  void warehouseManager.start();
+
+  // Multi-region failover: one instance holds the lease and does all the
+  // writing (ingestion, reconciliation, outbound delivery); the rest stand by
+  // and take over when the lease lapses. With failover off, this instance is
+  // always the leader and nothing changes.
+  const leaderConfig = resolveLeaderElectionConfig();
+  const workerPollMs = {
+    webhooks: Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000),
+    notifications: Number(process.env.NOTIFICATION_POLL_INTERVAL_MS ?? 2000),
+  };
+  let workersRunning = false;
+
+  function startLeaderWorkers() {
+    if (workersRunning) return;
+    workersRunning = true;
+    void streamDispatcher.start();
+    void warehouseManager.start();
+    webhooks.start(workerPollMs.webhooks);
+    notifications.start(workerPollMs.notifications);
+  }
+
+  async function stopLeaderWorkers() {
+    if (!workersRunning) return;
+    workersRunning = false;
+    webhooks.stop();
+    notifications.stop();
+    await streamDispatcher.close();
+    await warehouseManager.close();
+  }
+
+  const election = leaderConfig.enabled
+    ? createLeaderElection({
+        store,
+        metrics,
+        holderId: leaderConfig.instanceId || createHolderId({ region: leaderConfig.region }),
+        region: leaderConfig.region,
+        name: leaderConfig.leaseName,
+        ttlMs: leaderConfig.leaseTtlMs,
+        renewIntervalMs: leaderConfig.renewIntervalMs,
+        onElected: ({ holderId, lease }) => {
+          console.log(`[leader] ${holderId} is now the leader (fencing token ${lease?.fencingToken})`);
+          readiness.clearStandby();
+          startLeaderWorkers();
+          void indexAvailableEvents()
+            .catch((error) => console.error("Treasury event indexing failed:", error))
+            .finally(() => void reconcileBalances());
+        },
+        onDemoted: async ({ holderId, lease }) => {
+          console.log(`[leader] ${holderId} stepped down; current leader: ${lease?.holderId ?? "none"}`);
+          readiness.markStandby(lease ? { holderId: lease.holderId, region: lease.region } : null);
+          await stopLeaderWorkers();
+        },
+      })
+    : createStaticLeader({ region: leaderConfig.region });
+  metrics.isLeader.set(leaderConfig.enabled ? 0 : 1);
+  if (leaderConfig.enabled) {
+    if (store.backend !== "postgres") {
+      console.warn("[leader] failover is enabled on a non-Postgres store; instances only coordinate if they share this database");
+    }
+    // Until the first election round resolves we are a standby, not a stale leader.
+    readiness.markStandby(null);
+  }
 
   async function indexAvailableEvents() {
-    if (indexing) return;
+    // Keeps checkpoint age growing even while a batch is failing or hung.
+    await lagMonitor.refresh();
+    if (indexing || !election.isLeader()) return;
     indexing = true;
     const startedAt = performance.now();
     try {
@@ -337,11 +473,16 @@ async function serve({ store, stellar }) {
         pageLimit,
         finalityLag,
         subscriptions: graphqlSubscriptions,
+        validator,
         onEvent: (event) => streamDispatcher.publish(event),
       });
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
-      readiness.markSuccess();
+      await refreshQuarantineBacklog();
+      await lagMonitor.observe({ latestLedger: result.latestLedger, indexedLedger });
+      // A batch that finished after the lease was lost is still safe (writes are
+      // idempotent), but it must not make a standby look like it is ingesting.
+      if (election.isLeader()) readiness.markSuccess();
     } catch (error) {
       metrics.errors.inc({ stage: "index" });
       metrics.batches.inc({ outcome: "error" });
@@ -351,6 +492,11 @@ async function serve({ store, stellar }) {
       metrics.batchDuration.observe((performance.now() - startedAt) / 1000);
       indexing = false;
     }
+  }
+
+  async function refreshQuarantineBacklog() {
+    const { byReason } = await store.countQuarantinedEvents();
+    for (const reason of QUARANTINE_REASONS) metrics.quarantineBacklog.set({ reason }, byReason[reason] ?? 0);
   }
 
   async function readTokenBalance(account, tokenAddress) {
@@ -373,7 +519,7 @@ async function serve({ store, stellar }) {
   }
 
   async function reconcileBalances() {
-    if (reconciling) return;
+    if (reconciling || !election.isLeader()) return;
     reconciling = true;
     try {
       const account = await stellar.getAccount(simulationSource);
@@ -402,6 +548,15 @@ async function serve({ store, stellar }) {
     }
   }
 
+  const webhookDashboard = resolveWebhookDashboardConfig();
+  if (webhookDashboard.adminTokenRejected) {
+    console.warn("[ops] OPS_ADMIN_TOKEN is shorter than 16 characters and was ignored; webhook retry controls are disabled");
+  }
+  const apiKeyConfig = resolveApiKeysConfig();
+  const apiKeys = createApiKeyService({ store, config: apiKeyConfig, metrics });
+  if (apiKeyConfig.enabled && !webhookDashboard.adminToken) {
+    console.warn("[api-keys] API_KEYS_ENABLED is on but OPS_ADMIN_TOKEN is not set: keys cannot be issued over HTTP");
+  }
   const api = createApi({
     store,
     readiness,
@@ -410,6 +565,15 @@ async function serve({ store, stellar }) {
     finalityLag,
     tokenAddresses,
     subscriptions: graphqlSubscriptions,
+    election,
+    webhookDashboard,
+    webhookSubscriptions: subscriptions,
+    validator,
+    apiKeys,
+    apiKeysEnabled: apiKeyConfig.enabled,
+    lagMonitor,
+    runwayConfig: resolveRunwayConfig(),
+    anomalyConfig: resolveAnomalyConfig(),
   });
 
   const host = process.env.HOST ?? "127.0.0.1";
@@ -417,26 +581,33 @@ async function serve({ store, stellar }) {
   api.listen(port, host, () => {
     console.log(`Treasury indexer API listening on http://${host}:${port} (${store.backend} store)`);
     if (subscriptions.length > 0) console.log(`Webhook delivery enabled for ${subscriptions.length} subscription(s)`);
-    void indexAvailableEvents()
-      .catch((error) => console.error("Treasury event indexing failed:", error))
-      .finally(() => void reconcileBalances());
+    if (leaderConfig.enabled) {
+      election.start();
+    } else {
+      startLeaderWorkers();
+      void indexAvailableEvents()
+        .catch((error) => console.error("Treasury event indexing failed:", error))
+        .finally(() => void reconcileBalances());
+    }
   });
-  webhooks.start(Number(process.env.WEBHOOK_POLL_INTERVAL_MS ?? 2000));
-  notifications.start(Number(process.env.NOTIFICATION_POLL_INTERVAL_MS ?? 2000));
 
   const indexTimer = setInterval(() => {
     void indexAvailableEvents().catch((error) => console.error("Treasury event indexing failed:", error));
   }, indexIntervalMs);
+  const pruneTimer = setInterval(() => {
+    void apiKeys.prune().catch((error) => console.error("API key usage cleanup failed:", error));
+  }, 3_600_000);
+  pruneTimer.unref?.();
   const reconcileTimer = setInterval(() => void reconcileBalances(), Number(process.env.RECONCILE_INTERVAL_MS ?? 60000));
 
-  function shutdown() {
+  async function shutdown() {
     clearInterval(indexTimer);
     clearInterval(reconcileTimer);
-    webhooks.stop();
-    notifications.stop();
+    clearInterval(pruneTimer);
     graphqlSubscriptions?.close?.();
-    streamDispatcher.close();
-    warehouseManager.close();
+    // Release the lease first so a standby takes over without waiting for the TTL.
+    await election.stop().catch((error) => console.error("Leader release failed:", error));
+    await stopLeaderWorkers().catch((error) => console.error("Worker shutdown failed:", error));
     api.close(() => {
       store.close().finally(() => process.exit(0));
     });
@@ -480,6 +651,26 @@ async function main() {
       now: new Date().toISOString(),
     });
     console.log(`Requeued ${requeued} dead-lettered notification deliveries`);
+    await store.close();
+    return;
+  }
+
+  if (args.command === "quarantine-reprocess") {
+    if (args.reason && !QUARANTINE_REASONS.includes(args.reason)) {
+      throw new Error(`--reason must be one of: ${QUARANTINE_REASONS.join(", ")}`);
+    }
+    const result = await reprocessQuarantine({
+      store, treasuryAddress, validator, topic: args.topic, reason: args.reason,
+    });
+    console.log(`Examined ${result.examined} quarantined event(s): released ${result.released}, still quarantined ${result.stillQuarantined}`);
+    await store.close();
+    return;
+  }
+
+  if (args.command === "quarantine-discard") {
+    if (args.id === undefined) throw new Error("quarantine-discard needs --id <n>");
+    const discarded = await store.resolveQuarantinedEvent({ id: args.id, status: "discarded", now: new Date().toISOString() });
+    console.log(discarded ? `Discarded quarantined event ${args.id}` : `No quarantined event ${args.id} to discard`);
     await store.close();
     return;
   }

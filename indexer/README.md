@@ -102,6 +102,34 @@ of *older* events into a store that already holds *newer* ones correct.
 After a completed backfill the live indexer's checkpoint is advanced to the
 first ledger after the covered range, never backwards.
 
+#### Parallel backfill
+
+Set `BACKFILL_WORKERS` above `1` to split the range into shards of
+`BACKFILL_SHARD_SIZE` ledgers that are walked concurrently. The default is `1`,
+which keeps the single-cursor walk above and changes nothing for existing
+deployments.
+
+```bash
+BACKFILL_WORKERS=4 BACKFILL_SHARD_SIZE=50000 npm run backfill
+```
+
+- Every shard has its own checkpoint in `backfill_shards` (Postgres migration
+  `0009_backfill_shards.sql`): status, RPC cursor, last ledger, pages, events and
+  attempts. The checkpoint is written *after* the page's events, so replaying a
+  shard from any checkpoint is safe — inserts are keyed by event id.
+- A shard that fails is retried from its own cursor up to
+  `BACKFILL_SHARD_MAX_RETRIES` times (exponential backoff from
+  `BACKFILL_SHARD_RETRY_DELAY_MS`). If it still fails it stays `failed` with its
+  checkpoint while the other shards finish; re-running `backfill` resumes only
+  the unfinished shards.
+- The live indexer's checkpoint and the running balances are only updated once
+  **every** shard is done, so a partially covered range never hands over to the
+  live indexer.
+- Shard boundaries are anchored at the range start, so a later run whose chain
+  tip moved forward keeps finished shards and only extends the last one. A
+  different start ledger or shard size begins a new job.
+- `reindex` (and any rewind past a shard) discards shard checkpoints.
+
 ### Reindex
 
 Clears the store (entries, protocol events, balances, reconciliation results)
@@ -171,6 +199,67 @@ the column from migration `0004_event_dedupe_key`; SQLite adds it on open.
 `test/dedupe.test.js` re-runs ingestion, backfill and reindex on both backends
 and asserts no duplicates.
 
+## Event schema registry, validation and quarantine
+
+Every event the treasury contract emits is checked against a **versioned schema registry** ([schema-registry.js](src/schema-registry.js)) before it reaches `accord_events`. Events that do not fit are **quarantined**, not dropped, and never stall ingestion.
+
+- **Schemas** are `(topic, version)` pairs built from `src/catalog.json` (the current version) plus the recorded version history, so version `1` (`executed` still carried `transfers`) and pre-versioning events (no `version` field) stay valid. See [docs/EVENTS.md](../docs/EVENTS.md#event-versioning-policy). `GET /schemas` lists every topic, version and field.
+- **Checks:** known topic, known version, every field present with the right type and range (`u32`, `u64`, `i128`, addresses, `Vec`, `Option`, `BytesN`, the `Transfer` struct), and no fields outside the schema.
+- **Quarantine reasons:** `unknown_topic`, `unknown_version` (e.g. a newer contract), `invalid_payload`, `undecodable`. Each row keeps the reasons, the ledger and transaction, and the raw event (topic and value as base64 XDR) in `quarantined_events` (migration `0011_quarantined_events.sql`).
+- **Inspect:** `GET /quarantine` (`status`, `reason`, `topic`, `raw=true`, `limit`, `offset`; the response includes counts). Metrics: `accord_indexer_events_quarantined_total{reason}` and `accord_indexer_quarantined_events{reason}`.
+- **Recover:** after fixing the cause (register the new schema, ship a catalog update), run `npm run start -- quarantine-reprocess [--topic <name>] [--reason <code>]`. Every quarantined event that is valid now is indexed and marked `released`; the rest stay. `quarantine-discard --id <n>` retires one for good. Re-ingesting a range (backfill, replay) releases fixed events too.
+
+Safe to replay from any checkpoint:
+
+- Quarantine is keyed by the event's chain position (`ledger:transaction:eventIndex`), the same key that dedupes accepted events, so replaying a range quarantines each event once and the first verdict stands.
+- A store failure mid-batch leaves the checkpoint where it was; the retry finds the already-stored events deduped and finishes the rest.
+- A reorg rewind (and `reindex`) also removes quarantined events above the rewind point, so they are re-judged with the rest of the range.
+- Previously, an undecodable treasury event failed the whole batch on every retry; it is now quarantined and ingestion moves on.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EVENT_VALIDATION_MODE` | `enforce` | `enforce`: quarantine events that fail validation. `warn`: index invalid payloads anyway and count them in `accord_indexer_event_validation_warnings_total` (unknown topics and versions are still quarantined). `off`: previous behaviour, no validation and unknown topics ignored. An unrecognised value falls back to `enforce` with a warning. |
+| `EVENT_SCHEMA_STRICT` | `true` | Treat fields outside the schema as violations. Set `false` to tolerate additive fields |
+| `EVENT_ALLOW_UNVERSIONED` | `true` | Accept events from deployments that predate the `version` field |
+
+## API keys and quotas for analytics consumers
+
+Turn on `API_KEYS_ENABLED=true` and the analytics reads (`/ledger`, `/events`, `/reconciliation`, and the GraphQL subscriptions stream) require a scoped API key with a request quota. Health, readiness, metrics and the ops endpoints are not affected. It is **off by default**, so existing consumers keep working until you enable it.
+
+- **Keys** look like `acck_<16 hex id>_<64 hex secret>`, are shown **once** when issued, and only a SHA-256 hash of the secret is stored. Send them as `Authorization: Bearer <key>` or `X-API-Key: <key>` (never in the query string).
+- **Scopes:** `ledger`, `events`, `reconciliation`, `subscriptions` (or `"*"`). A key outside its scope gets `403`.
+- **Quota:** `limit` requests per fixed `windowSeconds` window (default 1000 per 3600 s), counted atomically in the store, so concurrent requests, and instances sharing the database, cannot overshoot it. Over the limit is `429` with `Retry-After`. Every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (epoch seconds). Refused requests (bad key, wrong scope, over quota) are never counted.
+- **Rotation:** `POST /admin/api-keys/:id/rotate` issues a new secret for the same key id (so its quota carries over). The old secret keeps working for `graceSeconds` (default `API_KEYS_ROTATION_GRACE_SECONDS`, 24 h; `0` cuts it off at once) so consumers can switch without downtime. Only one previous secret is honoured: rotating twice inside the grace period drops the oldest.
+- **Revocation** is immediate and idempotent (revoking twice is a no-op); a revoked key cannot be rotated back.
+- **Expiry:** an optional `expiresAt` when issuing.
+
+Managing keys needs `Authorization: Bearer <OPS_ADMIN_TOKEN>` (the same token as the [webhook retry controls](#delivery-dashboard-and-retry-controls)); without a configured token these endpoints answer `403`.
+
+```bash
+curl -X POST localhost:8787/admin/api-keys -H "authorization: Bearer $OPS_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"partner-dashboard","scopes":["ledger","events"],"limit":5000,"windowSeconds":3600}'
+# {"key":"acck_...","apiKey":{"id":"...","scopes":["events","ledger"],"quotaLimit":5000,...}}
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /admin/api-keys` | Issue a key: `name`, `scopes`, optional `limit`, `windowSeconds`, `expiresAt` (`201`, secret in the response only) |
+| `GET /admin/api-keys[?status=active\|revoked]` | List keys (never secrets) |
+| `GET /admin/api-keys/:id` | One key |
+| `POST /admin/api-keys/:id/rotate` | New secret; optional `graceSeconds` |
+| `POST /admin/api-keys/:id/revoke` | Revoke |
+
+Keys live in `api_keys` and quota counters in `api_key_usage` (migration `0012_api_keys.sql`, one counter row per key per window, pruned after `API_KEYS_USAGE_RETENTION_DAYS`). Counters are only shared between instances that share the store, so use Postgres when running several indexers. Metric: `accord_indexer_api_key_requests_total{key,result}`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `API_KEYS_ENABLED` | `false` | Require an API key for the analytics reads |
+| `API_KEYS_DEFAULT_QUOTA` | `1000` | Requests per window for a new key |
+| `API_KEYS_DEFAULT_WINDOW_SECONDS` | `3600` | Quota window for a new key |
+| `API_KEYS_ROTATION_GRACE_SECONDS` | `86400` | How long a rotated-out secret keeps working |
+| `API_KEYS_USAGE_RETENTION_DAYS` | `30` | How long quota counters are kept |
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two
@@ -199,17 +288,89 @@ After either event, the indexed state equals the chain state up to the final
 ledger — never ahead of it. `indexer/test/finality.test.js` asserts that
 invariant after both a not-yet-final ledger and a rollback.
 
+## Multi-region failover (leader election)
+
+Run the same indexer in several regions against one shared Postgres and let them elect a leader. The leader ingests events, reconciles balances and runs the outbound workers (webhooks, notifications, stream and warehouse exporters). Standbys keep serving the read API from the shared store and take over automatically when the leader stops.
+
+```bash
+STORE_BACKEND=postgres
+DATABASE_URL=postgres://...                  # the same database in every region
+INDEXER_LEADER_ELECTION_ENABLED=true
+INDEXER_REGION=us-east-1                     # label only
+```
+
+How it works:
+
+- Instances contend for one row in `indexer_leases` (migration `0009_indexer_leases.sql`) with a single atomic upsert. The holder renews every `INDEXER_LEASE_RENEW_MS`; if it stops, the lease lapses after `INDEXER_LEASE_TTL_MS` and the next instance to try wins. Worst-case takeover is the TTL plus one renewal interval.
+- Every change of ownership bumps a **fencing token**, reported by `GET /status` under `leader`.
+- A leader that cannot reach the store keeps leading only until its last successful renewal would have expired by its own clock, then steps down, so it never outlives the lease it holds.
+- Shutting down (`SIGTERM`/`SIGINT`) releases the lease first, so a standby takes over immediately instead of waiting out the TTL.
+- Failover is safe to replay from any checkpoint: events are deduplicated by chain position and the checkpoint only resumes from a ledger that was already covered. If two instances briefly overlap (clock skew, a slow leader), the extra writes are no-ops. Keep instance clocks NTP-synced and the TTL well above expected skew.
+- `/readyz` stays `200` on a healthy standby (it deliberately does not ingest); `/status` reports `checks.indexing.role = "standby"` and who the leader is.
+- Metrics: `accord_indexer_is_leader` (gauge) and `accord_indexer_leader_transitions_total{to}`.
+
+Failover is **off by default**: a single instance is always the leader and behaves exactly as before. It only coordinates instances that share the store, so use Postgres (a per-instance SQLite file elects a leader per file, not per fleet; the indexer logs a warning if you enable it on SQLite).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `INDEXER_LEADER_ELECTION_ENABLED` | `false` | Turn leader election on |
+| `INDEXER_REGION` | empty | Region label shown in status output |
+| `INDEXER_INSTANCE_ID` | `region:host-pid-random` | Unique id of this instance |
+| `INDEXER_LEASE_NAME` | `indexer-leader` | Lease contended for; use distinct names for independent deployments sharing a database |
+| `INDEXER_LEASE_TTL_MS` | `15000` | Lease lifetime without renewal (3000-300000) |
+| `INDEXER_LEASE_RENEW_MS` | `5000` | Renewal cadence; clamped to at most half the TTL |
+
+## Chain-tip lag and finality-depth monitoring
+
+The indexer tracks how far it trails the chain and alerts on it. Three checks each report `ok`, `warn` or `critical`:
+
+- **`tip_lag`** — ledgers behind the tip *above* the `LEDGER_FINALITY_LAG` floor (warn 20, critical 100), so a larger finality lag never alerts by itself.
+- **`checkpoint_age`** — seconds since the checkpoint last advanced (warn 120, critical 600). It keeps growing while batches fail.
+- **`finality_depth`** — confirmations on the newest indexed ledger; critical when below `FINALITY_MIN_DEPTH` (default `LEDGER_FINALITY_LAG`), i.e. non-final data was indexed.
+
+Metrics: `accord_indexer_chain_tip_lag_ledgers`, `..._chain_tip_lag_seconds`, `..._finality_depth_ledgers`, `..._checkpoint_age_seconds`, `..._lag_alert_level{check}`, `..._lag_threshold{check,level}` and `..._lag_alerts_total{check,level}`. `GET /lag` returns the current evaluation and `/status` embeds it (a `critical` level reports `degraded`). Settings and suggested Prometheus alerts are in [docs/OPERATIONS.md](../docs/OPERATIONS.md); response steps are in the [runbook](../docs/RUNBOOK.md#chain-tip-lag).
+
+The monitor is idempotent: it only records *when the indexed ledger changed*, so replaying an observation changes nothing. Its state persists in `lag_monitor_state` (Postgres migration `0010_lag_monitor_state.sql`), so a restart keeps the checkpoint age and does not re-fire an active alert. It is on by default (`LAG_MONITOR_ENABLED=false` disables it).
+
+## Cash-runway forecast
+
+`GET /runway?token=USDC` (default `USDC`; `XLM` also works) forecasts how long the treasury balance lasts from its indexed flows:
+
+```
+net burn/day = (outflow - inflow) over the window / window days
+               + RUNWAY_RECURRING_OUTFLOW_PER_DAY - RUNWAY_RECURRING_INFLOW_PER_DAY
+runway days  = balance / net burn/day
+```
+
+The window is `RUNWAY_LOOKBACK_DAYS` (default 90), shortened to the age of the first entry when history is younger. The response gives `status` (`burning`, `sustainable`, `beyond_horizon`, `depleted` or `no_data`), `runwayDays` and `depletionDate` (both `null` when not burning), plus the inputs used. Recurring amounts are base units per day and default to `0`, so by default the forecast rests on history alone; `RUNWAY_HORIZON_DAYS` (default 3650) caps the answer.
+
+The forecast is computed on demand from the already-deduplicated ledger entries and persists nothing, so it is idempotent and identical after any replay, backfill or reindex.
+
+## Outflow anomaly detection
+
+`GET /anomalies?token=USDC` scores the treasury's recent outflows against their own history and flags unusual ones. Transfers and recurring disbursements both settle as token outflows, so both are covered.
+
+Each outflow in the last `ANOMALY_REPORT_DAYS` is scored against the outflows that came *before it* in the preceding `ANOMALY_LOOKBACK_DAYS`, with a robust z-score: `(amount - median) / max(1.4826 * MAD, median / 10, 1)`. It is flagged when the score reaches `ANOMALY_THRESHOLD`, and never before `ANOMALY_MIN_SAMPLES` earlier outflows exist (the score is then `null`). The median/MAD baseline is not skewed by the outliers it hunts, and the floor stops a perfectly regular history from flagging tiny deviations.
+
+Safe defaults: 30-day baseline, 7-day report window, 10 minimum samples, threshold 6. Each score depends only on earlier ledger entries, so the result is deterministic and identical after any replay, backfill or reindex; nothing is persisted.
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
 - `GET /healthz` - Liveness: `200` whenever the process can answer.
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
+- `GET /lag` - Chain-tip lag, finality depth and checkpoint age with their alert levels (`503` until the first batch is observed).
+- `GET /runway?token=USDC` - Treasury cash-runway forecast from indexed flows.
+- `GET /anomalies?token=USDC` - Recent treasury outflows scored against their historical baseline; `anomalies` lists the flagged ones.
 - `GET /metrics` - Prometheus metrics.
-- `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
+- `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `event`, `order`, `limit`, `offset`).
+- `GET /ops/webhooks` - Webhook delivery dashboard with replay controls; see [Delivery dashboard](#delivery-dashboard-and-retry-controls).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
 - `GET /events?topic=created&limit=100` - Query decoded Accord Protocol events.
 - `GET /reconciliation` - View latest token balance reconciliation checks.
+- `GET /schemas` - The event schema registry (topics, versions, fields) and the validation mode in effect.
+- `GET /quarantine` - Events that failed schema validation, with counts; see [Event schema registry](#event-schema-registry-validation-and-quarantine).
 
 ## Environment
 
@@ -223,6 +384,20 @@ invariant after both a not-yet-final ledger and a rollback.
 | `SOROBAN_RPC_URL` | no | Soroban RPC endpoint |
 | `NETWORK_PASSPHRASE` | no | Stellar network passphrase |
 | `LEDGER_FINALITY_LAG` | no | Ledgers to hold back before treating one as final (default 2) |
+| `BACKFILL_WORKERS` | no | Shards walked concurrently by `backfill` (default 1 = sequential, max 32) |
+| `BACKFILL_SHARD_SIZE` | no | Ledgers per backfill shard (default 50000) |
+| `BACKFILL_SHARD_MAX_RETRIES` | no | In-run retries per failed shard before it is left `failed` (default 3) |
+| `BACKFILL_SHARD_RETRY_DELAY_MS` | no | Base retry delay, doubled each retry, capped at 60000 (default 1000) |
+| `LAG_MONITOR_ENABLED` | no | Chain-tip lag monitor (default `true`) |
+| `LAG_WARN_LEDGERS` / `LAG_CRITICAL_LEDGERS` | no | Lag above the finality floor that warns / is critical (defaults 20 / 100) |
+| `CHECKPOINT_AGE_WARN_SECONDS` / `CHECKPOINT_AGE_CRITICAL_SECONDS` | no | Checkpoint age that warns / is critical (defaults 120 / 600) |
+| `FINALITY_MIN_DEPTH` | no | Minimum confirmations on the newest indexed ledger (default `LEDGER_FINALITY_LAG`) |
+| `LEDGER_CLOSE_SECONDS` | no | Seconds per ledger for the lag-in-seconds estimate (default 5) |
+| `RUNWAY_LOOKBACK_DAYS` | no | History window for the runway forecast (default 90) |
+| `RUNWAY_RECURRING_OUTFLOW_PER_DAY` / `RUNWAY_RECURRING_INFLOW_PER_DAY` | no | Assumed recurring flows in base units per day (default 0) |
+| `RUNWAY_HORIZON_DAYS` | no | Longest runway reported (default 3650) |
+| `ANOMALY_LOOKBACK_DAYS` / `ANOMALY_REPORT_DAYS` | no | Baseline window / scored window for outflow anomalies (defaults 30 / 7) |
+| `ANOMALY_MIN_SAMPLES` / `ANOMALY_THRESHOLD` | no | Earlier outflows needed before flagging / robust z-score that flags (defaults 10 / 6) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |
@@ -342,7 +517,30 @@ Deliveries are kept in a durable outbox (`webhook_deliveries`), so a restart los
 - Subscriptions are independent: a slow or failing endpoint never delays another.
 - A `reindex` never resends: deliveries are unique per (subscription, event id).
 
-Run a single indexer instance per database: the outbox processor does not lock rows between processes.
+Run a single outbox processor per database: it does not lock rows between processes. With [leader election](#multi-region-failover-leader-election) enabled only the leader runs it.
+
+### Delivery dashboard and retry controls
+
+`GET /ops/webhooks` serves a self-contained operations page (no external requests, strict CSP) for the webhook outbox:
+
+- **Inspect:** outbox size per subscription, a filterable and paged delivery list (status, subscription, event id; newest first), and for each delivery the exact payload, the receiver's origin, and **every attempt** (round, outcome, HTTP status, latency, time, error). Attempt history is stored in `webhook_delivery_attempts` (migration `0010_webhook_delivery_attempts.sql`).
+- **Replay:** send one delivery through the dispatcher again (`POST /webhooks/deliveries/:id/replay`), or requeue every dead letter (`POST /webhooks/deliveries/retry-dead[?subscription=<id>]`).
+
+Replay is idempotent and safe to repeat:
+
+- It only flips the outbox row back to `pending`; the dispatcher then re-sends the **stored body byte for byte** with a fresh signature timestamp and the same `x-accord-event-id`, so receivers can deduplicate. Delivery stays at-least-once.
+- A dead or delivered delivery starts a new *replay round* (attempt count resets, history is kept). Replaying one that is already queued just makes it due now and is not counted again, so a double click or a retried request never queues a second copy.
+- Replays only take effect on the leader, because only the leader runs the dispatcher.
+
+Reading is open like the rest of the API. **Replay needs `Authorization: Bearer <OPS_ADMIN_TOKEN>`** and is disabled (`403`) until a token of at least 16 characters is configured; the dashboard hides the controls in that case. Put the indexer behind your usual network controls, since the read endpoints expose payloads.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WEBHOOK_DASHBOARD_ENABLED` | `true` | Serve the dashboard and its inspection endpoints (`false` returns `404`) |
+| `OPS_ADMIN_TOKEN` | unset | Bearer token that enables replay/retry. Unset or shorter than 16 characters keeps the dashboard read-only |
+| `WEBHOOK_DASHBOARD_PAGE_SIZE` | `50` | Deliveries per page (1-200) |
+
+Inspection endpoints: `GET /webhooks/deliveries` (adds `event` and `order=desc`), `GET /webhooks/deliveries/summary`, `GET /webhooks/deliveries/:id`. Replays are counted in `accord_indexer_webhook_replays_total{scope}`.
 
 ## Monitoring
 

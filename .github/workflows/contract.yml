@@ -184,6 +184,44 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # Contract fuzz corpus management & regression gate (#1049). Validates the
+  # persisted fuzz corpus, deduplication, bounds, secret redaction, and
+  # regression fixtures on every push and pull request.
+  fuzz-corpus:
+    name: Contract Fuzz Corpus Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Run fuzz corpus management unit tests
+        run: node --test scripts/fuzz-corpus.test.mjs
+
+      - name: Validate persisted fuzz corpus and regression fixtures
+        run: node scripts/fuzz-corpus.mjs validate --report-dir target/fuzz-corpus
+
+      - name: Append fuzz corpus report to job summary
+        if: always()
+        run: |
+          if [ -f target/fuzz-corpus/report.md ]; then
+            cat target/fuzz-corpus/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload fuzz corpus validation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-fuzz-corpus-report
+          path: target/fuzz-corpus
+          retention-days: 30
+          if-no-files-found: ignore
+
   # Coverage gate (#813). Separate from `ci` so a failing test there is reported
   # once, there; --ignore-run-fail lets this job still measure coverage and
   # enforce the threshold. The threshold lives in contracts/accord/Cargo.toml.

@@ -6,6 +6,12 @@
  *   - GraphQL live event subscriptions (push updates without polling)
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
+ *   - Multi-region failover (leader election)
+ *   - Webhook delivery dashboard and retry controls
+ *   - Contract event schema validation and quarantine
+ *   - API keys with per-key quotas
+ *   - Parallel backfill (workers, shard size, retries)
+ *   - Chain-tip lag / finality-depth monitoring and alert thresholds
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -109,6 +115,183 @@ export function resolveWarehouseConfig(env = process.env) {
 }
 
 /**
+ * Resolves multi-region failover (leader election) configuration.
+ *
+ * Safe defaults:
+ *   - enabled: false (a single instance is always the leader)
+ *   - region: "" (label only)
+ *   - leaseName: indexer-leader
+ *   - leaseTtlMs: 15000 (a dead leader is replaced after at most this long)
+ *   - renewIntervalMs: 5000 (never more than half the TTL)
+ *
+ * Failover needs every instance to share one store, i.e. STORE_BACKEND=postgres.
+ */
+export function resolveLeaderElectionConfig(env = process.env) {
+  const enabled = parseBool(env.INDEXER_LEADER_ELECTION_ENABLED, false);
+  const leaseTtlMs = parseIntSafe(env.INDEXER_LEASE_TTL_MS, 15000, 3000, 300000);
+  let renewIntervalMs = parseIntSafe(env.INDEXER_LEASE_RENEW_MS, 5000, 500, 150000);
+  // A renewal slower than half the TTL would let a healthy leader lapse.
+  if (renewIntervalMs * 2 > leaseTtlMs) renewIntervalMs = Math.floor(leaseTtlMs / 3);
+
+  return {
+    enabled,
+    region: env.INDEXER_REGION?.trim() || "",
+    instanceId: env.INDEXER_INSTANCE_ID?.trim() || "",
+    leaseName: env.INDEXER_LEASE_NAME?.trim() || "indexer-leader",
+    leaseTtlMs,
+    renewIntervalMs,
+  };
+}
+
+/**
+ * Resolves the parallel backfill configuration.
+ *
+ * Safe defaults:
+ *   - workers: 1 (sequential; the original single-cursor backfill is used)
+ *   - shardSize: 50000 ledgers per shard
+ *   - maxShardRetries: 3 in-run retries per shard before it is left `failed`
+ *   - retryBaseDelayMs: 1000 (doubles each retry, capped at 60000)
+ *
+ * Set BACKFILL_WORKERS above 1 to split the range into shards that are walked
+ * concurrently, each with its own checkpoint.
+ */
+export function resolveBackfillConfig(env = process.env) {
+  return {
+    workers: parseIntSafe(env.BACKFILL_WORKERS, 1, 1, 32),
+    shardSize: parseIntSafe(env.BACKFILL_SHARD_SIZE, 50000, 1, 10_000_000),
+    maxShardRetries: parseIntSafe(env.BACKFILL_SHARD_MAX_RETRIES, 3, 0, 20),
+    retryBaseDelayMs: parseIntSafe(env.BACKFILL_SHARD_RETRY_DELAY_MS, 1000, 0, 60000),
+  };
+}
+
+/**
+ * Resolves the webhook delivery dashboard configuration.
+ *
+ * Safe defaults:
+ *   - enabled: true (read-only: the page and the inspection endpoints)
+ *   - adminToken: "" - retry controls are OFF until OPS_ADMIN_TOKEN is set; a
+ *     token shorter than 16 characters is rejected rather than accepted weak
+ *   - pageSize: 50 deliveries per page
+ */
+export const MIN_ADMIN_TOKEN_LENGTH = 16;
+
+export function resolveWebhookDashboardConfig(env = process.env) {
+  const rawToken = env.OPS_ADMIN_TOKEN?.trim() || "";
+  const adminTokenRejected = rawToken !== "" && rawToken.length < MIN_ADMIN_TOKEN_LENGTH;
+  return {
+    enabled: parseBool(env.WEBHOOK_DASHBOARD_ENABLED, true),
+    adminToken: adminTokenRejected ? "" : rawToken,
+    adminTokenRejected,
+    pageSize: parseIntSafe(env.WEBHOOK_DASHBOARD_PAGE_SIZE, 50, 1, 200),
+  };
+}
+
+/**
+ * Resolves the chain-tip lag / finality-depth monitor configuration.
+ *
+ * Safe defaults (every threshold is on lag *above* the finality floor, so a
+ * larger LEDGER_FINALITY_LAG never raises an alert by itself):
+ *   - enabled: true
+ *   - ledgerCloseSeconds: 5 (converts ledgers to an estimated lag in seconds)
+ *   - tipLagWarnLedgers / tipLagCriticalLedgers: 20 / 100 (~100s / ~8min)
+ *   - checkpointAgeWarnSeconds / checkpointAgeCriticalSeconds: 120 / 600
+ *   - minFinalityDepth: the finality lag; the newest indexed ledger must be at
+ *     least this many ledgers below the chain tip
+ *
+ * A critical threshold below its warn threshold is raised to match it.
+ */
+export function resolveLagMonitorConfig(env = process.env, finalityLag = DEFAULT_FINALITY_LAG) {
+  const tipLagWarnLedgers = parseIntSafe(env.LAG_WARN_LEDGERS, 20, 1, 1_000_000);
+  const checkpointAgeWarnSeconds = parseIntSafe(env.CHECKPOINT_AGE_WARN_SECONDS, 120, 1, 604_800);
+  return {
+    enabled: parseBool(env.LAG_MONITOR_ENABLED, true),
+    ledgerCloseSeconds: parseIntSafe(env.LEDGER_CLOSE_SECONDS, 5, 1, 60),
+    tipLagWarnLedgers,
+    tipLagCriticalLedgers: Math.max(tipLagWarnLedgers, parseIntSafe(env.LAG_CRITICAL_LEDGERS, 100, 1, 1_000_000)),
+    checkpointAgeWarnSeconds,
+    checkpointAgeCriticalSeconds: Math.max(checkpointAgeWarnSeconds, parseIntSafe(env.CHECKPOINT_AGE_CRITICAL_SECONDS, 600, 1, 604_800)),
+    minFinalityDepth: parseIntSafe(env.FINALITY_MIN_DEPTH, finalityLag, 0, 1000),
+  };
+}
+
+/**
+ * Resolves contract event schema validation.
+ *
+ * Safe defaults:
+ *   - mode: enforce. Events that do not match a registered schema are
+ *     quarantined (kept, with the reason, and re-checkable), never dropped.
+ *     `warn` indexes invalid payloads anyway and reports them; `off` restores
+ *     the previous behaviour (no validation, unknown topics ignored).
+ *   - strict: true (fields outside the schema are violations)
+ *   - allowUnversioned: true (deployments that predate the `version` field)
+ */
+export const EVENT_VALIDATION_MODES = ["off", "warn", "enforce"];
+
+export function resolveEventValidationConfig(env = process.env) {
+  const requested = env.EVENT_VALIDATION_MODE?.trim().toLowerCase();
+  return {
+    mode: EVENT_VALIDATION_MODES.includes(requested) ? requested : "enforce",
+    modeRejected: Boolean(requested) && !EVENT_VALIDATION_MODES.includes(requested),
+    strict: parseBool(env.EVENT_SCHEMA_STRICT, true),
+    allowUnversioned: parseBool(env.EVENT_ALLOW_UNVERSIONED, true),
+  };
+}
+
+/**
+ * Resolves the cash-runway forecast assumptions.
+ *
+ * Safe defaults: a 90-day lookback, no recurring flows (the forecast then rests
+ * on history alone) and a 3650-day horizon. Recurring amounts are base units
+ * per day and must be non-negative integers; invalid values fall back to 0.
+ */
+export function resolveRunwayConfig(env = process.env) {
+  const amount = (value) => (/^\d{1,30}$/.test(String(value ?? "").trim()) ? String(value).trim() : "0");
+  return {
+    lookbackDays: parseIntSafe(env.RUNWAY_LOOKBACK_DAYS, 90, 1, 3650),
+    recurringOutflowPerDay: amount(env.RUNWAY_RECURRING_OUTFLOW_PER_DAY),
+    recurringInflowPerDay: amount(env.RUNWAY_RECURRING_INFLOW_PER_DAY),
+    horizonDays: parseIntSafe(env.RUNWAY_HORIZON_DAYS, 3650, 1, 36500),
+  };
+}
+
+/**
+ * Resolves API key configuration for analytics consumers.
+ *
+ * Safe defaults:
+ *   - enabled: false. Analytics reads stay open as before until you turn keys on.
+ *   - defaultQuota / defaultWindowSeconds: 1000 requests per hour for a new key
+ *   - rotationGraceSeconds: 86400 (the old secret keeps working for a day after a rotation)
+ *   - usageRetentionDays: 30 (how long per-window counters are kept)
+ *
+ * Managing keys over HTTP needs OPS_ADMIN_TOKEN.
+ */
+export function resolveApiKeysConfig(env = process.env) {
+  return {
+    enabled: parseBool(env.API_KEYS_ENABLED, false),
+    defaultQuota: parseIntSafe(env.API_KEYS_DEFAULT_QUOTA, 1000, 1, 10_000_000),
+    defaultWindowSeconds: parseIntSafe(env.API_KEYS_DEFAULT_WINDOW_SECONDS, 3600, 1, 2_592_000),
+    rotationGraceSeconds: parseIntSafe(env.API_KEYS_ROTATION_GRACE_SECONDS, 86400, 0, 2_592_000),
+    usageRetentionDays: parseIntSafe(env.API_KEYS_USAGE_RETENTION_DAYS, 30, 1, 365),
+  };
+}
+
+/**
+ * Resolves the outflow anomaly detection settings.
+ *
+ * Safe defaults: a 30-day baseline, scoring the last 7 days, no flag until 10
+ * earlier outflows exist, and a robust z-score threshold of 6 (conservative).
+ */
+export function resolveAnomalyConfig(env = process.env) {
+  const threshold = Number(env.ANOMALY_THRESHOLD);
+  return {
+    lookbackDays: parseIntSafe(env.ANOMALY_LOOKBACK_DAYS, 30, 1, 3650),
+    reportDays: parseIntSafe(env.ANOMALY_REPORT_DAYS, 7, 1, 365),
+    minSamples: parseIntSafe(env.ANOMALY_MIN_SAMPLES, 10, 1, 100000),
+    threshold: Number.isFinite(threshold) && threshold > 0 && env.ANOMALY_THRESHOLD !== "" ? threshold : 6,
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -116,6 +299,14 @@ export function loadIndexerConfig(env = process.env) {
     graphql: resolveGraphQLConfig(env),
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
+    leader: resolveLeaderElectionConfig(env),
+    webhookDashboard: resolveWebhookDashboardConfig(env),
+    eventValidation: resolveEventValidationConfig(env),
+    apiKeys: resolveApiKeysConfig(env),
+    backfill: resolveBackfillConfig(env),
+    runway: resolveRunwayConfig(env),
+    anomalies: resolveAnomalyConfig(env),
+    lagMonitor: resolveLagMonitorConfig(env, parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000)),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

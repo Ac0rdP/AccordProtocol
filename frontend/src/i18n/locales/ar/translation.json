@@ -1,6 +1,8 @@
 {
   "nav": {
     "dashboard": "لوحة التحكم",
+    "portfolio": "المحفظة",
+    "inbox": "صندوق المقترحات",
     "recurring": "المتكررة",
     "history": "السجل",
     "audit": "سجل التدقيق",
@@ -9,6 +11,7 @@
     "bulk": "إجراءات جماعية",
     "availability": "التوفر",
     "templates": "القوالب",
+    "integrations": "التكاملات",
     "notifications": "الإشعارات",
     "alerts": "قواعد التنبيه",
     "freshness": "حداثة البيانات",

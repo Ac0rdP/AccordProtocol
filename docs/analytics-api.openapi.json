@@ -991,7 +991,7 @@
             }
           }
         },
-        "description": "Follows every proposal created in the window through created → approved → executed, with cancelled (revoked) and expired proposals counted as the ways out. Each row is a cohort of proposals created in the window; rates are percentages (0–100). A proposal is approved once it reached its approval threshold, whatever became of it afterwards."
+        "description": "Follows every proposal created in the window through created \u2192 approved \u2192 executed, with cancelled (revoked) and expired proposals counted as the ways out. Each row is a cohort of proposals created in the window; rates are percentages (0\u2013100). A proposal is approved once it reached its approval threshold, whatever became of it afterwards."
       }
     },
     "/proposals/{id}": {
@@ -1632,6 +1632,182 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/integrations": {
+      "get": {
+        "operationId": "listIntegrations",
+        "summary": "Reviewed plugin and integration marketplace",
+        "tags": [
+          "Integrations"
+        ],
+        "description": "Lists the reviewed integration catalog (notifications, accounting, treasury automation) with explicit permissions and data boundaries, along with workspace installations.",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "Filter catalog by category.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "notifications",
+                "accounting",
+                "treasury_automation"
+              ],
+              "default": "all"
+            },
+            "x-error-code": "INVALID_CATEGORY",
+            "x-invalid-example": "unknown"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Contract address to load workspace installs for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Network name (testnet or mainnet).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Plugins per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_PAGINATION",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of plugins to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_PAGINATION",
+            "x-invalid-example": "-1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Integration catalog and workspace installs."
+          },
+          "400": {
+            "description": "Invalid query parameter."
+          }
+        }
+      }
+    },
+    "/integrations/{id}": {
+      "put": {
+        "operationId": "installIntegration",
+        "summary": "Install or update a reviewed integration",
+        "tags": [
+          "Integrations"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Installed or updated integration configuration."
+          },
+          "400": {
+            "description": "Validation error."
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token."
+          },
+          "404": {
+            "description": "Unknown or unreviewed plugin ID."
+          }
+        }
+      },
+      "delete": {
+        "operationId": "uninstallIntegration",
+        "summary": "Uninstall an integration from a workspace",
+        "tags": [
+          "Integrations"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Integration uninstalled."
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token."
+          },
+          "404": {
+            "description": "Integration is not installed."
           }
         }
       }
@@ -3730,6 +3906,345 @@
           }
         }
       }
+    },
+    "/branding": {
+      "get": {
+        "operationId": "listBranding",
+        "summary": "List white-label branding configurations for scoped workspaces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated workspace branding records"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      },
+      "put": {
+        "operationId": "upsertBranding",
+        "summary": "Create or update white-label branding and custom domain for a workspace",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated branding record with DNS verification token"
+          },
+          "400": {
+            "description": "Invalid branding payload or query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "resetBranding",
+        "summary": "Reset workspace branding to shared Accord defaults",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Branding reset result"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/billing": {
+      "get": {
+        "operationId": "getBillingPlan",
+        "summary": "Get current workspace billing plan, usage counters, and upgrade catalog",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace billing plan and usage summary"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      }
+    },
+    "/billing/plan": {
+      "put": {
+        "operationId": "updateBillingPlan",
+        "summary": "Upgrade or change workspace billing plan tier",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated workspace billing plan and limits"
+          },
+          "400": {
+            "description": "Invalid plan tier, email, or downgrade blocked by current usage"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/workflows/webhooks": {
+      "get": {
+        "operationId": "listWorkflowWebhooks",
+        "summary": "List Zapier and generic webhook subscriptions for scoped workspaces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated workflow webhook subscriptions (signing secrets redacted)"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createWorkflowWebhook",
+        "summary": "Register a Zapier or generic webhook trigger subscription",
+        "parameters": [
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created workflow webhook subscription"
+          },
+          "400": {
+            "description": "Invalid webhook URL, targetType, or trigger events"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/workflows/webhooks/{id}": {
+      "delete": {
+        "operationId": "deleteWorkflowWebhook",
+        "summary": "Delete a workflow webhook subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook deletion result"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          }
+        }
+      }
+    },
+    "/workflows/webhooks/{id}/test": {
+      "post": {
+        "operationId": "testWorkflowWebhook",
+        "summary": "Dispatch a sample proposal, approval, or treasury trigger payload to a webhook",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sample trigger payload queued for delivery"
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token"
+          },
+          "404": {
+            "description": "Webhook not found in workspace"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3789,33 +4304,41 @@
           "code": {
             "type": "string",
             "enum": [
-              "UNKNOWN_PARAMETER",
-              "INVALID_LIMIT",
-              "INVALID_OFFSET",
-              "INVALID_SORT",
-              "INVALID_ORDER",
-              "INVALID_STATUS",
+              "INVALID_BODY",
               "INVALID_CATEGORY",
+              "INVALID_COLOR",
+              "INVALID_CONTRACT_ID",
               "INVALID_DATE",
               "INVALID_DATE_RANGE",
-              "INVALID_CONTRACT_ID",
-              "INVALID_NETWORK",
+              "INVALID_DOMAIN",
+              "INVALID_EMAIL",
+              "INVALID_EVENT_TYPE",
               "INVALID_FORMAT",
-              "INVALID_PERIOD_DAYS",
-              "INVALID_SEVERITY",
               "INVALID_GROUP_BY",
-              "MISSING_PARAMETER",
-              "INVALID_BODY",
-              "INVALID_TEMPLATE_FIELD",
+              "INVALID_LIMIT",
               "INVALID_LOGO_URL",
-              "INVALID_COLOR",
-              "INVALID_SECTION",
+              "INVALID_LOOKBACK",
+              "INVALID_NETWORK",
+              "INVALID_OFFSET",
+              "INVALID_ORDER",
+              "INVALID_PERIOD_DAYS",
+              "INVALID_PLAN_TIER",
               "INVALID_RULE",
               "INVALID_RULE_ID",
               "INVALID_RULE_TYPE",
+              "INVALID_SECTION",
+              "INVALID_SEVERITY",
+              "INVALID_SORT",
               "INVALID_SOURCE",
-              "INVALID_LOOKBACK",
-              "RATE_LIMITED"
+              "INVALID_STATUS",
+              "INVALID_TARGET_TYPE",
+              "INVALID_TEMPLATE_FIELD",
+              "INVALID_WEBHOOK_URL",
+              "MISSING_PARAMETER",
+              "NOT_FOUND",
+              "PLAN_LIMIT_EXCEEDED",
+              "RATE_LIMITED",
+              "UNKNOWN_PARAMETER"
             ]
           }
         }
@@ -4398,19 +4921,19 @@
           },
           "approvalRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "executionRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "cancellationRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "approvalToExecutionRate": {
             "type": "number",
-            "description": "Percentage, 0–100."
+            "description": "Percentage, 0\u2013100."
           },
           "avgSecondsToExecute": {
             "type": "number",

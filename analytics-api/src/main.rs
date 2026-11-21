@@ -1,5 +1,9 @@
 use std::{
-    collections::BTreeMap, collections::HashMap, env, net::SocketAddr, sync::Arc, time::Duration,
+    collections::{BTreeMap, HashMap},
+    env,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -9,7 +13,7 @@ use axum::{
     http::{StatusCode, header},
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post, put},
 };
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -24,14 +28,18 @@ use tracing_subscriber::EnvFilter;
 mod admin;
 mod alert_rules;
 mod alerts;
+mod billing;
+mod branding;
 mod freshness;
 mod funnel;
+mod integrations;
 mod limits;
 mod mail;
 mod reports;
 mod schedule;
 mod scope;
 mod templates;
+mod workflows;
 
 #[cfg(test)]
 mod contract_tests;
@@ -210,6 +218,36 @@ fn app(state: AppState) -> Router {
                 .put(templates::put)
                 .delete(templates::delete)
                 .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
+        .route("/integrations", get(integrations::list))
+        .route(
+            "/integrations/{id}",
+            axum::routing::put(integrations::put)
+                .delete(integrations::delete)
+                .layer(DefaultBodyLimit::max(integrations::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/branding",
+            get(branding::list)
+                .put(branding::put)
+                .delete(branding::delete)
+                .layer(DefaultBodyLimit::max(branding::MAX_BODY_BYTES)),
+        )
+        .route("/billing", get(billing::get_plan))
+        .route(
+            "/billing/plan",
+            put(billing::update_plan).layer(DefaultBodyLimit::max(billing::MAX_BODY_BYTES)),
+        )
+        .route(
+            "/workflows/webhooks",
+            get(workflows::list)
+                .post(workflows::create)
+                .layer(DefaultBodyLimit::max(workflows::MAX_BODY_BYTES)),
+        )
+        .route("/workflows/webhooks/{id}", delete(workflows::remove))
+        .route(
+            "/workflows/webhooks/{id}/test",
+            post(workflows::test_trigger),
         )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
@@ -1396,9 +1434,21 @@ mod proposals {
 
     #[derive(Debug, Serialize)]
     pub(super) struct ErrorDetail {
-        field: String,
-        message: String,
+        pub(crate) field: String,
+        pub(crate) message: String,
+        pub(crate) code: &'static str,
+    }
+
+    pub(super) fn error_detail(
+        field: &str,
+        message: impl Into<String>,
         code: &'static str,
+    ) -> ErrorDetail {
+        ErrorDetail {
+            field: field.to_owned(),
+            message: message.into(),
+            code,
+        }
     }
 
     impl ApiError {

@@ -38,12 +38,36 @@ readinessProbe: { httpGet: { path: /readyz,  port: 8787 } }
 | `accord_indexer_chain_final_ledger` | gauge | | Latest ledger old enough to index. |
 | `accord_indexer_indexed_ledger` | gauge | | Last ledger covered by the checkpoint. |
 | `accord_indexer_ingestion_lag_ledgers` | gauge | | Final ledgers not yet indexed. **The ingestion lag.** |
+| `accord_indexer_chain_tip_lag_ledgers` | gauge | | Chain tip minus newest indexed ledger (includes the finality lag). |
+| `accord_indexer_chain_tip_lag_seconds` | gauge | | The same lag in estimated seconds (`LEDGER_CLOSE_SECONDS` per ledger). |
+| `accord_indexer_finality_depth_ledgers` | gauge | | Confirmations on the newest indexed ledger. Below `FINALITY_MIN_DEPTH` means non-final data was indexed. |
+| `accord_indexer_checkpoint_age_seconds` | gauge | | Seconds since the checkpoint last advanced; keeps growing while batches fail. |
+| `accord_indexer_lag_alert_level` | gauge | `check` = `tip_lag`, `finality_depth`, `checkpoint_age` | Monitor level: 0 ok, 1 warn, 2 critical. |
+| `accord_indexer_lag_threshold` | gauge | `check`, `level` | The configured thresholds, so dashboards can draw them. |
+| `accord_indexer_lag_alerts_total` | counter | `check`, `level` = `warn`, `critical` | Transitions into warn or critical. |
 | `accord_indexer_last_successful_batch_timestamp_seconds` | gauge | | Unix time of the last clean batch. |
 | `accord_indexer_http_requests_total` | counter | `method`, `route`, `status` | API requests (`route` is `unmatched` for unknown paths). |
 | `accord_indexer_http_request_duration_seconds` | histogram | `method`, `route` | API latency. |
 | `accord_indexer_webhook_deliveries_total` | counter | `subscription`, `result` = `delivered`, `retry`, `dead` | Delivery attempts. |
 | `accord_indexer_webhook_delivery_duration_seconds` | histogram | `subscription` | Receiver latency. |
 | `accord_indexer_webhook_deliveries` | gauge | `status` = `pending`, `delivered`, `dead` | Outbox size. |
+| `accord_indexer_api_key_requests_total` | counter | `key`, `result` = `ok`, `unauthorized`, `forbidden`, `quota_exceeded` | Analytics requests checked against API keys (`key` is `unknown` when unauthenticated). |
+| `accord_indexer_events_quarantined_total` | counter | `reason` = `unknown_topic`, `unknown_version`, `invalid_payload`, `undecodable` | Contract events that failed schema validation. |
+| `accord_indexer_quarantined_events` | gauge | `reason` | Events currently held in quarantine. |
+| `accord_indexer_event_validation_warnings_total` | counter | | Events indexed despite violations (`EVENT_VALIDATION_MODE=warn`). |
+| `accord_indexer_webhook_replays_total` | counter | `scope` = `single`, `bulk` | Deliveries an operator replayed from the dashboard or API. |
+
+### Chain-tip lag and finality-depth monitoring
+
+The indexer's lag monitor turns three signals into `ok` / `warn` / `critical` levels and exposes them on `/metrics`, `GET /lag` and `GET /status` (a `critical` level makes `/status` report `degraded`).
+
+| Check | Value | Warn | Critical | Settings |
+| --- | --- | --- | --- | --- |
+| `tip_lag` | ledgers behind the tip **above the finality floor** | 20 | 100 | `LAG_WARN_LEDGERS`, `LAG_CRITICAL_LEDGERS` |
+| `checkpoint_age` | seconds since the checkpoint last advanced | 120 | 600 | `CHECKPOINT_AGE_WARN_SECONDS`, `CHECKPOINT_AGE_CRITICAL_SECONDS` |
+| `finality_depth` | confirmations on the newest indexed ledger | | below `FINALITY_MIN_DEPTH` (default `LEDGER_FINALITY_LAG`) | `FINALITY_MIN_DEPTH` |
+
+`LEDGER_CLOSE_SECONDS` (default 5) only converts ledgers to the estimated `chain_tip_lag_seconds`. Set `LAG_MONITOR_ENABLED=false` to turn the monitor off. The checkpoint time and alert levels persist in `lag_monitor_state` (Postgres migration `0010`), so a restart does not reset the age or re-fire an active alert; level changes are logged once as `[lag] <check> <from> -> <to>`.
 
 ## GraphQL live event subscriptions
 
@@ -160,12 +184,32 @@ groups:
         expr: accord_indexer_ingestion_lag_ledgers > 100   # ~8 minutes at 5s per ledger
         for: 10m
         annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#ingestion-lag-high" }
+      - alert: AccordChainTipLagWarn
+        expr: accord_indexer_lag_alert_level{check="tip_lag"} >= 1
+        for: 5m
+        annotations: { summary: "Indexer is falling behind the chain tip", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#chain-tip-lag" }
+      - alert: AccordChainTipLagCritical
+        expr: accord_indexer_lag_alert_level{check="tip_lag"} == 2
+        for: 2m
+        annotations: { summary: "Indexer is far behind the chain tip", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#chain-tip-lag" }
+      - alert: AccordFinalityDepthLow
+        expr: accord_indexer_lag_alert_level{check="finality_depth"} == 2
+        for: 1m
+        annotations: { summary: "Indexed ledgers have fewer confirmations than the configured minimum", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#finality-depth-low" }
+      - alert: AccordCheckpointAgeHigh
+        expr: accord_indexer_lag_alert_level{check="checkpoint_age"} >= 1
+        for: 2m
+        annotations: { summary: "The indexing checkpoint has not advanced recently", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#checkpoint-age-high" }
       - alert: AccordIndexerErrors
         expr: sum by (stage) (increase(accord_indexer_errors_total[10m])) > 5
         annotations: { runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#indexer-errors" }
       - alert: AccordReorgDetected
         expr: increase(accord_indexer_reorgs_total[1h]) > 0
         annotations: { summary: "Chain view rolled back; check the RPC node", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#reorg-detected" }
+      - alert: AccordEventsQuarantined
+        expr: sum(accord_indexer_quarantined_events) > 0
+        for: 15m
+        annotations: { summary: "Contract events failed schema validation; see GET /quarantine", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#events-quarantined" }
       - alert: AccordWebhookDeadLetters
         expr: accord_indexer_webhook_deliveries{status="dead"} > 0
         annotations: { summary: "Webhook deliveries exhausted retries; see GET /webhooks/deliveries?status=dead", runbook_url: "https://github.com/Ac0rdP/AccordProtocol/blob/main/docs/RUNBOOK.md#webhook-dead-letters" }

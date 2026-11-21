@@ -68,14 +68,19 @@ export function parseTokenTransferEvent(event, tokenNames, treasuryAddress, targ
   };
 }
 
-export function parseAccordEvent(event, treasuryAddress, target) {
+/**
+ * @param {object} [options]
+ * @param {(topic: string) => boolean} [options.isKnownTopic]  decides which topics are Accord events;
+ *   defaults to the static catalog, the schema registry passes its own
+ */
+export function parseAccordEvent(event, treasuryAddress, target, { isKnownTopic } = {}) {
   const contractId = String(event.contractId ?? "").toLowerCase();
   if (contractId !== treasuryAddress.toLowerCase()) return null;
   if (!Array.isArray(event.topic) || event.topic.length === 0) return null;
 
   const topicName = decodeScVal(event.topic[0]);
-  const schema = getEventSchema(topicName);
-  if (!schema) return null; // Not an Accord protocol event from the catalog
+  const known = isKnownTopic ? isKnownTopic(topicName) : Boolean(getEventSchema(topicName));
+  if (!known) return null; // Not an Accord protocol event from the catalog
 
   const payload = decodeScVal(event.value);
   const ledger = Number(event.ledger);

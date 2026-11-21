@@ -22,6 +22,7 @@ import type {
   Role,
 } from "../types/accord";
 import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
+import { getActiveContractId } from "./activeContract";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
 const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
@@ -34,9 +35,10 @@ const server = new rpc.Server(RPC_URL);
 async function simulateView(
   fn: string,
   args: xdr.ScVal[] = [],
+  contractId = getActiveContractId(),
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(contractId);
   const tx = new TransactionBuilder(account, {
     fee: "100",
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -106,7 +108,11 @@ function safeBigInt(value: unknown): bigint {
 
 function mapKindDetails(
   kind: unknown,
-): Pick<Proposal, "kind" | "to" | "amount" | "token"> & { rawAmount?: string } {
+): Pick<Proposal, "kind" | "to" | "amount" | "token"> & {
+  rawAmount?: string;
+  tokenAddress?: string;
+  recipientAddress?: string;
+} {
   if (!kind || typeof kind !== "object") {
     return {
       kind: "transfer",
@@ -127,9 +133,11 @@ function mapKindDetails(
       return {
         kind: "transfer",
         to: shortenAddr(String(values[0] ?? "Unknown")),
+        recipientAddress: String(values[0] ?? ""),
         amount: stroopsToDisplay(rawStroops),
         rawAmount: String(rawStroops),
         token: shortenAddr(String(values[2] ?? "Unknown")),
+        tokenAddress: String(values[2] ?? ""),
       };
     }
     case "addowner":
@@ -217,7 +225,19 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     userHasApproved: false,
     approverAddresses: [],
     executedAt: formatDeadline(rawDeadline),
+    attachmentHash: mapAttachmentHash(raw.attachment_hash),
   };
+}
+
+function mapAttachmentHash(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Uint8Array) {
+    return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  if (Array.isArray(value) && value.every((byte) => typeof byte === "number")) {
+    return value.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -305,10 +325,11 @@ export async function getRoleVersion(): Promise<number> {
 export async function getRoles(
   address?: string,
   ownerAddresses: string[] = [],
+  contractId: string = CONTRACT_ID,
 ): Promise<Role[]> {
   if (!address) {
     try {
-      const val = await simulateView("get_roles");
+      const val = await simulateView("get_roles", [], contractId);
       return mapRoleList(scValToNative(val));
     } catch {
       return [];
@@ -318,7 +339,7 @@ export async function getRoles(
   try {
     const val = await simulateView("get_roles", [
       nativeToScVal(address, { type: "address" }),
-    ]);
+    ], contractId);
     return mapRoles(scValToNative(val));
   } catch {
     if (ownerAddresses.includes(address)) {
@@ -374,8 +395,8 @@ export async function getApproverWeight(owner: string): Promise<number> {
   }
 }
 
-export async function getOwners(): Promise<string[]> {
-  const val = await simulateView("get_owners");
+export async function getOwners(contractId?: string): Promise<string[]> {
+  const val = await simulateView("get_owners", [], contractId);
   return scValToNative(val) as string[];
 }
 
@@ -409,9 +430,9 @@ export async function getOwnerWeights(): Promise<Array<{ address: string; weight
   }
 }
 
-export async function getTotalWeight(): Promise<number> {
+export async function getTotalWeight(contractId?: string): Promise<number> {
   try {
-    const val = await simulateView("get_total_weight");
+    const val = await simulateView("get_total_weight", [], contractId);
     return Number(scValToNative(val) ?? 0);
   } catch {
     return 0;
@@ -472,8 +493,8 @@ function mapRoles(raw: unknown): Role[] {
   );
 }
 
-export async function getThreshold(): Promise<number> {
-  const val = await simulateView("get_threshold");
+export async function getThreshold(contractId?: string): Promise<number> {
+  const val = await simulateView("get_threshold", [], contractId);
   return Number(scValToNative(val));
 }
 
@@ -493,21 +514,98 @@ export async function getSpendingLimit(
   }
 }
 
-export async function getTotalProposals(): Promise<number> {
-  const val = await simulateView("get_total_proposals");
+export async function getTotalProposals(contractId?: string): Promise<number> {
+  const val = await simulateView("get_total_proposals", [], contractId);
   return Number(scValToNative(val));
 }
 
 export async function getProposalsPaged(
   offset: number,
   limit: number,
+  contractId?: string,
 ): Promise<unknown[]> {
   const val = await simulateView("get_proposals_paged", [
     nativeToScVal(BigInt(offset), { type: "u64" }),
     nativeToScVal(limit, { type: "u32" }),
-  ]);
+  ], contractId);
   const result = scValToNative(val);
   return Array.isArray(result) ? result : [];
+}
+
+export type PortfolioContractSummary = {
+  contractId: string;
+  owners: number;
+  totalWeight: number;
+  threshold: number;
+  totalProposals: number;
+  activeProposals: number;
+  readyProposals: number;
+  overdueProposals: number;
+  treasuryXlm: string;
+  treasuryUsdc: string;
+};
+
+export async function getPortfolioContractSummary(
+  contractId: string,
+): Promise<PortfolioContractSummary> {
+  const [ownersValue, thresholdValue, weightValue, totalValue] =
+    await Promise.all([
+      simulateView("get_owners", [], contractId),
+      simulateView("get_threshold", [], contractId),
+      simulateView("get_total_weight", [], contractId),
+      simulateView("get_total_proposals", [], contractId),
+    ]);
+  const ownerAddresses = scValToNative(ownersValue);
+  const threshold = Number(scValToNative(thresholdValue));
+  const totalWeight = Number(scValToNative(weightValue));
+  const totalProposals = Number(scValToNative(totalValue));
+  if (
+    !Array.isArray(ownerAddresses) ||
+    !Number.isSafeInteger(threshold) ||
+    threshold < 0 ||
+    !Number.isSafeInteger(totalWeight) ||
+    totalWeight < 0 ||
+    !Number.isSafeInteger(totalProposals) ||
+    totalProposals < 0
+  ) {
+    throw new Error("Contract returned invalid portfolio summary data.");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  let activeProposals = 0;
+  let readyProposals = 0;
+  let overdueProposals = 0;
+  for (let offset = 0; offset < totalProposals; offset += 50) {
+    const proposalValues = await getProposalsPaged(
+      offset,
+      Math.min(50, totalProposals - offset),
+      contractId,
+    );
+    if (proposalValues.length === 0) break;
+    for (const rawProposal of proposalValues) {
+      const proposal = mapProposal(rawProposal, threshold);
+      if (!["pending", "ready"].includes(proposal.status)) continue;
+      activeProposals += 1;
+      if (proposal.status === "ready") readyProposals += 1;
+      if (proposal.deadlineTs < now) overdueProposals += 1;
+    }
+  }
+  const [treasuryXlm, treasuryUsdc] = await Promise.all([
+    getContractXlmBalance(contractId),
+    getContractUsdcBalance(contractId),
+  ]);
+
+  return {
+    contractId,
+    owners: Array.isArray(ownerAddresses) ? ownerAddresses.length : 0,
+    totalWeight,
+    threshold,
+    totalProposals,
+    activeProposals,
+    readyProposals,
+    overdueProposals,
+    treasuryXlm,
+    treasuryUsdc,
+  };
 }
 
 function mapRecurringStatus(raw: unknown): RecurringStatus {
@@ -636,11 +734,12 @@ export async function getProposalApprovalProgress(
 export async function hasApproved(
   walletAddress: string,
   proposalId: number,
+  contractId: string = CONTRACT_ID,
 ): Promise<boolean> {
   const val = await simulateView("has_approved", [
     nativeToScVal(walletAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
   return scValToNative(val) as boolean;
 }
 
@@ -664,7 +763,7 @@ export async function getContractEvents(
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,
@@ -714,16 +813,21 @@ export async function getTokenBalanceOf(tokenAddress: string, accountAddress: st
 }
 
 /** Raw treasury balance (base units) for a given token. */
-export async function getTreasuryTokenBalance(tokenAddress: string): Promise<bigint> {
-  return getTokenBalanceOf(tokenAddress, CONTRACT_ID);
+export async function getTreasuryTokenBalance(
+  tokenAddress: string,
+  contractId = getActiveContractId(),
+): Promise<bigint> {
+  return getTokenBalanceOf(tokenAddress, contractId);
 }
 
-export async function getContractXlmBalance(): Promise<string> {
+export async function getContractXlmBalance(
+  contractId = getActiveContractId(),
+): Promise<string> {
   const xlmToken = import.meta.env.VITE_XLM_TOKEN_ADDRESS as string;
   if (!xlmToken) return "N/A";
   try {
     const val = await simulateContractView(xlmToken, "balance", [
-      nativeToScVal(CONTRACT_ID, { type: "address" }),
+      nativeToScVal(contractId, { type: "address" }),
     ]);
     const raw = scValToNative(val);
     if (typeof raw === "bigint" || typeof raw === "number" || typeof raw === "string") {
@@ -735,12 +839,14 @@ export async function getContractXlmBalance(): Promise<string> {
   }
 }
 
-export async function getContractUsdcBalance(): Promise<string> {
+export async function getContractUsdcBalance(
+  contractId = getActiveContractId(),
+): Promise<string> {
   const usdcToken = import.meta.env.VITE_USDC_TOKEN_ADDRESS as string;
   if (!usdcToken) return "N/A";
   try {
     const val = await simulateContractView(usdcToken, "balance", [
-      nativeToScVal(CONTRACT_ID, { type: "address" }),
+      nativeToScVal(contractId, { type: "address" }),
     ]);
     const raw = scValToNative(val);
     if (
@@ -995,7 +1101,7 @@ export async function getProposalEvents(
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,
@@ -1375,7 +1481,7 @@ export async function getOwnerWeightChangeEvents(
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,
@@ -1489,7 +1595,7 @@ export async function getHistoricalWeightChangeEvents(): Promise<
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,

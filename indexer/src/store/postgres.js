@@ -1,8 +1,19 @@
 import pg from "pg";
 import { migratePostgres } from "./migrations.js";
+import { foldDeliverySummary } from "./sqlite.js";
 
 // Serializes writers that fold running balances, mirroring SQLite's BEGIN IMMEDIATE.
 const LEDGER_LOCK_ID = 7_243_002;
+
+const toLease = (row) => ({
+  name: row.name,
+  holderId: row.holder_id,
+  region: row.region,
+  fencingToken: Number(row.fencing_token),
+  acquiredAt: iso(row.acquired_at),
+  renewedAt: iso(row.renewed_at),
+  expiresAt: iso(row.expires_at),
+});
 
 const iso = (value) => (value === null || value === undefined ? null : new Date(value).toISOString());
 
@@ -46,6 +57,45 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
   } catch (error) {
     await pool.end();
     throw error;
+  }
+
+  const apiKeyColumns = `id, name, scopes, quota_limit, quota_window_seconds, status, created_at, updated_at,
+    expires_at, rotated_at, revoked_at, previous_expires_at, previous_secret_hash IS NOT NULL AS has_previous_secret`;
+
+  function toApiKey(row, withSecrets) {
+    return {
+      id: row.id,
+      name: row.name,
+      scopes: JSON.parse(row.scopes),
+      quotaLimit: row.quota_limit,
+      quotaWindowSeconds: row.quota_window_seconds,
+      status: row.status,
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+      expiresAt: iso(row.expires_at),
+      rotatedAt: iso(row.rotated_at),
+      revokedAt: iso(row.revoked_at),
+      previousExpiresAt: iso(row.previous_expires_at),
+      hasPreviousSecret: Boolean(row.has_previous_secret),
+      ...(withSecrets ? { secretHash: row.secret_hash, previousSecretHash: row.previous_secret_hash } : {}),
+    };
+  }
+
+  async function selectApiKey(id) {
+    const { rows } = await pool.query(
+      `SELECT ${apiKeyColumns}, secret_hash, previous_secret_hash FROM api_keys WHERE id = $1`,
+      [id]
+    );
+    return rows[0] ? toApiKey(rows[0], true) : null;
+  }
+
+  async function selectLease(name) {
+    const { rows } = await pool.query(
+      `SELECT name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at
+       FROM indexer_leases WHERE name = $1`,
+      [name]
+    );
+    return rows[0] ? toLease(rows[0]) : null;
   }
 
   async function withTransaction(work, { lockLedger = false } = {}) {
@@ -110,11 +160,13 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       lastStatusCode: row.last_status_code,
       createdAt: iso(row.created_at),
       deliveredAt: iso(row.delivered_at),
+      replayCount: row.replay_count,
+      lastReplayedAt: iso(row.last_replayed_at),
     };
   }
 
   const deliveryColumns = `id, subscription_id, event_id, body, status, attempts, next_attempt_at,
-    last_error, last_status_code, created_at, delivered_at`;
+    last_error, last_status_code, created_at, delivered_at, replay_count, last_replayed_at`;
 
   function toNotificationDelivery(row) {
     return {
@@ -321,6 +373,10 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return withTransaction(async (client) => {
         const entries = await client.query("DELETE FROM ledger_entries WHERE ledger > $1", [target]);
         const events = await client.query("DELETE FROM accord_events WHERE ledger > $1", [target]);
+        // Re-ingested (and re-quarantined if still invalid) together with the rewound range.
+        await client.query("DELETE FROM quarantined_events WHERE ledger > $1", [target]);
+        // Shards that reached past the rewind point no longer describe indexed data.
+        await client.query("DELETE FROM backfill_shards WHERE end_ledger > $1", [target]);
         await replayBalances(client);
         return { removedEntries: entries.rowCount, removedEvents: events.rowCount };
       }, { lockLedger: true });
@@ -330,10 +386,13 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return withTransaction(async (client) => {
         const entries = await client.query("DELETE FROM ledger_entries");
         const events = await client.query("DELETE FROM accord_events");
+        await client.query("DELETE FROM quarantined_events");
         const reconciliations = await client.query("DELETE FROM reconciliation_results");
         await client.query("DELETE FROM token_balances");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'webhook\\_cursor:%'");
         await client.query("DELETE FROM indexer_state WHERE key LIKE 'notification\\_cursor:%'");
+        // Shards marked done describe data that no longer exists.
+        await client.query("DELETE FROM backfill_shards");
         return {
           removedEntries: entries.rowCount,
           removedEvents: events.rowCount,
@@ -396,15 +455,25 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return rows.map(toDelivery);
     },
 
-    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, now }) {
+    async completeWebhookDelivery({ id, outcome, attempts, nextAttemptAt, statusCode, error, durationMs, now }) {
       const status = outcome === "delivered" ? "delivered" : outcome === "dead" ? "dead" : "pending";
-      await pool.query(
-        `UPDATE webhook_deliveries SET status = $1, attempts = $2, next_attempt_at = $3,
-           last_error = $4, last_status_code = $5, updated_at = $6,
-           delivered_at = CASE WHEN $1 = 'delivered' THEN $6::timestamptz ELSE delivered_at END
-         WHERE id = $7`,
-        [status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, id]
-      );
+      await withTransaction(async (client) => {
+        await client.query(
+          `UPDATE webhook_deliveries SET status = $1, attempts = $2, next_attempt_at = $3,
+             last_error = $4, last_status_code = $5, updated_at = $6,
+             delivered_at = CASE WHEN $1 = 'delivered' THEN $6::timestamptz ELSE delivered_at END
+           WHERE id = $7`,
+          [status, attempts, nextAttemptAt ?? now, error ?? null, statusCode ?? null, now, id]
+        );
+        // One history row per attempt, written with the outcome so the two never disagree.
+        await client.query(
+          `INSERT INTO webhook_delivery_attempts (
+             delivery_id, attempt, replay_round, outcome, status_code, error, duration_ms, attempted_at
+           ) SELECT id, $2, replay_count, $3, $4, $5, $6, $7 FROM webhook_deliveries WHERE id = $1`,
+          [id, attempts, outcome === "delivered" || outcome === "dead" ? outcome : "retry",
+            statusCode ?? null, error ?? null, durationMs ?? null, now]
+        );
+      });
     },
 
     async countWebhookDeliveries() {
@@ -414,20 +483,85 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return counts;
     },
 
-    async listWebhookDeliveries({ status, subscriptionId, limit, offset }) {
+    async listWebhookDeliveries({ status, subscriptionId, eventId, order = "asc", limit, offset }) {
       const values = [];
-      const where = filterClause([["status", "=", status], ["subscription_id", "=", subscriptionId]], values);
+      const where = filterClause(
+        [["status", "=", status], ["subscription_id", "=", subscriptionId], ["event_id", "=", eventId]],
+        values
+      );
+      const direction = order === "desc" ? "DESC" : "ASC";
       const { rows } = await pool.query(
         `SELECT ${deliveryColumns} FROM webhook_deliveries ${where}
-         ORDER BY id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+         ORDER BY id ${direction} LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
         [...values, limit, offset]
       );
       return rows.map(toDelivery);
     },
 
+    async getWebhookDelivery(id) {
+      const { rows } = await pool.query(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = $1`, [id]);
+      return rows[0] ? toDelivery(rows[0]) : null;
+    },
+
+    async listWebhookDeliveryAttempts(deliveryId) {
+      const { rows } = await pool.query(
+        `SELECT id, delivery_id, attempt, replay_round, outcome, status_code, error, duration_ms, attempted_at
+         FROM webhook_delivery_attempts WHERE delivery_id = $1 ORDER BY id ASC`,
+        [deliveryId]
+      );
+      return rows.map((row) => ({
+        id: Number(row.id),
+        deliveryId: Number(row.delivery_id),
+        attempt: row.attempt,
+        replayRound: row.replay_round,
+        outcome: row.outcome,
+        statusCode: row.status_code,
+        error: row.error,
+        durationMs: row.duration_ms,
+        attemptedAt: iso(row.attempted_at),
+      }));
+    },
+
+    async summarizeWebhookDeliveries() {
+      const { rows } = await pool.query(
+        `SELECT subscription_id, status, COUNT(*) AS count, MIN(created_at) AS oldest_at,
+           COALESCE(SUM(replay_count), 0) AS replays
+         FROM webhook_deliveries GROUP BY subscription_id, status`
+      );
+      return foldDeliverySummary(rows.map((row) => ({
+        subscriptionId: row.subscription_id,
+        status: row.status,
+        count: Number(row.count),
+        oldestAt: iso(row.oldest_at),
+        replays: Number(row.replays),
+      })));
+    },
+
+    /** Same contract as the SQLite store; the row lock keeps concurrent replays from double-counting. */
+    async replayWebhookDelivery({ id, now }) {
+      return withTransaction(async (client) => {
+        const current = await client.query("SELECT status FROM webhook_deliveries WHERE id = $1 FOR UPDATE", [id]);
+        if (!current.rows[0]) return { found: false };
+        const previousStatus = current.rows[0].status;
+        if (previousStatus === "pending") {
+          await client.query("UPDATE webhook_deliveries SET next_attempt_at = $2, updated_at = $2 WHERE id = $1", [id, now]);
+        } else {
+          await client.query(
+            `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $2, updated_at = $2,
+               replay_count = replay_count + 1, last_replayed_at = $2
+             WHERE id = $1`,
+            [id, now]
+          );
+        }
+        const { rows } = await client.query(`SELECT ${deliveryColumns} FROM webhook_deliveries WHERE id = $1`, [id]);
+        return { found: true, previousStatus, delivery: toDelivery(rows[0]) };
+      });
+    },
+
     async requeueDeadWebhookDeliveries({ subscriptionId, now }) {
       const { rowCount } = await pool.query(
-        `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1
+        `UPDATE webhook_deliveries SET status = 'pending', attempts = 0, next_attempt_at = $1, updated_at = $1,
+           replay_count = replay_count + 1, last_replayed_at = $1
          WHERE status = 'dead' AND ($2::text IS NULL OR subscription_id = $2)`,
         [now, subscriptionId ?? null]
       );
@@ -626,6 +760,290 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
         rowsExported: Number(rows[0].rows_exported),
         schemaVersion: rows[0].schema_version,
         updatedAt: rows[0].updated_at,
+      };
+    },
+
+    /** Same contract as the SQLite store. */
+    async quarantineEvent(record) {
+      const now = record.now ?? new Date().toISOString();
+      const { rowCount } = await pool.query(
+        `INSERT INTO quarantined_events (
+           dedupe_key, event_id, contract_id, topic, schema_version, reason, errors, raw,
+           ledger, transaction_hash, occurred_at, status, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'quarantined', $12, $12)
+         ON CONFLICT (dedupe_key) DO NOTHING`,
+        [
+          record.dedupeKey, record.eventId, record.contractId ?? null, record.topic ?? null,
+          record.schemaVersion ?? null, record.reason, JSON.stringify(record.errors ?? []),
+          JSON.stringify(record.raw ?? {}), record.ledger, record.transactionHash ?? null,
+          record.occurredAt, now,
+        ]
+      );
+      return rowCount > 0;
+    },
+
+    async listQuarantinedEvents({ status, reason, topic, afterId, order = "desc", limit, offset = 0, includeRaw = false }) {
+      const values = [];
+      const where = filterClause([["status", "=", status], ["reason", "=", reason], ["topic", "=", topic]], values);
+      let condition = where;
+      if (afterId) {
+        values.push(afterId);
+        condition = `${where ? `${where} AND` : "WHERE"} id > $${values.length}`;
+      }
+      const { rows } = await pool.query(
+        `SELECT id, dedupe_key, event_id, contract_id, topic, schema_version, reason, errors, raw, ledger,
+           transaction_hash, occurred_at, status, created_at, resolved_at
+         FROM quarantined_events ${condition} ORDER BY id ${order === "asc" ? "ASC" : "DESC"}
+         LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+        [...values, limit, offset]
+      );
+      return rows.map((row) => ({
+        id: Number(row.id),
+        dedupeKey: row.dedupe_key,
+        eventId: row.event_id,
+        contractId: row.contract_id,
+        topic: row.topic,
+        schemaVersion: row.schema_version === null ? null : Number(row.schema_version),
+        reason: row.reason,
+        errors: JSON.parse(row.errors),
+        ...(includeRaw ? { raw: JSON.parse(row.raw) } : {}),
+        ledger: row.ledger,
+        transactionHash: row.transaction_hash,
+        occurredAt: iso(row.occurred_at),
+        status: row.status,
+        createdAt: iso(row.created_at),
+        resolvedAt: iso(row.resolved_at),
+      }));
+    },
+
+    async countQuarantinedEvents() {
+      const counts = { quarantined: 0, released: 0, discarded: 0, byReason: {} };
+      const byStatus = await pool.query("SELECT status, COUNT(*) AS count FROM quarantined_events GROUP BY status");
+      for (const row of byStatus.rows) counts[row.status] = Number(row.count);
+      const byReason = await pool.query(
+        "SELECT reason, COUNT(*) AS count FROM quarantined_events WHERE status = 'quarantined' GROUP BY reason"
+      );
+      for (const row of byReason.rows) counts.byReason[row.reason] = Number(row.count);
+      return counts;
+    },
+
+    async resolveQuarantinedEvent({ id, dedupeKey, status, now = new Date().toISOString() }) {
+      if (!["released", "discarded"].includes(status)) throw new Error("status must be released or discarded");
+      const { rowCount } = id !== undefined
+        ? await pool.query(
+            "UPDATE quarantined_events SET status = $1, updated_at = $2, resolved_at = $2 WHERE id = $3 AND status = 'quarantined'",
+            [status, now, id]
+          )
+        : await pool.query(
+            "UPDATE quarantined_events SET status = $1, updated_at = $2, resolved_at = $2 WHERE dedupe_key = $3 AND status = 'quarantined'",
+            [status, now, dedupeKey]
+          );
+      return rowCount > 0;
+    },
+
+    /** The API-key methods below follow the SQLite store's contract. */
+    async createApiKey({ id, name, secretHash, scopes, quotaLimit, quotaWindowSeconds, expiresAt = null, now }) {
+      const { rowCount } = await pool.query(
+        `INSERT INTO api_keys (id, name, secret_hash, scopes, quota_limit, quota_window_seconds, status,
+           created_at, updated_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $7, $8)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, name, secretHash, JSON.stringify(scopes), quotaLimit, quotaWindowSeconds, now, expiresAt]
+      );
+      return rowCount > 0;
+    },
+
+    async getApiKey(id) {
+      return selectApiKey(id);
+    },
+
+    async listApiKeys({ status, limit, offset }) {
+      const values = [];
+      const where = filterClause([["status", "=", status]], values);
+      const { rows } = await pool.query(
+        `SELECT ${apiKeyColumns} FROM api_keys ${where}
+         ORDER BY created_at ASC, id ASC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+        [...values, limit, offset]
+      );
+      return rows.map((row) => toApiKey(row, false));
+    },
+
+    async rotateApiKey({ id, secretHash, graceUntil = null, now }) {
+      const { rowCount } = await pool.query(
+        `UPDATE api_keys SET
+           previous_secret_hash = CASE WHEN $2::timestamptz IS NULL THEN NULL ELSE secret_hash END,
+           previous_expires_at = $2, secret_hash = $3, rotated_at = $4, updated_at = $4
+         WHERE id = $1 AND status = 'active'`,
+        [id, graceUntil, secretHash, now]
+      );
+      return rowCount > 0 ? selectApiKey(id) : null;
+    },
+
+    async revokeApiKey({ id, now }) {
+      const { rowCount } = await pool.query(
+        `UPDATE api_keys SET status = 'revoked', revoked_at = $2, updated_at = $2,
+           previous_secret_hash = NULL, previous_expires_at = NULL
+         WHERE id = $1 AND status = 'active'`,
+        [id, now]
+      );
+      const found = rowCount > 0 || (await pool.query("SELECT 1 FROM api_keys WHERE id = $1", [id])).rowCount > 0;
+      return { found, changed: rowCount > 0 };
+    },
+
+    async consumeApiKeyQuota({ keyId, windowStart, limit, now }) {
+      const { rows } = await pool.query(
+        `INSERT INTO api_key_usage AS usage (key_id, window_start, request_count, updated_at) VALUES ($1, $2, 1, $3)
+         ON CONFLICT (key_id, window_start) DO UPDATE SET
+           request_count = usage.request_count + 1, updated_at = EXCLUDED.updated_at
+         WHERE usage.request_count < $4
+         RETURNING request_count`,
+        [keyId, windowStart, now, limit]
+      );
+      if (rows[0]) return { allowed: true, used: Number(rows[0].request_count) };
+      const current = await pool.query(
+        "SELECT request_count FROM api_key_usage WHERE key_id = $1 AND window_start = $2",
+        [keyId, windowStart]
+      );
+      return { allowed: false, used: Number(current.rows[0]?.request_count ?? limit) };
+    },
+
+    async pruneApiKeyUsage({ before }) {
+      const { rowCount } = await pool.query("DELETE FROM api_key_usage WHERE window_start < $1", [before]);
+      return rowCount;
+    },
+
+    /** Same contract as the SQLite store; the upsert is a single atomic statement. */
+    async acquireLease({ name, holderId, region = "", ttlMs, now = new Date().toISOString() }) {
+      const expiresAt = new Date(Date.parse(now) + ttlMs).toISOString();
+      const { rows } = await pool.query(
+        `INSERT INTO indexer_leases AS lease (name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at)
+         VALUES ($1, $2, $3, 1, $4, $4, $5)
+         ON CONFLICT (name) DO UPDATE SET
+           fencing_token = CASE
+             WHEN lease.holder_id = EXCLUDED.holder_id AND lease.expires_at > EXCLUDED.renewed_at
+             THEN lease.fencing_token ELSE lease.fencing_token + 1 END,
+           acquired_at = CASE
+             WHEN lease.holder_id = EXCLUDED.holder_id AND lease.expires_at > EXCLUDED.renewed_at
+             THEN lease.acquired_at ELSE EXCLUDED.acquired_at END,
+           holder_id = EXCLUDED.holder_id,
+           region = EXCLUDED.region,
+           renewed_at = EXCLUDED.renewed_at,
+           expires_at = EXCLUDED.expires_at
+         WHERE lease.holder_id = EXCLUDED.holder_id OR lease.expires_at <= EXCLUDED.renewed_at
+         RETURNING name, holder_id, region, fencing_token, acquired_at, renewed_at, expires_at`,
+        [name, holderId, region, now, expiresAt]
+      );
+      if (rows[0]) return { acquired: true, lease: toLease(rows[0]) };
+      return { acquired: false, lease: await selectLease(name) };
+    },
+
+    async getLease(name) {
+      return selectLease(name);
+    },
+
+    async releaseLease({ name, holderId, now = new Date().toISOString() }) {
+      const { rowCount } = await pool.query(
+        "UPDATE indexer_leases SET expires_at = $3 WHERE name = $1 AND holder_id = $2 AND expires_at > $3",
+        [name, holderId, now]
+      );
+      return rowCount > 0;
+    },
+
+    async registerBackfillJob({ jobId, shards, now = new Date().toISOString() }) {
+      return withTransaction(async (client) => {
+        // A different job's shards describe a different range; keep only this job's.
+        await client.query("DELETE FROM backfill_shards WHERE job_id <> $1", [jobId]);
+        for (const shard of shards) {
+          await client.query(
+            `INSERT INTO backfill_shards (job_id, shard_index, start_ledger, end_ledger, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (job_id, shard_index) DO UPDATE SET
+               status = CASE WHEN EXCLUDED.end_ledger > backfill_shards.end_ledger THEN 'pending' ELSE backfill_shards.status END,
+               end_ledger = GREATEST(backfill_shards.end_ledger, EXCLUDED.end_ledger)`,
+            [jobId, shard.index, shard.start, shard.end, now]
+          );
+        }
+        // A crashed worker leaves its shard 'running'; nobody owns it now.
+        await client.query(
+          "UPDATE backfill_shards SET status = 'pending', updated_at = $2 WHERE job_id = $1 AND status = 'running'",
+          [jobId, now]
+        );
+        return true;
+      });
+    },
+
+    async listBackfillShards(jobId) {
+      const { rows } = await pool.query(
+        `SELECT job_id, shard_index, start_ledger, end_ledger, status, cursor, last_ledger,
+           pages, events_indexed, attempts, last_error, updated_at
+         FROM backfill_shards WHERE job_id = $1 ORDER BY shard_index ASC`,
+        [jobId]
+      );
+      return rows.map((row) => ({
+        jobId: row.job_id,
+        index: row.shard_index,
+        start: row.start_ledger,
+        end: row.end_ledger,
+        status: row.status,
+        cursor: row.cursor,
+        lastLedger: row.last_ledger,
+        pages: row.pages,
+        eventsIndexed: Number(row.events_indexed),
+        attempts: row.attempts,
+        lastError: row.last_error,
+        updatedAt: iso(row.updated_at),
+      }));
+    },
+
+    async updateBackfillShard({ jobId, shardIndex, status, cursor, lastLedger, pages, eventsIndexed, attempts, lastError, now = new Date().toISOString() }) {
+      await pool.query(
+        `UPDATE backfill_shards SET
+           status = COALESCE($1, status),
+           cursor = COALESCE($2, cursor),
+           last_ledger = COALESCE($3, last_ledger),
+           pages = COALESCE($4, pages),
+           events_indexed = COALESCE($5, events_indexed),
+           attempts = COALESCE($6, attempts),
+           last_error = $7,
+           updated_at = $8
+         WHERE job_id = $9 AND shard_index = $10`,
+        [
+          status ?? null, cursor ?? null, lastLedger ?? null, pages ?? null,
+          eventsIndexed ?? null, attempts ?? null, lastError ?? null, now, jobId, shardIndex,
+        ]
+      );
+      return true;
+    },
+
+    async setLagMonitorState({ monitor, latestLedger = null, indexedLedger = null, checkpointAdvancedAt = null, levels = {}, now = new Date().toISOString() }) {
+      await pool.query(
+        `INSERT INTO lag_monitor_state (monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (monitor) DO UPDATE SET
+           latest_ledger = EXCLUDED.latest_ledger,
+           indexed_ledger = EXCLUDED.indexed_ledger,
+           checkpoint_advanced_at = EXCLUDED.checkpoint_advanced_at,
+           levels = EXCLUDED.levels,
+           updated_at = EXCLUDED.updated_at`,
+        [monitor, latestLedger, indexedLedger, checkpointAdvancedAt, JSON.stringify(levels), now]
+      );
+      return true;
+    },
+
+    async getLagMonitorState(monitor) {
+      const { rows } = await pool.query(
+        `SELECT monitor, latest_ledger, indexed_ledger, checkpoint_advanced_at, levels, updated_at
+         FROM lag_monitor_state WHERE monitor = $1`,
+        [monitor]
+      );
+      if (!rows[0]) return null;
+      return {
+        monitor: rows[0].monitor,
+        latestLedger: rows[0].latest_ledger,
+        indexedLedger: rows[0].indexed_ledger,
+        checkpointAdvancedAt: iso(rows[0].checkpoint_advanced_at),
+        levels: JSON.parse(rows[0].levels),
+        updatedAt: iso(rows[0].updated_at),
       };
     },
 
