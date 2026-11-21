@@ -998,8 +998,9 @@ maintainers control when they land.
 - **Review policy**: All dependency pull requests must be manually reviewed and
   approved by repository maintainers. Auto-merge is disabled.
 - **CI requirements**: Every dependency PR must pass the required status checks
-  on `main` — secret and malware scans, supply-chain policy, contract build,
-  tests, coverage and benchmarks. See
+  on `main` — secret and malware scans, supply-chain policy, and dependency
+  source/provenance checks. Contract build, coverage, and benchmark jobs still
+  report but are advisory. See
   [`docs/CI.md`](./docs/CI.md#required-status-checks).
 - **Lockfile changes**: Commit the updated lockfile (`Cargo.lock`,
   `frontend/package-lock.json`, `indexer/package-lock.json`) with the manifest
