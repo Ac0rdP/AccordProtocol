@@ -104,6 +104,8 @@ Add the contract address to `frontend/.env.local`:
 VITE_CONTRACT_ADDRESS=YOUR_CONTRACT_ID
 VITE_SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
 VITE_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+# Optional. See frontend/docs/proposal-workflows.md for the required API response.
+VITE_IPFS_UPLOAD_ENDPOINT=
 ```
 
 Then restart the dev server:
@@ -338,4 +340,3 @@ For production operations, incident containment, rollback procedures, and key ro
 - [Upgrade Rollback Runbook](./runbooks/UPGRADE_ROLLBACK.md) — diagnosing flawed deployments, in-place WASM rollback via `upgrade`, bytecode TTL verification, and post-rollback state checks.
 - [Key Rotation Runbook](./runbooks/KEY_ROTATION.md) — step-by-step procedures for rotating multisig owner keys and replacing the guardian address.
 - [Runbooks Index](./runbooks/README.md) — directory overview, operational prerequisites, and secrets policy.
-

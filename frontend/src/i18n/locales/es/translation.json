@@ -1,6 +1,7 @@
 {
   "nav": {
     "dashboard": "panel",
+    "inbox": "bandeja de propuestas",
     "recurring": "recurrentes",
     "history": "historial",
     "audit": "registro de auditoría",

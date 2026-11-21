@@ -31,6 +31,9 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `c_wgt`        | `OwnerWeightChangedEvent`        | `{ owner: Address, old_weight: u32, new_weight: u32, new_total_weight: u32, version: u32 }` |
 | `role_granted` | `RoleGrantedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
 | `role_revoked` | `RoleRevokedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
+| `p_deps`        | `ProposalDependenciesSetEvent`   | `{ id: u64, dependencies: Vec<u64>, version: u32 }` |
+| `tr_lim`        | `TreasurySpendingLimitExecutedEvent` | `{ token: Address, previous_limit: Option<i128>, new_limit: i128, window_secs: u64, version: u32 }` |
+| `tr_spnt`       | `TreasurySpendTrackedEvent`      | `{ token: Address, amount: i128, total_spent_window: i128, total_spent_lifetime: i128, version: u32 }` |
 
 Every payload carries a trailing `version: u32` field holding the event-schema version (see [Event Versioning Policy](#event-versioning-policy)).
 
