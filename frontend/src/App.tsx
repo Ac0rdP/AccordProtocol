@@ -36,9 +36,11 @@ import { FeedbackWidget } from "./components/FeedbackWidget";
 import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
+import { resolvePublicDeepLink } from "./lib/shareLinks";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AlertRulesPage } from "./pages/AlertRulesPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { BulkActionsPage } from "./pages/BulkActionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { FreshnessPage } from "./pages/FreshnessPage";
@@ -53,10 +55,13 @@ import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TemplateMarketplacePage } from "./pages/TemplateMarketplacePage";
+import { ProposalInboxPage } from "./pages/ProposalInboxPage";
+import type { ProposalInboxEntry } from "./lib/proposalInbox";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
+  { key: "inbox", to: "/app/inbox" },
   { key: "bulk", to: "/app/bulk" },
   { key: "recurring", to: "/app/recurring" },
   { key: "history", to: "/app/history" },
@@ -124,22 +129,14 @@ export default function App() {
 
   // Deep-link handling: ensure direct proposal URLs or query params open the correct page
   useEffect(() => {
-    const directMatch = location.pathname.match(/^\/proposals\/(\d+)/);
-    if (directMatch) {
-      const id = directMatch[1];
-      navigate(`/app/proposals/${id}`, { replace: true });
-      return;
-    }
-
     if (location.pathname === "/onboarding" || location.pathname === "/onboarding/") {
       navigate("/app/onboarding", { replace: true });
       return;
     }
 
-    const params = new URLSearchParams(location.search);
-    const proposalParam = params.get("proposal");
-    if (proposalParam) {
-      navigate(`/app/proposals/${proposalParam}`, { replace: true });
+    const deepLinkTarget = resolvePublicDeepLink(location.pathname, location.search);
+    if (deepLinkTarget && deepLinkTarget !== location.pathname) {
+      navigate(deepLinkTarget, { replace: true });
     }
   }, [location.pathname, location.search, navigate]);
 
@@ -327,6 +324,26 @@ export default function App() {
     }
   }, [wallet.address]);
 
+  const inboxApprove = useCallback(async (entry: ProposalInboxEntry) => {
+    if (!wallet.address) {
+      await wallet.connect();
+      return;
+    }
+    await withTx(() =>
+      approveProposal(wallet.address!, entry.proposal.id, entry.workspace.contractId),
+    );
+  }, [wallet.address, wallet.connect, withTx]);
+
+  const inboxExecute = useCallback(async (entry: ProposalInboxEntry) => {
+    if (!wallet.address) {
+      await wallet.connect();
+      return;
+    }
+    await withTx(() =>
+      executeProposal(wallet.address!, entry.proposal.id, entry.workspace.contractId),
+    );
+  }, [wallet.address, wallet.connect, withTx]);
+
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
     thresholdStat?.value.split(" ")[0] ?? "0",
@@ -468,7 +485,7 @@ export default function App() {
                     : "text-zinc-400 hover:text-zinc-300"
                 }`}
               >
-                {t(`nav.${key}`)}
+                {t(`nav.${key}`, key === "inbox" ? { defaultValue: "Proposal inbox" } : undefined)}
               </Link>
             ))}
 
@@ -561,6 +578,17 @@ export default function App() {
               </div>
             )}
             <Routes>
+              <Route
+                path="inbox"
+                element={
+                  <ProposalInboxPage
+                    walletAddress={wallet.address}
+                    onConnect={wallet.connect}
+                    onApprove={inboxApprove}
+                    onExecute={inboxExecute}
+                  />
+                }
+              />
               <Route
                 path="onboarding"
                 element={<OnboardingPage wallet={wallet} onComplete={refresh} />}
