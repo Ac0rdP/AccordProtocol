@@ -11,8 +11,9 @@ This guide provides visual, step-by-step walkthroughs (in responsive animated SV
 3. [Flow 3: Reviewing, Approving & Executing Proposals](#flow-3-reviewing-approving--executing-proposals)
 4. [Flow 4: Recurring Payments & Contributor Payroll](#flow-4-recurring-payments--contributor-payroll)
 5. [Flow 5: Treasury Analytics & Activity Monitoring](#flow-5-treasury-analytics--activity-monitoring)
-6. [Maintenance & Update Guide](#maintenance--update-guide)
-7. [CI & Asset Integrity Validation](#ci--asset-integrity-validation)
+6. [Advanced Governance Walkthroughs (RBAC, Weighted Approvals, Delegation, Recurring)](./guides/advanced-governance-walkthroughs.md)
+7. [Maintenance & Update Guide](#maintenance--update-guide)
+8. [CI & Asset Integrity Validation](#ci--asset-integrity-validation)
 
 ---
 

@@ -34,7 +34,7 @@ use crate::{
     },
     app,
     limits::{Limits, LimitsConfig},
-    freshness, funnel, proposals, report_api, spend, templates,
+    freshness, funnel, integrations, proposals, report_api, spend, templates,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -244,6 +244,9 @@ fn openapi_query_parameters_match_the_validators() {
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
+        ("/integrations", "get", integrations::LIST_PARAMS),
+        ("/integrations/{id}", "put", integrations::WRITE_PARAMS),
+        ("/integrations/{id}", "delete", integrations::WRITE_PARAMS),
         ("/report-templates", "get", templates::LIST_PARAMS),
         ("/report-templates", "put", templates::WRITE_PARAMS),
         ("/report-templates", "delete", templates::WRITE_PARAMS),
@@ -327,6 +330,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals", "get"),
         ("/proposals/funnel", "get"),
         ("/reports", "get"),
+        ("/integrations", "get"),
         ("/report-templates", "get"),
         ("/alert-rules", "get"),
         ("/freshness", "get"),
@@ -406,6 +410,9 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/spend/by-category"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
+        ("GET", "/integrations"),
+        ("PUT", "/integrations/slack-notifications"),
+        ("DELETE", "/integrations/slack-notifications"),
         ("GET", "/report-templates"),
         ("PUT", "/report-templates"),
         ("DELETE", "/report-templates"),

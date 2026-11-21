@@ -26,6 +26,7 @@ mod alert_rules;
 mod alerts;
 mod freshness;
 mod funnel;
+mod integrations;
 mod limits;
 mod mail;
 mod reports;
@@ -210,6 +211,13 @@ fn app(state: AppState) -> Router {
                 .put(templates::put)
                 .delete(templates::delete)
                 .layer(DefaultBodyLimit::max(templates::MAX_BODY_BYTES)),
+        )
+        .route("/integrations", get(integrations::list))
+        .route(
+            "/integrations/{id}",
+            axum::routing::put(integrations::put)
+                .delete(integrations::delete)
+                .layer(DefaultBodyLimit::max(integrations::MAX_BODY_BYTES)),
         )
         .route("/alerts", get(alert_api::list))
         .route("/alerts/rules", get(alert_api::rules))
@@ -1396,9 +1404,21 @@ mod proposals {
 
     #[derive(Debug, Serialize)]
     pub(super) struct ErrorDetail {
-        field: String,
-        message: String,
+        pub(super) field: String,
+        pub(super) message: String,
+        pub(super) code: &'static str,
+    }
+
+    pub(super) fn error_detail(
+        field: &str,
+        message: impl Into<String>,
         code: &'static str,
+    ) -> ErrorDetail {
+        ErrorDetail {
+            field: field.to_owned(),
+            message: message.into(),
+            code,
+        }
     }
 
     impl ApiError {

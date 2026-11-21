@@ -143,4 +143,4 @@ If you suspect the problem is with the Stellar Testnet itself rather than a sing
 - **Learning what each part of the dashboard means?** See the [Reading the Dashboard](reading-the-dashboard.md) guide.
 - **Managing grant disbursements?** See the [Grant Management](grant-management.md) guide.
 - **Running payroll through Accord?** See the [Payroll Multisig](payroll-multisig.md) guide.
-- **Need the full list of error codes?** See the [Contract API Reference](../CONTRACT_API.md) for every error code, its numeric value, and when it is thrown.
+- **Need the full list of error codes?** See the [Error-Code & Troubleshooting Index](../ERROR_CODES.md) and the [Contract API Reference](../CONTRACT_API.md) for every contract and API error code, its cause, user message, and operator remedy.

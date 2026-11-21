@@ -1636,6 +1636,182 @@
         }
       }
     },
+    "/integrations": {
+      "get": {
+        "operationId": "listIntegrations",
+        "summary": "Reviewed plugin and integration marketplace",
+        "tags": [
+          "Integrations"
+        ],
+        "description": "Lists the reviewed integration catalog (notifications, accounting, treasury automation) with explicit permissions and data boundaries, along with workspace installations.",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "Filter catalog by category.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "notifications",
+                "accounting",
+                "treasury_automation"
+              ],
+              "default": "all"
+            },
+            "x-error-code": "INVALID_CATEGORY",
+            "x-invalid-example": "unknown"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Contract address to load workspace installs for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Network name (testnet or mainnet).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Plugins per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_PAGINATION",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of plugins to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_PAGINATION",
+            "x-invalid-example": "-1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Integration catalog and workspace installs."
+          },
+          "400": {
+            "description": "Invalid query parameter."
+          }
+        }
+      }
+    },
+    "/integrations/{id}": {
+      "put": {
+        "operationId": "installIntegration",
+        "summary": "Install or update a reviewed integration",
+        "tags": [
+          "Integrations"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Installed or updated integration configuration."
+          },
+          "400": {
+            "description": "Validation error."
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token."
+          },
+          "404": {
+            "description": "Unknown or unreviewed plugin ID."
+          }
+        }
+      },
+      "delete": {
+        "operationId": "uninstallIntegration",
+        "summary": "Uninstall an integration from a workspace",
+        "tags": [
+          "Integrations"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Integration uninstalled."
+          },
+          "401": {
+            "description": "Missing or invalid admin bearer token."
+          },
+          "404": {
+            "description": "Integration is not installed."
+          }
+        }
+      }
+    },
     "/report-templates": {
       "get": {
         "operationId": "listReportTemplates",

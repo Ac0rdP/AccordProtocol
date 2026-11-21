@@ -9,6 +9,7 @@
     "bulk": "bulk actions",
     "availability": "availability",
     "templates": "templates",
+    "integrations": "integrations",
     "notifications": "notifications",
     "alerts": "alert rules",
     "freshness": "data freshness",
