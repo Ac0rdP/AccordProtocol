@@ -84,3 +84,7 @@ What is **not** guaranteed:
 - Read `version` from every payload and store it with the event. The Accord indexer records it in the `schema_version` column of `accord_events` and returns it as `schemaVersion` from its store.
 - Decode by `version`, not by assuming the latest shape. Reject or quarantine events whose version is higher than the highest version your decoder supports instead of guessing at fields.
 - Keep decoders for older versions as long as you index history that contains them.
+
+### How the Accord indexer enforces this
+
+The indexer keeps a versioned schema registry built from this catalog and the version table above, and validates every treasury event against the schema for its `(topic, version)`. Events with an unknown topic, an unknown version, a missing or mistyped field, or a field outside the schema are **quarantined** (kept with the reason and the raw event) instead of being indexed or silently dropped, and can be re-validated once the registry is updated. Events with no `version` are checked against the version `1` shape. When you bump `EVENT_SCHEMA_VERSION`, update `indexer/src/catalog.json`, `CURRENT_EVENT_SCHEMA_VERSION` and `SCHEMA_CHANGES` in `indexer/src/schema-registry.js` in the same change. See the [indexer README](../indexer/README.md#event-schema-registry-validation-and-quarantine).

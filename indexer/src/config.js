@@ -6,6 +6,10 @@
  *   - GraphQL live event subscriptions (push updates without polling)
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
+ *   - Multi-region failover (leader election)
+ *   - Webhook delivery dashboard and retry controls
+ *   - Contract event schema validation and quarantine
+ *   - API keys with per-key quotas
  *   - Parallel backfill (workers, shard size, retries)
  *   - Chain-tip lag / finality-depth monitoring and alert thresholds
  */
@@ -111,6 +115,35 @@ export function resolveWarehouseConfig(env = process.env) {
 }
 
 /**
+ * Resolves multi-region failover (leader election) configuration.
+ *
+ * Safe defaults:
+ *   - enabled: false (a single instance is always the leader)
+ *   - region: "" (label only)
+ *   - leaseName: indexer-leader
+ *   - leaseTtlMs: 15000 (a dead leader is replaced after at most this long)
+ *   - renewIntervalMs: 5000 (never more than half the TTL)
+ *
+ * Failover needs every instance to share one store, i.e. STORE_BACKEND=postgres.
+ */
+export function resolveLeaderElectionConfig(env = process.env) {
+  const enabled = parseBool(env.INDEXER_LEADER_ELECTION_ENABLED, false);
+  const leaseTtlMs = parseIntSafe(env.INDEXER_LEASE_TTL_MS, 15000, 3000, 300000);
+  let renewIntervalMs = parseIntSafe(env.INDEXER_LEASE_RENEW_MS, 5000, 500, 150000);
+  // A renewal slower than half the TTL would let a healthy leader lapse.
+  if (renewIntervalMs * 2 > leaseTtlMs) renewIntervalMs = Math.floor(leaseTtlMs / 3);
+
+  return {
+    enabled,
+    region: env.INDEXER_REGION?.trim() || "",
+    instanceId: env.INDEXER_INSTANCE_ID?.trim() || "",
+    leaseName: env.INDEXER_LEASE_NAME?.trim() || "indexer-leader",
+    leaseTtlMs,
+    renewIntervalMs,
+  };
+}
+
+/**
  * Resolves the parallel backfill configuration.
  *
  * Safe defaults:
@@ -128,6 +161,28 @@ export function resolveBackfillConfig(env = process.env) {
     shardSize: parseIntSafe(env.BACKFILL_SHARD_SIZE, 50000, 1, 10_000_000),
     maxShardRetries: parseIntSafe(env.BACKFILL_SHARD_MAX_RETRIES, 3, 0, 20),
     retryBaseDelayMs: parseIntSafe(env.BACKFILL_SHARD_RETRY_DELAY_MS, 1000, 0, 60000),
+  };
+}
+
+/**
+ * Resolves the webhook delivery dashboard configuration.
+ *
+ * Safe defaults:
+ *   - enabled: true (read-only: the page and the inspection endpoints)
+ *   - adminToken: "" - retry controls are OFF until OPS_ADMIN_TOKEN is set; a
+ *     token shorter than 16 characters is rejected rather than accepted weak
+ *   - pageSize: 50 deliveries per page
+ */
+export const MIN_ADMIN_TOKEN_LENGTH = 16;
+
+export function resolveWebhookDashboardConfig(env = process.env) {
+  const rawToken = env.OPS_ADMIN_TOKEN?.trim() || "";
+  const adminTokenRejected = rawToken !== "" && rawToken.length < MIN_ADMIN_TOKEN_LENGTH;
+  return {
+    enabled: parseBool(env.WEBHOOK_DASHBOARD_ENABLED, true),
+    adminToken: adminTokenRejected ? "" : rawToken,
+    adminTokenRejected,
+    pageSize: parseIntSafe(env.WEBHOOK_DASHBOARD_PAGE_SIZE, 50, 1, 200),
   };
 }
 
@@ -160,6 +215,29 @@ export function resolveLagMonitorConfig(env = process.env, finalityLag = DEFAULT
 }
 
 /**
+ * Resolves contract event schema validation.
+ *
+ * Safe defaults:
+ *   - mode: enforce. Events that do not match a registered schema are
+ *     quarantined (kept, with the reason, and re-checkable), never dropped.
+ *     `warn` indexes invalid payloads anyway and reports them; `off` restores
+ *     the previous behaviour (no validation, unknown topics ignored).
+ *   - strict: true (fields outside the schema are violations)
+ *   - allowUnversioned: true (deployments that predate the `version` field)
+ */
+export const EVENT_VALIDATION_MODES = ["off", "warn", "enforce"];
+
+export function resolveEventValidationConfig(env = process.env) {
+  const requested = env.EVENT_VALIDATION_MODE?.trim().toLowerCase();
+  return {
+    mode: EVENT_VALIDATION_MODES.includes(requested) ? requested : "enforce",
+    modeRejected: Boolean(requested) && !EVENT_VALIDATION_MODES.includes(requested),
+    strict: parseBool(env.EVENT_SCHEMA_STRICT, true),
+    allowUnversioned: parseBool(env.EVENT_ALLOW_UNVERSIONED, true),
+  };
+}
+
+/**
  * Resolves the cash-runway forecast assumptions.
  *
  * Safe defaults: a 90-day lookback, no recurring flows (the forecast then rests
@@ -173,6 +251,27 @@ export function resolveRunwayConfig(env = process.env) {
     recurringOutflowPerDay: amount(env.RUNWAY_RECURRING_OUTFLOW_PER_DAY),
     recurringInflowPerDay: amount(env.RUNWAY_RECURRING_INFLOW_PER_DAY),
     horizonDays: parseIntSafe(env.RUNWAY_HORIZON_DAYS, 3650, 1, 36500),
+  };
+}
+
+/**
+ * Resolves API key configuration for analytics consumers.
+ *
+ * Safe defaults:
+ *   - enabled: false. Analytics reads stay open as before until you turn keys on.
+ *   - defaultQuota / defaultWindowSeconds: 1000 requests per hour for a new key
+ *   - rotationGraceSeconds: 86400 (the old secret keeps working for a day after a rotation)
+ *   - usageRetentionDays: 30 (how long per-window counters are kept)
+ *
+ * Managing keys over HTTP needs OPS_ADMIN_TOKEN.
+ */
+export function resolveApiKeysConfig(env = process.env) {
+  return {
+    enabled: parseBool(env.API_KEYS_ENABLED, false),
+    defaultQuota: parseIntSafe(env.API_KEYS_DEFAULT_QUOTA, 1000, 1, 10_000_000),
+    defaultWindowSeconds: parseIntSafe(env.API_KEYS_DEFAULT_WINDOW_SECONDS, 3600, 1, 2_592_000),
+    rotationGraceSeconds: parseIntSafe(env.API_KEYS_ROTATION_GRACE_SECONDS, 86400, 0, 2_592_000),
+    usageRetentionDays: parseIntSafe(env.API_KEYS_USAGE_RETENTION_DAYS, 30, 1, 365),
   };
 }
 
@@ -200,6 +299,10 @@ export function loadIndexerConfig(env = process.env) {
     graphql: resolveGraphQLConfig(env),
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
+    leader: resolveLeaderElectionConfig(env),
+    webhookDashboard: resolveWebhookDashboardConfig(env),
+    eventValidation: resolveEventValidationConfig(env),
+    apiKeys: resolveApiKeysConfig(env),
     backfill: resolveBackfillConfig(env),
     runway: resolveRunwayConfig(env),
     anomalies: resolveAnomalyConfig(env),
