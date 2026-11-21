@@ -4,6 +4,7 @@ import { Check, Copy, Link2, ShieldAlert } from "lucide-react";
 import { canApprove, canExecute, formatWeightPercent, missingRoleTooltip, shortenAddr } from "../lib/soroban";
 import type { Proposal, ProposalCategory, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
+import { MarkdownDescription } from "./MarkdownDescription";
 import { StatusBadge } from "./StatusBadge";
 
 type ProposalCardProps = {
@@ -247,7 +248,12 @@ export function ProposalCard({
             </button>
           </div>
 
-          {proposal.description && <p className="mt-1.5 max-w-sm text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">{proposal.description}</p>}
+          {proposal.description && (
+            <MarkdownDescription
+              text={proposal.description}
+              className="mt-1.5 max-w-sm text-xs text-zinc-600 dark:text-zinc-400"
+            />
+          )}
 
           <Link to={`/proposals/${proposal.id}`} className="mt-2 inline-flex rounded text-xs font-medium text-emerald-400 transition-colors hover:text-emerald-300 focus:outline-none focus:ring-2 focus:ring-zinc-400">
             View details

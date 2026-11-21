@@ -49,10 +49,17 @@ export function resolveStoreConfig(env = process.env) {
  *   getLatestAccordEventId() / getAccordEventsAfter(id, limit)
  *   enqueueWebhookDeliveries / claimDueWebhookDeliveries / completeWebhookDelivery
  *   countWebhookDeliveries / listWebhookDeliveries / requeueDeadWebhookDeliveries
+ *   getWebhookDelivery / listWebhookDeliveryAttempts / summarizeWebhookDeliveries / replayWebhookDelivery
  *   upsertNotificationDestination / listNotificationDestinations
  *   getNotificationDestination / deleteNotificationDestination
  *   enqueueNotificationDeliveries / claimDueNotificationDeliveries / completeNotificationDelivery
  *   countNotificationDeliveries / listNotificationDeliveries / requeueDeadNotificationDeliveries
+ *   quarantineEvent(record) -> boolean          false when that event was already quarantined
+ *   listQuarantinedEvents / countQuarantinedEvents / resolveQuarantinedEvent
+ *   createApiKey / getApiKey / listApiKeys / rotateApiKey / revokeApiKey
+ *   consumeApiKeyQuota({keyId, windowStart, limit, now}) -> {allowed, used} / pruneApiKeyUsage({before})
+ *   acquireLease({name, holderId, region, ttlMs, now}) -> {acquired, lease}
+ *   getLease(name) / releaseLease({name, holderId, now})
  *   close()
  *
  * plus a `backend` string. Timestamps are ISO 8601 strings on both backends.

@@ -12,8 +12,19 @@ export const DEFAULT_READY_MAX_STALENESS_MS = 60_000;
 export function createReadiness({ store, maxStalenessMs = DEFAULT_READY_MAX_STALENESS_MS, now = () => Date.now() }) {
   let lastSuccessAt = null;
   let lastError = null;
+  let standby = null;
 
   return {
+    /**
+     * A standby deliberately does not ingest, so staleness is not a fault for it.
+     * `leader` describes who does; call `markSuccess` again once promoted.
+     */
+    markStandby(leader = null) {
+      standby = { leader };
+    },
+    clearStandby() {
+      standby = null;
+    },
     markSuccess() {
       lastSuccessAt = now();
       lastError = null;
@@ -35,7 +46,9 @@ export function createReadiness({ store, maxStalenessMs = DEFAULT_READY_MAX_STAL
         checks.store = { ok: false, detail: String(error?.message ?? error) };
       }
 
-      if (lastSuccessAt === null) {
+      if (standby) {
+        checks.indexing = { ok: true, role: "standby", leader: standby.leader };
+      } else if (lastSuccessAt === null) {
         checks.indexing = { ok: false, detail: lastError ?? "waiting for the first indexing batch" };
       } else {
         const ageMs = now() - lastSuccessAt;

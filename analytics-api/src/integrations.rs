@@ -320,14 +320,14 @@ fn resolve_target(
         .get("network")
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .or(scope.default_network.as_deref())
+        .or(scope.networks.first().map(String::as_str))
         .unwrap_or("testnet")
         .to_owned();
     let contract_id = raw
         .get("contractId")
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .or(scope.default_contract.as_deref());
+        .or(scope.contract_ids.first().map(String::as_str));
     match contract_id {
         Some(c) => Some((network, c.to_owned())),
         None => {
@@ -409,13 +409,13 @@ pub(crate) async fn list(
         .get("contractId")
         .map(String::as_str)
         .filter(|s| !s.is_empty())
-        .or(state.scope.default_contract.as_deref())
+        .or(state.scope.contract_ids.first().map(String::as_str))
     {
         let network = raw
             .get("network")
             .map(String::as_str)
             .filter(|s| !s.is_empty())
-            .or(state.scope.default_network.as_deref())
+            .or(state.scope.networks.first().map(String::as_str))
             .unwrap_or("testnet");
         let rows: Vec<InstallRow> = sqlx::query_as(
             "SELECT plugin_id, network, contract_id, enabled, config, installed_by, installed_at, updated_at \

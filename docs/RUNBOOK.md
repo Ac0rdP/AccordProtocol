@@ -150,13 +150,30 @@ Alert `AccordReorgDetected`: the chain head moved backwards and the store was re
 3. If `LEDGER_FINALITY_LAG` is smaller than the reorg depth you see, raise it.
 4. Verify balances afterwards ([drift recovery](#recover-from-balance-drift)).
 
+### rotate-or-revoke-an-api-key
+
+A consumer's analytics key leaked, or it is due for rotation (needs `OPS_ADMIN_TOKEN`; see the [indexer README](../indexer/README.md#api-keys-and-quotas-for-analytics-consumers)).
+
+1. Leaked: `POST /admin/api-keys/<id>/revoke` stops it immediately; issue a replacement with `POST /admin/api-keys`.
+2. Routine rotation: `POST /admin/api-keys/<id>/rotate` returns the new key (shown once). Hand it to the consumer; the old secret keeps working for the grace period (`graceSeconds`, default 24 h), so there is no downtime. Pass `{"graceSeconds":0}` to cut the old one off now.
+3. A consumer hitting `429`: check `accord_indexer_api_key_requests_total{key="<id>",result="quota_exceeded"}`; issue a key with a higher `limit` or longer `windowSeconds` if the usage is legitimate.
+
+### events-quarantined
+
+Alert `AccordEventsQuarantined`: contract events failed schema validation and are parked in quarantine; nothing was lost and ingestion kept going.
+
+1. `curl 'localhost:8787/quarantine?raw=true'` for the reason and the violations. `GET /schemas` shows what the indexer accepts.
+2. `unknown_version` / `unknown_topic` usually means the contract was upgraded: update `catalog.json`, `CURRENT_EVENT_SCHEMA_VERSION` and `SCHEMA_CHANGES` ([docs/EVENTS.md](EVENTS.md#event-versioning-policy)), then deploy the indexer.
+3. `invalid_payload` / `undecodable` on a known version is a contract or RPC problem: escalate before releasing anything.
+4. Run `node src/index.js quarantine-reprocess` (optionally `--topic` / `--reason`) to index everything that is valid now. Use `quarantine-discard --id <n>` for events that should never be indexed.
+
 ### webhook-dead-letters
 
 Alert `AccordWebhookDeadLetters`: deliveries exhausted `WEBHOOK_MAX_ATTEMPTS`.
 
-1. `curl 'localhost:8787/webhooks/deliveries?status=dead'` for the subscription and last error.
+1. Open `/ops/webhooks` (or `curl 'localhost:8787/webhooks/deliveries?status=dead'`) for the subscription, payload, last error and the full attempt history.
 2. Fix the receiver (or the subscription URL/secret in `WEBHOOK_SUBSCRIPTIONS_FILE`).
-3. Run `node src/index.js webhooks-requeue --subscription <id>`.
+3. Replay from the dashboard (one delivery, or "Retry dead" per subscription; needs `OPS_ADMIN_TOKEN`), or run `node src/index.js webhooks-requeue --subscription <id>`.
 
 ### webhook-backlog
 

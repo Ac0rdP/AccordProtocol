@@ -1,4 +1,5 @@
-import { parseAccordEvent, parseTokenTransferEvent } from "./events.js";
+import { ingestAccordEvent } from "./event-validation.js";
+import { parseTokenTransferEvent } from "./events.js";
 import { DEFAULT_FINALITY_LAG, finalLedgerFor, resolveFinalityLag } from "./finality.js";
 import { buildContractFilters } from "./indexing.js";
 import { parallelBackfill } from "./parallel-backfill.js";
@@ -101,6 +102,7 @@ export async function walkHistory({
   maxPages = Number.MAX_SAFE_INTEGER,
   onProgress = () => {},
   onEvent = () => {},
+  validator = undefined,
 }) {
   const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
   const filters = buildContractFilters({ tokens, treasuryAddress });
@@ -123,6 +125,7 @@ export async function walkHistory({
   let walkLedger = resuming ? Number(await store.getState(startLedgerKey) ?? start) : start;
   let pages = resuming ? Number(await store.getState(`${stateKey}_pages`) ?? 0) : 0;
   let eventsIndexed = resuming ? Number(await store.getState(eventsKey) ?? 0) : 0;
+  let eventsQuarantined = 0;
 
   await store.setState(fromKey, start);
   await store.setState(toKey, end);
@@ -152,11 +155,16 @@ export async function walkHistory({
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
       const transferRecorded = transferEntry ? await store.recordTransfer(transferEntry) : false;
       if (transferRecorded) eventsIndexed += 1;
-      const accordEntry = parseAccordEvent(event, treasuryAddress);
-      const accordRecorded = accordEntry ? await store.recordAccordEvent(accordEntry) : false;
+      // Events that fail schema validation are quarantined, never silently dropped.
+      const accordResult = await ingestAccordEvent({ event, treasuryAddress, store, validator });
+      const { entry: accordEntry, recorded: accordRecorded } = accordResult;
       if (accordRecorded) eventsIndexed += 1;
+      if (accordResult.newlyQuarantined) eventsQuarantined += 1;
       // Per-event detail for callers that want it (the replay command).
-      onEvent({ event, ledger: eventLedger, transfer: transferEntry, transferRecorded, accord: accordEntry, accordRecorded });
+      onEvent({
+        event, ledger: eventLedger, transfer: transferEntry, transferRecorded, accord: accordEntry, accordRecorded,
+        quarantined: accordResult.quarantined, quarantineErrors: accordResult.quarantineErrors ?? [],
+      });
       if (eventLedger > furthestLedger) furthestLedger = eventLedger;
     }
 
@@ -176,7 +184,7 @@ export async function walkHistory({
         complete: true,
         resumed: resuming,
       });
-      return { start, end, pages, eventsIndexed, furthestLedger, resumed: resuming, complete: true };
+      return { start, end, pages, eventsIndexed, eventsQuarantined, furthestLedger, resumed: resuming, complete: true };
     }
 
     if (!response.cursor || response.cursor === cursor) {
@@ -202,7 +210,7 @@ export async function walkHistory({
     });
   }
 
-  return { start, end, pages, eventsIndexed, furthestLedger, resumed: resuming, complete: false };
+  return { start, end, pages, eventsIndexed, eventsQuarantined, furthestLedger, resumed: resuming, complete: false };
 }
 
 /**
@@ -220,6 +228,7 @@ export async function backfill(options) {
     from, to, finalityLag = DEFAULT_FINALITY_LAG,
     pageLimit = DEFAULT_PAGE_LIMIT, onProgress = () => {},
     fallbackStart = DEFAULT_GENESIS_LEDGER,
+    validator,
     // Optional `{ workers, shardSize, maxShardRetries, retryBaseDelayMs, sleep }`
     // (see `resolveBackfillConfig`). More than one worker enables sharding.
     parallel = null,
@@ -233,8 +242,6 @@ export async function backfill(options) {
     return { ...range, eventsIndexed: 0, pages: 0, complete: true, nothingToDo: true };
   }
 
-  // Sharding needs a finite end; without a known chain head, fall back to the
-  // single-cursor walk.
   const sharded = parallel && parallel.workers > 1 && Number.isFinite(range.end);
   const walk = sharded
     ? await parallelBackfill({
@@ -245,7 +252,7 @@ export async function backfill(options) {
     : await walkHistory({
         stellar, store, tokens, treasuryAddress,
         start: range.start, end: range.end,
-        stateKey: "backfill", pageLimit, onProgress,
+        stateKey: "backfill", pageLimit, onProgress, validator,
       });
 
   if (walk.complete) {
@@ -269,7 +276,7 @@ export async function reindex(options) {
     stellar, store, tokens, treasuryAddress,
     from, to, finalityLag = DEFAULT_FINALITY_LAG,
     pageLimit = DEFAULT_PAGE_LIMIT, onProgress = () => {},
-    fallbackStart = DEFAULT_GENESIS_LEDGER,
+    fallbackStart = DEFAULT_GENESIS_LEDGER, validator,
   } = options;
 
   const range = await resolveHistoryRange({ stellar, from, to, finalityLag, fallbackStart });
@@ -301,7 +308,7 @@ export async function reindex(options) {
   const walk = await walkHistory({
     stellar, store, tokens, treasuryAddress,
     start: range.start, end: range.end,
-    stateKey: "reindex", pageLimit, onProgress,
+    stateKey: "reindex", pageLimit, onProgress, validator,
   });
 
   if (walk.complete) {

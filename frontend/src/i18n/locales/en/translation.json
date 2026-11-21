@@ -1,6 +1,8 @@
 {
   "nav": {
     "dashboard": "dashboard",
+    "portfolio": "portfolio",
+    "inbox": "proposal inbox",
     "recurring": "recurring",
     "history": "history",
     "audit": "audit log",

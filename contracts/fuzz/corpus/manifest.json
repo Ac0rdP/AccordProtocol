@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "fuzzCrateManifest": "contracts/fuzz/Cargo.toml",
+  "policy": {
+    "minSeedBytes": 1,
+    "maxSeedBytes": 4096,
+    "maxFilesPerTarget": 64,
+    "requiredRegressionPrefix": "regression-"
+  },
+  "nightly": {
+    "secondsPerTarget": 60,
+    "maxTotalTimeSeconds": 180,
+    "minimizeAfterRun": true
+  },
+  "targets": {
+    "weight_arithmetic": {
+      "source": "contracts/fuzz/fuzz_targets/weight_arithmetic.rs",
+      "minInputBytes": 4,
+      "description": "Weighted owner governance arithmetic, dynamic quorum snapshots, and approval/revocation sum invariants.",
+      "regressionFixtures": [
+        "regression-total-weight-drift-guard"
+      ]
+    },
+    "proposal_bookkeeping": {
+      "source": "contracts/fuzz/fuzz_targets/proposal_bookkeeping.rs",
+      "minInputBytes": 2,
+      "description": "Active proposal counter (ACTCNT), 50-proposal cap enforcement, monotonic proposal IDs, and expiry cleanup.",
+      "regressionFixtures": [
+        "regression-active-count-expiry-reuse"
+      ]
+    },
+    "proposal_input_validation": {
+      "source": "contracts/fuzz/fuzz_targets/proposal_input_validation.rs",
+      "minInputBytes": 12,
+      "description": "Proposal description length bounds (1..=300), deadline window (NOW+1..=NOW+7776000), and ProposalCategory XDR decoding.",
+      "regressionFixtures": [
+        "regression-malformed-category-and-overflow-deadline"
+      ]
+    }
+  }
+}

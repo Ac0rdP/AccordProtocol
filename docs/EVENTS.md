@@ -14,6 +14,10 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `rpay`         | `RecurringPaymentDisbursedEvent` | `{ schedule_id: u64, recipient: Address, token: Address, amount: i128, total_disbursed: i128, periods_disbursed: u32, version: u32 }` |
 | `approved`     | `ProposalApprovedEvent`          | `{ id: u64, approver: Address, approvals: u32, threshold: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
 | `revoked`      | `ProposalRevokedEvent`           | `{ id: u64, approver: Address, approvals: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
+| `abstain`      | `ProposalAbstainedEvent`         | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
+| `unabst`       | `ProposalAbstentionRevokedEvent` | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
+| `softapr`      | `ProposalSoftApprovedEvent`       | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
+| `unsftap`      | `ProposalSoftApprovalRevokedEvent` | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
 | `executed`     | `ProposalExecutedEvent`          | `{ id: u64, executor: Address, version: u32 }` |
 | `guard_set`    | `GuardianSetEvent`               | `{ guardian: Address, version: u32 }` |
 | `frozen`       | `FrozenEvent`                    | `{ guardian: Address, version: u32 }` |
@@ -43,7 +47,7 @@ This catalog is loaded by the off-chain indexer to decode raw contract events de
 
 Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION`, a single public constant in `contracts/accord/src/lib.rs`. It is the only place the version is defined; bump it there and every event picks up the new value.
 
-**Current version: `2`.** Version `1` was the first versioned schema; version `2` removed `transfers` from `ProposalExecutedEvent` (a full 50-transfer batch duplicated in the event exceeded the network's 16 KiB contract-event limit). Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
+**Current version: `3`.** Version `1` was the first versioned schema; version `2` removed `transfers` from `ProposalExecutedEvent`; version `3` adds abstention participation events. Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
 
 ### When the version is bumped
 
@@ -53,6 +57,7 @@ Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION
 |---------|--------|
 | `1` | Initial versioned schema: every event struct gains `version`. |
 | `2` | `ProposalExecutedEvent` drops `transfers`; transfers remain in `ProposalCreatedEvent` and on-chain state. |
+| `3` | Adds `abstain`, `unabst`, `softapr`, and `unsftap` participation events. Abstentions and soft approvals never alter binding approval weight or quorum. |
 
 ### Stability guarantees for consumers
 
@@ -79,3 +84,7 @@ What is **not** guaranteed:
 - Read `version` from every payload and store it with the event. The Accord indexer records it in the `schema_version` column of `accord_events` and returns it as `schemaVersion` from its store.
 - Decode by `version`, not by assuming the latest shape. Reject or quarantine events whose version is higher than the highest version your decoder supports instead of guessing at fields.
 - Keep decoders for older versions as long as you index history that contains them.
+
+### How the Accord indexer enforces this
+
+The indexer keeps a versioned schema registry built from this catalog and the version table above, and validates every treasury event against the schema for its `(topic, version)`. Events with an unknown topic, an unknown version, a missing or mistyped field, or a field outside the schema are **quarantined** (kept with the reason and the raw event) instead of being indexed or silently dropped, and can be re-validated once the registry is updated. Events with no `version` are checked against the version `1` shape. When you bump `EVENT_SCHEMA_VERSION`, update `indexer/src/catalog.json`, `CURRENT_EVENT_SCHEMA_VERSION` and `SCHEMA_CHANGES` in `indexer/src/schema-registry.js` in the same change. See the [indexer README](../indexer/README.md#event-schema-registry-validation-and-quarantine).

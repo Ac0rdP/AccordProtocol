@@ -16,6 +16,9 @@ import {
 import { StrKey } from "@stellar/stellar-sdk";
 import { PageState } from "../components/PageState";
 import { NotificationDestinationsPanel } from "../components/NotificationDestinationsPanel";
+import { WorkspaceBrandingPanel } from "../components/WorkspaceBrandingPanel";
+import { WorkspaceBillingPanel } from "../components/WorkspaceBillingPanel";
+import { WorkflowAutomationPanel } from "../components/WorkflowAutomationPanel";
 import type { DashboardStat } from "../types/accord";
 
 const MAX_DESCRIPTION_LEN = 300;
@@ -24,6 +27,7 @@ type SettingsPageProps = {
   stats: DashboardStat[];
   walletAddress: string | null;
   ownerAddresses: string[];
+  contractId?: string;
   onProposalSubmitted: () => void;
   /** Forces the loading state (used by the page-state matrix tests). */
   loading?: boolean;
@@ -36,12 +40,16 @@ export function SettingsPage({
   stats,
   walletAddress,
   ownerAddresses,
+  contractId: selectedContractId,
   onProposalSubmitted,
   loading = false,
   error = null,
   onRetry,
 }: SettingsPageProps) {
-  const contractId = import.meta.env.VITE_CONTRACT_ADDRESS ?? "Unknown";
+  const contractId =
+    selectedContractId ??
+    (import.meta.env.VITE_CONTRACT_ADDRESS as string | undefined) ??
+    "Unknown";
   const network = import.meta.env.VITE_NETWORK_PASSPHRASE ?? "Unknown";
   const threshold = stats.find((stat) => stat.label === "Threshold")?.value ?? "Unknown";
 
@@ -547,6 +555,9 @@ export function SettingsPage({
       </div>
 
       <NotificationDestinationsPanel />
+      <WorkspaceBrandingPanel contractId={contractId} canEdit={Boolean(isOwner)} />
+      <WorkspaceBillingPanel contractId={contractId} canManageBilling={Boolean(isOwner)} />
+      <WorkflowAutomationPanel contractId={contractId} canManageWebhooks={Boolean(isOwner)} />
     </div>
   );
 }

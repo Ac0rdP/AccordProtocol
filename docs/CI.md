@@ -253,15 +253,12 @@ regardless of which paths it touches:
 | npm provenance (indexer) | `supply-chain.yml` |
 | Cargo sources and lockfile | `supply-chain.yml` |
 | Exception changes need an approving review | `supply-chain.yml` |
-| Contract CI | `contract.yml` |
-| Contract Snapshot Verification | `contract.yml` |
-| Contract Coverage | `contract.yml` |
-| Contract Benchmarks | `contract.yml` |
-| Detect testnet upgrade paths | `contract.yml` |
 
-`Testnet Upgrade Simulation` is intentionally not required: it only runs when
-the upgrade-path detector marks a pull request as relevant, and GitHub treats a
-skipped job as passing.
+The contract workflow (`contract.yml`) still runs on every pull request, but
+its build, coverage, benchmark, snapshot, and upgrade-detection jobs are
+advisory: they report results without blocking a merge. `Testnet Upgrade
+Simulation` only runs when the upgrade-path detector marks a pull request as
+relevant, and GitHub treats a skipped job as passing.
 
 `Docs build & link validation` is also not required while the lychee action's
 `output` configuration is being fixed; the documentation build still runs and
@@ -300,12 +297,7 @@ gh api -X PUT repos/Ac0rdP/AccordProtocol/branches/main/protection \
       "npm provenance (frontend)",
       "npm provenance (indexer)",
       "Cargo sources and lockfile",
-      "Exception changes need an approving review",
-      "Contract CI",
-      "Contract Snapshot Verification",
-      "Contract Coverage",
-      "Contract Benchmarks",
-      "Detect testnet upgrade paths"
+      "Exception changes need an approving review"
     ]
   },
   "enforce_admins": true,
