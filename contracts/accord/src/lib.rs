@@ -227,6 +227,22 @@ pub struct Proposal {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct ProposalSimulation {
+    pub category: ProposalCategory,
+    pub quorum_weight: u32,
+    pub proposer: Address,
+    pub required_role: Role,
+    pub proposer_auth_required: bool,
+    pub transfer_count: u32,
+    pub distinct_token_count: u32,
+    pub owner_spending_limit_checks: u32,
+    pub minimum_persistent_writes: u32,
+    pub minimum_instance_writes: u32,
+    pub emitted_events: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct ProposalApprovalProgress {
     pub approval_weight: u32,
     pub quorum_weight: u32,
@@ -2099,7 +2115,8 @@ fn read_spending_limit(env: &Env, owner: &Address, token: &Address) -> Option<i1
 
 fn read_spent_tracker(env: &Env, owner: &Address, token: &Address) -> SpentTracker {
     let key = spent_tracking_key(owner, token);
-    env.storage()
+    env
+        .storage()
         .persistent()
         .get(&key)
         .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
@@ -2923,7 +2940,7 @@ pub struct AccordContract;
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
-// Proposer: create_recurring_schedule, create_proposal, create_add_owner_proposal,
+// Proposer: create_recurring_schedule, create_proposal, simulate_proposal, create_add_owner_proposal,
 //   create_spending_limit_proposal, create_change_weight_proposal,
 //   create_remove_owner_proposal, create_change_threshold_proposal,
 //   create_recurring_proposal, create_cancel_recurring_proposal,
@@ -2953,6 +2970,102 @@ pub struct AccordContract;
 //   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
 //   get_proposal_approval_progress, is_frozen, get_guardian,
 //   get_asset_registry_enabled, is_token_approved, get_escrow.
+
+fn validate_transfer_proposal(
+    env: &Env,
+    proposer: &Address,
+    transfers: &Vec<Transfer>,
+    description: &String,
+    deadline: u64,
+) -> Result<bool, ContractError> {
+    proposer.require_auth();
+    let proposer_is_owner = read_owners_map(env)?.contains_key(proposer.clone());
+    require_role(env, proposer, Role::Proposer)?;
+    require_not_frozen(env)?;
+
+    let transfers_len = transfers.len();
+    if transfers_len == 0 || transfers_len > MAX_BATCH_TRANSFERS {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    require_kind_not_frozen(env, ProposalKindTag::Transfer)?;
+    for transfer in transfers.iter() {
+        if transfer.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        validate_token(env, &transfer.token)?;
+        require_asset_not_frozen(env, &transfer.token)?;
+        if transfer.to == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+    }
+
+    if proposer_is_owner {
+        let mut checked_tokens: Vec<Address> = Vec::new(env);
+        let mut checked_totals: Vec<i128> = Vec::new(env);
+        for transfer in transfers.iter() {
+            let mut found = false;
+            for i in 0..checked_tokens.len() {
+                if checked_tokens.get(i).unwrap() == transfer.token {
+                    let total = checked_totals
+                        .get(i)
+                        .unwrap()
+                        .checked_add(transfer.amount)
+                        .ok_or(ContractError::ArithmeticError)?;
+                    checked_totals.set(i, total);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                checked_tokens.push_back(transfer.token.clone());
+                checked_totals.push_back(transfer.amount);
+            }
+        }
+        for i in 0..checked_tokens.len() {
+            let token = checked_tokens.get(i).unwrap();
+            if let Some(limit) = read_spending_limit(env, proposer, &token) {
+                let already_spent = effective_spent(env, proposer, &token);
+                let cumulative = checked_totals
+                    .get(i)
+                    .unwrap()
+                    .checked_add(already_spent)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
+            }
+        }
+    }
+
+    if description.is_empty() {
+        return Err(ContractError::EmptyDescription);
+    }
+    if description.len() > MAX_DESCRIPTION_LEN {
+        return Err(ContractError::DescriptionTooLong);
+    }
+
+    let now = env.ledger().timestamp();
+    if deadline <= now {
+        return Err(ContractError::InvalidDeadline);
+    }
+    if deadline - now > MAX_PROPOSAL_DURATION {
+        return Err(ContractError::InvalidDuration);
+    }
+
+    Ok(proposer_is_owner)
+}
+
+fn distinct_transfer_token_count(env: &Env, transfers: &Vec<Transfer>) -> u32 {
+    let mut tokens: Vec<Address> = Vec::new(env);
+    for transfer in transfers.iter() {
+        if !tokens.contains(&transfer.token) {
+            tokens.push_back(transfer.token);
+        }
+    }
+    tokens.len()
+}
+
 #[contractimpl]
 impl AccordContract {
     /// One-shot initializer. Sets the list of owners with their individual
@@ -3367,82 +3480,7 @@ impl AccordContract {
         deadline: u64,
         category: ProposalCategory,
     ) -> Result<u64, ContractError> {
-        proposer.require_auth();
-        // A non-owner holding the Proposer role may draft transfers; owner
-        // proposers keep their owner-keyed spending limits (checked below).
-        let proposer_is_owner = read_owners_map(&env)?.contains_key(proposer.clone());
-        require_role(&env, &proposer, Role::Proposer)?;
-        require_not_frozen(&env)?;
-
-        let transfers_len = transfers.len();
-        if transfers_len == 0 || transfers_len > MAX_BATCH_TRANSFERS {
-            return Err(ContractError::InvalidAmount);
-        }
-
-        require_kind_not_frozen(&env, ProposalKindTag::Transfer)?;
-        for transfer in transfers.iter() {
-            if transfer.amount < MIN_AMOUNT {
-                return Err(ContractError::InvalidAmount);
-            }
-            validate_token(&env, &transfer.token)?;
-            require_asset_not_frozen(&env, &transfer.token)?;
-            if transfer.to == env.current_contract_address() {
-                return Err(ContractError::InvalidRecipient);
-            }
-        }
-
-        if proposer_is_owner {
-            let mut checked_tokens: Vec<Address> = Vec::new(&env);
-            let mut checked_totals: Vec<i128> = Vec::new(&env);
-            for transfer in transfers.iter() {
-                let mut found = false;
-                for i in 0..checked_tokens.len() {
-                    if checked_tokens.get(i).unwrap() == transfer.token {
-                        let total = checked_totals
-                            .get(i)
-                            .unwrap()
-                            .checked_add(transfer.amount)
-                            .ok_or(ContractError::ArithmeticError)?;
-                        checked_totals.set(i, total);
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    checked_tokens.push_back(transfer.token.clone());
-                    checked_totals.push_back(transfer.amount);
-                }
-            }
-            for i in 0..checked_tokens.len() {
-                let token = checked_tokens.get(i).unwrap();
-                if let Some(limit) = read_spending_limit(&env, &proposer, &token) {
-                    let already_spent = effective_spent(&env, &proposer, &token);
-                    let cumulative = checked_totals
-                        .get(i)
-                        .unwrap()
-                        .checked_add(already_spent)
-                        .ok_or(ContractError::ArithmeticError)?;
-                    if cumulative > limit {
-                        return Err(ContractError::SpendingLimitExceeded);
-                    }
-                }
-            }
-        }
-
-        if description.is_empty() {
-            return Err(ContractError::EmptyDescription);
-        }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let now = env.ledger().timestamp();
-        if deadline <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if deadline - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
-        }
+        validate_transfer_proposal(&env, &proposer, &transfers, &description, deadline)?;
 
         let threshold = read_threshold(&env)?;
         let id = read_next_id(&env);
@@ -3484,6 +3522,39 @@ impl AccordContract {
         );
 
         Ok(id)
+    }
+
+    /// Validates a transfer proposal and returns deterministic contract-work
+    /// estimates without creating a proposal or emitting events.
+    pub fn simulate_proposal(
+        env: Env,
+        proposer: Address,
+        transfers: Vec<Transfer>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+    ) -> Result<ProposalSimulation, ContractError> {
+        let proposer_is_owner =
+            validate_transfer_proposal(&env, &proposer, &transfers, &description, deadline)?;
+        let distinct_token_count = distinct_transfer_token_count(&env, &transfers);
+
+        Ok(ProposalSimulation {
+            category,
+            quorum_weight: read_threshold(&env)?,
+            proposer,
+            required_role: Role::Proposer,
+            proposer_auth_required: true,
+            transfer_count: transfers.len(),
+            distinct_token_count,
+            owner_spending_limit_checks: if proposer_is_owner {
+                distinct_token_count
+            } else {
+                0
+            },
+            minimum_persistent_writes: 2,
+            minimum_instance_writes: 2,
+            emitted_events: 1,
+        })
     }
 
     /// Creates a transfer proposal and associates a 32-byte digest of an

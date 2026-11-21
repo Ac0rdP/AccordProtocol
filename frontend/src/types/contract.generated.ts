@@ -89,6 +89,7 @@ export type ContractProposalKind =
   | { ChangeThreshold: number }
   | { SetSpendingLimit: [string, string, bigint] }
   | { SetSpendingLimitWindow: [string, string, bigint, number] }
+  | { SetTreasurySpendingLimit: [string, bigint, number] }
   | { ChangeOwnerWeight: [string, number] }
   | { CreateRecurringPayment: ContractCreateRecurringParams }
   | { CancelRecurringPayment: number }
@@ -101,6 +102,7 @@ export type ContractProposalKind =
   | { AddApprovedToken: string }
   | { RemoveApprovedToken: string }
   | { TransferGuardian: string }
+  | { RotateOwner: [string, string] }
   | { CreateEscrow: ContractEscrowParams };
 
 export type ContractModifyRecurringParams = {
@@ -137,6 +139,20 @@ export type ContractProposal = {
   attachment_hash: string | null;
 };
 
+export type ContractProposalSimulation = {
+  category: ContractProposalCategory;
+  quorum_weight: number;
+  proposer: string;
+  required_role: ContractRole;
+  proposer_auth_required: boolean;
+  transfer_count: number;
+  distinct_token_count: number;
+  owner_spending_limit_checks: number;
+  minimum_persistent_writes: number;
+  minimum_instance_writes: number;
+  emitted_events: number;
+};
+
 export type ContractProposalApprovalProgress = {
   approval_weight: number;
   quorum_weight: number;
@@ -164,6 +180,83 @@ export type ContractEscrowRecord = {
   token: string;
   amount: bigint;
   release_mode: ContractEscrowReleaseMode;
+};
+
+export type ContractProposalKindTag =
+  | "Transfer"
+  | "Recurring"
+  | "Escrow"
+  | "Ownership"
+  | "Governance";
+
+export type ContractFreezeScope =
+  | { Asset: string }
+  | { Kind: ContractProposalKindTag };
+
+export type ContractScopedFreezeChangedEvent = {
+  scope: ContractFreezeScope;
+  frozen: boolean;
+  guardian: string;
+  version: number;
+};
+
+export type ContractGuardianQuorumConfig = {
+  guardians: string[];
+  threshold: number;
+};
+
+export type ContractSocialRecoveryRequest = {
+  id: number;
+  new_owner: string;
+  replace_owner: string | null;
+  approvals: string[];
+  proposed_at: number;
+  execute_after: number;
+  executed: boolean;
+};
+
+export type ContractGuardianQuorumConfiguredEvent = {
+  guardians: string[];
+  threshold: number;
+  version: number;
+};
+
+export type ContractSocialRecoveryProposedEvent = {
+  id: number;
+  new_owner: string;
+  replace_owner: string | null;
+  proposed_at: number;
+  version: number;
+};
+
+export type ContractSocialRecoveryApprovedEvent = {
+  id: number;
+  guardian: string;
+  approvals: number;
+  threshold: number;
+  execute_after: number;
+  version: number;
+};
+
+export type ContractSocialRecoveryExecutedEvent = {
+  id: number;
+  new_owner: string;
+  replace_owner: string | null;
+  executed_at: number;
+  version: number;
+};
+
+export type ContractOwnerRotatedEvent = {
+  old_owner: string;
+  new_owner: string;
+  weight: number;
+  version: number;
+};
+
+export type ContractStorageMigratedEvent = {
+  from_version: number;
+  to_version: number;
+  version: number;
 };
 
 export type ContractDelegation = {
@@ -460,6 +553,38 @@ export type ContractRoleRevokedEvent = {
   version: number;
 };
 
+export type ContractAssetTreasuryAccounting = {
+  token: string;
+  total_spent: bigint;
+  window_spent: bigint;
+  spend_limit: bigint | null;
+  window_secs: number;
+  epoch: number;
+  available_limit: bigint | null;
+};
+
+export type ContractProposalDependenciesSetEvent = {
+  id: number;
+  dependencies: number[];
+  version: number;
+};
+
+export type ContractTreasurySpendingLimitExecutedEvent = {
+  token: string;
+  previous_limit: bigint | null;
+  new_limit: bigint;
+  window_secs: number;
+  version: number;
+};
+
+export type ContractTreasurySpendTrackedEvent = {
+  token: string;
+  amount: bigint;
+  total_spent_window: bigint;
+  total_spent_lifetime: bigint;
+  version: number;
+};
+
 export enum ContractError {
   AlreadyInitialized = 1,
   NotInitialized = 2,
@@ -523,8 +648,28 @@ export enum ContractError {
   EscrowNotFound = 63,
   EscrowConditionNotMet = 64,
   EscrowFundsUnavailable = 65,
-  AlreadyAbstained = 66,
-  NotAbstained = 67,
-  AlreadySoftApproved = 68,
-  NotSoftApproved = 69,
+  DependencyNotExecuted = 66,
+  DependencyCancelled = 67,
+  DependencyExpired = 68,
+  InvalidDependency = 69,
+  DuplicateDependency = 70,
+  TooManyDependencies = 71,
+  TreasurySpendingLimitExceeded = 72,
+  InvalidSpendingLimit = 73,
+  DependencyNotFound = 74,
+  AlreadyAbstained = 75,
+  NotAbstained = 76,
+  AlreadySoftApproved = 77,
+  NotSoftApproved = 78,
+  UnsupportedSchemaVersion = 79,
+  SkippedSchemaVersion = 80,
+  SchemaVersionMismatch = 81,
+  LegacyMigrationRequired = 82,
+  OwnerRotationDelayActive = 83,
+  GuardianQuorumNotConfigured = 84,
+  InvalidGuardianQuorum = 85,
+  NotGuardian = 86,
+  RecoveryRequestNotFound = 87,
+  RecoveryRequestNotReady = 88,
+  RecoveryDelayActive = 89,
 }
