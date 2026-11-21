@@ -6,6 +6,8 @@
  *   - GraphQL live event subscriptions (push updates without polling)
  *   - Event stream exporters (Kafka, NATS)
  *   - Data warehouse connectors (BigQuery, Snowflake)
+ *   - Parallel backfill (workers, shard size, retries)
+ *   - Chain-tip lag / finality-depth monitoring and alert thresholds
  */
 
 import { DEFAULT_FINALITY_LAG } from "./finality.js";
@@ -109,6 +111,88 @@ export function resolveWarehouseConfig(env = process.env) {
 }
 
 /**
+ * Resolves the parallel backfill configuration.
+ *
+ * Safe defaults:
+ *   - workers: 1 (sequential; the original single-cursor backfill is used)
+ *   - shardSize: 50000 ledgers per shard
+ *   - maxShardRetries: 3 in-run retries per shard before it is left `failed`
+ *   - retryBaseDelayMs: 1000 (doubles each retry, capped at 60000)
+ *
+ * Set BACKFILL_WORKERS above 1 to split the range into shards that are walked
+ * concurrently, each with its own checkpoint.
+ */
+export function resolveBackfillConfig(env = process.env) {
+  return {
+    workers: parseIntSafe(env.BACKFILL_WORKERS, 1, 1, 32),
+    shardSize: parseIntSafe(env.BACKFILL_SHARD_SIZE, 50000, 1, 10_000_000),
+    maxShardRetries: parseIntSafe(env.BACKFILL_SHARD_MAX_RETRIES, 3, 0, 20),
+    retryBaseDelayMs: parseIntSafe(env.BACKFILL_SHARD_RETRY_DELAY_MS, 1000, 0, 60000),
+  };
+}
+
+/**
+ * Resolves the chain-tip lag / finality-depth monitor configuration.
+ *
+ * Safe defaults (every threshold is on lag *above* the finality floor, so a
+ * larger LEDGER_FINALITY_LAG never raises an alert by itself):
+ *   - enabled: true
+ *   - ledgerCloseSeconds: 5 (converts ledgers to an estimated lag in seconds)
+ *   - tipLagWarnLedgers / tipLagCriticalLedgers: 20 / 100 (~100s / ~8min)
+ *   - checkpointAgeWarnSeconds / checkpointAgeCriticalSeconds: 120 / 600
+ *   - minFinalityDepth: the finality lag; the newest indexed ledger must be at
+ *     least this many ledgers below the chain tip
+ *
+ * A critical threshold below its warn threshold is raised to match it.
+ */
+export function resolveLagMonitorConfig(env = process.env, finalityLag = DEFAULT_FINALITY_LAG) {
+  const tipLagWarnLedgers = parseIntSafe(env.LAG_WARN_LEDGERS, 20, 1, 1_000_000);
+  const checkpointAgeWarnSeconds = parseIntSafe(env.CHECKPOINT_AGE_WARN_SECONDS, 120, 1, 604_800);
+  return {
+    enabled: parseBool(env.LAG_MONITOR_ENABLED, true),
+    ledgerCloseSeconds: parseIntSafe(env.LEDGER_CLOSE_SECONDS, 5, 1, 60),
+    tipLagWarnLedgers,
+    tipLagCriticalLedgers: Math.max(tipLagWarnLedgers, parseIntSafe(env.LAG_CRITICAL_LEDGERS, 100, 1, 1_000_000)),
+    checkpointAgeWarnSeconds,
+    checkpointAgeCriticalSeconds: Math.max(checkpointAgeWarnSeconds, parseIntSafe(env.CHECKPOINT_AGE_CRITICAL_SECONDS, 600, 1, 604_800)),
+    minFinalityDepth: parseIntSafe(env.FINALITY_MIN_DEPTH, finalityLag, 0, 1000),
+  };
+}
+
+/**
+ * Resolves the cash-runway forecast assumptions.
+ *
+ * Safe defaults: a 90-day lookback, no recurring flows (the forecast then rests
+ * on history alone) and a 3650-day horizon. Recurring amounts are base units
+ * per day and must be non-negative integers; invalid values fall back to 0.
+ */
+export function resolveRunwayConfig(env = process.env) {
+  const amount = (value) => (/^\d{1,30}$/.test(String(value ?? "").trim()) ? String(value).trim() : "0");
+  return {
+    lookbackDays: parseIntSafe(env.RUNWAY_LOOKBACK_DAYS, 90, 1, 3650),
+    recurringOutflowPerDay: amount(env.RUNWAY_RECURRING_OUTFLOW_PER_DAY),
+    recurringInflowPerDay: amount(env.RUNWAY_RECURRING_INFLOW_PER_DAY),
+    horizonDays: parseIntSafe(env.RUNWAY_HORIZON_DAYS, 3650, 1, 36500),
+  };
+}
+
+/**
+ * Resolves the outflow anomaly detection settings.
+ *
+ * Safe defaults: a 30-day baseline, scoring the last 7 days, no flag until 10
+ * earlier outflows exist, and a robust z-score threshold of 6 (conservative).
+ */
+export function resolveAnomalyConfig(env = process.env) {
+  const threshold = Number(env.ANOMALY_THRESHOLD);
+  return {
+    lookbackDays: parseIntSafe(env.ANOMALY_LOOKBACK_DAYS, 30, 1, 3650),
+    reportDays: parseIntSafe(env.ANOMALY_REPORT_DAYS, 7, 1, 365),
+    minSamples: parseIntSafe(env.ANOMALY_MIN_SAMPLES, 10, 1, 100000),
+    threshold: Number.isFinite(threshold) && threshold > 0 && env.ANOMALY_THRESHOLD !== "" ? threshold : 6,
+  };
+}
+
+/**
  * Full consolidated indexer configuration.
  */
 export function loadIndexerConfig(env = process.env) {
@@ -116,6 +200,10 @@ export function loadIndexerConfig(env = process.env) {
     graphql: resolveGraphQLConfig(env),
     streams: resolveStreamExportersConfig(env),
     warehouse: resolveWarehouseConfig(env),
+    backfill: resolveBackfillConfig(env),
+    runway: resolveRunwayConfig(env),
+    anomalies: resolveAnomalyConfig(env),
+    lagMonitor: resolveLagMonitorConfig(env, parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000)),
     finalityLag: parseIntSafe(env.LEDGER_FINALITY_LAG, DEFAULT_FINALITY_LAG, 0, 1000),
     readyMaxStalenessMs: parseIntSafe(
       env.READY_MAX_STALENESS_MS,

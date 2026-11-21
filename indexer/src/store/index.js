@@ -43,6 +43,8 @@ export function resolveStoreConfig(env = process.env) {
  *   getAccordEvents({topic, from, to, limit, offset})
  *   setState(key, value) / getState(key)        string checkpoints, null when unset
  *   recordReconciliation(result) / getLatestReconciliations()
+ *   registerBackfillJob({jobId, shards}) / listBackfillShards(jobId) / updateBackfillShard(update)
+ *   setLagMonitorState(state) / getLagMonitorState(monitor)
  *   recomputeBalances() / rewindToLedger(ledger) / clearHistory()
  *   getLatestAccordEventId() / getAccordEventsAfter(id, limit)
  *   enqueueWebhookDeliveries / claimDueWebhookDeliveries / completeWebhookDelivery
