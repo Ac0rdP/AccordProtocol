@@ -1,0 +1,159 @@
+{
+  "proposals": [
+    {
+      "id": 1,
+      "kind": "transfer",
+      "to": "GRECIPIENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "amount": "2500.00",
+      "token": "USDC",
+      "description": "Payroll payout",
+      "approvals": 2,
+      "threshold": 2,
+      "status": "executed",
+      "deadline": "2026-09-02",
+      "deadlineTs": 1788343200,
+      "createdAt": "2026-09-02T10:00:00Z",
+      "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+      "userHasApproved": false,
+      "approverAddresses": [
+        "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+        "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+      ],
+      "executedAt": "2026-09-02T10:00:00Z",
+      "category": "Payroll"
+    },
+    {
+      "id": 2,
+      "kind": "transfer",
+      "to": "GRECIPIENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "amount": "450.00",
+      "token": "USDC",
+      "description": "Ops payout",
+      "approvals": 2,
+      "threshold": 2,
+      "status": "executed",
+      "deadline": "2026-09-05",
+      "deadlineTs": 1788618600,
+      "createdAt": "2026-09-05T14:30:00Z",
+      "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+      "userHasApproved": false,
+      "approverAddresses": [
+        "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+        "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+      ],
+      "executedAt": "2026-09-05T14:30:00Z",
+      "category": "Ops"
+    },
+    {
+      "id": 3,
+      "kind": "transfer",
+      "to": "GRECIPIENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "amount": "5000.00",
+      "token": "XLM",
+      "description": "Grant payout",
+      "approvals": 2,
+      "threshold": 2,
+      "status": "executed",
+      "deadline": "2026-09-12",
+      "deadlineTs": 1789204500,
+      "createdAt": "2026-09-12T09:15:00Z",
+      "proposer": "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+      "userHasApproved": false,
+      "approverAddresses": [
+        "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+        "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+      ],
+      "executedAt": "2026-09-12T09:15:00Z",
+      "category": "Grant"
+    },
+    {
+      "id": 4,
+      "kind": "transfer",
+      "to": "GRECIPIENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "amount": "2500.00",
+      "token": "USDC",
+      "description": "Payroll payout",
+      "approvals": 2,
+      "threshold": 2,
+      "status": "executed",
+      "deadline": "2026-09-16",
+      "deadlineTs": 1789556400,
+      "createdAt": "2026-09-16T11:00:00Z",
+      "proposer": "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+      "userHasApproved": false,
+      "approverAddresses": [
+        "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+        "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+      ],
+      "executedAt": "2026-09-16T11:00:00Z",
+      "category": "Payroll"
+    },
+    {
+      "id": 5,
+      "kind": "transfer",
+      "to": "GRECIPIENTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "amount": "1200.00",
+      "token": "XLM",
+      "description": "Transfer payout",
+      "approvals": 2,
+      "threshold": 2,
+      "status": "executed",
+      "deadline": "2026-09-22",
+      "deadlineTs": 1790095500,
+      "createdAt": "2026-09-22T16:45:00Z",
+      "proposer": "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+      "userHasApproved": false,
+      "approverAddresses": [
+        "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+        "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+      ],
+      "executedAt": "2026-09-22T16:45:00Z",
+      "category": "Transfer"
+    }
+  ],
+  "ownerCount": 3,
+  "owners": [
+    "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4IQDNC",
+    "GBZXBCBP4A3RUGQ6E7Z46N3N3J67HCH34T3Z7Q6DCLOXX367G4B34CBO",
+    "GCCZUKX7LI3MSLUA4MIIN3LSO43DTBPJMHBPSTUQISDLMZMPOJU3ANWJ"
+  ],
+  "deposits": [
+    {
+      "timestamp": 1788220800,
+      "token": "USDC",
+      "amount": "12000.00"
+    },
+    {
+      "timestamp": 1788220800,
+      "token": "XLM",
+      "amount": "8000.00"
+    },
+    {
+      "timestamp": 1789430400,
+      "token": "USDC",
+      "amount": "6000.00"
+    }
+  ],
+  "balanceSnapshots": [
+    {
+      "timestamp": 1788220800,
+      "balances": {
+        "USDC": 12000
+      }
+    },
+    {
+      "timestamp": 1788220800,
+      "balances": {
+        "USDC": 12000,
+        "XLM": 8000
+      }
+    },
+    {
+      "timestamp": 1789430400,
+      "balances": {
+        "USDC": 18000,
+        "XLM": 8000
+      }
+    }
+  ]
+}
