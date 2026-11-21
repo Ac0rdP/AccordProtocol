@@ -213,6 +213,76 @@ jobs:
           path: frontend/playwright-report/
           if-no-files-found: ignore
 
+  share-links-embeds-e2e:
+    name: Share links & embeds E2E (signed-out)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix frontend ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run signed-out share links, deep links & embed widget E2E suite
+        working-directory: frontend
+        run: npm run e2e:share-embeds
+
+      - name: Summarize share links & embeds E2E results
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "frontend/playwright-report/results.json";
+            if (!fs.existsSync(p)) process.exit(0);
+            const data = JSON.parse(fs.readFileSync(p, "utf8"));
+            const redact = (s) => String(s || "").replace(/Bearer\s+[A-Za-z0-9._~-]{10,}/gi, "Bearer [REDACTED]").replace(/([?&](?:api_key|token|secret)=)[^&\s]+/gi, "$1[REDACTED]");
+            const failures = [];
+            const walk = (suites) => {
+              for (const s of suites || []) {
+                for (const sp of s.specs || []) {
+                  if (!sp.ok) failures.push(`- **${redact(sp.title)}** (${s.file || "share-links-embeds.spec.ts"})`);
+                }
+                walk(s.suites);
+              }
+            };
+            walk(data.suites);
+            const lines = ["## Share Links & Embeds E2E Summary", ""];
+            if (failures.length === 0) {
+              lines.push("All signed-out share link, deep link, and embed widget E2E checks passed.");
+            } else {
+              lines.push(`Failed cases (${failures.length}):`, "", ...failures);
+            }
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+            }
+          '
+
+      - name: Upload share links & embeds Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: share-links-embeds-playwright-report
+          path: frontend/playwright-report/
+          if-no-files-found: ignore
+
   sdk-and-example-build:
     name: SDK & example dApp build & smoke test
     runs-on: ubuntu-latest
