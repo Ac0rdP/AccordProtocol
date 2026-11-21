@@ -287,12 +287,26 @@ mod tests {
 
     #[test]
     fn a_stale_checkpoint_or_report_is_a_breach() {
-        let lagging = item("n", "c", Some((1, now() - Duration::seconds(121))), Some(now()), now(), &SLO);
+        let lagging = item(
+            "n",
+            "c",
+            Some((1, now() - Duration::seconds(121))),
+            Some(now()),
+            now(),
+            &SLO,
+        );
         assert_eq!(lagging.ingestion_status, Status::Breach);
         assert_eq!(lagging.report_status, Status::Ok);
         assert_eq!(lagging.status, Status::Breach);
 
-        let old_report = item("n", "c", Some((1, now())), Some(now() - Duration::days(2)), now(), &SLO);
+        let old_report = item(
+            "n",
+            "c",
+            Some((1, now())),
+            Some(now() - Duration::days(2)),
+            now(),
+            &SLO,
+        );
         assert_eq!(old_report.report_status, Status::Breach);
     }
 
@@ -316,9 +330,21 @@ mod tests {
 
     #[test]
     fn api_latency_is_judged_by_p95() {
-        let slow = metrics::LatencySummary { requests: 10, p50_seconds: Some(0.1), p95_seconds: Some(1.0) };
-        let fast = metrics::LatencySummary { requests: 10, p50_seconds: Some(0.01), p95_seconds: Some(0.25) };
-        let none = metrics::LatencySummary { requests: 0, p50_seconds: None, p95_seconds: None };
+        let slow = metrics::LatencySummary {
+            requests: 10,
+            p50_seconds: Some(0.1),
+            p95_seconds: Some(1.0),
+        };
+        let fast = metrics::LatencySummary {
+            requests: 10,
+            p50_seconds: Some(0.01),
+            p95_seconds: Some(0.25),
+        };
+        let none = metrics::LatencySummary {
+            requests: 0,
+            p50_seconds: None,
+            p95_seconds: None,
+        };
 
         assert_eq!(api_latency(&slow, &SLO).status, Status::Breach);
         assert_eq!(api_latency(&fast, &SLO).status, Status::Ok);
