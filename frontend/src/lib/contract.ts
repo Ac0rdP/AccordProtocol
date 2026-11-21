@@ -34,9 +34,10 @@ const server = new rpc.Server(RPC_URL);
 async function simulateView(
   fn: string,
   args: xdr.ScVal[] = [],
+  contractId: string = CONTRACT_ID,
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(contractId);
   const tx = new TransactionBuilder(account, {
     fee: "100",
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -106,7 +107,11 @@ function safeBigInt(value: unknown): bigint {
 
 function mapKindDetails(
   kind: unknown,
-): Pick<Proposal, "kind" | "to" | "amount" | "token"> & { rawAmount?: string } {
+): Pick<Proposal, "kind" | "to" | "amount" | "token"> & {
+  rawAmount?: string;
+  tokenAddress?: string;
+  recipientAddress?: string;
+} {
   if (!kind || typeof kind !== "object") {
     return {
       kind: "transfer",
@@ -127,9 +132,11 @@ function mapKindDetails(
       return {
         kind: "transfer",
         to: shortenAddr(String(values[0] ?? "Unknown")),
+        recipientAddress: String(values[0] ?? ""),
         amount: stroopsToDisplay(rawStroops),
         rawAmount: String(rawStroops),
         token: shortenAddr(String(values[2] ?? "Unknown")),
+        tokenAddress: String(values[2] ?? ""),
       };
     }
     case "addowner":
@@ -217,7 +224,19 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     userHasApproved: false,
     approverAddresses: [],
     executedAt: formatDeadline(rawDeadline),
+    attachmentHash: mapAttachmentHash(raw.attachment_hash),
   };
+}
+
+function mapAttachmentHash(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Uint8Array) {
+    return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  if (Array.isArray(value) && value.every((byte) => typeof byte === "number")) {
+    return value.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -305,10 +324,11 @@ export async function getRoleVersion(): Promise<number> {
 export async function getRoles(
   address?: string,
   ownerAddresses: string[] = [],
+  contractId: string = CONTRACT_ID,
 ): Promise<Role[]> {
   if (!address) {
     try {
-      const val = await simulateView("get_roles");
+      const val = await simulateView("get_roles", [], contractId);
       return mapRoleList(scValToNative(val));
     } catch {
       return [];
@@ -318,7 +338,7 @@ export async function getRoles(
   try {
     const val = await simulateView("get_roles", [
       nativeToScVal(address, { type: "address" }),
-    ]);
+    ], contractId);
     return mapRoles(scValToNative(val));
   } catch {
     if (ownerAddresses.includes(address)) {
@@ -374,8 +394,8 @@ export async function getApproverWeight(owner: string): Promise<number> {
   }
 }
 
-export async function getOwners(): Promise<string[]> {
-  const val = await simulateView("get_owners");
+export async function getOwners(contractId: string = CONTRACT_ID): Promise<string[]> {
+  const val = await simulateView("get_owners", [], contractId);
   return scValToNative(val) as string[];
 }
 
@@ -472,8 +492,8 @@ function mapRoles(raw: unknown): Role[] {
   );
 }
 
-export async function getThreshold(): Promise<number> {
-  const val = await simulateView("get_threshold");
+export async function getThreshold(contractId: string = CONTRACT_ID): Promise<number> {
+  const val = await simulateView("get_threshold", [], contractId);
   return Number(scValToNative(val));
 }
 
@@ -493,19 +513,20 @@ export async function getSpendingLimit(
   }
 }
 
-export async function getTotalProposals(): Promise<number> {
-  const val = await simulateView("get_total_proposals");
+export async function getTotalProposals(contractId: string = CONTRACT_ID): Promise<number> {
+  const val = await simulateView("get_total_proposals", [], contractId);
   return Number(scValToNative(val));
 }
 
 export async function getProposalsPaged(
   offset: number,
   limit: number,
+  contractId: string = CONTRACT_ID,
 ): Promise<unknown[]> {
   const val = await simulateView("get_proposals_paged", [
     nativeToScVal(BigInt(offset), { type: "u64" }),
     nativeToScVal(limit, { type: "u32" }),
-  ]);
+  ], contractId);
   const result = scValToNative(val);
   return Array.isArray(result) ? result : [];
 }
@@ -636,11 +657,12 @@ export async function getProposalApprovalProgress(
 export async function hasApproved(
   walletAddress: string,
   proposalId: number,
+  contractId: string = CONTRACT_ID,
 ): Promise<boolean> {
   const val = await simulateView("has_approved", [
     nativeToScVal(walletAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
   return scValToNative(val) as boolean;
 }
 
@@ -714,8 +736,11 @@ export async function getTokenBalanceOf(tokenAddress: string, accountAddress: st
 }
 
 /** Raw treasury balance (base units) for a given token. */
-export async function getTreasuryTokenBalance(tokenAddress: string): Promise<bigint> {
-  return getTokenBalanceOf(tokenAddress, CONTRACT_ID);
+export async function getTreasuryTokenBalance(
+  tokenAddress: string,
+  contractId: string = CONTRACT_ID,
+): Promise<bigint> {
+  return getTokenBalanceOf(tokenAddress, contractId);
 }
 
 export async function getContractXlmBalance(): Promise<string> {

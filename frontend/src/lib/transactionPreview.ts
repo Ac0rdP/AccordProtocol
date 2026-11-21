@@ -1,7 +1,11 @@
-import { estimateCreateProposalFee, estimateCreateRecurringPaymentFee } from "./submit";
+import {
+  estimateCreateProposalFee,
+  estimateCreateRecurringPaymentFee,
+  simulateProposalExecution,
+} from "./submit";
 import { getTokenBalanceOf, getTreasuryTokenBalance } from "./contract";
 import { stroopsToDisplay } from "./soroban";
-import type { ProposalCategory } from "../types/accord";
+import type { Proposal, ProposalCategory } from "../types/accord";
 
 export type BalanceDeltaRow = {
   /** "Treasury" or "Recipient" — who this balance belongs to. */
@@ -19,6 +23,66 @@ export type TransactionPreview = {
   feeError: string | null;
   balances: BalanceDeltaRow[];
 };
+
+export type ProposalExecutionDryRun = {
+  feeEstimate: number;
+  authorizationEntryCount: number;
+  balances: BalanceDeltaRow[];
+  balanceErrors: string[];
+};
+
+export async function previewProposalExecution(
+  callerAddress: string,
+  proposal: Proposal,
+  contractId?: string,
+): Promise<ProposalExecutionDryRun> {
+  const simulation = await simulateProposalExecution(callerAddress, proposal.id, contractId);
+  const balances: BalanceDeltaRow[] = [];
+  const balanceErrors: string[] = [];
+
+  if (
+    proposal.kind === "transfer" &&
+    proposal.tokenAddress &&
+    proposal.recipientAddress &&
+    proposal.rawAmount
+  ) {
+    const delta = BigInt(proposal.rawAmount);
+    const [treasuryResult, recipientResult] = await Promise.allSettled([
+      getTreasuryTokenBalance(proposal.tokenAddress, contractId),
+      getTokenBalanceOf(proposal.tokenAddress, proposal.recipientAddress),
+    ]);
+
+    if (treasuryResult.status === "fulfilled") {
+      const before = treasuryResult.value;
+      const after = before - delta;
+      balances.push({
+        label: "Treasury (simulated)",
+        address: "",
+        token: proposal.token,
+        before: stroopsToDisplay(before),
+        after: stroopsToDisplay(after < 0n ? 0n : after),
+      });
+    } else {
+      balanceErrors.push(`Treasury balance unavailable: ${describeSimulationError(treasuryResult.reason)}`);
+    }
+    if (recipientResult.status === "fulfilled") {
+      const before = recipientResult.value;
+      balances.push({
+        label: "Recipient (simulated)",
+        address: proposal.recipientAddress,
+        token: proposal.token,
+        before: stroopsToDisplay(before),
+        after: stroopsToDisplay(before + delta),
+      });
+    } else {
+      balanceErrors.push(`Recipient balance unavailable: ${describeSimulationError(recipientResult.reason)}`);
+    }
+  } else if (proposal.kind === "transfer") {
+    balanceErrors.push("The proposal is missing a token, recipient, or amount; balance changes cannot be computed.");
+  }
+
+  return { ...simulation, balances, balanceErrors };
+}
 
 function describeSimulationError(reason: unknown): string {
   return reason instanceof Error
