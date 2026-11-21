@@ -12353,3 +12353,182 @@ fn test_property_dag_ordered_execution_simulation() {
         assert_eq!(client.get_proposal(&proposals[i]).status, ProposalStatus::Executed);
     }
 }
+
+#[test]
+fn simulate_proposal_reports_requirements_and_does_not_create_state_or_events() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let contract_events = || {
+        env.events()
+            .all()
+            .filter_by_contract(&client.address)
+            .events()
+            .len()
+    };
+    let event_count_before = contract_events();
+    let transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+
+    let simulation = client.simulate_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "simulation"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    assert_eq!(simulation.category, ProposalCategory::Transfer);
+    assert_eq!(simulation.quorum_weight, 2);
+    assert_eq!(simulation.authorization_requirements.len(), 1);
+    let authorization = simulation.authorization_requirements.get(0).unwrap();
+    assert_eq!(authorization.address, owner_a);
+    assert_eq!(authorization.role, Role::Proposer);
+    assert!(authorization.auth_required);
+    assert_eq!(simulation.resource_estimate.transfer_count, 1);
+    assert_eq!(simulation.resource_estimate.distinct_token_count, 1);
+    assert_eq!(simulation.resource_estimate.owner_spending_limit_checks, 1);
+    assert_eq!(simulation.resource_estimate.minimum_persistent_writes, 2);
+    assert_eq!(simulation.resource_estimate.minimum_instance_writes, 2);
+    assert_eq!(simulation.resource_estimate.emitted_events, 1);
+    assert_eq!(client.get_total_proposals(), 0);
+    assert_eq!(contract_events(), event_count_before);
+}
+
+#[test]
+fn simulate_proposal_preserves_role_and_frozen_state_precedence() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let empty = Vec::new(&env);
+    let description = str(&env, "simulation");
+
+    assert_eq!(
+        client.try_simulate_proposal(
+            &non_owner,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    set_roles(&env, &client.address, &non_owner, &[Role::Proposer]);
+    let owners = Vec::from_array(&env, [owner_a, owner_b]);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&owners, &guardian);
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_simulate_proposal(
+            &non_owner,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+
+    let transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &non_owner,
+            &transfers,
+            &str(&env, ""),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn simulate_proposal_rejects_transfer_limits() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let description = str(&env, "limits");
+    let empty = Vec::new(&env);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &owner_a,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+
+    let zero_amount = t(&env, &recipient, 0, &token_client.address);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &owner_a,
+            &zero_amount,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+
+    let mut excessive = Vec::new(&env);
+    for _ in 0..=MAX_BATCH_TRANSFERS {
+        excessive.push_back(Transfer {
+            to: recipient.clone(),
+            token: token_client.address.clone(),
+            amount: 1,
+        });
+    }
+    assert_eq!(
+        client.try_simulate_proposal(
+            &owner_a,
+            &excessive,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+
+    env.as_contract(&client.address, || {
+        write_spending_limit(&env, &owner_a, &token_client.address, 5);
+    });
+    let over_limit = t(&env, &recipient, 6, &token_client.address);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &owner_a,
+            &over_limit,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn proposal_simulation_estimates_transfer_counts(count in 1u32..=MAX_BATCH_TRANSFERS) {
+        let (env, client, owner_a, _, _, _, token_client) = setup(2);
+        let recipient = Address::generate(&env);
+        let mut transfers = Vec::new(&env);
+        for _ in 0..count {
+            transfers.push_back(Transfer {
+                to: recipient.clone(),
+                token: token_client.address.clone(),
+                amount: 1,
+            });
+        }
+
+        let simulation = client.simulate_proposal(
+            &owner_a,
+            &transfers,
+            &str(&env, "property"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+
+        prop_assert_eq!(simulation.resource_estimate.transfer_count, count);
+        prop_assert_eq!(simulation.resource_estimate.distinct_token_count, 1);
+        prop_assert_eq!(simulation.resource_estimate.owner_spending_limit_checks, 1);
+    }
+}
