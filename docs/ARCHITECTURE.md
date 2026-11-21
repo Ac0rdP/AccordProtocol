@@ -48,6 +48,7 @@
 | `revoke_soft_approval(supporter, proposal_id)`                         | Owner removes a previous soft approval           | Proposal card revoke-soft |
 | `revoke(approver, proposal_id)`                                       | Owner withdraws their approval                   | Proposal card revoke button  |
 | `execute(executor, proposal_id)`                                      | Executes a Ready proposal, transfers tokens      | Proposal card execute button |
+| `simulate_proposal(proposer, transfers, description, deadline, category)` | Validates a transfer draft and returns requirements and deterministic work counts | Proposal form preflight |
 | `get_proposal(proposal_id)`                                           | Reads a single proposal                          | Proposal detail page         |
 | `get_proposals_paged(offset, limit)`                                  | Paginated proposal list                          | Dashboard list               |
 | `get_owners()`                                                        | Returns owner list                               | Settings / owners panel      |
@@ -62,6 +63,18 @@
 | `get_asset_treasury_accounting(token)`                                | Returns per-asset treasury accounting record     | Treasury balance/limit panel |
 
 See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
+
+`simulate_proposal` runs the same authorization, role, frozen-state, transfer,
+spending-limit, description, and deadline validation as `create_proposal`, in
+the same order, but does not allocate an ID, write proposal state, or emit an
+event. Existing storage entries read during validation still receive their
+normal TTL extensions. Its result lists the proposer's required `Proposer`
+authorization and role, snapshotted quorum weight, transfer/distinct-token
+counts, owner spending limit checks, minimum state writes, and the event count
+that submission would produce. These are deterministic contract-work counts,
+not CPU instructions, memory bytes, fee estimates, or a guarantee of
+transaction success against later state changes. Clients needing exact Soroban resource and fee estimates
+must still simulate the real submission through Soroban RPC.
 
 ## 3. Storage Layout (Soroban)
 

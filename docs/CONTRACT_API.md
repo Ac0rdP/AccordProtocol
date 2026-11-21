@@ -39,6 +39,27 @@ seconds.
 equivalent) digest. The digest is stored in `Proposal.attachment_hash`, and is
 included in the `ProposalCreatedEvent`; `None` preserves the existing flow.
 
+## Proposal preflight simulation
+
+`simulate_proposal(proposer, transfers, description, deadline, category)` runs
+the transfer-proposal checks used by `create_proposal` without creating a
+proposal record or emitting an event. Reads retain their normal storage TTL
+extensions. It returns:
+
+- `authorization_requirements`: the proposer address, required `Proposer` role,
+  and whether address authorization is required.
+- `quorum_weight`: the current threshold that a newly submitted proposal would
+  snapshot.
+- `resource_estimate`: transfer count, distinct token count, owner spending
+  limit checks, minimum persistent and instance writes, and event count.
+
+The work counts are deterministic estimates of contract operations only. They
+are not CPU or memory estimates and do not replace Soroban RPC simulation for
+transaction resource limits or fees. State may change between preflight and
+submission, so the real `create_proposal` call must still be simulated and
+validated before it is submitted. The preflight uses the same auth, role,
+frozen-state, and validation precedence as proposal creation.
+
 ### JavaScript SDK call patterns
 
 The examples below use `@stellar/stellar-sdk`. Read-only functions are called by building and simulating a transaction, then decoding the returned `ScVal` with `scValToNative`. State-changing functions follow the same flow used by the frontend: build the transaction, simulate it, assemble the prepared transaction, sign it, and submit it with `sendTransaction`.
