@@ -311,9 +311,11 @@ describeEachBackend("api key HTTP", () => {
     const time = { now: T0 };
     const metrics = createIndexerMetrics();
     const apiKeys = createApiKeyService({ store, config, metrics, now: () => time.now });
+    const readiness = createReadiness({ store });
+    readiness.markSuccess();
     const api = createApi({
       store,
-      readiness: createReadiness({ store }),
+      readiness,
       metrics,
       startLedger: 1,
       finalityLag: 1,

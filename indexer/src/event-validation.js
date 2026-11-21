@@ -23,6 +23,13 @@ export const VALIDATION_MODES = ["off", "warn", "enforce"];
 const MAX_ERRORS = 20;
 
 function decode(encoded) {
+  if (
+    encoded === null ||
+    encoded === undefined ||
+    (typeof encoded !== "string" && typeof encoded.toXDR !== "function")
+  ) {
+    throw new Error("expected an ScVal or base64 ScVal string");
+  }
   const value = typeof encoded === "string" ? xdr.ScVal.fromXDR(encoded, "base64") : encoded;
   return scValToNative(value);
 }

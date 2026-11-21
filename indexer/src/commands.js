@@ -2,6 +2,7 @@ import { ingestAccordEvent } from "./event-validation.js";
 import { parseTokenTransferEvent } from "./events.js";
 import { DEFAULT_FINALITY_LAG, finalLedgerFor, resolveFinalityLag } from "./finality.js";
 import { buildContractFilters } from "./indexing.js";
+import { parallelBackfill } from "./parallel-backfill.js";
 
 /** Events requested per RPC page. */
 export const DEFAULT_PAGE_LIMIT = 1000;
@@ -226,7 +227,11 @@ export async function backfill(options) {
     stellar, store, tokens, treasuryAddress,
     from, to, finalityLag = DEFAULT_FINALITY_LAG,
     pageLimit = DEFAULT_PAGE_LIMIT, onProgress = () => {},
-    fallbackStart = DEFAULT_GENESIS_LEDGER, validator,
+    fallbackStart = DEFAULT_GENESIS_LEDGER,
+    validator,
+    // Optional `{ workers, shardSize, maxShardRetries, retryBaseDelayMs, sleep }`
+    // (see `resolveBackfillConfig`). More than one worker enables sharding.
+    parallel = null,
   } = options;
 
   const range = await resolveHistoryRange({ stellar, from, to, finalityLag, fallbackStart });
@@ -237,11 +242,18 @@ export async function backfill(options) {
     return { ...range, eventsIndexed: 0, pages: 0, complete: true, nothingToDo: true };
   }
 
-  const walk = await walkHistory({
-    stellar, store, tokens, treasuryAddress,
-    start: range.start, end: range.end,
-    stateKey: "backfill", pageLimit, onProgress, validator,
-  });
+  const sharded = parallel && parallel.workers > 1 && Number.isFinite(range.end);
+  const walk = sharded
+    ? await parallelBackfill({
+        stellar, store, tokens, treasuryAddress,
+        start: range.start, end: range.end,
+        ...parallel, pageLimit, onProgress,
+      })
+    : await walkHistory({
+        stellar, store, tokens, treasuryAddress,
+        start: range.start, end: range.end,
+        stateKey: "backfill", pageLimit, onProgress, validator,
+      });
 
   if (walk.complete) {
     await finishHistoryRun(store, range.end);

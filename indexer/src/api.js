@@ -1,5 +1,8 @@
 import { createServer } from "node:http";
+import { computeAnomalies } from "./anomalies.js";
+import { resolveAnomalyConfig, resolveRunwayConfig } from "./config.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
+import { computeRunway } from "./runway.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
 import { defaultValidator, QUARANTINE_REASONS } from "./event-validation.js";
 import { createSubscriptionManager } from "./subscriptions.js";
@@ -7,7 +10,7 @@ import { apiKeyOpsRouteLabel, createApiKeyOps, extractApiKey } from "./api-keys.
 import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
 
 const ROUTES = new Set([
-  "/health", "/healthz", "/readyz", "/status", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/health", "/healthz", "/readyz", "/status", "/lag", "/runway", "/anomalies", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
   "/schemas", "/quarantine",
 ]);
@@ -65,6 +68,22 @@ function parsePage(searchParams) {
   return { limit, offset };
 }
 
+/** The monitor's evaluation as served by `/lag` and embedded in `/status`. */
+function lagSummary(lag) {
+  return {
+    level: lag.level,
+    latestLedger: lag.latestLedger,
+    indexedLedger: lag.indexedLedger,
+    tipLagLedgers: lag.tipLagLedgers,
+    tipLagSeconds: lag.tipLagSeconds,
+    finalityDepth: lag.finalityDepth,
+    finalityLag: lag.finalityLag,
+    checkpointAgeSeconds: lag.checkpointAgeSeconds,
+    checks: lag.checks,
+    observedAt: lag.observedAt,
+  };
+}
+
 /**
  * Structured status for the public status page.
  *
@@ -73,8 +92,15 @@ function parsePage(searchParams) {
  * A broken store is an outage, a store that answers while indexing lags is
  * degraded, everything else is operational.
  */
-async function buildStatus({ store, readiness, startLedger, finalityLag, election = null }) {
+async function buildStatus({ store, readiness, startLedger, finalityLag, election = null, lagMonitor = null }) {
   const { checks } = await readiness.check();
+  // Lag is reported once the monitor has seen a batch; a critical level degrades the service.
+  const lag = lagMonitor?.current() ?? null;
+  if (lag) {
+    checks.lag = lag.level === "critical"
+      ? { ok: false, level: lag.level, detail: "indexer is behind the chain tip beyond the critical threshold" }
+      : { ok: true, level: lag.level };
+  }
   const status = !checks.store?.ok
     ? "outage"
     : Object.values(checks).every((check) => check.ok)
@@ -100,6 +126,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
     latestLedger,
     finalityLag,
     ...(election ? { leader: election.status() } : {}),
+    ...(lag ? { lag: lagSummary(lag) } : {}),
   };
 }
 
@@ -120,7 +147,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false, lagMonitor = null, runwayConfig = resolveRunwayConfig({}), anomalyConfig = resolveAnomalyConfig({}) }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
   const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
 
@@ -265,8 +292,16 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       }
 
       case "/status": {
-        const status = await buildStatus({ store, readiness, startLedger, finalityLag, election });
+        const status = await buildStatus({ store, readiness, startLedger, finalityLag, election, lagMonitor });
         return sendJson(response, status.status === "outage" ? 503 : 200, status);
+      }
+
+      case "/lag": {
+        if (lagMonitor && !lagMonitor.enabled) return sendJson(response, 200, { status: "disabled" });
+        const lag = lagMonitor?.current() ?? null;
+        // 200 even when behind: the level is the answer. 503 only before the first observation.
+        if (!lag) return sendJson(response, 503, { status: "unknown", detail: "no indexing batch observed yet" });
+        return sendJson(response, 200, { status: lag.level, ...lagSummary(lag) });
       }
 
       case "/metrics":
@@ -292,6 +327,18 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
           ...parsePage(url.searchParams),
         });
         return sendJson(response, 200, { entries });
+      }
+
+      case "/runway": {
+        const token = (url.searchParams.get("token") ?? "USDC").toUpperCase();
+        if (!tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
+        return sendJson(response, 200, await computeRunway({ store, token, config: runwayConfig }));
+      }
+
+      case "/anomalies": {
+        const token = (url.searchParams.get("token") ?? "USDC").toUpperCase();
+        if (!tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
+        return sendJson(response, 200, await computeAnomalies({ store, token, config: anomalyConfig }));
       }
 
       case "/events": {

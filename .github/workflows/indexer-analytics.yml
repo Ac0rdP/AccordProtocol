@@ -17,6 +17,7 @@ on:
       - 'docs/OPERATIONS.md'
       - 'docs/ANALYTICS_API.md'
       - 'docs/analytics-api.openapi.json'
+      - 'docs/analytics-api-load-testing.md'
       - 'docs/RUNBOOK.md'
       - 'frontend/src/lib/analytics*'
       - 'frontend/src/lib/__tests__/analytics*'
@@ -53,7 +54,7 @@ jobs:
 
       - name: Type-check frontend and analytics modules
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npx tsc -b
 
       - name: Run indexer & analytics test suites
         run: npm --prefix frontend run test:analytics
@@ -64,6 +65,28 @@ jobs:
 
       - name: Run the status page tests
         run: node --test scripts/status-page.test.mjs
+
+      - name: Run analytics API 10k RPS load test suite
+        run: node --test scripts/analytics-load-test.test.mjs
+
+      - name: Enforce analytics API 10k RPS throughput, latency & error budgets
+        run: node scripts/analytics-load-test.mjs --ci-gate --report-dir target/analytics-load-test
+
+      - name: Append analytics API load test report to job summary
+        if: always()
+        run: |
+          if [ -f target/analytics-load-test/report.md ]; then
+            cat target/analytics-load-test/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload analytics API load test artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: analytics-api-load-report
+          path: target/analytics-load-test
+          retention-days: 30
+          if-no-files-found: ignore
 
   indexer:
     name: Indexer Tests (SQLite + Postgres)

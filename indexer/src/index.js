@@ -8,6 +8,7 @@ import {
 import { createApi } from "./api.js";
 import { backfill, reindex, resolveFirstLedger } from "./commands.js";
 import { DEFAULT_FINALITY_LAG, resolveFinalityLag } from "./finality.js";
+import { createLagMonitor } from "./lag-monitor.js";
 import { createReadiness, DEFAULT_READY_MAX_STALENESS_MS } from "./health.js";
 import { indexEventBatch } from "./indexing.js";
 import {
@@ -31,6 +32,10 @@ import {
   resolveStreamExportersConfig,
   resolveWarehouseConfig,
   resolveWebhookDashboardConfig,
+  resolveBackfillConfig,
+  resolveAnomalyConfig,
+  resolveLagMonitorConfig,
+  resolveRunwayConfig,
 } from "./config.js";
 import { createApiKeyService } from "./api-keys.js";
 import { createEventValidator, QUARANTINE_REASONS, reprocessQuarantine } from "./event-validation.js";
@@ -260,6 +265,7 @@ async function runHistoryCommand({ command, args, store, stellar }) {
     // When no --from is given, the first ledger the RPC retains is the
     // practical genesis; a configured INDEXER_START_LEDGER takes precedence.
     fallbackStart: startLedgerFromEnv({ optional: true }) ?? 1,
+    parallel: command === "backfill" ? resolveBackfillConfig() : null,
   });
   if (result.nothingToDo) {
     console.log(`[${command}] nothing to do`);
@@ -267,7 +273,10 @@ async function runHistoryCommand({ command, args, store, stellar }) {
   }
   if (!result.complete) {
     // maxPages guard tripped; the checkpoint on disk makes this resumable.
-    console.error(`[${command}] stopped early after ${result.pages} pages; re-run to resume`);
+    const failed = result.failedShards?.length
+      ? ` (${result.failedShards.length} shard(s) failed: ${result.failedShards.map((shard) => `#${shard.index} ${shard.start}-${shard.end}`).join(", ")})`
+      : "";
+    console.error(`[${command}] stopped early after ${result.pages} pages${failed}; re-run to resume`);
   }
   return result;
 }
@@ -332,6 +341,16 @@ async function serve({ store, stellar }) {
     maxStalenessMs: Number(
       process.env.READY_MAX_STALENESS_MS ?? Math.max(DEFAULT_READY_MAX_STALENESS_MS, indexIntervalMs * 6)
     ),
+  });
+  const lagMonitor = createLagMonitor({
+    store,
+    metrics,
+    config: resolveLagMonitorConfig(process.env, finalityLag),
+    finalityLag,
+    onAlert: ({ check, level, previous, value, threshold }) => {
+      const log = level === "ok" ? console.log : console.warn;
+      log(`[lag] ${check} ${previous} -> ${level} (value ${value}, threshold ${threshold})`);
+    },
   });
   const subscriptions = loadSubscriptions();
   const webhooks = createWebhookDispatcher({
@@ -439,6 +458,8 @@ async function serve({ store, stellar }) {
   }
 
   async function indexAvailableEvents() {
+    // Keeps checkpoint age growing even while a batch is failing or hung.
+    await lagMonitor.refresh();
     if (indexing || !election.isLeader()) return;
     indexing = true;
     const startedAt = performance.now();
@@ -458,6 +479,7 @@ async function serve({ store, stellar }) {
       const indexedLedger = Number((await store.getState("next_ledger")) ?? startLedger) - 1;
       recordBatchSuccess(metrics, result, indexedLedger);
       await refreshQuarantineBacklog();
+      await lagMonitor.observe({ latestLedger: result.latestLedger, indexedLedger });
       // A batch that finished after the lease was lost is still safe (writes are
       // idempotent), but it must not make a standby look like it is ingesting.
       if (election.isLeader()) readiness.markSuccess();
@@ -549,6 +571,9 @@ async function serve({ store, stellar }) {
     validator,
     apiKeys,
     apiKeysEnabled: apiKeyConfig.enabled,
+    lagMonitor,
+    runwayConfig: resolveRunwayConfig(),
+    anomalyConfig: resolveAnomalyConfig(),
   });
 
   const host = process.env.HOST ?? "127.0.0.1";

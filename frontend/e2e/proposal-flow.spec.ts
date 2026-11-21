@@ -169,6 +169,23 @@ test("create then approve then execute a proposal", async ({ page }) => {
       else if (fn === "get_proposals_paged") retval = proposalsXdr(state.status, state.approvals);
       else if (fn === "has_approved") retval = hasApprovedXdr(state.hasApproved);
       else if (fn === "get_roles") retval = rolesXdr();
+      else if (fn === "get_owner_weights") {
+        retval = xdr.ScVal.scvVec([
+          nativeToScVal({ owner: G, weight: 1n }),
+        ]).toXDR("base64");
+      } else if (fn === "get_total_weight" || fn === "get_required_quorum_weight") {
+        retval = THRESH_B64;
+      } else if (fn === "get_weight_cap_pct") {
+        retval = nativeToScVal(100, { type: "u32" }).toXDR("base64");
+      } else if (fn === "get_active_delegations" || fn === "get_recurring_payments") {
+        retval = xdr.ScVal.scvVec([]).toXDR("base64");
+      } else if (fn === "is_frozen") {
+        retval = xdr.ScVal.scvBool(false).toXDR("base64");
+      } else if (fn === "get_spending_limit") {
+        retval = nativeToScVal(-1n, { type: "i64" }).toXDR("base64");
+      } else if (fn === "get_role_version") {
+        retval = nativeToScVal(1, { type: "u32" }).toXDR("base64");
+      }
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify(simResult(id, retval)),

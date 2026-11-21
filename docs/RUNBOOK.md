@@ -108,6 +108,30 @@ Alert `AccordIngestionLagHigh`: more than 100 final ledgers behind. The floor is
 2. Otherwise the indexer is slow: check `accord_indexer_batch_duration_seconds` and RPC latency. Lowering `INDEX_INTERVAL_MS` helps only if batches finish well inside the interval; each batch already pages 1000 events at a time.
 3. After a long outage, let it catch up, or run a [backfill](#backfill-a-ledger-range) from the checkpoint.
 
+### chain-tip-lag
+
+Alerts `AccordChainTipLagWarn` / `AccordChainTipLagCritical`: the indexer is more than `LAG_WARN_LEDGERS` / `LAG_CRITICAL_LEDGERS` ledgers behind the chain tip, *beyond* the `LEDGER_FINALITY_LAG` floor.
+
+1. `curl localhost:8787/lag` — compare `tipLagLedgers`, `tipLagSeconds` and `checkpointAgeSeconds`.
+2. A growing `checkpointAgeSeconds` means indexing is stuck: follow [indexing-stalled](#indexing-stalled).
+3. A steady lag with a fresh checkpoint means the indexer is slow rather than stuck: follow [ingestion-lag-high](#ingestion-lag-high).
+4. If the lag is expected (for example right after a long outage), run a [backfill](#backfill-a-ledger-range) with `BACKFILL_WORKERS` above 1 to catch up faster.
+
+### finality-depth-low
+
+Alert `AccordFinalityDepthLow`: the newest indexed ledger has fewer confirmations than `FINALITY_MIN_DEPTH` (default `LEDGER_FINALITY_LAG`), so non-final data may have been indexed.
+
+1. `curl localhost:8787/lag` — check `finalityDepth` against `finalityLag`.
+2. A negative depth means the checkpoint is ahead of the tip the RPC reports: the RPC node is stale or was reset. Check [reorg-detected](#reorg-detected) and pin to one node.
+3. If `LEDGER_FINALITY_LAG` was lowered recently, lower `FINALITY_MIN_DEPTH` to match, or [reindex](#reindex-rebuild-from-chain) once the lag is back.
+
+### checkpoint-age-high
+
+Alert `AccordCheckpointAgeHigh`: the checkpoint has not advanced for `CHECKPOINT_AGE_WARN_SECONDS` (critical at `CHECKPOINT_AGE_CRITICAL_SECONDS`).
+
+1. If the chain itself has stopped closing ledgers (check `accord_indexer_chain_latest_ledger`), this is expected: nothing to index.
+2. Otherwise follow [indexing-stalled](#indexing-stalled); the age keeps growing while batches fail, so it clears on its own once a batch succeeds.
+
 ### indexer-errors
 
 Alert `AccordIndexerErrors`: more than 5 errors in 10 minutes. The `stage` label says where:
@@ -188,6 +212,25 @@ Keep this table in step with the code: `indexer/test/ops-assets.test.js` fails i
 | `SOROBAN_RPC_URL` | testnet RPC | See [indexing-stalled](#indexing-stalled). |
 | `NETWORK_PASSPHRASE` | testnet | Network used to build simulations. |
 | `INDEXER_START_LEDGER` | none | First ledger for live indexing; fallback start for backfill/reindex. |
+| `BACKFILL_WORKERS` | `1` | Shards `backfill` walks concurrently; above 1 enables parallel, per-shard resumable backfill. |
+| `BACKFILL_SHARD_SIZE` | `50000` | Ledgers per backfill shard. |
+| `BACKFILL_SHARD_MAX_RETRIES` | `3` | In-run retries per failed shard before it is left `failed`; re-run `backfill` to resume. |
+| `BACKFILL_SHARD_RETRY_DELAY_MS` | `1000` | Base shard retry delay (doubles each retry, capped at 60000). |
+| `LAG_MONITOR_ENABLED` | `true` | Turns the chain-tip lag monitor off when `false`; see [chain-tip-lag](#chain-tip-lag). |
+| `LEDGER_CLOSE_SECONDS` | `5` | Seconds per ledger used to estimate lag in seconds. |
+| `LAG_WARN_LEDGERS` | `20` | Ledgers behind the tip, above the finality floor, that raise a `warn`. |
+| `LAG_CRITICAL_LEDGERS` | `100` | Ledgers behind the tip, above the finality floor, that raise `critical`. |
+| `CHECKPOINT_AGE_WARN_SECONDS` | `120` | Seconds without checkpoint progress that raise a `warn`; see [checkpoint-age-high](#checkpoint-age-high). |
+| `CHECKPOINT_AGE_CRITICAL_SECONDS` | `600` | Seconds without checkpoint progress that raise `critical`. |
+| `FINALITY_MIN_DEPTH` | `LEDGER_FINALITY_LAG` | Minimum confirmations on the newest indexed ledger; see [finality-depth-low](#finality-depth-low). |
+| `RUNWAY_LOOKBACK_DAYS` | `90` | History window for `GET /runway`. |
+| `RUNWAY_RECURRING_OUTFLOW_PER_DAY` | `0` | Assumed recurring outflow (base units/day) added to the runway forecast. |
+| `RUNWAY_RECURRING_INFLOW_PER_DAY` | `0` | Assumed recurring inflow (base units/day) subtracted from the runway forecast. |
+| `RUNWAY_HORIZON_DAYS` | `3650` | Longest runway `GET /runway` reports. |
+| `ANOMALY_LOOKBACK_DAYS` | `30` | Baseline window for `GET /anomalies`. |
+| `ANOMALY_REPORT_DAYS` | `7` | How far back `GET /anomalies` scores outflows. |
+| `ANOMALY_MIN_SAMPLES` | `10` | Earlier outflows required before one can be flagged. |
+| `ANOMALY_THRESHOLD` | `6` | Robust z-score at or above which an outflow is flagged. |
 | `LEDGER_FINALITY_LAG` | see `--help` | Ledgers held back before indexing; the lag floor ([reorg-detected](#reorg-detected)). |
 | `INDEX_INTERVAL_MS` | `5000` | Poll interval; see [ingestion-lag-high](#ingestion-lag-high). |
 | `RECONCILE_INTERVAL_MS` | `60000` | Drift check cadence; see [drift recovery](#recover-from-balance-drift). |

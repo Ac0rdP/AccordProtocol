@@ -31,6 +31,130 @@ fn non_snapshot_env() -> Env {
 }
 
 #[test]
+fn abstention_counts_participation_but_never_approval_weight() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "abstention"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert!(client.has_abstained(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.abstention_count, 1);
+    assert_eq!(progress.abstention_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+
+    let abstainers = client.get_abstainers(&id);
+    assert_eq!(abstainers.len(), 1);
+    assert_eq!(abstainers.get(0), Some(owner_a.clone()));
+    assert_eq!(client.get_approvers(&id).len(), 0);
+}
+
+#[test]
+fn abstention_and_approval_are_mutually_exclusive_and_typed() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "exclusive vote"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+
+    client.revoke_abstention(&owner_a, &id);
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_abstention(&owner_a, &id),
+        Err(Ok(ContractError::NotAbstained))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+#[test]
+fn soft_approval_is_support_only_and_mutually_exclusive() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "soft support"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.soft_approve(&owner_a, &id);
+    assert!(client.has_soft_approved(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.get_proposal(&id).status,
+        ProposalStatus::Pending
+    );
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.soft_approval_count, 1);
+    assert_eq!(progress.soft_approval_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+    assert_eq!(client.get_approvers(&id).len(), 0);
+    assert_eq!(client.get_soft_approvers(&id).len(), 1);
+
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+
+    client.revoke_soft_approval(&owner_a, &id);
+    assert!(!client.has_soft_approved(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_soft_approval(&owner_a, &id),
+        Err(Ok(ContractError::NotSoftApproved))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+
+    client.revoke(&owner_a, &id);
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+}
+
+#[test]
 fn recovery_blocks_value_but_allows_governance() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let guardian = Address::generate(&env);
@@ -2361,7 +2485,7 @@ fn expired_status_takes_priority_over_ready() {
 #[test]
 fn get_version_returns_current_version() {
     let (_, client, _, _, _, _, _) = setup(2);
-    assert_eq!(client.get_version(), 1);
+    assert_eq!(client.get_version(), 2);
 }
 
 // ─── Storage-schema version (#737) ────────────────────────────────────────────
@@ -11244,4 +11368,694 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
         env.as_contract(&client.address, || read_active_count(&env)),
         1
     );
+}
+
+// ─── Tests for Proposal Dependency Graph (#940) ─────────────────────────────
+
+#[test]
+fn test_proposal_dependencies_lifecycle_and_ordered_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Proposal 1: Transfer 10 stroops
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "First in batch"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // Proposal 2: Depends on Proposal 1
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Second in batch - depends on p1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Verify dependencies view
+    let retrieved_deps = client.get_proposal_dependencies(&p2);
+    assert_eq!(retrieved_deps.len(), 1);
+    assert_eq!(retrieved_deps.get(0).unwrap(), p1);
+
+    // check_proposal_dependencies returns false while p1 is pending
+    assert_eq!(client.check_proposal_dependencies(&p2), false);
+
+    // Approve Proposal 2 to reach Ready status
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Ready);
+
+    // Attempting to execute p2 before p1 executes must fail with DependencyNotExecuted
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // Now approve and execute p1
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Ready);
+    client.execute(&owner_a, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Executed);
+
+    // check_proposal_dependencies now returns true
+    assert_eq!(client.check_proposal_dependencies(&p2), true);
+
+    // Now execute p2 - must succeed!
+    client.execute(&owner_a, &p2);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn test_proposal_dependencies_cancelled_parent_blocks_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Parent proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Child proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Cancel parent proposal
+    client.cancel_proposal(&owner_a, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Cancelled);
+
+    // check_proposal_dependencies returns Err(DependencyCancelled)
+    let check_res = client.try_check_proposal_dependencies(&p2);
+    assert_eq!(check_res.unwrap_err().unwrap(), ContractError::DependencyCancelled);
+
+    // Approve child proposal to Ready
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+
+    // Execute child proposal fails with DependencyCancelled
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyCancelled);
+}
+
+#[test]
+fn test_proposal_dependencies_expired_parent_blocks_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Parent proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Child proposal"),
+        &(DEADLINE + 86_400),
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Approve child proposal so it is Ready
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+
+    // Advance ledger time past p1 deadline (but before p2 deadline)
+    set_timestamp(&env, DEADLINE + 10);
+
+    // check_proposal_dependencies detects expired parent
+    let check_res = client.try_check_proposal_dependencies(&p2);
+    assert_eq!(check_res.unwrap_err().unwrap(), ContractError::DependencyExpired);
+
+    // Execute fails with DependencyExpired
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyExpired);
+}
+
+#[test]
+fn test_proposal_dependencies_validation_and_set_entrypoint() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P2"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // Set dependencies on p2 to depend on p1
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    client.set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(client.get_proposal_dependencies(&p2), deps);
+
+    // Non-owner / unauthorized caller rejected
+    let res = client.try_set_proposal_dependencies(&non_owner, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::MissingRole);
+
+    // Other owner (not original proposer) rejected
+    let res = client.try_set_proposal_dependencies(&owner_b, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::Unauthorized);
+
+    // Cannot modify dependencies once proposal is approved
+    client.approve(&owner_a, &p2);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyApproved);
+
+    // Edge cases: self dependency (p3 depending on p3)
+    let p3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P3"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let mut self_deps = Vec::new(&env);
+    self_deps.push_back(p3);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &self_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidDependency);
+
+    // Forward dependency (p3 depending on future id 999)
+    let mut fwd_deps = Vec::new(&env);
+    fwd_deps.push_back(999);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &fwd_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidDependency);
+
+    // Duplicate dependencies in list
+    let mut dup_deps = Vec::new(&env);
+    dup_deps.push_back(p1);
+    dup_deps.push_back(p1);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &dup_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DuplicateDependency);
+
+    // More than 10 dependencies
+    let mut many_deps = Vec::new(&env);
+    for _ in 0..11 {
+        many_deps.push_back(p1);
+    }
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &many_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TooManyDependencies);
+}
+
+#[test]
+fn test_proposal_dependencies_chain_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Chain: p1 -> p2 -> p3
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps2 = Vec::new(&env);
+    deps2.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 2"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps2,
+    );
+
+    let mut deps3 = Vec::new(&env);
+    deps3.push_back(p2);
+    let p3 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 3"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps3,
+    );
+
+    // Approve all
+    for id in [p1, p2, p3] {
+        client.approve(&owner_a, &id);
+        client.approve(&owner_b, &id);
+    }
+
+    // Try executing p3 first -> fails
+    assert_eq!(client.try_execute(&owner_a, &p3).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+    // Try executing p2 first -> fails
+    assert_eq!(client.try_execute(&owner_a, &p2).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // Execute in proper sequential order: p1 -> p2 -> p3
+    client.execute(&owner_a, &p1);
+    client.execute(&owner_a, &p2);
+    client.execute(&owner_a, &p3);
+
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Executed);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Executed);
+    assert_eq!(client.get_proposal(&p3).status, ProposalStatus::Executed);
+}
+
+// ─── Tests for Per-Asset Treasury Accounting and Spend Limits (#939) ─────────
+
+#[test]
+fn test_treasury_spending_limit_governance_and_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // No limit initially
+    assert_eq!(client.get_treasury_spending_limit(&token_client.address), None);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), None);
+
+    // Propose setting treasury limit of 100 with window of 86_400 (1 day)
+    let prop_id = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client.address,
+        &100_i128,
+        &86_400_u64,
+        &str(&env, "Set treasury spend limit"),
+        &DEADLINE,
+    );
+
+    // Approve and execute governance proposal
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_a, &prop_id);
+
+    // Verify limit and window are set
+    assert_eq!(client.get_treasury_spending_limit(&token_client.address), Some(100));
+    assert_eq!(client.get_treasury_spending_window(&token_client.address), 86_400);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(100));
+
+    // First spend: transfer 60 stroops (within limit 100)
+    let spend_1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 60, &token_client.address),
+        &str(&env, "Spend 60"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_1);
+    client.approve(&owner_b, &spend_1);
+    client.execute(&owner_a, &spend_1);
+
+    // Verify accounting updated
+    assert_eq!(client.get_treasury_spent(&token_client.address), 60);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(40));
+
+    let acct = client.get_asset_treasury_accounting(&token_client.address);
+    assert_eq!(acct.window_spent, 60);
+    assert_eq!(acct.total_spent, 60);
+    assert_eq!(acct.spend_limit, Some(100));
+    assert_eq!(acct.available_limit, Some(40));
+
+    // Second spend: attempt transfer 50 stroops (60 + 50 = 110 > 100) -> must fail!
+    let spend_2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 50, &token_client.address),
+        &str(&env, "Spend 50 exceeding limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_2);
+    client.approve(&owner_b, &spend_2);
+    let res = client.try_execute(&owner_a, &spend_2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+
+    // Spend 40 stroops (60 + 40 = 100 exact limit) -> succeeds!
+    let spend_3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 40, &token_client.address),
+        &str(&env, "Spend 40 exact limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_3);
+    client.approve(&owner_b, &spend_3);
+    client.execute(&owner_a, &spend_3);
+
+    assert_eq!(client.get_treasury_spent(&token_client.address), 100);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(0));
+
+    // Window rollover: after window elapsed, spend resets to 0
+    set_timestamp(&env, NOW + 86_401);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(100));
+
+    // After rollover, spend 70 stroops succeeds!
+    let spend_4 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 70, &token_client.address),
+        &str(&env, "Spend 70 after rollover"),
+        &(DEADLINE + 86_401),
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_4);
+    client.approve(&owner_b, &spend_4);
+    client.execute(&owner_a, &spend_4);
+
+    assert_eq!(client.get_treasury_spent(&token_client.address), 70);
+    let acct_after = client.get_asset_treasury_accounting(&token_client.address);
+    assert_eq!(acct_after.window_spent, 70);
+    assert_eq!(acct_after.total_spent, 170); // 60 + 40 + 70 lifetime total
+}
+
+#[test]
+fn test_treasury_per_asset_spending_limits_are_independent() {
+    let (env, client, owner_a, owner_b, _, _, token_client_a) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Setup second token (Token B)
+    let token_admin = Address::generate(&env);
+    let token_id_b = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client_b = token::Client::new(&env, &token_id_b.address());
+    let token_sac_b = token::StellarAssetClient::new(&env, &token_id_b.address());
+    token_sac_b.mint(&client.address, &100_000_i128);
+
+    // Set Token A limit = 100
+    let p_a = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client_a.address,
+        &100_i128,
+        &86_400_u64,
+        &str(&env, "Limit A"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &p_a);
+    client.approve(&owner_b, &p_a);
+    client.execute(&owner_a, &p_a);
+
+    // Set Token B limit = 500
+    let p_b = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client_b.address,
+        &500_i128,
+        &86_400_u64,
+        &str(&env, "Limit B"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &p_b);
+    client.approve(&owner_b, &p_b);
+    client.execute(&owner_a, &p_b);
+
+    // Spend 90 of Token A
+    let spend_a = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 90, &token_client_a.address),
+        &str(&env, "Spend Token A"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_a);
+    client.approve(&owner_b, &spend_a);
+    client.execute(&owner_a, &spend_a);
+
+    // Token A has 10 remaining; Token B STILL HAS FULL 500 REMAINING!
+    assert_eq!(client.get_treasury_available_limit(&token_client_a.address), Some(10));
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(500));
+
+    // Spend 400 of Token B -> succeeds, and Token A is completely unaffected!
+    let spend_b = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 400, &token_client_b.address),
+        &str(&env, "Spend Token B"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_b);
+    client.approve(&owner_b, &spend_b);
+    client.execute(&owner_a, &spend_b);
+
+    assert_eq!(client.get_treasury_available_limit(&token_client_a.address), Some(10));
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(100));
+
+    // Token A cannot spend 20 (limit exceeded)
+    let spend_a2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client_a.address),
+        &str(&env, "Spend Token A over limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_a2);
+    client.approve(&owner_b, &spend_a2);
+    assert_eq!(client.try_execute(&owner_a, &spend_a2).unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+
+    // Token B CAN spend 50 (within limit)
+    let spend_b2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 50, &token_client_b.address),
+        &str(&env, "Spend Token B within limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_b2);
+    client.approve(&owner_b, &spend_b2);
+    client.execute(&owner_a, &spend_b2);
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(50));
+}
+
+#[test]
+fn test_treasury_zero_limit_blocks_outflows() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Set limit = 0 (blocks all token outflows from treasury)
+    let p_zero = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client.address,
+        &0_i128,
+        &86_400_u64,
+        &str(&env, "Zero limit blocks token"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &p_zero);
+    client.approve(&owner_b, &p_zero);
+    client.execute(&owner_a, &p_zero);
+
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(0));
+
+    let p_transfer = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1, &token_client.address),
+        &str(&env, "Transfer 1 stroop"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p_transfer);
+    client.approve(&owner_b, &p_transfer);
+    assert_eq!(client.try_execute(&owner_a, &p_transfer).unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+}
+
+#[test]
+fn test_storage_version_2_and_migrate_to_v2() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+
+    // Fresh deployment initializes at version 2
+    assert_eq!(client.get_storage_version(), 2);
+
+    // migrate_to_v2 fails if already at version 2
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    let res = client.try_migrate_to_v2(&approvers);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyMigrated);
+
+    // Simulate pre-v2 contract at storage version 1
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &1_u32);
+    });
+    assert_eq!(client.get_storage_version(), 1);
+
+    // migrate_to_v2 without quorum fails
+    let mut solo_approver = Vec::new(&env);
+    solo_approver.push_back(owner_a.clone());
+    let res = client.try_migrate_to_v2(&solo_approver);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ThresholdNotMet);
+
+    // migrate_to_v2 with quorum succeeds and stamps version 2
+    client.migrate_to_v2(&approvers);
+    assert_eq!(client.get_storage_version(), 2);
+}
+
+// ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
+
+#[test]
+fn test_adversarial_multi_parent_dependency_resilience() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Create 3 parent proposals
+    let p1 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    let p2 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P2"), &DEADLINE, &ProposalCategory::Transfer);
+    let p3 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P3"), &DEADLINE, &ProposalCategory::Transfer);
+
+    // Child depends on all three
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    deps.push_back(p2);
+    deps.push_back(p3);
+    let child = client.create_proposal_with_deps(&owner_a, &t(&env, &recipient, 50, &token_client.address), &str(&env, "Child"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+
+    // Approve child so it is Ready
+    client.approve(&owner_a, &child);
+    client.approve(&owner_b, &child);
+
+    // Execute p1 and p3 only (p2 remains unexecuted)
+    client.approve(&owner_a, &p1); client.approve(&owner_b, &p1); client.execute(&owner_a, &p1);
+    client.approve(&owner_a, &p3); client.approve(&owner_b, &p3); client.execute(&owner_a, &p3);
+
+    // Executing child fails because p2 has not executed
+    assert_eq!(client.try_execute(&owner_a, &child).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // If p2 is cancelled, child can never execute
+    client.cancel_proposal(&owner_a, &p2);
+    assert_eq!(client.try_execute(&owner_a, &child).unwrap_err().unwrap(), ContractError::DependencyCancelled);
+}
+
+#[test]
+fn test_adversarial_batch_transfer_atomic_rejection_on_treasury_limit() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipient3 = Address::generate(&env);
+
+    // Set treasury limit of 100
+    let p_lim = client.create_treasury_limit_proposal(&owner_a, &token_client.address, &100_i128, &86_400_u64, &str(&env, "Limit 100"), &DEADLINE);
+    client.approve(&owner_a, &p_lim); client.approve(&owner_b, &p_lim); client.execute(&owner_a, &p_lim);
+
+    // Attempt multi-transfer in a single proposal: 40 + 40 + 30 = 110 > 100
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer { to: recipient1.clone(), token: token_client.address.clone(), amount: 40 });
+    transfers.push_back(Transfer { to: recipient2.clone(), token: token_client.address.clone(), amount: 40 });
+    transfers.push_back(Transfer { to: recipient3.clone(), token: token_client.address.clone(), amount: 30 });
+
+    let p_batch = client.create_proposal(&owner_a, &transfers, &str(&env, "Batch transfer 110"), &DEADLINE, &ProposalCategory::Transfer);
+    client.approve(&owner_a, &p_batch);
+    client.approve(&owner_b, &p_batch);
+
+    // Execute must fail with TreasurySpendingLimitExceeded
+    let res = client.try_execute(&owner_a, &p_batch);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+
+    // Atomicity check: NO transfer occurred, recipients received 0, treasury spent is 0
+    assert_eq!(token_client.balance(&recipient1), 0);
+    assert_eq!(token_client.balance(&recipient2), 0);
+    assert_eq!(token_client.balance(&recipient3), 0);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+}
+
+#[test]
+fn test_adversarial_frozen_contract_blocks_dependency_and_treasury_operations() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.set_guardian(&approvers, &guardian);
+
+    let p1 = client.create_proposal(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    let p2 = client.create_proposal(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "P2"), &DEADLINE, &ProposalCategory::Transfer);
+
+    // Freeze contract
+    client.freeze(&guardian);
+
+    // create_proposal_with_deps blocked
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let res = client.try_create_proposal_with_deps(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "Blocked"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+
+    // set_proposal_dependencies blocked
+    let res = client.try_set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+
+    // create_treasury_limit_proposal blocked
+    let res = client.try_create_treasury_limit_proposal(&owner_a, &token_client.address, &100_i128, &86_400_u64, &str(&env, "Blocked limit"), &DEADLINE);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+}
+
+#[test]
+fn test_property_dag_ordered_execution_simulation() {
+    let env = non_snapshot_env();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client = token::Client::new(&env, &token_id.address());
+    let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+    token_sac.mint(&contract_id, &1_000_000_i128);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner_a.clone());
+    owners.push_back(owner_b.clone());
+    let mut weights = Vec::new(&env);
+    weights.push_back(1);
+    weights.push_back(1);
+    client.initialize(&owners, &weights, &2, &0);
+
+    let recipient = Address::generate(&env);
+    // Build a 5-node linear DAG: 1 -> 2 -> 3 -> 4 -> 5
+    let mut proposals = std::vec::Vec::new();
+    let p1 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    proposals.push(p1);
+
+    for i in 1..5 {
+        let mut deps = Vec::new(&env);
+        deps.push_back(proposals[i - 1]);
+        let pid = client.create_proposal_with_deps(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+        proposals.push(pid);
+    }
+
+    // Approve all
+    for pid in &proposals {
+        client.approve(&owner_a, pid);
+        client.approve(&owner_b, pid);
+    }
+
+    // Assert that each proposal cannot execute until its predecessor executes
+    for i in 0..5 {
+        // Any j > i cannot execute yet
+        for j in (i + 1)..5 {
+            assert_eq!(client.check_proposal_dependencies(&proposals[j]), false);
+            assert_eq!(client.try_execute(&owner_a, &proposals[j]).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+        }
+        // proposals[i] can execute
+        assert_eq!(client.check_proposal_dependencies(&proposals[i]), true);
+        client.execute(&owner_a, &proposals[i]);
+        assert_eq!(client.get_proposal(&proposals[i]).status, ProposalStatus::Executed);
+    }
 }

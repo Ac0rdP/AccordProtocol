@@ -14,6 +14,10 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `rpay`         | `RecurringPaymentDisbursedEvent` | `{ schedule_id: u64, recipient: Address, token: Address, amount: i128, total_disbursed: i128, periods_disbursed: u32, version: u32 }` |
 | `approved`     | `ProposalApprovedEvent`          | `{ id: u64, approver: Address, approvals: u32, threshold: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
 | `revoked`      | `ProposalRevokedEvent`           | `{ id: u64, approver: Address, approvals: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
+| `abstain`      | `ProposalAbstainedEvent`         | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
+| `unabst`       | `ProposalAbstentionRevokedEvent` | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
+| `softapr`      | `ProposalSoftApprovedEvent`       | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
+| `unsftap`      | `ProposalSoftApprovalRevokedEvent` | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
 | `executed`     | `ProposalExecutedEvent`          | `{ id: u64, executor: Address, version: u32 }` |
 | `guard_set`    | `GuardianSetEvent`               | `{ guardian: Address, version: u32 }` |
 | `frozen`       | `FrozenEvent`                    | `{ guardian: Address, version: u32 }` |
@@ -31,6 +35,9 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `c_wgt`        | `OwnerWeightChangedEvent`        | `{ owner: Address, old_weight: u32, new_weight: u32, new_total_weight: u32, version: u32 }` |
 | `role_granted` | `RoleGrantedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
 | `role_revoked` | `RoleRevokedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
+| `p_deps`        | `ProposalDependenciesSetEvent`   | `{ id: u64, dependencies: Vec<u64>, version: u32 }` |
+| `tr_lim`        | `TreasurySpendingLimitExecutedEvent` | `{ token: Address, previous_limit: Option<i128>, new_limit: i128, window_secs: u64, version: u32 }` |
+| `tr_spnt`       | `TreasurySpendTrackedEvent`      | `{ token: Address, amount: i128, total_spent_window: i128, total_spent_lifetime: i128, version: u32 }` |
 
 Every payload carries a trailing `version: u32` field holding the event-schema version (see [Event Versioning Policy](#event-versioning-policy)).
 
@@ -40,7 +47,7 @@ This catalog is loaded by the off-chain indexer to decode raw contract events de
 
 Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION`, a single public constant in `contracts/accord/src/lib.rs`. It is the only place the version is defined; bump it there and every event picks up the new value.
 
-**Current version: `2`.** Version `1` was the first versioned schema; version `2` removed `transfers` from `ProposalExecutedEvent` (a full 50-transfer batch duplicated in the event exceeded the network's 16 KiB contract-event limit). Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
+**Current version: `3`.** Version `1` was the first versioned schema; version `2` removed `transfers` from `ProposalExecutedEvent`; version `3` adds abstention participation events. Events emitted by deployments that predate the field have no `version`; consumers should treat a missing field as "unversioned" (the indexer stores it as `NULL`).
 
 ### When the version is bumped
 
@@ -50,6 +57,7 @@ Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION
 |---------|--------|
 | `1` | Initial versioned schema: every event struct gains `version`. |
 | `2` | `ProposalExecutedEvent` drops `transfers`; transfers remain in `ProposalCreatedEvent` and on-chain state. |
+| `3` | Adds `abstain`, `unabst`, `softapr`, and `unsftap` participation events. Abstentions and soft approvals never alter binding approval weight or quorum. |
 
 ### Stability guarantees for consumers
 

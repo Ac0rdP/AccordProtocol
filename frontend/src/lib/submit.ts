@@ -14,6 +14,7 @@ import {
   shortenAddr,
 } from "./soroban";
 import { signTx } from "./wallet";
+import { getActiveContractId } from "./activeContract";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
 const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
@@ -51,16 +52,17 @@ export function isSubmissionInFlight(
 async function submitTransaction(
   callerAddress: string,
   fn: string,
-  args: xdr.ScVal[]
+  args: xdr.ScVal[],
+  contractId: string = CONTRACT_ID,
 ): Promise<void> {
-  const key = getSubmissionKey(callerAddress, fn, args);
+  const key = `${getSubmissionKey(callerAddress, fn, args)}:${contractId}`;
   if (inFlightSubmissions.has(key)) {
     return inFlightSubmissions.get(key)!;
   }
 
   const execution = (async () => {
     const account = await server.getAccount(callerAddress);
-    const contract = new Contract(CONTRACT_ID);
+    const contract = new Contract(getActiveContractId());
 
     const tx = new TransactionBuilder(account, {
       fee: "100000",
@@ -175,9 +177,10 @@ export async function withSubmissionRetry<T>(
 async function buildAndSubmit(
   callerAddress: string,
   fn: string,
-  args: xdr.ScVal[]
+  args: xdr.ScVal[],
+  contractId: string = CONTRACT_ID,
 ): Promise<void> {
-  return withSubmissionRetry(() => submitTransaction(callerAddress, fn, args));
+  return withSubmissionRetry(() => submitTransaction(callerAddress, fn, args, contractId));
 }
 
 async function simulateOnly(
@@ -186,7 +189,7 @@ async function simulateOnly(
   args: xdr.ScVal[]
 ): Promise<number> {
   const account = await server.getAccount(callerAddress);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
 
   const tx = new TransactionBuilder(account, {
     fee: "100000",
@@ -213,7 +216,7 @@ async function simulateView(
   args: xdr.ScVal[] = []
 ): Promise<xdr.ScVal> {
   const account = await server.getAccount(SIM_SOURCE);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
   const tx = new TransactionBuilder(account, {
     fee: "100",
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -442,7 +445,7 @@ export async function getContractEvents(fromLedger: number): Promise<number> {
       filters: [
         {
           type: "contract",
-          contractIds: [CONTRACT_ID],
+          contractIds: [getActiveContractId()],
         },
       ],
       limit: 100,
@@ -474,32 +477,70 @@ export async function getApprovers(proposalId: number): Promise<string[]> {
 
 export async function approveProposal(
   callerAddress: string,
-  proposalId: number
+  proposalId: number,
+  contractId?: string,
 ): Promise<void> {
   await buildAndSubmit(callerAddress, "approve", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
 }
 
 export async function executeProposal(
   callerAddress: string,
-  proposalId: number
+  proposalId: number,
+  contractId?: string,
 ): Promise<void> {
   await buildAndSubmit(callerAddress, "execute", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
+}
+
+export async function simulateProposalExecution(
+  callerAddress: string,
+  proposalId: number,
+  contractId: string = CONTRACT_ID,
+): Promise<{ feeEstimate: number; authorizationEntryCount: number }> {
+  const account = await server.getAccount(callerAddress);
+  const contract = new Contract(contractId);
+  const tx = new TransactionBuilder(account, {
+    fee: "100000",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(
+      "execute",
+      nativeToScVal(callerAddress, { type: "address" }),
+      nativeToScVal(BigInt(proposalId), { type: "u64" }),
+    ))
+    .setTimeout(30)
+    .build();
+
+  const simulation = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(simulation)) {
+    const err = simulation as rpc.Api.SimulateTransactionErrorResponse;
+    throw new Error(`Execution dry-run failed: ${err.error ?? "simulation failed"}`);
+  }
+
+  const result = simulation as rpc.Api.SimulateTransactionSuccessResponse;
+  const authorizationEntryCount = Array.isArray(result.result?.auth)
+    ? result.result.auth.length
+    : 0;
+  return {
+    feeEstimate: Number(BigInt(result.minResourceFee) + 100000n) / 10_000_000,
+    authorizationEntryCount,
+  };
 }
 
 export async function revokeProposal(
   callerAddress: string,
-  proposalId: number
+  proposalId: number,
+  contractId?: string,
 ): Promise<void> {
   await buildAndSubmit(callerAddress, "revoke", [
     nativeToScVal(callerAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
 }
 
 export async function disburseRecurring(
@@ -528,6 +569,29 @@ export async function createProposal(
     deadlineTs,
     category,
   );
+}
+
+export async function createProposalWithAttachment(
+  callerAddress: string,
+  to: string,
+  tokenAddress: string,
+  amount: bigint,
+  description: string,
+  deadlineTs: bigint,
+  attachmentDigest: Uint8Array,
+  category: ProposalCategory = "Transfer",
+): Promise<void> {
+  if (attachmentDigest.length !== 32) {
+    throw new Error("Attachment digest must be exactly 32 bytes.");
+  }
+  await buildAndSubmit(callerAddress, "create_proposal_with_attachment", [
+    nativeToScVal(callerAddress, { type: "address" }),
+    xdr.ScVal.scvVec([transferScVal(to, tokenAddress, amount)]),
+    xdr.ScVal.scvString(description),
+    nativeToScVal(deadlineTs, { type: "u64" }),
+    proposalCategoryScVal(category),
+    nativeToScVal(attachmentDigest, { type: "bytes" }),
+  ]);
 }
 
 export async function createBatchProposal(
@@ -627,7 +691,7 @@ export async function buildAndAssembleTx(
   args: xdr.ScVal[]
 ): Promise<string> {
   const account = await server.getAccount(callerAddress);
-  const contract = new Contract(CONTRACT_ID);
+  const contract = new Contract(getActiveContractId());
 
   const tx = new TransactionBuilder(account, {
     fee: "100000",

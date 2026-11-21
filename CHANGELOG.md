@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- Safe Markdown proposal descriptions and previews, a reorderable batch-transfer builder, a multi-contract treasury and proposal-health dashboard, and owner abstention/soft-approval votes that count toward participation without adding approval weight (#968, #967, #964, #963).
 - Automated SDK semantic releases: `sdk-release.yml` derives the next version and changelog from Conventional Commits touching `packages/sdk`, publishes to npm with provenance attestations, tags `sdk-v<version>` and creates a GitHub Release; the planner is exported as `planRelease` (#1020).
 - Multi-language client generation from the contract ABI: `parseSorobanSpec` and `generateClient` emit typed Python and Go clients, with an `npm run codegen` CLI (#1017).
 - SDK per-entry-point bundle-size budgets and forbidden-import rules (`bundle-budgets.json`, `npm run size`), enforced in CI and before publishing; exported as `evaluateBudgets` (#1021).

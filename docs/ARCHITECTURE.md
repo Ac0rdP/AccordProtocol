@@ -42,6 +42,10 @@
 | `initialize(owners, threshold)`                                       | One-shot init — sets owners and M-of-N threshold | Deployment script only       |
 | `create_proposal(proposer, to, amount, token, description, deadline)` | Creates a transfer proposal                      | Proposal creation form       |
 | `approve(approver, proposal_id)`                                      | Owner casts an approval vote                     | Proposal card approve button |
+| `abstain(abstainer, proposal_id)`                                     | Owner records a non-approval participation vote  | Proposal card abstain button |
+| `revoke_abstention(abstainer, proposal_id)`                           | Owner removes a previously recorded abstention   | Proposal card revoke-abstain |
+| `soft_approve(supporter, proposal_id)`                                 | Owner records positive support with zero quorum weight | Proposal card soft-approve |
+| `revoke_soft_approval(supporter, proposal_id)`                         | Owner removes a previous soft approval           | Proposal card revoke-soft |
 | `revoke(approver, proposal_id)`                                       | Owner withdraws their approval                   | Proposal card revoke button  |
 | `execute(executor, proposal_id)`                                      | Executes a Ready proposal, transfers tokens      | Proposal card execute button |
 | `get_proposal(proposal_id)`                                           | Reads a single proposal                          | Proposal detail page         |
@@ -50,6 +54,12 @@
 | `get_threshold()`                                                     | Returns approval threshold                       | Dashboard header stat        |
 | `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
 | `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
+| `create_proposal_with_deps(proposer, ... deps)`                       | Creates proposal with parent dependencies        | Dependency graph composer    |
+| `set_proposal_dependencies(proposer, id, deps)`                        | Sets dependencies for a pending proposal         | Dependency graph editor      |
+| `get_proposal_dependencies(id)`                                       | Returns declared parent proposal IDs             | Dependency visualizer        |
+| `check_proposal_dependencies(id)`                                     | Validates if all dependencies have executed      | Execution gate check         |
+| `create_treasury_limit_proposal(proposer, token, limit, window, ...)`  | Creates per-asset treasury spend limit proposal  | Treasury policy settings     |
+| `get_asset_treasury_accounting(token)`                                | Returns per-asset treasury accounting record     | Treasury balance/limit panel |
 
 See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
 
@@ -83,6 +93,8 @@ Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 | `OWNERS`              | `Map<Address,u32>` | Owner address → voting weight map (max 20) | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("PROP", id)`        | `Proposal`         | Per-proposal state                         | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("APPR", id, owner)` | `u32`              | Per-owner approval weight per proposal     | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("ABST", id, owner)` | `u32`              | Per-owner abstention weight per proposal; participation-only and never approval weight | 518,400 / 17,280 | ~0.052 XLM |
+| `("SOFT", id, owner)` | `u32`              | Per-owner soft-approval participation weight; never approval/quorum weight | 518,400 / 17,280 | ~0.052 XLM |
 
 ### Proposal Struct Fields
 
@@ -100,6 +112,33 @@ ready_at         u64           (ledger time when quorum was first reached; 0 if 
 quorum_weight    u32           (threshold snapshotted at proposal creation)
 category         ProposalCategory
 ```
+
+### Abstention Participation
+
+An owner may hold at most one of two mutually exclusive proposal-voting records:
+approval or abstention. `abstain` uses the same owner and Approver-role
+authorization as `approve`, and is blocked in frozen state. An abstention stores
+the owner's effective voting weight under `("ABST", proposal_id, owner)`, but
+does not modify `Proposal.approvals` or `Proposal.approval_weight`; therefore
+it cannot make a proposal Ready or contribute to execution quorum.
+
+Participation weight is the sum of binding approval weight plus abstention
+weight plus soft-approval weight. Because each owner has only one vote record
+per proposal, these categories do not overlap. The read views expose
+abstention count/weight, soft-approval count/weight, and participation weight.
+Revoking a participation or soft vote removes only that record and leaves
+binding approval state unchanged.
+
+### Soft Approval
+
+`soft_approve` is a distinct, positive support vote for an owner with the
+Approver role. It stores the owner's effective weight under
+`("SOFT", proposal_id, owner)` for participation/support reporting, but it
+never changes `Proposal.approvals`, `Proposal.approval_weight`, `ready_at`,
+or proposal status. Soft approval is mutually exclusive with binding approval
+and abstention. Owners revoke it with `revoke_soft_approval` before changing
+to a binding approval or abstention. The same auth, owner/role, frozen-state,
+proposal-status, and duplicate-vote precedence is used for every vote path.
 
 ### Key Naming Conventions
 
@@ -126,6 +165,11 @@ Accord uses two patterns:
 | --------------------- | ------------------------------------------------------- |
 | `("PROP", id)`        | Proposal record keyed by proposal ID (u64)              |
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
+| `("PDEP", id)`        | Proposal dependency DAG parent IDs list (`Vec<u64>`)   |
+| `("TRLIM", token)`    | Per-asset treasury spending limit (`i128`)             |
+| `("TRWIND", token)`   | Per-asset treasury spending window seconds (`u64`)     |
+| `("TRSPENT", token)`  | Per-asset treasury spent tracker (`SpentTracker`)      |
+| `("TRTOT", token)`    | Per-asset treasury lifetime total spent (`i128`)       |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
 
@@ -138,13 +182,14 @@ The contract records an explicit **storage-schema version** in instance storage 
 | Version | Written by | Keys introduced in this version |
 | ------- | ---------- | ------------------------------- |
 | `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
-| `1` (current) | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+| `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
+| `2` (current) | `initialize`, `migrate_to_v2` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury spending limits and accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), and additive per-proposal/per-owner abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`). `migrate_to_abstention_storage` is kept as an equivalent entrypoint for deployments built from the abstention-only branch. |
 
 **Upgrade path between versions:**
 
 - **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
 - **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
-- **`1` → `2` (future):** the release that bumps the version must list the keys it adds in the table above and ship a migration that re-stamps `STOVER`. Until such a migration exists, do not assume a contract reporting an older version is compatible with a newer WASM.
+- **`1` → `2`:** deploy the updated WASM with `upgrade`, then invoke `migrate_to_v2` with co-owner approvers meeting quorum threshold. The migration verifies quorum, stamps `STOVER = 2`, and emits a `v2_migr` event. Existing approvals and proposals remain unchanged; abstention and soft-approval keys are created on demand. `migrate_to_abstention_storage` performs the same version stamp if a deployment used that entrypoint.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 

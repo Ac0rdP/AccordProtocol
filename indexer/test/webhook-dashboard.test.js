@@ -315,7 +315,7 @@ describeEachBackend("webhook dashboard API", () => {
       store,
       subscriptions: [SUBSCRIPTION],
       maxAttempts: 1,
-      now: () => Date.parse(LATER),
+      now: () => Date.now(),
       logger: { error() {} },
       fetchImpl: async (url, init) => {
         requests.push({ url, body: init.body, headers: init.headers });
