@@ -322,7 +322,7 @@ pub(crate) async fn create(
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> ApiResult<(StatusCode, Json<WebhookView>)> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
     unknown_parameters(&raw, WRITE_PARAMS, &mut details);
@@ -364,7 +364,7 @@ pub(crate) async fn remove(
     Path(id): Path<i64>,
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
 ) -> ApiResult<Json<DeleteWebhookResponse>> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
     unknown_parameters(&raw, WRITE_PARAMS, &mut details);
@@ -396,7 +396,7 @@ pub(crate) async fn test_trigger(
     Path(id): Path<i64>,
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
 ) -> ApiResult<Json<TestTriggerResponse>> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
     unknown_parameters(&raw, WRITE_PARAMS, &mut details);

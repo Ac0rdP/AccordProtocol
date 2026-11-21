@@ -1426,7 +1426,7 @@ mod proposals {
 
     #[derive(Debug, Serialize)]
     pub(super) struct ErrorDetail {
-        field: String,
+        pub(crate) field: String,
         message: String,
         code: &'static str,
     }
