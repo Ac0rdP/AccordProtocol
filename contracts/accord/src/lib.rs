@@ -227,30 +227,18 @@ pub struct Proposal {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct ProposalAuthorizationRequirement {
-    pub address: Address,
-    pub role: Role,
-    pub auth_required: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct ProposalResourceEstimate {
+pub struct ProposalSimulation {
+    pub category: ProposalCategory,
+    pub quorum_weight: u32,
+    pub proposer: Address,
+    pub required_role: Role,
+    pub proposer_auth_required: bool,
     pub transfer_count: u32,
     pub distinct_token_count: u32,
     pub owner_spending_limit_checks: u32,
     pub minimum_persistent_writes: u32,
     pub minimum_instance_writes: u32,
     pub emitted_events: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct ProposalSimulation {
-    pub category: ProposalCategory,
-    pub quorum_weight: u32,
-    pub authorization_requirements: Vec<ProposalAuthorizationRequirement>,
-    pub resource_estimate: ProposalResourceEstimate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2127,15 +2115,11 @@ fn read_spending_limit(env: &Env, owner: &Address, token: &Address) -> Option<i1
 
 fn read_spent_tracker(env: &Env, owner: &Address, token: &Address) -> SpentTracker {
     let key = spent_tracking_key(owner, token);
-    let tracker = env
+    env
         .storage()
         .persistent()
         .get(&key)
-        .unwrap_or(SpentTracker { spent: 0, epoch: 0 });
-    if env.storage().persistent().has(&key) {
-        bump_persistent(env, &key);
-    }
-    tracker
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
 }
 
 fn write_spent_tracker(env: &Env, owner: &Address, token: &Address, tracker: &SpentTracker) {
@@ -3553,29 +3537,23 @@ impl AccordContract {
         let proposer_is_owner =
             validate_transfer_proposal(&env, &proposer, &transfers, &description, deadline)?;
         let distinct_token_count = distinct_transfer_token_count(&env, &transfers);
-        let mut authorization_requirements = Vec::new(&env);
-        authorization_requirements.push_back(ProposalAuthorizationRequirement {
-            address: proposer,
-            role: Role::Proposer,
-            auth_required: true,
-        });
 
         Ok(ProposalSimulation {
             category,
             quorum_weight: read_threshold(&env)?,
-            authorization_requirements,
-            resource_estimate: ProposalResourceEstimate {
-                transfer_count: transfers.len(),
-                distinct_token_count,
-                owner_spending_limit_checks: if proposer_is_owner {
-                    distinct_token_count
-                } else {
-                    0
-                },
-                minimum_persistent_writes: 2,
-                minimum_instance_writes: 2,
-                emitted_events: 1,
+            proposer,
+            required_role: Role::Proposer,
+            proposer_auth_required: true,
+            transfer_count: transfers.len(),
+            distinct_token_count,
+            owner_spending_limit_checks: if proposer_is_owner {
+                distinct_token_count
+            } else {
+                0
             },
+            minimum_persistent_writes: 2,
+            minimum_instance_writes: 2,
+            emitted_events: 1,
         })
     }
 

@@ -46,12 +46,13 @@ the transfer-proposal checks used by `create_proposal` without creating a
 proposal record or emitting an event. Reads retain their normal storage TTL
 extensions. It returns:
 
-- `authorization_requirements`: the proposer address, required `Proposer` role,
-  and whether address authorization is required.
+- `proposer`, `required_role`, and `proposer_auth_required`: the address,
+  required `Proposer` role, and whether address authorization is required.
 - `quorum_weight`: the current threshold that a newly submitted proposal would
   snapshot.
-- `resource_estimate`: transfer count, distinct token count, owner spending
-  limit checks, minimum persistent and instance writes, and event count.
+- `transfer_count`, `distinct_token_count`, and
+  `owner_spending_limit_checks`.
+- `minimum_persistent_writes`, `minimum_instance_writes`, and `emitted_events`.
 
 The work counts are deterministic estimates of contract operations only. They
 are not CPU or memory estimates and do not replace Soroban RPC simulation for

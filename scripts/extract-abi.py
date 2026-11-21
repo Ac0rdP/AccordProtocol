@@ -402,12 +402,18 @@ def main() -> int:
 
     if not args.check:
         output_path = Path(args.output) if args.output else DEFAULT_BASELINE
+        if not output_path.is_absolute():
+            output_path = ROOT / output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps(current_abi, indent=2, sort_keys=False) + "\n",
             encoding="utf-8",
         )
-        print(f"ABI baseline written to {output_path.relative_to(ROOT)}")
+        try:
+            display_path = output_path.relative_to(ROOT)
+        except ValueError:
+            display_path = output_path
+        print(f"ABI baseline written to {display_path}")
         print(f"  Functions: {len(current_abi['functions'])}")
         print(f"  Types: {len(current_abi['types'])}")
         print(f"  Errors: {len(current_abi['errors'])}")

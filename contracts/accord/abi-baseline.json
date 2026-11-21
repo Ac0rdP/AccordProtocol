@@ -1,8 +1,36 @@
 {
   "schema_version": 1,
-  "contract_version": 1,
+  "contract_version": 2,
   "package_version": "0.0.0",
   "functions": [
+    {
+      "name": "abstain",
+      "args": [
+        {
+          "name": "abstainer",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "abstain_sponsored",
+      "args": [
+        {
+          "name": "abstainer",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
     {
       "name": "approve",
       "args": [
@@ -12,6 +40,20 @@
         },
         {
           "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "approve_social_recovery",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "request_id",
           "type": "u64"
         }
       ],
@@ -93,6 +135,24 @@
         {
           "name": "schedule_id",
           "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "configure_guardian_quorum",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "guardians",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
         }
       ],
       "return_type": "Result<(), ContractError>"
@@ -630,6 +690,32 @@
       "return_type": "Result<u64, ContractError>"
     },
     {
+      "name": "create_rotate_owner_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
       "name": "create_spending_limit_proposal",
       "args": [
         {
@@ -794,6 +880,20 @@
       "return_type": "Result<(), ContractError>"
     },
     {
+      "name": "execute_social_recovery",
+      "args": [
+        {
+          "name": "caller",
+          "type": "Address"
+        },
+        {
+          "name": "request_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
       "name": "exit_recovery",
       "args": [
         {
@@ -812,6 +912,52 @@
         }
       ],
       "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "freeze_asset",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "frozen",
+          "type": "bool"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "freeze_proposal_kind",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "kind",
+          "type": "ProposalKindTag"
+        },
+        {
+          "name": "frozen",
+          "type": "bool"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "get_abstainers",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<Vec<Address>, ContractError>"
     },
     {
       "name": "get_active_delegations",
@@ -894,6 +1040,11 @@
       "return_type": "Option<Address>"
     },
     {
+      "name": "get_guardian_quorum",
+      "args": [],
+      "return_type": "Option<GuardianQuorumConfig>"
+    },
+    {
       "name": "get_max_single_owner_weight_pct",
       "args": [],
       "return_type": "u32"
@@ -907,6 +1058,16 @@
         }
       ],
       "return_type": "Result<u64, ContractError>"
+    },
+    {
+      "name": "get_owner_rotation_delay",
+      "args": [
+        {
+          "name": "_env",
+          "type": "Env"
+        }
+      ],
+      "return_type": "u64"
     },
     {
       "name": "get_owner_spending_limits",
@@ -937,6 +1098,16 @@
       "name": "get_owners",
       "args": [],
       "return_type": "Result<Vec<Address>, ContractError>"
+    },
+    {
+      "name": "get_participation_progress",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<ProposalApprovalProgress, ContractError>"
     },
     {
       "name": "get_proposal",
@@ -1051,6 +1222,36 @@
       "return_type": "Vec<Role>"
     },
     {
+      "name": "get_social_recovery",
+      "args": [
+        {
+          "name": "request_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<SocialRecoveryRequest, ContractError>"
+    },
+    {
+      "name": "get_social_recovery_delay",
+      "args": [
+        {
+          "name": "_env",
+          "type": "Env"
+        }
+      ],
+      "return_type": "u64"
+    },
+    {
+      "name": "get_soft_approvers",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<Vec<Address>, ContractError>"
+    },
+    {
       "name": "get_spending_limit",
       "args": [
         {
@@ -1096,6 +1297,11 @@
       "name": "get_storage_version",
       "args": [],
       "return_type": "u32"
+    },
+    {
+      "name": "get_supported_storage_versions",
+      "args": [],
+      "return_type": "Vec<u32>"
     },
     {
       "name": "get_threshold",
@@ -1178,6 +1384,20 @@
       "return_type": "u32"
     },
     {
+      "name": "has_abstained",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
       "name": "has_approved",
       "args": [
         {
@@ -1206,6 +1426,20 @@
       "return_type": "bool"
     },
     {
+      "name": "has_soft_approved",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
       "name": "initialize",
       "args": [
         {
@@ -1226,6 +1460,16 @@
         }
       ],
       "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "is_asset_frozen",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "bool"
     },
     {
       "name": "is_frozen",
@@ -1253,6 +1497,30 @@
       "return_type": "bool"
     },
     {
+      "name": "is_proposal_kind_frozen",
+      "args": [
+        {
+          "name": "kind",
+          "type": "ProposalKindTag"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
+      "name": "is_storage_version_supported",
+      "args": [
+        {
+          "name": "_env",
+          "type": "Env"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ],
+      "return_type": "bool"
+    },
+    {
       "name": "is_token_approved",
       "args": [
         {
@@ -1261,6 +1529,34 @@
         }
       ],
       "return_type": "bool"
+    },
+    {
+      "name": "migrate_storage",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "from_version",
+          "type": "u32"
+        },
+        {
+          "name": "target_version",
+          "type": "u32"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "migrate_to_abstention_storage",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
     },
     {
       "name": "migrate_to_rbac",
@@ -1291,6 +1587,24 @@
         }
       ],
       "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "propose_social_recovery",
+      "args": [
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "replace_owner",
+          "type": "Option<Address>"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
     },
     {
       "name": "refund_escrow",
@@ -1339,6 +1653,34 @@
       "args": [
         {
           "name": "approver",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "revoke_abstention",
+      "args": [
+        {
+          "name": "abstainer",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "revoke_soft_approval",
+      "args": [
+        {
+          "name": "supporter",
           "type": "Address"
         },
         {
@@ -1408,6 +1750,60 @@
         {
           "name": "dependencies",
           "type": "Vec<u64>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "simulate_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        }
+      ],
+      "return_type": "Result<ProposalSimulation, ContractError>"
+    },
+    {
+      "name": "soft_approve",
+      "args": [
+        {
+          "name": "supporter",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "soft_approve_sponsored",
+      "args": [
+        {
+          "name": "supporter",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
         }
       ],
       "return_type": "Result<(), ContractError>"
@@ -1803,6 +2199,24 @@
       ]
     },
     {
+      "name": "FreezeScope",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Asset",
+          "payload": [
+            "Address"
+          ]
+        },
+        {
+          "name": "Kind",
+          "payload": [
+            "ProposalKindTag"
+          ]
+        }
+      ]
+    },
+    {
       "name": "FrozenEvent",
       "kind": "struct",
       "fields": [
@@ -1826,6 +2240,38 @@
         },
         {
           "name": "total_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "GuardianQuorumConfig",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "guardians",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "GuardianQuorumConfiguredEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "guardians",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "threshold",
           "type": "u32"
         },
         {
@@ -1867,6 +2313,28 @@
         {
           "name": "new_end_time",
           "type": "Option<u64>"
+        }
+      ]
+    },
+    {
+      "name": "OwnerRotatedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "old_owner",
+          "type": "Address"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
         }
       ]
     },
@@ -1965,6 +2433,74 @@
       ]
     },
     {
+      "name": "ProposalAbstainedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "abstainer",
+          "type": "Address"
+        },
+        {
+          "name": "abstention_count",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_abstention_weight",
+          "type": "u32"
+        },
+        {
+          "name": "participation_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalAbstentionRevokedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "abstainer",
+          "type": "Address"
+        },
+        {
+          "name": "abstention_count",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_abstention_weight",
+          "type": "u32"
+        },
+        {
+          "name": "participation_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "ProposalApprovalProgress",
       "kind": "struct",
       "fields": [
@@ -1978,6 +2514,26 @@
         },
         {
           "name": "total_weight",
+          "type": "u32"
+        },
+        {
+          "name": "abstention_count",
+          "type": "u32"
+        },
+        {
+          "name": "abstention_weight",
+          "type": "u32"
+        },
+        {
+          "name": "participation_weight",
+          "type": "u32"
+        },
+        {
+          "name": "soft_approval_count",
+          "type": "u32"
+        },
+        {
+          "name": "soft_approval_weight",
           "type": "u32"
         }
       ]
@@ -2259,10 +2815,38 @@
           ]
         },
         {
+          "name": "RotateOwner",
+          "payload": [
+            "Address",
+            "Address"
+          ]
+        },
+        {
           "name": "CreateEscrow",
           "payload": [
             "EscrowParams"
           ]
+        }
+      ]
+    },
+    {
+      "name": "ProposalKindTag",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Transfer"
+        },
+        {
+          "name": "Recurring"
+        },
+        {
+          "name": "Escrow"
+        },
+        {
+          "name": "Ownership"
+        },
+        {
+          "name": "Governance"
         }
       ]
     },
@@ -2288,6 +2872,124 @@
         },
         {
           "name": "cumulative_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalSimulation",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "quorum_weight",
+          "type": "u32"
+        },
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "required_role",
+          "type": "Role"
+        },
+        {
+          "name": "proposer_auth_required",
+          "type": "bool"
+        },
+        {
+          "name": "transfer_count",
+          "type": "u32"
+        },
+        {
+          "name": "distinct_token_count",
+          "type": "u32"
+        },
+        {
+          "name": "owner_spending_limit_checks",
+          "type": "u32"
+        },
+        {
+          "name": "minimum_persistent_writes",
+          "type": "u32"
+        },
+        {
+          "name": "minimum_instance_writes",
+          "type": "u32"
+        },
+        {
+          "name": "emitted_events",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalSoftApprovalRevokedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "supporter",
+          "type": "Address"
+        },
+        {
+          "name": "soft_approval_count",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_soft_weight",
+          "type": "u32"
+        },
+        {
+          "name": "participation_weight",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "ProposalSoftApprovedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "supporter",
+          "type": "Address"
+        },
+        {
+          "name": "soft_approval_count",
+          "type": "u32"
+        },
+        {
+          "name": "weight",
+          "type": "u32"
+        },
+        {
+          "name": "cumulative_soft_weight",
+          "type": "u32"
+        },
+        {
+          "name": "participation_weight",
           "type": "u32"
         },
         {
@@ -2806,6 +3508,28 @@
       ]
     },
     {
+      "name": "ScopedFreezeChangedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "scope",
+          "type": "FreezeScope"
+        },
+        {
+          "name": "frozen",
+          "type": "bool"
+        },
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "SetSpendingLimitExecutedEvent",
       "kind": "struct",
       "fields": [
@@ -2828,6 +3552,122 @@
         {
           "name": "version",
           "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SocialRecoveryApprovedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "guardian",
+          "type": "Address"
+        },
+        {
+          "name": "approvals",
+          "type": "u32"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        },
+        {
+          "name": "execute_after",
+          "type": "u64"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SocialRecoveryExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "replace_owner",
+          "type": "Option<Address>"
+        },
+        {
+          "name": "executed_at",
+          "type": "u64"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SocialRecoveryProposedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "replace_owner",
+          "type": "Option<Address>"
+        },
+        {
+          "name": "proposed_at",
+          "type": "u64"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "SocialRecoveryRequest",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "new_owner",
+          "type": "Address"
+        },
+        {
+          "name": "replace_owner",
+          "type": "Option<Address>"
+        },
+        {
+          "name": "approvals",
+          "type": "Vec<Address>"
+        },
+        {
+          "name": "proposed_at",
+          "type": "u64"
+        },
+        {
+          "name": "execute_after",
+          "type": "u64"
+        },
+        {
+          "name": "executed",
+          "type": "bool"
         }
       ]
     },
@@ -2856,6 +3696,24 @@
         {
           "name": "epoch",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "StorageMigratedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "from_version",
+          "type": "u32"
+        },
+        {
+          "name": "to_version",
+          "type": "u32"
+        },
+        {
+          "name": "version",
+          "type": "u32"
         }
       ]
     },
@@ -3249,6 +4107,66 @@
         {
           "name": "DependencyNotFound",
           "discriminant": 74
+        },
+        {
+          "name": "AlreadyAbstained",
+          "discriminant": 75
+        },
+        {
+          "name": "NotAbstained",
+          "discriminant": 76
+        },
+        {
+          "name": "AlreadySoftApproved",
+          "discriminant": 77
+        },
+        {
+          "name": "NotSoftApproved",
+          "discriminant": 78
+        },
+        {
+          "name": "UnsupportedSchemaVersion",
+          "discriminant": 79
+        },
+        {
+          "name": "SkippedSchemaVersion",
+          "discriminant": 80
+        },
+        {
+          "name": "SchemaVersionMismatch",
+          "discriminant": 81
+        },
+        {
+          "name": "LegacyMigrationRequired",
+          "discriminant": 82
+        },
+        {
+          "name": "OwnerRotationDelayActive",
+          "discriminant": 83
+        },
+        {
+          "name": "GuardianQuorumNotConfigured",
+          "discriminant": 84
+        },
+        {
+          "name": "InvalidGuardianQuorum",
+          "discriminant": 85
+        },
+        {
+          "name": "NotGuardian",
+          "discriminant": 86
+        },
+        {
+          "name": "RecoveryRequestNotFound",
+          "discriminant": 87
+        },
+        {
+          "name": "RecoveryRequestNotReady",
+          "discriminant": 88
+        },
+        {
+          "name": "RecoveryDelayActive",
+          "discriminant": 89
         }
       ]
     }

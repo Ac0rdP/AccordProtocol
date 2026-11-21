@@ -74,6 +74,34 @@ def test_malformed_baseline():
     check("error mentions malformed", "malformed" in stderr.lower(), stderr[:200])
 
 
+def test_relative_output_path():
+    """Relative output paths are written and reported without crashing."""
+    print("\n--- Test: relative output path ---")
+    output_exists = False
+    with tempfile.TemporaryDirectory(dir=ROOT) as temp_dir:
+        output_path = Path(temp_dir) / "abi.json"
+        relative_output_path = output_path.relative_to(ROOT)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(EXTRACT_SCRIPT),
+                "--output",
+                str(relative_output_path),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        output_exists = output_path.exists()
+    check("exit code is 0", result.returncode == 0, result.stderr[:300])
+    check(
+        "reports output path",
+        "ABI baseline written to" in result.stdout,
+        result.stdout[:300],
+    )
+    check("writes requested output", output_exists)
+
+
 def test_removed_function():
     """Breaking change: a function is removed without version bump."""
     print("\n--- Test: removed function (breaking) ---")
@@ -200,6 +228,7 @@ def main():
     test_unchanged_abi()
     test_missing_baseline()
     test_malformed_baseline()
+    test_relative_output_path()
     test_removed_function()
     test_changed_argument_type()
     test_version_bumped_allows_breaking()

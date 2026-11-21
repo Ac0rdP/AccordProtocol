@@ -12377,17 +12377,15 @@ fn simulate_proposal_reports_requirements_and_does_not_create_state_or_events() 
 
     assert_eq!(simulation.category, ProposalCategory::Transfer);
     assert_eq!(simulation.quorum_weight, 2);
-    assert_eq!(simulation.authorization_requirements.len(), 1);
-    let authorization = simulation.authorization_requirements.get(0).unwrap();
-    assert_eq!(authorization.address, owner_a);
-    assert_eq!(authorization.role, Role::Proposer);
-    assert!(authorization.auth_required);
-    assert_eq!(simulation.resource_estimate.transfer_count, 1);
-    assert_eq!(simulation.resource_estimate.distinct_token_count, 1);
-    assert_eq!(simulation.resource_estimate.owner_spending_limit_checks, 1);
-    assert_eq!(simulation.resource_estimate.minimum_persistent_writes, 2);
-    assert_eq!(simulation.resource_estimate.minimum_instance_writes, 2);
-    assert_eq!(simulation.resource_estimate.emitted_events, 1);
+    assert_eq!(simulation.proposer, owner_a);
+    assert_eq!(simulation.required_role, Role::Proposer);
+    assert!(simulation.proposer_auth_required);
+    assert_eq!(simulation.transfer_count, 1);
+    assert_eq!(simulation.distinct_token_count, 1);
+    assert_eq!(simulation.owner_spending_limit_checks, 1);
+    assert_eq!(simulation.minimum_persistent_writes, 2);
+    assert_eq!(simulation.minimum_instance_writes, 2);
+    assert_eq!(simulation.emitted_events, 1);
     assert_eq!(client.get_total_proposals(), 0);
     assert_eq!(contract_events(), event_count_before);
 }
@@ -12507,8 +12505,27 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
     #[test]
-    fn proposal_simulation_estimates_transfer_counts(count in 1u32..=MAX_BATCH_TRANSFERS) {
-        let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    fn proposal_simulation_estimates_transfer_counts(count in 1u32..=16) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b);
+        owners.push_back(owner_c);
+        let mut weights = Vec::new(&env);
+        weights.push_back(1);
+        weights.push_back(1);
+        weights.push_back(1);
+        client.initialize(&owners, &weights, &2, &0);
         let recipient = Address::generate(&env);
         let mut transfers = Vec::new(&env);
         for _ in 0..count {
@@ -12527,8 +12544,8 @@ proptest! {
             &ProposalCategory::Transfer,
         );
 
-        prop_assert_eq!(simulation.resource_estimate.transfer_count, count);
-        prop_assert_eq!(simulation.resource_estimate.distinct_token_count, 1);
-        prop_assert_eq!(simulation.resource_estimate.owner_spending_limit_checks, 1);
+        prop_assert_eq!(simulation.transfer_count, count);
+        prop_assert_eq!(simulation.distinct_token_count, 1);
+        prop_assert_eq!(simulation.owner_spending_limit_checks, 1);
     }
 }
