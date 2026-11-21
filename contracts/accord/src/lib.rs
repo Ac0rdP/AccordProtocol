@@ -175,6 +175,9 @@ pub enum ProposalKind {
     RemoveApprovedToken(Address),
     /// Rotate the emergency guardian through normal proposal quorum.
     TransferGuardian(Address),
+    /// Replace an owner key with a new address, preserving weight and roles.
+    /// Activation is delayed after the proposal reaches quorum.
+    RotateOwner(Address, Address),
     /// Create escrow whose balance is reserved until its release condition.
     CreateEscrow(EscrowParams),
 }
@@ -257,6 +260,127 @@ pub struct EscrowRecord {
     pub token: Address,
     pub amount: i128,
     pub release_mode: EscrowReleaseMode,
+}
+
+/// Coarse classification of a `ProposalKind` used by scoped emergency freezes.
+/// Scoped freezes target the operation family rather than a specific proposal,
+/// so governance, ownership changes, and unrelated operations stay available.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum ProposalKindTag {
+    Transfer,
+    Recurring,
+    Escrow,
+    Ownership,
+    Governance,
+}
+
+/// The target of a scoped emergency freeze: one asset (token) or one proposal
+/// kind family.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum FreezeScope {
+    Asset(Address),
+    Kind(ProposalKindTag),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ScopedFreezeChangedEvent {
+    pub scope: FreezeScope,
+    pub frozen: bool,
+    pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// A guardian set authorized to start social recovery when owner keys are
+/// lost. Operates independently of the single emergency guardian that can
+/// freeze the contract.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GuardianQuorumConfig {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
+}
+
+/// A social-recovery request. Guardians approve until `threshold` is met, then
+/// the request becomes executable after `SOCIAL_RECOVERY_DELAY`, leaving an
+/// auditable window before ownership changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SocialRecoveryRequest {
+    pub id: u64,
+    pub new_owner: Address,
+    /// When set, the recovered key replaces this owner (preserving its weight
+    /// and roles). When `None`, the recovered key is added as a new owner.
+    pub replace_owner: Option<Address>,
+    pub approvals: Vec<Address>,
+    pub proposed_at: u64,
+    pub execute_after: u64,
+    pub executed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct GuardianQuorumConfiguredEvent {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SocialRecoveryProposedEvent {
+    pub id: u64,
+    pub new_owner: Address,
+    pub replace_owner: Option<Address>,
+    pub proposed_at: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SocialRecoveryApprovedEvent {
+    pub id: u64,
+    pub guardian: Address,
+    pub approvals: u32,
+    pub threshold: u32,
+    pub execute_after: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SocialRecoveryExecutedEvent {
+    pub id: u64,
+    pub new_owner: Address,
+    pub replace_owner: Option<Address>,
+    pub executed_at: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OwnerRotatedEvent {
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub weight: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageMigratedEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 /// An owner's delegation of (part of) their voting weight to another owner.
@@ -829,6 +953,32 @@ pub enum ContractError {
     NotAbstained = 76,
     AlreadySoftApproved = 77,
     NotSoftApproved = 78,
+    /// Thrown when a requested storage schema version is not in the registry
+    /// or is newer than the running contract.
+    UnsupportedSchemaVersion = 79,
+    /// Thrown when a migration would skip an intermediate schema version or
+    /// move backwards.
+    SkippedSchemaVersion = 80,
+    /// Thrown when the caller's expected current schema version is stale.
+    SchemaVersionMismatch = 81,
+    /// Thrown when a legacy deployment must run its legacy migrations first.
+    LegacyMigrationRequired = 82,
+    /// Thrown when an owner rotation is executed before its activation delay.
+    OwnerRotationDelayActive = 83,
+    /// Thrown when social recovery is attempted without a configured guardian
+    /// quorum.
+    GuardianQuorumNotConfigured = 84,
+    /// Thrown when a guardian quorum is configured with invalid membership or
+    /// threshold.
+    InvalidGuardianQuorum = 85,
+    /// Thrown when the caller is not a configured recovery guardian.
+    NotGuardian = 86,
+    /// Thrown when a social-recovery request does not exist.
+    RecoveryRequestNotFound = 87,
+    /// Thrown when a social-recovery request has not reached quorum yet.
+    RecoveryRequestNotReady = 88,
+    /// Thrown when social recovery is executed before its delay has elapsed.
+    RecoveryDelayActive = 89,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -903,6 +1053,26 @@ fn recovery_key() -> Symbol {
     symbol_short!("RECOV")
 }
 
+fn guardian_quorum_key() -> Symbol {
+    symbol_short!("GUARDS")
+}
+
+fn social_recovery_next_key() -> Symbol {
+    symbol_short!("SRNEXT")
+}
+
+fn social_recovery_key(id: u64) -> (Symbol, u64) {
+    (symbol_short!("SREC"), id)
+}
+
+fn asset_freeze_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("AFRZ"), token.clone())
+}
+
+fn kind_freeze_key(kind: ProposalKindTag) -> (Symbol, ProposalKindTag) {
+    (symbol_short!("KFRZ"), kind)
+}
+
 fn recurring_next_id_key() -> Symbol {
     symbol_short!("RPNEXT")
 }
@@ -957,8 +1127,26 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// deployed contract can always report the layout it actually uses. A missing
 /// key reads as `0`, meaning a pre-versioning (legacy) deployment.
 /// Version 2 introduces proposal dependency graphs, per-asset treasury accounting and
-/// spend limits, and additive per-proposal abstention and soft-approval records.
+/// spend limits, additive per-proposal abstention and soft-approval records,
+/// scoped freezes, guardian-quorum social recovery, and staged owner rotation.
 const STORAGE_SCHEMA_VERSION: u32 = 2;
+
+/// Every storage layout this contract can read or migrate to. `0` is the
+/// pre-versioning legacy layout, `1` added weighted governance/RBAC, and `2`
+/// added scoped freezes, guardian-quorum recovery requests, and the rotation
+/// proposal kind. A version outside this list is unknown and must be refused.
+pub const SUPPORTED_STORAGE_VERSIONS: [u32; 3] = [0, 1, 2];
+
+/// Minimum delay between a `RotateOwner` proposal reaching quorum and its
+/// activation. Gives the existing owner key time to object before handoff.
+pub const OWNER_ROTATION_DELAY: u64 = 86_400;
+
+/// Delay between the guardian quorum approving a social-recovery request and
+/// the ownership change becoming executable.
+pub const SOCIAL_RECOVERY_DELAY: u64 = 172_800;
+
+const MIN_GUARDIANS: u32 = 1;
+const MAX_GUARDIANS: u32 = 10;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -1297,9 +1485,13 @@ fn read_storage_version(env: &Env) -> u32 {
 }
 
 fn write_storage_version(env: &Env) {
+    write_storage_version_value(env, STORAGE_SCHEMA_VERSION);
+}
+
+fn write_storage_version_value(env: &Env, version: u32) {
     env.storage()
         .instance()
-        .set(&storage_version_key(), &STORAGE_SCHEMA_VERSION);
+        .set(&storage_version_key(), &version);
     bump_instance(env);
 }
 
@@ -1516,6 +1708,45 @@ fn remove_delegation(env: &Env, delegator: &Address) {
     env.storage()
         .persistent()
         .remove(&delegation_key(delegator));
+}
+
+/// Drops every delegation that references `owner`, either as delegator or as
+/// delegate. Used when an owner address stops being an owner, so voting weight
+/// cannot be silently redirected or stranded.
+fn remove_delegations_touching(env: &Env, owner: &Address) {
+    remove_delegation(env, owner);
+    if let Ok(owners) = read_owners_map(env) {
+        for other in owners.keys().iter() {
+            if let Some(delegation) = read_delegation(env, &other) {
+                if delegation.delegate == *owner {
+                    remove_delegation(env, &other);
+                }
+            }
+        }
+    }
+}
+
+/// Reverses an ex-owner's approvals on every still-active proposal so a key
+/// that is removed or rotated away cannot keep contributing quorum.
+fn purge_owner_approvals(env: &Env, owner: &Address) -> Result<(), ContractError> {
+    let next_id = read_next_id(env);
+    for pid in 1..next_id {
+        if let Ok(mut proposal) = read_proposal(env, pid) {
+            let status = derive_status(env, &proposal);
+            if matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+                let counted = read_approval_weight(env, pid, owner);
+                if counted > 0 {
+                    write_approval_weight(env, pid, owner, 0);
+                    proposal.approvals = checked_weight_sub(proposal.approvals, counted)?;
+                    proposal.approval_weight =
+                        checked_weight_sub(proposal.approval_weight, counted)?;
+                    proposal.status = derive_status(env, &proposal);
+                    write_proposal(env, &proposal);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_delegation_active(env: &Env, delegation: &Delegation) -> bool {
@@ -2211,6 +2442,120 @@ fn require_not_recovery(env: &Env) -> Result<(), ContractError> {
     Ok(())
 }
 
+fn proposal_kind_tag(kind: &ProposalKind) -> ProposalKindTag {
+    match kind {
+        ProposalKind::Transfer(_) => ProposalKindTag::Transfer,
+        ProposalKind::CreateRecurringPayment(_)
+        | ProposalKind::CancelRecurringPayment(_)
+        | ProposalKind::PauseRecurringPayment(_)
+        | ProposalKind::ResumeRecurringPayment(_)
+        | ProposalKind::ModifyRecurringPayment(_) => ProposalKindTag::Recurring,
+        ProposalKind::CreateEscrow(_) => ProposalKindTag::Escrow,
+        ProposalKind::AddOwner(_, _)
+        | ProposalKind::RemoveOwner(_)
+        | ProposalKind::ChangeOwnerWeight(_, _)
+        | ProposalKind::RotateOwner(_, _) => ProposalKindTag::Ownership,
+        ProposalKind::ChangeThreshold(_)
+        | ProposalKind::SetSpendingLimit(_, _, _)
+        | ProposalKind::SetSpendingLimitWindow(_, _, _, _)
+        | ProposalKind::SetTreasurySpendingLimit(_, _, _)
+        | ProposalKind::GrantRole(_, _)
+        | ProposalKind::RevokeRole(_, _)
+        | ProposalKind::SetAssetRegistryEnabled(_)
+        | ProposalKind::AddApprovedToken(_)
+        | ProposalKind::RemoveApprovedToken(_)
+        | ProposalKind::TransferGuardian(_) => ProposalKindTag::Governance,
+    }
+}
+
+fn is_asset_frozen(env: &Env, token: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&asset_freeze_key(token))
+        .unwrap_or(false)
+}
+
+fn is_kind_frozen(env: &Env, kind: ProposalKindTag) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&kind_freeze_key(kind))
+        .unwrap_or(false)
+}
+
+fn require_asset_not_frozen(env: &Env, token: &Address) -> Result<(), ContractError> {
+    if is_asset_frozen(env, token) {
+        return Err(ContractError::ContractFrozen);
+    }
+    Ok(())
+}
+
+fn require_kind_not_frozen(env: &Env, kind: ProposalKindTag) -> Result<(), ContractError> {
+    if is_kind_frozen(env, kind) {
+        return Err(ContractError::ContractFrozen);
+    }
+    Ok(())
+}
+
+/// Rejects an outflow of `token` when either the asset itself or its operation
+/// family is under a scoped emergency freeze.
+fn require_outflow_allowed(
+    env: &Env,
+    token: &Address,
+    kind: ProposalKindTag,
+) -> Result<(), ContractError> {
+    require_kind_not_frozen(env, kind)?;
+    require_asset_not_frozen(env, token)
+}
+
+fn read_guardian_quorum(env: &Env) -> Option<GuardianQuorumConfig> {
+    env.storage().instance().get(&guardian_quorum_key())
+}
+
+fn is_guardian(env: &Env, address: &Address) -> bool {
+    match read_guardian_quorum(env) {
+        Some(config) => {
+            for guardian in config.guardians.iter() {
+                if guardian == *address {
+                    return true;
+                }
+            }
+            false
+        }
+        None => false,
+    }
+}
+
+fn read_social_recovery(env: &Env, id: u64) -> Result<SocialRecoveryRequest, ContractError> {
+    env.storage()
+        .persistent()
+        .get(&social_recovery_key(id))
+        .ok_or(ContractError::RecoveryRequestNotFound)
+}
+
+fn write_social_recovery(env: &Env, request: &SocialRecoveryRequest) {
+    let key = social_recovery_key(request.id);
+    env.storage().persistent().set(&key, request);
+    bump_persistent(env, &key);
+}
+
+fn recovery_approval_count(request: &SocialRecoveryRequest) -> u32 {
+    request.approvals.len()
+}
+
+fn read_social_recovery_next_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&social_recovery_next_key())
+        .unwrap_or(1_u64)
+}
+
+fn write_social_recovery_next_id(env: &Env, id: u64) {
+    env.storage()
+        .instance()
+        .set(&social_recovery_next_key(), &id);
+    bump_instance(env);
+}
+
 // ─── Business Logic Helpers ──────────────────────────────────────────────────
 
 fn require_owner_and_weight(env: &Env, address: &Address) -> Result<u32, ContractError> {
@@ -2363,6 +2708,7 @@ fn create_governance_proposal(
     description: String,
     deadline: u64,
 ) -> Result<u64, ContractError> {
+    require_kind_not_frozen(env, proposal_kind_tag(&kind))?;
     validate_description(&description)?;
     validate_deadline(env, deadline)?;
 
@@ -2847,34 +3193,68 @@ impl AccordContract {
         Ok(())
     }
 
-    /// One-time migration to the abstention/soft-approval storage layout.
-    /// Existing approvals remain unchanged; the new per-proposal/per-owner
-    /// `ABST` and `SOFT` entries are absent until an owner first records that
-    /// vote. This migration only stamps the layout version and is therefore
-    /// safe for existing proposals.
-    pub fn migrate_to_abstention_storage(
+    /// Moves the deployment forward exactly one registered storage-schema step.
+    ///
+    /// `from_version` must match the version currently recorded on chain, so a
+    /// stale operator script cannot stamp a layout it did not observe. The
+    /// target must be in `SUPPORTED_STORAGE_VERSIONS`, must not be newer than
+    /// the running contract, and must be exactly the next step: skipped,
+    /// repeated, and backward migrations are refused.
+    ///
+    /// A legacy (`0`) deployment must first run `migrate_to_weighted_governance`
+    /// and `migrate_to_rbac`, which bring the layout up to the current schema.
+    /// This entrypoint covers the operator-driven steps between versioned
+    /// layouts after that.
+    pub fn migrate_storage(
         env: Env,
         approvers: Vec<Address>,
+        from_version: u32,
+        target_version: u32,
     ) -> Result<(), ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
         }
-        if read_storage_version(&env) >= STORAGE_SCHEMA_VERSION {
+        require_weighted_approvers(&env, &approvers)?;
+
+        let current = read_storage_version(&env);
+        if from_version != current {
+            return Err(ContractError::SchemaVersionMismatch);
+        }
+        if target_version == current {
             return Err(ContractError::AlreadyMigrated);
         }
-        require_weighted_approvers(&env, &approvers)?;
-        require_not_frozen(&env)?;
-        write_storage_version(&env);
+        if current == 0 {
+            return Err(ContractError::LegacyMigrationRequired);
+        }
+        if !SUPPORTED_STORAGE_VERSIONS.contains(&target_version)
+            || target_version > STORAGE_SCHEMA_VERSION
+        {
+            return Err(ContractError::UnsupportedSchemaVersion);
+        }
+        if target_version != current.saturating_add(1) {
+            return Err(ContractError::SkippedSchemaVersion);
+        }
 
+        write_storage_version_value(&env, target_version);
         env.events().publish(
-            (symbol_short!("migrated"),),
-            GovernanceMigratedEvent {
+            (symbol_short!("stor_mig"),),
+            StorageMigratedEvent {
+                from_version: current,
+                to_version: target_version,
                 version: EVENT_SCHEMA_VERSION,
-                owner_count: read_owners_map(&env)?.len(),
-                total_weight: read_total_weight(&env),
             },
         );
         Ok(())
+    }
+
+    /// Compatibility entrypoint for deployments built from the abstention-only
+    /// branch. It stamps the current registry version through `migrate_storage`.
+    pub fn migrate_to_abstention_storage(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        let current = read_storage_version(&env);
+        Self::migrate_storage(env, approvers, current, STORAGE_SCHEMA_VERSION)
     }
 
     /// Create a recurring schedule for periodic disbursements.
@@ -2999,11 +3379,13 @@ impl AccordContract {
             return Err(ContractError::InvalidAmount);
         }
 
+        require_kind_not_frozen(&env, ProposalKindTag::Transfer)?;
         for transfer in transfers.iter() {
             if transfer.amount < MIN_AMOUNT {
                 return Err(ContractError::InvalidAmount);
             }
             validate_token(&env, &transfer.token)?;
+            require_asset_not_frozen(&env, &transfer.token)?;
             if transfer.to == env.current_contract_address() {
                 return Err(ContractError::InvalidRecipient);
             }
@@ -3249,6 +3631,8 @@ impl AccordContract {
         ) {
             return Err(ContractError::RecurringPaymentInactive);
         }
+
+        require_outflow_allowed(&env, &schedule.token, ProposalKindTag::Recurring)?;
 
         let now = env.ledger().timestamp();
         let due_at = recurring_payment_due_at(&schedule)?;
@@ -4106,6 +4490,42 @@ impl AccordContract {
         )
     }
 
+    /// Creates a proposal to replace an owner key with a new address.
+    ///
+    /// The rotation goes through the normal propose → approve → execute
+    /// lifecycle. It does not activate the moment quorum is reached: `execute`
+    /// refuses until `OWNER_ROTATION_DELAY` has elapsed since `ready_at`, so the
+    /// current key holder has a window to object.
+    pub fn create_rotate_owner_proposal(
+        env: Env,
+        proposer: Address,
+        owner: Address,
+        new_owner: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        if owner == new_owner {
+            return Err(ContractError::DuplicateOwner);
+        }
+        let owners = read_owners_map(&env)?;
+        if !owners.contains_key(owner.clone()) {
+            return Err(ContractError::OwnerNotFound);
+        }
+        if owners.contains_key(new_owner.clone()) {
+            return Err(ContractError::DuplicateOwner);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RotateOwner(owner, new_owner),
+            description,
+            deadline,
+        )
+    }
+
     /// Creates a proposal to reserve treasury tokens until the selected release condition.
     pub fn create_escrow_proposal(
         env: Env,
@@ -4560,6 +4980,10 @@ impl AccordContract {
             return Err(ContractError::ProposalNotActive);
         }
 
+        // A scoped emergency freeze blocks only the affected operation family;
+        // governance and unrelated proposals remain executable.
+        require_kind_not_frozen(&env, proposal_kind_tag(&proposal.kind))?;
+
         // Time-lock enforcement.
         let time_lock_delay: u64 = env.storage().instance().get(&timelock_key()).unwrap_or(0);
         if time_lock_delay > 0 {
@@ -4600,6 +5024,7 @@ impl AccordContract {
                 // them here as well would pay the recipient twice.
                 for transfer in transfers.iter() {
                     validate_token(&env, &transfer.token)?;
+                    require_asset_not_frozen(&env, &transfer.token)?;
                     if available_balance(&env, &transfer.token)? < transfer.amount {
                         return Err(ContractError::TransferFailed);
                     }
@@ -4825,6 +5250,51 @@ impl AccordContract {
                         version: EVENT_SCHEMA_VERSION,
                         removed_owner: owner_to_remove.clone(),
                         owner_count: prev_count - 1,
+                    },
+                );
+            }
+            ProposalKind::RotateOwner(old_owner, new_owner) => {
+                // Activation is deliberately staged: quorum only schedules the
+                // handoff. The delay gives the current key holder time to
+                // object before the old address loses its weight and roles.
+                let now = env.ledger().timestamp();
+                if now < proposal.ready_at.saturating_add(OWNER_ROTATION_DELAY) {
+                    return Err(ContractError::OwnerRotationDelayActive);
+                }
+
+                let mut owners = read_owners_map(&env)?;
+                let weight = owners
+                    .get(old_owner.clone())
+                    .ok_or(ContractError::OwnerNotFound)?;
+                if owners.contains_key(new_owner.clone()) {
+                    return Err(ContractError::DuplicateOwner);
+                }
+
+                // Carry the existing roles across, so a rotated key keeps its
+                // operational permissions instead of falling back to defaults.
+                let mut roles = read_owner_roles(&env, old_owner);
+                if roles.is_empty() {
+                    roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
+                }
+
+                owners.remove(old_owner.clone());
+                owners.set(new_owner.clone(), weight);
+                let key = owners_key();
+                env.storage().persistent().set(&key, &owners);
+                bump_persistent(&env, &key);
+
+                update_owner_roles(&env, old_owner, &Vec::new(&env));
+                update_owner_roles(&env, new_owner, &roles);
+                remove_delegations_touching(&env, old_owner);
+                purge_owner_approvals(&env, old_owner)?;
+
+                env.events().publish(
+                    (symbol_short!("rot_own"),),
+                    OwnerRotatedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        old_owner: old_owner.clone(),
+                        new_owner: new_owner.clone(),
+                        weight,
                     },
                 );
             }
@@ -5258,6 +5728,7 @@ impl AccordContract {
             }
             ProposalKind::CreateEscrow(params) => {
                 validate_token(&env, &params.token)?;
+                require_asset_not_frozen(&env, &params.token)?;
                 if params.recipient == env.current_contract_address() {
                     return Err(ContractError::InvalidRecipient);
                 }
@@ -6146,6 +6617,18 @@ impl AccordContract {
         read_storage_version(&env)
     }
 
+    /// Returns the storage-schema versions this contract can read or migrate
+    /// to. `0` denotes the pre-versioning legacy layout; the last entry is the
+    /// current layout. See `docs/ARCHITECTURE.md` §3.
+    pub fn get_supported_storage_versions(env: Env) -> Vec<u32> {
+        Vec::from_slice(&env, &SUPPORTED_STORAGE_VERSIONS)
+    }
+
+    /// Returns whether `version` is in the contract's migration registry.
+    pub fn is_storage_version_supported(_env: Env, version: u32) -> bool {
+        SUPPORTED_STORAGE_VERSIONS.contains(&version)
+    }
+
     pub fn get_total_weight(env: Env) -> u32 {
         read_total_weight(&env)
     }
@@ -6634,6 +7117,85 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Freezes or unfreezes transfers of a single asset without touching the
+    /// rest of the contract. Only the configured emergency guardian may call.
+    pub fn freeze_asset(
+        env: Env,
+        guardian: Address,
+        token: Address,
+        frozen: bool,
+    ) -> Result<(), ContractError> {
+        guardian.require_auth();
+        let stored = read_guardian(&env).ok_or(ContractError::NoGuardian)?;
+        if stored != guardian {
+            return Err(ContractError::Unauthorized);
+        }
+        validate_token_interface(&env, &token)?;
+
+        let key = asset_freeze_key(&token);
+        if frozen {
+            env.storage().instance().set(&key, &true);
+        } else {
+            env.storage().instance().remove(&key);
+        }
+        bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("sc_frz"),),
+            ScopedFreezeChangedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                scope: FreezeScope::Asset(token),
+                frozen,
+                guardian,
+            },
+        );
+        Ok(())
+    }
+
+    /// Freezes or unfreezes one proposal-kind family. Only the configured
+    /// emergency guardian may call. Governance and other kinds stay available.
+    pub fn freeze_proposal_kind(
+        env: Env,
+        guardian: Address,
+        kind: ProposalKindTag,
+        frozen: bool,
+    ) -> Result<(), ContractError> {
+        guardian.require_auth();
+        let stored = read_guardian(&env).ok_or(ContractError::NoGuardian)?;
+        if stored != guardian {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let key = kind_freeze_key(kind);
+        if frozen {
+            env.storage().instance().set(&key, &true);
+        } else {
+            env.storage().instance().remove(&key);
+        }
+        bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("sc_frz"),),
+            ScopedFreezeChangedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                scope: FreezeScope::Kind(kind),
+                frozen,
+                guardian,
+            },
+        );
+        Ok(())
+    }
+
+    /// Returns whether `token` is under a scoped emergency freeze.
+    pub fn is_asset_frozen(env: Env, token: Address) -> bool {
+        is_asset_frozen(&env, &token)
+    }
+
+    /// Returns whether proposals of `kind` are under a scoped emergency freeze.
+    pub fn is_proposal_kind_frozen(env: Env, kind: ProposalKindTag) -> bool {
+        is_kind_frozen(&env, kind)
+    }
+
     /// Resumes normal operation after a freeze. Requires distinct registered
     /// owners whose combined weight reaches `threshold`.
     pub fn unfreeze(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
@@ -6683,6 +7245,272 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Configures the guardian set that can start social recovery. Requires
+    /// distinct registered owners whose combined weight reaches `threshold`.
+    /// The guardian set is independent of the single emergency guardian used by
+    /// `freeze` / `enter_recovery`.
+    pub fn configure_guardian_quorum(
+        env: Env,
+        approvers: Vec<Address>,
+        guardians: Vec<Address>,
+        threshold: u32,
+    ) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+
+        let count = guardians.len();
+        if !(MIN_GUARDIANS..=MAX_GUARDIANS).contains(&count) {
+            return Err(ContractError::InvalidGuardianQuorum);
+        }
+        for i in 0..guardians.len() {
+            for j in (i + 1)..guardians.len() {
+                if guardians.get(i).unwrap() == guardians.get(j).unwrap() {
+                    return Err(ContractError::InvalidGuardianQuorum);
+                }
+            }
+        }
+        if threshold == 0 || threshold > count {
+            return Err(ContractError::InvalidGuardianQuorum);
+        }
+
+        env.storage().instance().set(
+            &guardian_quorum_key(),
+            &GuardianQuorumConfig {
+                guardians: guardians.clone(),
+                threshold,
+            },
+        );
+        bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("gq_set"),),
+            GuardianQuorumConfiguredEvent {
+                guardians,
+                threshold,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    /// Opens a social-recovery request to add a new owner or replace a lost
+    /// owner key. The calling guardian's approval is recorded immediately; the
+    /// request becomes executable only after the guardian quorum is met and
+    /// `SOCIAL_RECOVERY_DELAY` has elapsed.
+    pub fn propose_social_recovery(
+        env: Env,
+        guardian: Address,
+        new_owner: Address,
+        replace_owner: Option<Address>,
+    ) -> Result<u64, ContractError> {
+        guardian.require_auth();
+        let config =
+            read_guardian_quorum(&env).ok_or(ContractError::GuardianQuorumNotConfigured)?;
+        if !is_guardian(&env, &guardian) {
+            return Err(ContractError::NotGuardian);
+        }
+
+        let owners = read_owners_map(&env)?;
+        if owners.contains_key(new_owner.clone()) {
+            return Err(ContractError::DuplicateOwner);
+        }
+        if let Some(old_owner) = &replace_owner {
+            if !owners.contains_key(old_owner.clone()) {
+                return Err(ContractError::OwnerNotFound);
+            }
+            if *old_owner == new_owner {
+                return Err(ContractError::DuplicateOwner);
+            }
+        } else if owners.len() >= MAX_OWNERS {
+            return Err(ContractError::InvalidOwners);
+        }
+
+        let id = read_social_recovery_next_id(&env);
+        write_social_recovery_next_id(
+            &env,
+            id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+        );
+
+        let now = env.ledger().timestamp();
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(guardian.clone());
+        let mut request = SocialRecoveryRequest {
+            id,
+            new_owner: new_owner.clone(),
+            replace_owner: replace_owner.clone(),
+            approvals,
+            proposed_at: now,
+            execute_after: 0,
+            executed: false,
+        };
+        if recovery_approval_count(&request) >= config.threshold {
+            request.execute_after = now.saturating_add(SOCIAL_RECOVERY_DELAY);
+        }
+        write_social_recovery(&env, &request);
+
+        env.events().publish(
+            (symbol_short!("soc_prop"),),
+            SocialRecoveryProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                new_owner,
+                replace_owner,
+                proposed_at: now,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Adds a guardian approval to a social-recovery request. Once the quorum
+    /// is met the request records its executable time; earlier approvals are
+    /// kept for the audit trail.
+    pub fn approve_social_recovery(
+        env: Env,
+        guardian: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        guardian.require_auth();
+        let config =
+            read_guardian_quorum(&env).ok_or(ContractError::GuardianQuorumNotConfigured)?;
+        if !is_guardian(&env, &guardian) {
+            return Err(ContractError::NotGuardian);
+        }
+
+        let mut request = read_social_recovery(&env, request_id)?;
+        if request.executed {
+            return Err(ContractError::RecoveryRequestNotFound);
+        }
+        if request.execute_after != 0 {
+            return Err(ContractError::RecoveryRequestNotReady);
+        }
+        for existing in request.approvals.iter() {
+            if existing == guardian {
+                return Err(ContractError::AlreadyApproved);
+            }
+        }
+        request.approvals.push_back(guardian.clone());
+
+        if recovery_approval_count(&request) >= config.threshold {
+            request.execute_after = env
+                .ledger()
+                .timestamp()
+                .saturating_add(SOCIAL_RECOVERY_DELAY);
+        }
+        write_social_recovery(&env, &request);
+
+        env.events().publish(
+            (symbol_short!("soc_appr"),),
+            SocialRecoveryApprovedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: request_id,
+                guardian,
+                approvals: request.approvals.len(),
+                threshold: config.threshold,
+                execute_after: request.execute_after,
+            },
+        );
+        Ok(())
+    }
+
+    /// Applies a social-recovery request after quorum and the delay. Any
+    /// authenticated caller may trigger it; the guardians already authorized
+    /// the ownership change.
+    pub fn execute_social_recovery(
+        env: Env,
+        caller: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        let config =
+            read_guardian_quorum(&env).ok_or(ContractError::GuardianQuorumNotConfigured)?;
+        let mut request = read_social_recovery(&env, request_id)?;
+        if request.executed {
+            return Err(ContractError::RecoveryRequestNotFound);
+        }
+        if request.execute_after == 0 || recovery_approval_count(&request) < config.threshold {
+            return Err(ContractError::RecoveryRequestNotReady);
+        }
+        let now = env.ledger().timestamp();
+        if now < request.execute_after {
+            return Err(ContractError::RecoveryDelayActive);
+        }
+
+        let mut owners = read_owners_map(&env)?;
+        match &request.replace_owner {
+            Some(old_owner) => {
+                let weight = owners
+                    .get(old_owner.clone())
+                    .ok_or(ContractError::OwnerNotFound)?;
+                if owners.contains_key(request.new_owner.clone()) {
+                    return Err(ContractError::DuplicateOwner);
+                }
+                let mut roles = read_owner_roles(&env, old_owner);
+                if roles.is_empty() {
+                    roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
+                }
+                owners.remove(old_owner.clone());
+                owners.set(request.new_owner.clone(), weight);
+                let key = owners_key();
+                env.storage().persistent().set(&key, &owners);
+                bump_persistent(&env, &key);
+
+                update_owner_roles(&env, old_owner, &Vec::new(&env));
+                update_owner_roles(&env, &request.new_owner, &roles);
+                remove_delegations_touching(&env, old_owner);
+                purge_owner_approvals(&env, old_owner)?;
+            }
+            None => {
+                if owners.len() >= MAX_OWNERS {
+                    return Err(ContractError::InvalidOwners);
+                }
+                let current_total = read_total_weight(&env);
+                let new_total = checked_weight_add(current_total, MIN_OWNER_WEIGHT)?;
+                owners.set(request.new_owner.clone(), MIN_OWNER_WEIGHT);
+                let key = owners_key();
+                env.storage().persistent().set(&key, &owners);
+                bump_persistent(&env, &key);
+                let roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
+                update_owner_roles(&env, &request.new_owner, &roles);
+                write_total_weight(&env, new_total);
+            }
+        }
+
+        request.executed = true;
+        write_social_recovery(&env, &request);
+        env.events().publish(
+            (symbol_short!("soc_exec"),),
+            SocialRecoveryExecutedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id: request_id,
+                new_owner: request.new_owner.clone(),
+                replace_owner: request.replace_owner.clone(),
+                executed_at: now,
+            },
+        );
+        Ok(())
+    }
+
+    /// Returns the configured guardian quorum, if any.
+    pub fn get_guardian_quorum(env: Env) -> Option<GuardianQuorumConfig> {
+        read_guardian_quorum(&env)
+    }
+
+    /// Returns the enforced delay between social-recovery quorum and execution.
+    pub fn get_social_recovery_delay(_env: Env) -> u64 {
+        SOCIAL_RECOVERY_DELAY
+    }
+
+    /// Returns a social-recovery request, including its audit fields.
+    pub fn get_social_recovery(
+        env: Env,
+        request_id: u64,
+    ) -> Result<SocialRecoveryRequest, ContractError> {
+        read_social_recovery(&env, request_id)
+    }
+
+    /// Returns the enforced delay between owner-rotation quorum and activation.
+    pub fn get_owner_rotation_delay(_env: Env) -> u64 {
+        OWNER_ROTATION_DELAY
+    }
+
     /// Returns whether the contract is currently frozen.
     pub fn is_frozen(env: Env) -> bool {
         is_frozen_state(&env)
@@ -6727,6 +7555,7 @@ impl AccordContract {
                 if env.ledger().timestamp() <= *deadline => {}
             _ => return Err(ContractError::EscrowConditionNotMet),
         }
+        require_outflow_allowed(&env, &escrow.token, ProposalKindTag::Escrow)?;
         validate_token_interface(&env, &escrow.token)?;
         if token::Client::new(&env, &escrow.token)
             .try_transfer(
@@ -6769,6 +7598,7 @@ impl AccordContract {
                 if env.ledger().timestamp() >= *deadline => {}
             _ => return Err(ContractError::EscrowConditionNotMet),
         }
+        require_outflow_allowed(&env, &escrow.token, ProposalKindTag::Escrow)?;
         validate_token_interface(&env, &escrow.token)?;
         if token::Client::new(&env, &escrow.token)
             .try_transfer(

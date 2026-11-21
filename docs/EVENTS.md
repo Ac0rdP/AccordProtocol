@@ -35,6 +35,13 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `c_wgt`        | `OwnerWeightChangedEvent`        | `{ owner: Address, old_weight: u32, new_weight: u32, new_total_weight: u32, version: u32 }` |
 | `role_granted` | `RoleGrantedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
 | `role_revoked` | `RoleRevokedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
+| `stor_mig`     | `StorageMigratedEvent`           | `{ from_version: u32, to_version: u32, version: u32 }` |
+| `rot_own`      | `OwnerRotatedEvent`              | `{ old_owner: Address, new_owner: Address, weight: u32, version: u32 }` |
+| `gq_set`       | `GuardianQuorumConfiguredEvent`  | `{ guardians: Vec<Address>, threshold: u32, version: u32 }` |
+| `soc_prop`     | `SocialRecoveryProposedEvent`    | `{ id: u64, new_owner: Address, replace_owner: Option<Address>, proposed_at: u64, version: u32 }` |
+| `soc_appr`     | `SocialRecoveryApprovedEvent`    | `{ id: u64, guardian: Address, approvals: u32, threshold: u32, execute_after: u64, version: u32 }` |
+| `soc_exec`     | `SocialRecoveryExecutedEvent`    | `{ id: u64, new_owner: Address, replace_owner: Option<Address>, executed_at: u64, version: u32 }` |
+| `sc_frz`       | `ScopedFreezeChangedEvent`       | `{ scope: FreezeScope, frozen: bool, guardian: Address, version: u32 }` |
 | `p_deps`        | `ProposalDependenciesSetEvent`   | `{ id: u64, dependencies: Vec<u64>, version: u32 }` |
 | `tr_lim`        | `TreasurySpendingLimitExecutedEvent` | `{ token: Address, previous_limit: Option<i128>, new_limit: i128, window_secs: u64, version: u32 }` |
 | `tr_spnt`       | `TreasurySpendTrackedEvent`      | `{ token: Address, amount: i128, total_spent_window: i128, total_spent_lifetime: i128, version: u32 }` |

@@ -11370,6 +11370,300 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
     );
 }
 
+// ─── Storage migration registry (#960) ───────────────────────────────────────
+
+#[test]
+fn storage_migration_registry_lists_supported_versions() {
+    let (_, client, _, _, _, _, _) = setup(2);
+    let supported = client.get_supported_storage_versions();
+    assert_eq!(supported.len(), 3);
+    assert!(supported.contains(0));
+    assert!(supported.contains(STORAGE_SCHEMA_VERSION));
+    assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
+    assert!(!client.is_storage_version_supported(&99));
+}
+
+#[test]
+fn migrate_storage_enforces_registry_and_no_skips() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+
+    // Simulate a contract already on the version-1 layout.
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &1_u32);
+    });
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &0, &2),
+        Err(Ok(ContractError::SchemaVersionMismatch))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &99),
+        Err(Ok(ContractError::UnsupportedSchemaVersion))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &1),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &0),
+        Err(Ok(ContractError::SkippedSchemaVersion))
+    );
+
+    client.migrate_storage(&approvers, &1, &2);
+    assert_eq!(client.get_storage_version(), 2);
+
+    // A legacy deployment must run its legacy migrations instead of jumping
+    // straight to the current layout.
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &0_u32);
+    });
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &0, &2),
+        Err(Ok(ContractError::LegacyMigrationRequired))
+    );
+}
+
+// ─── Staged owner key rotation (#959) ────────────────────────────────────────
+
+#[test]
+fn owner_rotation_is_staged_and_preserves_weight_and_roles() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_key = Address::generate(&env);
+
+    let id = client.create_rotate_owner_proposal(
+        &owner_a,
+        &owner_c,
+        &new_key,
+        &str(&env, "rotate compromised key"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::OwnerRotationDelayActive))
+    );
+
+    set_timestamp(&env, NOW + OWNER_ROTATION_DELAY);
+    client.execute(&owner_a, &id);
+
+    let owners = client.get_owners();
+    assert!(!owners.contains(&owner_c));
+    assert!(owners.contains(&new_key));
+    assert_eq!(client.get_owner_weight(&new_key), 1);
+    assert_eq!(client.get_total_weight(), 3);
+    assert_eq!(client.get_threshold(), 2);
+    assert_eq!(client.get_roles(&new_key).len(), 3);
+    assert_eq!(client.get_roles(&owner_c).len(), 0);
+}
+
+#[test]
+fn rotate_owner_proposal_rejects_unknown_owner_and_existing_target() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_key = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_rotate_owner_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &new_key,
+            &str(&env, "unknown owner"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::OwnerNotFound))
+    );
+    assert_eq!(
+        client.try_create_rotate_owner_proposal(
+            &owner_a,
+            &owner_c,
+            &owner_b,
+            &str(&env, "already an owner"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::DuplicateOwner))
+    );
+}
+
+// ─── Guardian-quorum social recovery (#958) ──────────────────────────────────
+
+#[test]
+fn social_recovery_replaces_lost_owner_after_quorum_and_delay() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian_a = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+    let new_key = Address::generate(&env);
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    let guardians = Vec::from_array(&env, [guardian_a.clone(), guardian_b.clone()]);
+    client.configure_guardian_quorum(&approvers, &guardians, &2);
+
+    let id = client.propose_social_recovery(&guardian_a, &new_key, &Some(owner_c.clone()));
+    assert_eq!(
+        client.try_execute_social_recovery(&owner_a, &id),
+        Err(Ok(ContractError::RecoveryRequestNotReady))
+    );
+
+    client.approve_social_recovery(&guardian_b, &id);
+    assert_eq!(
+        client.try_execute_social_recovery(&owner_a, &id),
+        Err(Ok(ContractError::RecoveryDelayActive))
+    );
+
+    set_timestamp(&env, NOW + SOCIAL_RECOVERY_DELAY);
+    client.execute_social_recovery(&owner_a, &id);
+
+    let owners = client.get_owners();
+    assert!(!owners.contains(&owner_c));
+    assert!(owners.contains(&new_key));
+    assert_eq!(client.get_owner_weight(&new_key), 1);
+    assert_eq!(client.get_total_weight(), 3);
+    assert_eq!(client.get_roles(&new_key).len(), 3);
+
+    let request = client.get_social_recovery(&id);
+    assert!(request.executed);
+    assert_eq!(request.approvals.len(), 2);
+}
+
+#[test]
+fn social_recovery_requires_configured_guardians_and_distinct_approvals() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let guardian_a = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+    let new_key = Address::generate(&env);
+
+    assert_eq!(
+        client.try_propose_social_recovery(&owner_a, &new_key, &None),
+        Err(Ok(ContractError::GuardianQuorumNotConfigured))
+    );
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    let guardians = Vec::from_array(&env, [guardian_a.clone(), guardian_b.clone()]);
+    client.configure_guardian_quorum(&approvers, &guardians, &2);
+
+    assert_eq!(
+        client.try_propose_social_recovery(&owner_a, &new_key, &None),
+        Err(Ok(ContractError::NotGuardian))
+    );
+    assert_eq!(
+        client.try_configure_guardian_quorum(
+            &approvers,
+            &Vec::from_array(&env, [guardian_a.clone(), guardian_a.clone()]),
+            &2,
+        ),
+        Err(Ok(ContractError::InvalidGuardianQuorum))
+    );
+
+    let id = client.propose_social_recovery(&guardian_a, &new_key, &None);
+    assert_eq!(
+        client.try_approve_social_recovery(&guardian_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+// ─── Scoped emergency freezes (#957) ─────────────────────────────────────────
+
+#[test]
+fn scoped_asset_freeze_blocks_only_that_asset() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+
+    client.freeze_asset(&guardian, &token_client.address, &true);
+    assert!(client.is_asset_frozen(&token_client.address));
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 10, &token_client.address),
+            &str(&env, "frozen asset"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+
+    // Governance remains available while the asset is frozen.
+    let id = client.create_change_threshold_proposal(
+        &owner_a,
+        &2,
+        &str(&env, "governance while frozen"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_eq!(client.get_threshold(), 2);
+
+    client.freeze_asset(&guardian, &token_client.address, &false);
+    assert!(!client.is_asset_frozen(&token_client.address));
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "unfrozen asset"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        client.get_proposal(&transfer_id).status,
+        ProposalStatus::Pending
+    );
+}
+
+#[test]
+fn scoped_kind_freeze_isolates_operation_families() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+
+    client.freeze_proposal_kind(&guardian, &ProposalKindTag::Transfer, &true);
+    assert!(client.is_proposal_kind_frozen(&ProposalKindTag::Transfer));
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 10, &token_client.address),
+            &str(&env, "frozen kind"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_freeze_asset(&owner_a, &token_client.address, &true),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    // Ownership and governance kinds still work.
+    let id = client.create_change_threshold_proposal(
+        &owner_a,
+        &2,
+        &str(&env, "governance while kind frozen"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    client.freeze_proposal_kind(&guardian, &ProposalKindTag::Transfer, &false);
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "unfrozen kind"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        client.get_proposal(&transfer_id).status,
+        ProposalStatus::Pending
+    );
+}
+
 // ─── Tests for Proposal Dependency Graph (#940) ─────────────────────────────
 
 #[test]
