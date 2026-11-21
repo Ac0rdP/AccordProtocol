@@ -66,6 +66,26 @@ Every event payload includes a `version: u32` field set to `EVENT_SCHEMA_VERSION
 | `2` | `ProposalExecutedEvent` drops `transfers`; transfers remain in `ProposalCreatedEvent` and on-chain state. |
 | `3` | Adds `abstain`, `unabst`, `softapr`, and `unsftap` participation events. Abstentions and soft approvals never alter binding approval weight or quorum. |
 
+### Additive and breaking changes
+
+The version number is a schema identifier, not a promise that every change is
+backward-compatible for every consumer. Apply these rules when extending the
+event surface:
+
+| Change | Contract rule | Indexer/SDK compatibility |
+|--------|---------------|---------------------------|
+| Add a new topic/event | Bump the global schema version and document its topic and payload here. | Additive for consumers that ignore unknown topics. Indexers must retain or quarantine unknown topics rather than misdecode or silently discard them. |
+| Add, remove, rename, or change a payload field | Bump the global schema version; do not change the meaning of an existing field without changing its name and version. | Breaking for strict decoders. Older decoders must continue decoding the older version or explicitly quarantine the unsupported newer version. |
+| Rename a topic, change a field type/unit, or change which action emits an event | Bump the global schema version and record the semantic change. | Breaking; consumers must update their version-specific decoder and event handling. |
+| Add an SDK helper or a decoder for a known event/version | No contract schema change unless the event itself changes. | Additive when existing SDK APIs and decoded values retain their behavior. |
+
+Even a change that is additive for tolerant consumers gets a new global
+`EVENT_SCHEMA_VERSION`. SDKs should expose the event version and preserve
+unknown events/payloads where possible; they must not infer that a newer
+version is compatible merely because the fields they use still exist.
+Indexers should decode only registered `(topic, version)` pairs, quarantine
+unknown pairs with the raw payload, and keep processing unrelated events.
+
 ### Stability guarantees for consumers
 
 Within a given schema version, consumers can rely on:
