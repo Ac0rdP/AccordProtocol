@@ -7,6 +7,7 @@ import { stroopsToDisplay } from "../lib/soroban";
 import { ApprovalBar } from "../components/ApprovalBar";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
+import { MarkdownDescription } from "../components/MarkdownDescription";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { PageState } from "../components/PageState";
@@ -480,9 +481,10 @@ export function ProposalDetailPage({
         <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
           Description
         </p>
-        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-zinc-300">
-          {proposal.description || "No description provided."}
-        </p>
+        <MarkdownDescription
+          text={proposal.description}
+          className="mt-3 text-sm text-zinc-300"
+        />
       </section>
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">

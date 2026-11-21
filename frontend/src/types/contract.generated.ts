@@ -141,6 +141,11 @@ export type ContractProposalApprovalProgress = {
   approval_weight: number;
   quorum_weight: number;
   total_weight: number;
+  abstention_count: number;
+  abstention_weight: number;
+  participation_weight: number;
+  soft_approval_count: number;
+  soft_approval_weight: number;
 };
 
 export type ContractOwnerWeight = {
@@ -212,6 +217,46 @@ export type ContractProposalRevokedEvent = {
   approvals: number;
   weight: number;
   cumulative_weight: number;
+  version: number;
+};
+
+export type ContractProposalAbstainedEvent = {
+  id: number;
+  abstainer: string;
+  abstention_count: number;
+  weight: number;
+  cumulative_abstention_weight: number;
+  participation_weight: number;
+  version: number;
+};
+
+export type ContractProposalAbstentionRevokedEvent = {
+  id: number;
+  abstainer: string;
+  abstention_count: number;
+  weight: number;
+  cumulative_abstention_weight: number;
+  participation_weight: number;
+  version: number;
+};
+
+export type ContractProposalSoftApprovedEvent = {
+  id: number;
+  supporter: string;
+  soft_approval_count: number;
+  weight: number;
+  cumulative_soft_weight: number;
+  participation_weight: number;
+  version: number;
+};
+
+export type ContractProposalSoftApprovalRevokedEvent = {
+  id: number;
+  supporter: string;
+  soft_approval_count: number;
+  weight: number;
+  cumulative_soft_weight: number;
+  participation_weight: number;
   version: number;
 };
 
@@ -478,4 +523,8 @@ export enum ContractError {
   EscrowNotFound = 63,
   EscrowConditionNotMet = 64,
   EscrowFundsUnavailable = 65,
+  AlreadyAbstained = 66,
+  NotAbstained = 67,
+  AlreadySoftApproved = 68,
+  NotSoftApproved = 69,
 }

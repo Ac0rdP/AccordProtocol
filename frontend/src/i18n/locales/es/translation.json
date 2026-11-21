@@ -1,6 +1,7 @@
 {
   "nav": {
     "dashboard": "panel",
+    "portfolio": "cartera",
     "inbox": "bandeja de propuestas",
     "recurring": "recurrentes",
     "history": "historial",

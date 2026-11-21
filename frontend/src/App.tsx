@@ -36,6 +36,10 @@ import { FeedbackWidget } from "./components/FeedbackWidget";
 import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
+import {
+  getActiveContractId,
+  setActiveContractId,
+} from "./lib/activeContract";
 import { resolvePublicDeepLink } from "./lib/shareLinks";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
 import { AlertRulesPage } from "./pages/AlertRulesPage";
@@ -52,6 +56,7 @@ import { OwnerAvailabilityPage } from "./pages/OwnerAvailabilityPage";
 import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
+import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TemplateMarketplacePage } from "./pages/TemplateMarketplacePage";
@@ -62,6 +67,7 @@ import type { Proposal } from "./types/accord";
 const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
   { key: "inbox", to: "/app/inbox" },
+  { key: "portfolio", to: "/app/portfolio" },
   { key: "bulk", to: "/app/bulk" },
   { key: "recurring", to: "/app/recurring" },
   { key: "history", to: "/app/history" },
@@ -85,6 +91,9 @@ type OptimisticPatch = {
 export default function App() {
   const { t } = useTranslation();
   const [showCreate, setShowCreate] = useState(false);
+  const [activeContractId, setActiveContractSelection] = useState(
+    () => getActiveContractId(),
+  );
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
@@ -111,7 +120,20 @@ export default function App() {
     refresh,
     optimisticUpdate,
     lastSuccessAt,
-  } = useContract(wallet.address);
+  } = useContract(wallet.address, activeContractId);
+
+  const handleSelectPortfolioContract = useCallback((contractId: string) => {
+    try {
+      setActiveContractId(contractId);
+      setActiveContractSelection(contractId);
+    } catch (error) {
+      setTxError(
+        error instanceof Error
+          ? error.message
+          : "Could not switch the active contract.",
+      );
+    }
+  }, []);
 
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
@@ -594,6 +616,15 @@ export default function App() {
                 element={<OnboardingPage wallet={wallet} onComplete={refresh} />}
               />
               <Route
+                path="portfolio"
+                element={
+                  <PortfolioDashboardPage
+                    activeContractId={activeContractId}
+                    onSelectContract={handleSelectPortfolioContract}
+                  />
+                }
+              />
+              <Route
                 index
               element={
                 routeParams.id ? (
@@ -690,6 +721,7 @@ export default function App() {
                   stats={stats}
                   walletAddress={wallet.address}
                   ownerAddresses={ownerAddresses}
+                  contractId={activeContractId}
                   onProposalSubmitted={refresh}
                 />
               }
@@ -715,6 +747,7 @@ export default function App() {
                   stats={stats}
                   walletAddress={wallet.address}
                   ownerAddresses={ownerAddresses}
+                  contractId={activeContractId}
                   onProposalSubmitted={refresh}
                 />
               }
