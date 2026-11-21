@@ -486,7 +486,7 @@ mod tests {
             "events": ["unknown.event"]
         }"#;
         let errs = validate_webhook_input(payload).unwrap_err();
-        let codes: Vec<&str> = errs.iter().map(|e| e.code.as_str()).collect();
+        let codes: Vec<&str> = errs.iter().map(|e| e.code).collect();
         assert!(codes.contains(&"INVALID_TARGET_TYPE"));
         assert!(codes.contains(&"INVALID_WEBHOOK_URL"));
         assert!(codes.contains(&"INVALID_EVENT_TYPE"));

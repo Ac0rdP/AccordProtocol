@@ -60,6 +60,7 @@ import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TemplateMarketplacePage } from "./pages/TemplateMarketplacePage";
+import { IntegrationMarketplacePage } from "./pages/IntegrationMarketplacePage";
 import { ProposalInboxPage } from "./pages/ProposalInboxPage";
 import type { ProposalInboxEntry } from "./lib/proposalInbox";
 import type { Proposal } from "./types/accord";
@@ -76,6 +77,7 @@ const NAV_ITEMS = [
   { key: "owners", to: "/app/owners" },
   { key: "availability", to: "/app/availability" },
   { key: "templates", to: "/app/templates" },
+  { key: "integrations", to: "/app/integrations" },
   { key: "notifications", to: "/app/notifications" },
   { key: "alerts", to: "/app/alerts" },
   { key: "freshness", to: "/app/freshness" },
@@ -685,6 +687,7 @@ export default function App() {
               }
             />
             <Route path="templates" element={<TemplateMarketplacePage />} />
+            <Route path="integrations" element={<IntegrationMarketplacePage />} />
             <Route
               path="availability"
               element={

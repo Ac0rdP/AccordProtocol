@@ -160,6 +160,17 @@ export const PAGE_STATE_MATRIX: PageStateMatrixEntry[] = [
     },
   },
   {
+    page: "IntegrationMarketplacePage",
+    route: "/app/integrations",
+    dataSource: "useIntegrationMarketplace (fetchIntegrationMarketplace)",
+    dataBacked: true,
+    states: {
+      loading: { message: "Loading integration marketplace…", retry: false },
+      empty: { message: "No reviewed integrations available", retry: false },
+      error: { message: "Could not load the integration marketplace", retry: true },
+    },
+  },
+  {
     page: "OwnerAvailabilityPage",
     route: "/app/availability",
     dataSource: "useContract(owners/proposals) + useOwnerAvailability",

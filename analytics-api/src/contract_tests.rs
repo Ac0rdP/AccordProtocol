@@ -36,7 +36,7 @@ use crate::{
     billing,
     branding,
     limits::{Limits, LimitsConfig},
-    freshness, funnel, proposals, report_api, spend, templates, workflows,
+    freshness, funnel, integrations, proposals, report_api, spend, templates, workflows,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -246,6 +246,9 @@ fn openapi_query_parameters_match_the_validators() {
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
+        ("/integrations", "get", integrations::LIST_PARAMS),
+        ("/integrations/{id}", "put", integrations::WRITE_PARAMS),
+        ("/integrations/{id}", "delete", integrations::WRITE_PARAMS),
         ("/report-templates", "get", templates::LIST_PARAMS),
         ("/report-templates", "put", templates::WRITE_PARAMS),
         ("/report-templates", "delete", templates::WRITE_PARAMS),
@@ -338,6 +341,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals", "get"),
         ("/proposals/funnel", "get"),
         ("/reports", "get"),
+        ("/integrations", "get"),
         ("/report-templates", "get"),
         ("/branding", "get"),
         ("/workflows/webhooks", "get"),
@@ -419,6 +423,9 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/spend/by-category"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
+        ("GET", "/integrations"),
+        ("PUT", "/integrations/slack-notifications"),
+        ("DELETE", "/integrations/slack-notifications"),
         ("GET", "/report-templates"),
         ("PUT", "/report-templates"),
         ("DELETE", "/report-templates"),
@@ -2098,11 +2105,12 @@ async fn branding_rejects_bad_requests_before_the_database() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(first_detail(&body).1, "INVALID_LIMIT");
 
-    let (status, _, body) = send(
+    let (status, body) = send(
         &state,
         "PUT",
         "/branding?contractId=test-contract&network=testnet",
         r#"{"primaryColor":"not-hex","customDomain":"bad domain"}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2120,11 +2128,12 @@ async fn branding_rejects_bad_requests_before_the_database() {
 async fn branding_writes_require_the_admin_token_when_configured() {
     let mut state = lazy_state();
     state.admin_token = Some(Arc::from("secret-token"));
-    let (status, _, _) = send(
+    let (status, _) = send(
         &state,
         "PUT",
         "/branding?contractId=test-contract&network=testnet",
         r#"{"brandName":"Acme"}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -2139,11 +2148,12 @@ async fn billing_rejects_bad_requests_before_the_database() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(first_detail(&body).1, "INVALID_CONTRACT_ID");
 
-    let (status, _, body) = send(
+    let (status, body) = send(
         &state,
         "PUT",
         "/billing/plan?contractId=test-contract&network=testnet",
         r#"{"planTier":"gold","billingEmail":"not-an-email"}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2161,11 +2171,12 @@ async fn billing_rejects_bad_requests_before_the_database() {
 async fn billing_plan_updates_require_admin_token_when_configured() {
     let mut state = lazy_state();
     state.admin_token = Some(Arc::from("secret-token"));
-    let (status, _, _) = send(
+    let (status, _) = send(
         &state,
         "PUT",
         "/billing/plan?contractId=test-contract&network=testnet",
         r#"{"planTier":"pro"}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -2180,11 +2191,12 @@ async fn workflow_webhooks_reject_bad_requests_before_the_database() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(first_detail(&body).1, "INVALID_LIMIT");
 
-    let (status, _, body) = send(
+    let (status, body) = send(
         &state,
         "POST",
         "/workflows/webhooks?contractId=test-contract&network=testnet",
         r#"{"name":"Hook","targetType":"bad","url":"http://127.0.0.1/x","events":["bad.evt"]}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2203,11 +2215,12 @@ async fn workflow_webhooks_reject_bad_requests_before_the_database() {
 async fn workflow_webhook_writes_require_admin_token_when_configured() {
     let mut state = lazy_state();
     state.admin_token = Some(Arc::from("secret-token"));
-    let (status, _, _) = send(
+    let (status, _) = send(
         &state,
         "POST",
         "/workflows/webhooks?contractId=test-contract&network=testnet",
         r#"{"name":"Zapier","targetType":"zapier","url":"https://hooks.zapier.com/hooks/catch/1/2/","events":["proposal.created"]}"#,
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

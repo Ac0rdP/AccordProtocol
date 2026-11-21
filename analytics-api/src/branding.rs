@@ -478,7 +478,7 @@ mod tests {
             "customDomain": "not a domain"
         }"##;
         let errors = validate_input("testnet", "C123", payload).unwrap_err();
-        let codes: Vec<&str> = errors.iter().map(|e| e.code.as_str()).collect();
+        let codes: Vec<&str> = errors.iter().map(|e| e.code).collect();
         assert!(codes.contains(&"INVALID_LOGO_URL"));
         assert!(codes.contains(&"INVALID_COLOR"));
         assert!(codes.contains(&"INVALID_DOMAIN"));

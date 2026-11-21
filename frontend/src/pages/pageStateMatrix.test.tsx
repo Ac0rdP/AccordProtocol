@@ -20,10 +20,12 @@ import { SettingsPage } from "./SettingsPage";
 import { ProposalDetailPage } from "./ProposalDetailPage";
 import { BulkActionsPage } from "./BulkActionsPage";
 import { TemplateMarketplacePage } from "./TemplateMarketplacePage";
+import { IntegrationMarketplacePage } from "./IntegrationMarketplacePage";
 import { OwnerAvailabilityPage } from "./OwnerAvailabilityPage";
 import { NotificationSchedulePage } from "./NotificationSchedulePage";
 import { useTreasuryAnalytics } from "../hooks/useTreasuryAnalytics";
 import { useTemplateMarketplace } from "../hooks/useTemplateMarketplace";
+import { useIntegrationMarketplace } from "../hooks/useIntegrationMarketplace";
 import { useNotificationSchedule } from "../hooks/useNotificationSchedule";
 import { DEFAULT_NOTIFICATION_SCHEDULE } from "../lib/notificationSchedule";
 import type { TreasuryAnalytics } from "../types/accord";
@@ -64,6 +66,10 @@ vi.mock("../hooks/useTreasuryAnalytics", () => ({
 
 vi.mock("../hooks/useTemplateMarketplace", () => ({
   useTemplateMarketplace: vi.fn(),
+}));
+
+vi.mock("../hooks/useIntegrationMarketplace", () => ({
+  useIntegrationMarketplace: vi.fn(),
 }));
 
 vi.mock("../hooks/useNotificationSchedule", () => ({
@@ -247,6 +253,19 @@ const RENDERERS: Record<string, (kind: PageStateKind) => void> = {
   TemplateMarketplacePage: (kind) => {
     scoreTemplateMarketplace(kind);
     render(<TemplateMarketplacePage />);
+  },
+  IntegrationMarketplacePage: (kind) => {
+    vi.mocked(useIntegrationMarketplace).mockReturnValue({
+      plugins: [],
+      installs: {},
+      loading: kind === "loading",
+      error: kind === "error" ? "boom" : null,
+      actionError: null,
+      retry: noop,
+      install: async () => {},
+      uninstall: async () => {},
+    });
+    render(<IntegrationMarketplacePage />);
   },
   OwnerAvailabilityPage: (kind) => {
     render(

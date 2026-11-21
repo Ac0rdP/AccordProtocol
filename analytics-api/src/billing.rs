@@ -424,7 +424,7 @@ mod tests {
         let errs =
             validate_plan_input(br#"{"planTier":"platinum","billingEmail":"bad-email"}"#)
                 .unwrap_err();
-        let codes: Vec<&str> = errs.iter().map(|e| e.code.as_str()).collect();
+        let codes: Vec<&str> = errs.iter().map(|e| e.code).collect();
         assert!(codes.contains(&"INVALID_PLAN_TIER"));
         assert!(codes.contains(&"INVALID_EMAIL"));
     }

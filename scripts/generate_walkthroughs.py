@@ -391,11 +391,135 @@ generate_svg(
     '#38bdf8'
 )
 
+# 6. RBAC & Roles Management
+generate_svg(
+    'docs/assets/walkthroughs/06-rbac-roles-management.svg',
+    'Walkthrough: RBAC & Roles Management',
+    'Grant and revoke Proposer, Approver, Executor, and Viewer roles',
+    'Inspect Current Role Assignments',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">1. Query on-chain roles with get_roles and get_role_members</text>
+    <rect x="90" y="260" width="440" height="38" rx="6" fill="#1e293b" stroke="#3b82f6" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#93c5fd">Owner GABC... | Roles: [Proposer, Approver] | RoleVersion: 1</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Separation of duties prevents one key from proposing and executing alone.</text>
+    ''',
+    'Propose Grant or Revoke Role',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">2. Submit create_grant_role_proposal or create_revoke_role_proposal</text>
+    <rect x="90" y="260" width="440" height="38" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#fde68a">Proposal #24: Grant Executor to GXYZ... (Quorum: 2/3)</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Role changes require full multisig approval before taking effect.</text>
+    ''',
+    'Verify Updated Permissions',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">3. Execute proposal and confirm with has_role</text>
+    <rect x="90" y="260" width="440" height="38" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a7f3d0">has_role(GXYZ..., Executor) =&gt; true | Event: role_gr</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Unauthorized calls now fail deterministically with MissingRole (52).</text>
+    ''',
+    'RBAC GOVERNANCE',
+    '#3b82f6'
+)
+
+# 7. Weighted Approvals & Quorum
+generate_svg(
+    'docs/assets/walkthroughs/07-weighted-approvals-quorum.svg',
+    'Walkthrough: Weighted Approvals & Quorum',
+    'Configure owner voting weights while enforcing the 50% single-owner cap',
+    'Check Owner Weights & Total Weight',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">1. Read weights via get_owner_weights and get_total_weight</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#a855f7" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#e9d5ff">Weights: [40, 30, 20, 10] | Total: 100 | Threshold: 60</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">No single owner may exceed MAX_SINGLE_OWNER_WEIGHT_PCT (50%).</text>
+    ''',
+    'Adjust Weight via Governance Proposal',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">2. Submit create_change_weight_proposal for target owner</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#fde68a">Proposal #25: Set weight(GDEF...) = 25 (Validated &lt;= 50% cap)</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Contract blocks changes that violate WouldBreakQuorum (48).</text>
+    ''',
+    'Weighted Quorum Reached',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">3. Cumulative approval weight meets or exceeds threshold</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a7f3d0">Approved Weight: 70 / 60 =&gt; Status: Ready for Execution</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Each approve() call adds the signer's effective weight once.</text>
+    ''',
+    'WEIGHTED QUORUM',
+    '#a855f7'
+)
+
+# 8. Vote Delegation
+generate_svg(
+    'docs/assets/walkthroughs/08-vote-delegation.svg',
+    'Walkthrough: Vote Delegation',
+    'Delegate voting weight temporarily and inspect effective quorum power',
+    'Inspect Active Delegations',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">1. Query get_delegations and get_active_delegations</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#06b6d4" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a5f3fc">Alice (w=30) -&gt; Bob (w=25) | Bob Effective Weight: 55</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Delegations prevent quorum stalls when an owner is unavailable.</text>
+    ''',
+    'Check Effective Weight Before Voting',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">2. Verify get_effective_weight(delegate) on-chain</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#fde68a">get_effective_weight(Bob) =&gt; 55 | get_effective_weight(Alice) =&gt; 0</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Delegated weight cannot be double-counted by the delegator.</text>
+    ''',
+    'Approve with Combined Weight',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">3. Delegate approves proposal with combined effective weight</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a7f3d0">Bob approved #26 (+55 weight) =&gt; Quorum Reached</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Delegators can revoke at any time to reclaim their voting weight.</text>
+    ''',
+    'DELEGATION',
+    '#06b6d4'
+)
+
+# 9. Recurring Payments Governance
+generate_svg(
+    'docs/assets/walkthroughs/09-recurring-payments-governance.svg',
+    'Walkthrough: Recurring Payments Governance',
+    'Create, disburse, pause, resume, modify, and cancel recurring schedules',
+    'Create & Approve Schedule',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">1. Submit create_recurring_proposal with interval and cap</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#6366f1" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#c7d2fe">Schedule #4: 2,000 USDC every 2,592,000s (30d) | Cap: 24,000</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Once approved and executed, the schedule enters Active state.</text>
+    ''',
+    'Permissionless Disbursement',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">2. Call disburse_recurring(schedule_id) when interval elapses</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#1e293b" stroke="#f59e0b" stroke-width="1" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#fde68a">get_next_disbursement_time(4) =&gt; due | Disbursed: 2,000 USDC</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Early calls fail safely with RecurringIntervalNotElapsed (36).</text>
+    ''',
+    'Pause, Resume & Cancel Controls',
+    '''
+    <text x="90" y="240" font-family="sans-serif" font-size="14" font-weight="600" fill="#f8fafc">3. Govern active streams with pause, resume, modify, or cancel</text>
+    <rect x="90" y="260" width="460" height="38" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1.5" />
+    <text x="105" y="284" font-family="sans-serif" font-size="13" fill="#a7f3d0">create_pause_recurring_proposal -&gt; Paused | Resume / Cancel</text>
+    <text x="90" y="330" font-family="sans-serif" font-size="13" fill="#94a3b8">Cancelled schedules are terminal and return ScheduleTerminal (41).</text>
+    ''',
+    'RECURRING OPS',
+    '#6366f1'
+)
+
 # Also generate corresponding animated GIFs for maximum compatibility
 generate_gif('docs/assets/walkthroughs/01-wallet-connection-onboarding.gif', 320, 200, 3, 'Onboarding', ['Testnet', 'Fund', 'Connect'])
 generate_gif('docs/assets/walkthroughs/02-create-multisig-proposal.gif', 320, 200, 3, 'Create Proposal', ['New', 'Params', 'Simulate'])
 generate_gif('docs/assets/walkthroughs/03-approve-and-execute-proposal.gif', 320, 200, 3, 'Approve & Execute', ['Review', 'Approve', 'Execute'])
 generate_gif('docs/assets/walkthroughs/04-recurring-payroll-schedule.gif', 320, 200, 3, 'Payroll Stream', ['Config', 'Consensus', 'Disburse'])
 generate_gif('docs/assets/walkthroughs/05-treasury-analytics-monitoring.gif', 320, 200, 3, 'Analytics & Audit', ['Overview', 'Quorum', 'Event Feed'])
+generate_gif('docs/assets/walkthroughs/06-rbac-roles-management.gif', 320, 200, 3, 'RBAC Governance', ['Inspect', 'Propose', 'Verify'])
+generate_gif('docs/assets/walkthroughs/07-weighted-approvals-quorum.gif', 320, 200, 3, 'Weighted Quorum', ['Weights', 'Adjust', 'Quorum'])
+generate_gif('docs/assets/walkthroughs/08-vote-delegation.gif', 320, 200, 3, 'Delegation', ['Inspect', 'Effective', 'Approve'])
+generate_gif('docs/assets/walkthroughs/09-recurring-payments-governance.gif', 320, 200, 3, 'Recurring Ops', ['Create', 'Disburse', 'Controls'])
 
 print("All walkthrough assets generated successfully.")
