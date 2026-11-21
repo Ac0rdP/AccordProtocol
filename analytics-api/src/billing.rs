@@ -282,7 +282,7 @@ pub(crate) async fn get_plan(
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
 ) -> ApiResult<Json<BillingSummary>> {
     let mut details = Vec::new();
-    unknown_parameters(&raw, QUERY_PARAMS, &mut details);
+    unknown_parameters(&raw, &mut details);
     let target = resolve_target(&state.scope, &raw, &mut details);
     if !details.is_empty() {
         return Err((StatusCode::BAD_REQUEST, Json(ApiError::invalid(details))));
@@ -336,10 +336,10 @@ pub(crate) async fn update_plan(
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> ApiResult<Json<BillingSummary>> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
-    unknown_parameters(&raw, QUERY_PARAMS, &mut details);
+    unknown_parameters(&raw, &mut details);
     let target = resolve_target(&state.scope, &raw, &mut details);
     if !details.is_empty() {
         return Err((StatusCode::BAD_REQUEST, Json(ApiError::invalid(details))));

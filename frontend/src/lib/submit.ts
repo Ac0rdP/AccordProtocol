@@ -522,10 +522,9 @@ export async function simulateProposalExecution(
   }
 
   const result = simulation as rpc.Api.SimulateTransactionSuccessResponse;
-  const authorizationEntryCount = result.results?.reduce(
-    (count, item) => count + (Array.isArray(item.auth) ? item.auth.length : 0),
-    0,
-  ) ?? 0;
+  const authorizationEntryCount = Array.isArray(result.result?.auth)
+    ? result.result.auth.length
+    : 0;
   return {
     feeEstimate: Number(BigInt(result.minResourceFee) + 100000n) / 10_000_000,
     authorizationEntryCount,
@@ -590,7 +589,7 @@ export async function createProposalWithAttachment(
     xdr.ScVal.scvString(description),
     nativeToScVal(deadlineTs, { type: "u64" }),
     proposalCategoryScVal(category),
-    nativeToScVal(attachmentDigest, { type: "bytesN", length: 32 }),
+    nativeToScVal(attachmentDigest, { type: "bytes" }),
   ]);
 }
 

@@ -354,7 +354,7 @@ pub(crate) async fn put(
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> ApiResult<Json<BrandingRecord>> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
     unknown_parameters(&raw, WRITE_PARAMS, &mut details);
@@ -411,7 +411,7 @@ pub(crate) async fn delete(
     headers: HeaderMap,
     axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
 ) -> ApiResult<Json<ResetResponse>> {
-    admin::require_token(state.admin_token.as_deref(), &headers)?;
+    admin::require(&state, &headers)?;
 
     let mut details = Vec::new();
     unknown_parameters(&raw, WRITE_PARAMS, &mut details);
