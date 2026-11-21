@@ -102,6 +102,34 @@ of *older* events into a store that already holds *newer* ones correct.
 After a completed backfill the live indexer's checkpoint is advanced to the
 first ledger after the covered range, never backwards.
 
+#### Parallel backfill
+
+Set `BACKFILL_WORKERS` above `1` to split the range into shards of
+`BACKFILL_SHARD_SIZE` ledgers that are walked concurrently. The default is `1`,
+which keeps the single-cursor walk above and changes nothing for existing
+deployments.
+
+```bash
+BACKFILL_WORKERS=4 BACKFILL_SHARD_SIZE=50000 npm run backfill
+```
+
+- Every shard has its own checkpoint in `backfill_shards` (Postgres migration
+  `0009_backfill_shards.sql`): status, RPC cursor, last ledger, pages, events and
+  attempts. The checkpoint is written *after* the page's events, so replaying a
+  shard from any checkpoint is safe — inserts are keyed by event id.
+- A shard that fails is retried from its own cursor up to
+  `BACKFILL_SHARD_MAX_RETRIES` times (exponential backoff from
+  `BACKFILL_SHARD_RETRY_DELAY_MS`). If it still fails it stays `failed` with its
+  checkpoint while the other shards finish; re-running `backfill` resumes only
+  the unfinished shards.
+- The live indexer's checkpoint and the running balances are only updated once
+  **every** shard is done, so a partially covered range never hands over to the
+  live indexer.
+- Shard boundaries are anchored at the range start, so a later run whose chain
+  tip moved forward keeps finished shards and only extends the last one. A
+  different start ledger or shard size begins a new job.
+- `reindex` (and any rewind past a shard) discards shard checkpoints.
+
 ### Reindex
 
 Clears the store (entries, protocol events, balances, reconciliation results)
@@ -199,12 +227,49 @@ After either event, the indexed state equals the chain state up to the final
 ledger — never ahead of it. `indexer/test/finality.test.js` asserts that
 invariant after both a not-yet-final ledger and a rollback.
 
+## Chain-tip lag and finality-depth monitoring
+
+The indexer tracks how far it trails the chain and alerts on it. Three checks each report `ok`, `warn` or `critical`:
+
+- **`tip_lag`** — ledgers behind the tip *above* the `LEDGER_FINALITY_LAG` floor (warn 20, critical 100), so a larger finality lag never alerts by itself.
+- **`checkpoint_age`** — seconds since the checkpoint last advanced (warn 120, critical 600). It keeps growing while batches fail.
+- **`finality_depth`** — confirmations on the newest indexed ledger; critical when below `FINALITY_MIN_DEPTH` (default `LEDGER_FINALITY_LAG`), i.e. non-final data was indexed.
+
+Metrics: `accord_indexer_chain_tip_lag_ledgers`, `..._chain_tip_lag_seconds`, `..._finality_depth_ledgers`, `..._checkpoint_age_seconds`, `..._lag_alert_level{check}`, `..._lag_threshold{check,level}` and `..._lag_alerts_total{check,level}`. `GET /lag` returns the current evaluation and `/status` embeds it (a `critical` level reports `degraded`). Settings and suggested Prometheus alerts are in [docs/OPERATIONS.md](../docs/OPERATIONS.md); response steps are in the [runbook](../docs/RUNBOOK.md#chain-tip-lag).
+
+The monitor is idempotent: it only records *when the indexed ledger changed*, so replaying an observation changes nothing. Its state persists in `lag_monitor_state` (Postgres migration `0010_lag_monitor_state.sql`), so a restart keeps the checkpoint age and does not re-fire an active alert. It is on by default (`LAG_MONITOR_ENABLED=false` disables it).
+
+## Cash-runway forecast
+
+`GET /runway?token=USDC` (default `USDC`; `XLM` also works) forecasts how long the treasury balance lasts from its indexed flows:
+
+```
+net burn/day = (outflow - inflow) over the window / window days
+               + RUNWAY_RECURRING_OUTFLOW_PER_DAY - RUNWAY_RECURRING_INFLOW_PER_DAY
+runway days  = balance / net burn/day
+```
+
+The window is `RUNWAY_LOOKBACK_DAYS` (default 90), shortened to the age of the first entry when history is younger. The response gives `status` (`burning`, `sustainable`, `beyond_horizon`, `depleted` or `no_data`), `runwayDays` and `depletionDate` (both `null` when not burning), plus the inputs used. Recurring amounts are base units per day and default to `0`, so by default the forecast rests on history alone; `RUNWAY_HORIZON_DAYS` (default 3650) caps the answer.
+
+The forecast is computed on demand from the already-deduplicated ledger entries and persists nothing, so it is idempotent and identical after any replay, backfill or reindex.
+
+## Outflow anomaly detection
+
+`GET /anomalies?token=USDC` scores the treasury's recent outflows against their own history and flags unusual ones. Transfers and recurring disbursements both settle as token outflows, so both are covered.
+
+Each outflow in the last `ANOMALY_REPORT_DAYS` is scored against the outflows that came *before it* in the preceding `ANOMALY_LOOKBACK_DAYS`, with a robust z-score: `(amount - median) / max(1.4826 * MAD, median / 10, 1)`. It is flagged when the score reaches `ANOMALY_THRESHOLD`, and never before `ANOMALY_MIN_SAMPLES` earlier outflows exist (the score is then `null`). The median/MAD baseline is not skewed by the outliers it hunts, and the floor stops a perfectly regular history from flagging tiny deviations.
+
+Safe defaults: 30-day baseline, 7-day report window, 10 minimum samples, threshold 6. Each score depends only on earlier ledger entries, so the result is deterministic and identical after any replay, backfill or reindex; nothing is persisted.
+
 ## Endpoints
 
 - `GET /health` - Service health, current ledger state and the finality lag in effect.
 - `GET /healthz` - Liveness: `200` whenever the process can answer.
 - `GET /readyz` - Readiness: `200` when the store answers and indexing made progress recently, otherwise `503` with per-check detail.
 - `GET /status` - Structured status for the [public status page](../docs/STATUS.md): `operational`, `degraded` or `outage` plus one entry per check (`store`, `indexing`). It is `503` only while the store is down.
+- `GET /lag` - Chain-tip lag, finality depth and checkpoint age with their alert levels (`503` until the first batch is observed).
+- `GET /runway?token=USDC` - Treasury cash-runway forecast from indexed flows.
+- `GET /anomalies?token=USDC` - Recent treasury outflows scored against their historical baseline; `anomalies` lists the flagged ones.
 - `GET /metrics` - Prometheus metrics.
 - `GET /webhooks/deliveries?status=dead` - Inspect the webhook outbox (`status` is `pending`, `delivered` or `dead`; optional `subscription`, `limit`, `offset`).
 - `GET /ledger?token=XLM&limit=100` - Query historical treasury token transfer events.
@@ -223,6 +288,20 @@ invariant after both a not-yet-final ledger and a rollback.
 | `SOROBAN_RPC_URL` | no | Soroban RPC endpoint |
 | `NETWORK_PASSPHRASE` | no | Stellar network passphrase |
 | `LEDGER_FINALITY_LAG` | no | Ledgers to hold back before treating one as final (default 2) |
+| `BACKFILL_WORKERS` | no | Shards walked concurrently by `backfill` (default 1 = sequential, max 32) |
+| `BACKFILL_SHARD_SIZE` | no | Ledgers per backfill shard (default 50000) |
+| `BACKFILL_SHARD_MAX_RETRIES` | no | In-run retries per failed shard before it is left `failed` (default 3) |
+| `BACKFILL_SHARD_RETRY_DELAY_MS` | no | Base retry delay, doubled each retry, capped at 60000 (default 1000) |
+| `LAG_MONITOR_ENABLED` | no | Chain-tip lag monitor (default `true`) |
+| `LAG_WARN_LEDGERS` / `LAG_CRITICAL_LEDGERS` | no | Lag above the finality floor that warns / is critical (defaults 20 / 100) |
+| `CHECKPOINT_AGE_WARN_SECONDS` / `CHECKPOINT_AGE_CRITICAL_SECONDS` | no | Checkpoint age that warns / is critical (defaults 120 / 600) |
+| `FINALITY_MIN_DEPTH` | no | Minimum confirmations on the newest indexed ledger (default `LEDGER_FINALITY_LAG`) |
+| `LEDGER_CLOSE_SECONDS` | no | Seconds per ledger for the lag-in-seconds estimate (default 5) |
+| `RUNWAY_LOOKBACK_DAYS` | no | History window for the runway forecast (default 90) |
+| `RUNWAY_RECURRING_OUTFLOW_PER_DAY` / `RUNWAY_RECURRING_INFLOW_PER_DAY` | no | Assumed recurring flows in base units per day (default 0) |
+| `RUNWAY_HORIZON_DAYS` | no | Longest runway reported (default 3650) |
+| `ANOMALY_LOOKBACK_DAYS` / `ANOMALY_REPORT_DAYS` | no | Baseline window / scored window for outflow anomalies (defaults 30 / 7) |
+| `ANOMALY_MIN_SAMPLES` / `ANOMALY_THRESHOLD` | no | Earlier outflows needed before flagging / robust z-score that flags (defaults 10 / 6) |
 | `STORE_BACKEND` | no | `sqlite` (default) or `postgres` |
 | `DATABASE_PATH` | no | SQLite file (default `./data/treasury.sqlite`) |
 | `DATABASE_URL` | postgres | Postgres connection URL |

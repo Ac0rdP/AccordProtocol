@@ -77,7 +77,7 @@ All instance keys reside in the shared contract instance `LedgerEntry`. They exp
 | `TWEIGHT` | `u32` | `total_weight_key()` | Cached sum of all owner voting weights in the `OWNERS` map. | Singleton |
 | `GOVVER` | `bool` | `governance_version_key()` | Flag indicating contract has completed migration to weighted governance. | Singleton |
 | `ROLEVER` | `u32` | `role_version_key()` | Role-Based Access Control schema version (`1` = RBAC active). | Singleton |
-| `STOVER` | `u32` | `storage_version_key()` | Storage-schema layout version (`STORAGE_SCHEMA_VERSION = 1`). | Singleton |
+| `STOVER` | `u32` | `storage_version_key()` | Storage-schema layout version (`STORAGE_SCHEMA_VERSION = 2`). | Singleton |
 | `MAXOWNP` | `u32` | `max_single_owner_weight_pct_key()` | Maximum single-owner voting weight share percentage (default `50%`). | Singleton |
 
 **Total Instance Cost**: **~0.052 XLM per 30-day bump cycle** (shared by all 15 instance keys).
@@ -103,6 +103,11 @@ Each key below occupies an independent `LedgerEntry` with separate TTL extension
 | `("RMEM", role)` | `Vec<Address>` | `role_members_key(role)` | Per-Role | ~120–880 B | 1 KB | ~0.052 XLM | Index of all addresses holding a specific role (max 20 members). |
 | `("DELEG", delegator)` | `Delegation` | `delegation_key(delegator)` | Per-Owner (Delegator) | ~164 B | 1 KB | ~0.052 XLM | Outgoing voting weight delegation: delegate address, weight, and expiration timestamp. |
 | `("CLASSIC", asset)` | `Address` | `classic_asset_key(asset)` | Per-Classic Asset | ~128 B | 1 KB | ~0.052 XLM | Mapping from asset symbol (`XLM`, `USDC`, `EURC`) to Stellar Asset Contract address. |
+| `("PDEP", id)` | `Vec<u64>` | `proposal_dependencies_key(id)` | Per-Proposal | ~120–160 B | 1 KB | ~0.052 XLM | Proposal dependency DAG parent IDs list (max 10 dependencies). |
+| `("TRLIM", token)` | `i128` | `treasury_spending_limit_key(token)` | Per-Token | ~148 B | 1 KB | ~0.052 XLM | Treasury rolling spending cap for a specific asset token. |
+| `("TRWIND", token)` | `u64` | `treasury_spending_window_key(token)` | Per-Token | ~140 B | 1 KB | ~0.052 XLM | Treasury rolling spend window in seconds for a token. |
+| `("TRSPENT", token)` | `SpentTracker` | `treasury_spent_tracker_key(token)` | Per-Token | ~152 B | 1 KB | ~0.052 XLM | Current epoch spend tracker (`spent: i128, epoch: u64`) for treasury token. |
+| `("TRTOT", token)` | `i128` | `treasury_total_spent_key(token)` | Per-Token | ~148 B | 1 KB | ~0.052 XLM | Lifetime cumulative spent treasury amount for a token. |
 
 ---
 
@@ -119,8 +124,9 @@ Understanding key granularity ensures reviewers can evaluate storage costs when 
 - **Entries Created**:
   - `1` `("PROP", id)` entry.
   - Up to $N$ `("APPR", id, owner)` entries, where $N$ is the number of voting co-owners.
+  - Up to `1` `("PDEP", id)` entry if the proposal declares dependencies (max 10 parent IDs).
 - **Maximum Active Footprint**: Bound by `MAX_ACTIVE_PROPOSALS = 50`.
-  - For a 7-owner multisig: $50 \times (1 + 7) = \mathbf{400}$ max concurrent entries.
+  - For a 7-owner multisig: $50 \times (1 + 7 + 1) = \mathbf{450}$ max concurrent entries.
 - **Lifecycle & Expiry**:
   - Inactive / settled proposals remain in ledger storage until their 30-day persistent TTL expires without access.
 
@@ -147,6 +153,14 @@ Understanding key granularity ensures reviewers can evaluate storage costs when 
 ### 6. Per-Role Keys
 - **Entries Created**: `("RMEM", role)` for 4 roles (`Proposer`, `Approver`, `Executor`, `Viewer`).
 - **Footprint**: Fixed at $\mathbf{4}$ persistent entries.
+
+### 7. Per-Token Treasury Keys
+- **Entries Created**:
+  - `("TRLIM", token)` (treasury spending limit)
+  - `("TRWIND", token)` (treasury spending window)
+  - `("TRSPENT", token)` (current epoch spend tracker)
+  - `("TRTOT", token)` (lifetime total spent amount)
+- **Footprint**: $4 \times \text{distinct tracked treasury tokens}$. For 5 active treasury assets = $5 \times 4 = \mathbf{20}$ entries.
 
 ---
 
@@ -185,7 +199,7 @@ Let us calculate the worst-case on-chain storage footprint and monthly rent for 
 
 1. **Storage Invariant**: Every storage key read or written in `contracts/accord/src/lib.rs` must have a corresponding entry in this reference document and in `docs/ARCHITECTURE.md` §3.
 2. **Schema Versioning**:
-   - The contract defines `STORAGE_SCHEMA_VERSION = 1` in `contracts/accord/src/lib.rs`.
+   - The contract defines `STORAGE_SCHEMA_VERSION = 2` in `contracts/accord/src/lib.rs`.
    - Any commit that adds a new storage key, deletes an existing key, or modifies the serialized type of a value **must**:
      - Increment `STORAGE_SCHEMA_VERSION` in `lib.rs`.
      - Update the version migration table in `docs/ARCHITECTURE.md`.
