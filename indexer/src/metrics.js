@@ -155,6 +155,37 @@ export function createIndexerMetrics() {
       name: "accord_indexer_ingestion_lag_ledgers",
       help: "Final ledgers not yet indexed (final ledger minus indexed ledger).",
     }),
+    chainTipLagLedgers: registry.gauge({
+      name: "accord_indexer_chain_tip_lag_ledgers",
+      help: "Ledgers between the chain tip and the newest indexed ledger (includes the finality lag).",
+    }),
+    chainTipLagSeconds: registry.gauge({
+      name: "accord_indexer_chain_tip_lag_seconds",
+      help: "Estimated chain-tip lag in seconds (ledgers times LEDGER_CLOSE_SECONDS).",
+    }),
+    finalityDepthLedgers: registry.gauge({
+      name: "accord_indexer_finality_depth_ledgers",
+      help: "Confirmations on the newest indexed ledger (chain tip minus indexed ledger). Below the minimum means non-final data was indexed.",
+    }),
+    checkpointAgeSeconds: registry.gauge({
+      name: "accord_indexer_checkpoint_age_seconds",
+      help: "Seconds since the indexing checkpoint last advanced.",
+    }),
+    lagAlertLevel: registry.gauge({
+      name: "accord_indexer_lag_alert_level",
+      help: "Lag monitor alert level per check: 0 ok, 1 warn, 2 critical.",
+      labelNames: ["check"],
+    }),
+    lagThreshold: registry.gauge({
+      name: "accord_indexer_lag_threshold",
+      help: "Configured lag monitor thresholds per check and level.",
+      labelNames: ["check", "level"],
+    }),
+    lagAlerts: registry.counter({
+      name: "accord_indexer_lag_alerts_total",
+      help: "Lag monitor level transitions into warn or critical, by check.",
+      labelNames: ["check", "level"],
+    }),
     lastSuccess: registry.gauge({
       name: "accord_indexer_last_successful_batch_timestamp_seconds",
       help: "Unix time of the last indexing batch that completed without error.",
