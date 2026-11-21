@@ -245,7 +245,7 @@ export type ContractProposalSoftApprovedEvent = {
   supporter: string;
   soft_approval_count: number;
   weight: number;
-  cumulative_soft_approval_weight: number;
+  cumulative_soft_weight: number;
   participation_weight: number;
   version: number;
 };
@@ -255,7 +255,7 @@ export type ContractProposalSoftApprovalRevokedEvent = {
   supporter: string;
   soft_approval_count: number;
   weight: number;
-  cumulative_soft_approval_weight: number;
+  cumulative_soft_weight: number;
   participation_weight: number;
   version: number;
 };

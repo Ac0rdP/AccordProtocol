@@ -1,0 +1,73 @@
+{
+  "fixtureId": "regression-2026-10-spend-by-category-cache-stampede",
+  "description": "Regression fixture capturing a cache-invalidation stampede on GET /spend/by-category under 10k RPS query mix that saturated the 10-connection PostgreSQL pool, dropped throughput below 10k RPS, spiked p99 tail latency, and triggered 503 pool-acquire errors on /owners/participation.",
+  "expectedViolationCodes": [
+    "THROUGHPUT_BELOW_BUDGET",
+    "ROUTE_LATENCY_P99_EXCEEDED",
+    "ROUTE_ERROR_BUDGET_EXCEEDED"
+  ],
+  "report": {
+    "profile": "production-10k-rps",
+    "targetRps": 10000,
+    "achievedRps": 8420,
+    "durationSeconds": 10,
+    "totalRequests": 84200,
+    "statusCounts": {
+      "200": 83990,
+      "429": 0,
+      "500": 140,
+      "503": 70
+    },
+    "overall": {
+      "p50Ms": 11.4,
+      "p95Ms": 44.0,
+      "p99Ms": 185.0,
+      "error5xxRate": 0.002494,
+      "unexpectedErrorRate": 0.002494
+    },
+    "routes": {
+      "proposals_list": {
+        "requests": 29470,
+        "p50Ms": 6.2,
+        "p95Ms": 22.1,
+        "p99Ms": 64.0,
+        "errorRate": 0.0005
+      },
+      "spend_by_category": {
+        "requests": 21050,
+        "p50Ms": 14.5,
+        "p95Ms": 78.0,
+        "p99Ms": 340.0,
+        "errorRate": 0.0045
+      },
+      "proposal_detail": {
+        "requests": 12630,
+        "p50Ms": 5.8,
+        "p95Ms": 21.0,
+        "p99Ms": 58.0,
+        "errorRate": 0.0004
+      },
+      "owner_participation": {
+        "requests": 8420,
+        "p50Ms": 22.0,
+        "p95Ms": 72.0,
+        "p99Ms": 210.0,
+        "errorRate": 0.0085
+      },
+      "graphql_proposals": {
+        "requests": 8420,
+        "p50Ms": 19.0,
+        "p95Ms": 61.0,
+        "p99Ms": 138.0,
+        "errorRate": 0.0015
+      },
+      "health_readyz": {
+        "requests": 4210,
+        "p50Ms": 2.5,
+        "p95Ms": 9.0,
+        "p99Ms": 24.0,
+        "errorRate": 0.0
+      }
+    }
+  }
+}

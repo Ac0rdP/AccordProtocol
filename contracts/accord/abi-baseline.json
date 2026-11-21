@@ -74,6 +74,16 @@
       "return_type": "Result<(), ContractError>"
     },
     {
+      "name": "check_proposal_dependencies",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<bool, ContractError>"
+    },
+    {
       "name": "claim_stream",
       "args": [
         {
@@ -436,6 +446,36 @@
       "return_type": "Result<u64, ContractError>"
     },
     {
+      "name": "create_proposal_with_deps",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "transfers",
+          "type": "Vec<Transfer>"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "category",
+          "type": "ProposalCategory"
+        },
+        {
+          "name": "dependencies",
+          "type": "Vec<u64>"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
       "name": "create_recurring_proposal",
       "args": [
         {
@@ -654,6 +694,36 @@
       "return_type": "Result<u64, ContractError>"
     },
     {
+      "name": "create_treasury_limit_proposal",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "limit",
+          "type": "i128"
+        },
+        {
+          "name": "window_secs",
+          "type": "u64"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Result<u64, ContractError>"
+    },
+    {
       "name": "create_unapprove_token_proposal",
       "args": [
         {
@@ -769,6 +839,16 @@
       "return_type": "bool"
     },
     {
+      "name": "get_asset_treasury_accounting",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "AssetTreasuryAccounting"
+    },
+    {
       "name": "get_classic_asset",
       "args": [
         {
@@ -877,6 +957,16 @@
         }
       ],
       "return_type": "Result<ProposalApprovalProgress, ContractError>"
+    },
+    {
+      "name": "get_proposal_dependencies",
+      "args": [
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        }
+      ],
+      "return_type": "Vec<u64>"
     },
     {
       "name": "get_proposals_paged",
@@ -1028,6 +1118,56 @@
       "return_type": "u32"
     },
     {
+      "name": "get_treasury_available_limit",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Option<i128>"
+    },
+    {
+      "name": "get_treasury_balance",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Result<i128, ContractError>"
+    },
+    {
+      "name": "get_treasury_spending_limit",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "Option<i128>"
+    },
+    {
+      "name": "get_treasury_spending_window",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "u64"
+    },
+    {
+      "name": "get_treasury_spent",
+      "args": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "return_type": "i128"
+    },
+    {
       "name": "get_version",
       "args": [
         {
@@ -1124,6 +1264,16 @@
     },
     {
       "name": "migrate_to_rbac",
+      "args": [
+        {
+          "name": "approvers",
+          "type": "Vec<Address>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
+      "name": "migrate_to_v2",
       "args": [
         {
           "name": "approvers",
@@ -1245,6 +1395,24 @@
       "return_type": "Result<(), ContractError>"
     },
     {
+      "name": "set_proposal_dependencies",
+      "args": [
+        {
+          "name": "proposer",
+          "type": "Address"
+        },
+        {
+          "name": "proposal_id",
+          "type": "u64"
+        },
+        {
+          "name": "dependencies",
+          "type": "Vec<u64>"
+        }
+      ],
+      "return_type": "Result<(), ContractError>"
+    },
+    {
       "name": "sweep_expired",
       "args": [
         {
@@ -1359,6 +1527,40 @@
         {
           "name": "amount",
           "type": "i128"
+        }
+      ]
+    },
+    {
+      "name": "AssetTreasuryAccounting",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "total_spent",
+          "type": "i128"
+        },
+        {
+          "name": "window_spent",
+          "type": "i128"
+        },
+        {
+          "name": "spend_limit",
+          "type": "Option<i128>"
+        },
+        {
+          "name": "window_secs",
+          "type": "u64"
+        },
+        {
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "name": "available_limit",
+          "type": "Option<i128>"
         }
       ]
     },
@@ -1892,6 +2094,24 @@
       ]
     },
     {
+      "name": "ProposalDependenciesSetEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64"
+        },
+        {
+          "name": "dependencies",
+          "type": "Vec<u64>"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "ProposalExecutedEvent",
       "kind": "struct",
       "fields": [
@@ -1950,6 +2170,14 @@
           "name": "SetSpendingLimitWindow",
           "payload": [
             "Address",
+            "Address",
+            "i128",
+            "u64"
+          ]
+        },
+        {
+          "name": "SetTreasurySpendingLimit",
+          "payload": [
             "Address",
             "i128",
             "u64"
@@ -2650,6 +2878,58 @@
       ]
     },
     {
+      "name": "TreasurySpendTrackedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "total_spent_window",
+          "type": "i128"
+        },
+        {
+          "name": "total_spent_lifetime",
+          "type": "i128"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "TreasurySpendingLimitExecutedEvent",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "previous_limit",
+          "type": "Option<i128>"
+        },
+        {
+          "name": "new_limit",
+          "type": "i128"
+        },
+        {
+          "name": "window_secs",
+          "type": "u64"
+        },
+        {
+          "name": "version",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "UnfrozenEvent",
       "kind": "struct",
       "fields": [
@@ -2933,6 +3213,42 @@
         {
           "name": "EscrowFundsUnavailable",
           "discriminant": 65
+        },
+        {
+          "name": "DependencyNotExecuted",
+          "discriminant": 66
+        },
+        {
+          "name": "DependencyCancelled",
+          "discriminant": 67
+        },
+        {
+          "name": "DependencyExpired",
+          "discriminant": 68
+        },
+        {
+          "name": "InvalidDependency",
+          "discriminant": 69
+        },
+        {
+          "name": "DuplicateDependency",
+          "discriminant": 70
+        },
+        {
+          "name": "TooManyDependencies",
+          "discriminant": 71
+        },
+        {
+          "name": "TreasurySpendingLimitExceeded",
+          "discriminant": 72
+        },
+        {
+          "name": "InvalidSpendingLimit",
+          "discriminant": 73
+        },
+        {
+          "name": "DependencyNotFound",
+          "discriminant": 74
         }
       ]
     }

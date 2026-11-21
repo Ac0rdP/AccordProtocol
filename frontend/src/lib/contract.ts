@@ -25,6 +25,7 @@ import { stroopsToDisplay, formatDeadline, shortenAddr } from "./soroban";
 import { getActiveContractId } from "./activeContract";
 
 const RPC_URL = import.meta.env.VITE_SOROBAN_RPC_URL as string;
+const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ADDRESS as string;
 const NETWORK_PASSPHRASE = import.meta.env.VITE_NETWORK_PASSPHRASE as string;
 // Any funded testnet account - used only to build simulation transactions (no signing).
 const SIM_SOURCE = import.meta.env.VITE_SIM_SOURCE as string;
@@ -107,7 +108,11 @@ function safeBigInt(value: unknown): bigint {
 
 function mapKindDetails(
   kind: unknown,
-): Pick<Proposal, "kind" | "to" | "amount" | "token"> & { rawAmount?: string } {
+): Pick<Proposal, "kind" | "to" | "amount" | "token"> & {
+  rawAmount?: string;
+  tokenAddress?: string;
+  recipientAddress?: string;
+} {
   if (!kind || typeof kind !== "object") {
     return {
       kind: "transfer",
@@ -128,9 +133,11 @@ function mapKindDetails(
       return {
         kind: "transfer",
         to: shortenAddr(String(values[0] ?? "Unknown")),
+        recipientAddress: String(values[0] ?? ""),
         amount: stroopsToDisplay(rawStroops),
         rawAmount: String(rawStroops),
         token: shortenAddr(String(values[2] ?? "Unknown")),
+        tokenAddress: String(values[2] ?? ""),
       };
     }
     case "addowner":
@@ -218,7 +225,19 @@ export function mapProposal(raw: any, threshold: number): Proposal {
     userHasApproved: false,
     approverAddresses: [],
     executedAt: formatDeadline(rawDeadline),
+    attachmentHash: mapAttachmentHash(raw.attachment_hash),
   };
+}
+
+function mapAttachmentHash(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Uint8Array) {
+    return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  if (Array.isArray(value) && value.every((byte) => typeof byte === "number")) {
+    return value.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return undefined;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -306,10 +325,11 @@ export async function getRoleVersion(): Promise<number> {
 export async function getRoles(
   address?: string,
   ownerAddresses: string[] = [],
+  contractId: string = CONTRACT_ID,
 ): Promise<Role[]> {
   if (!address) {
     try {
-      const val = await simulateView("get_roles");
+      const val = await simulateView("get_roles", [], contractId);
       return mapRoleList(scValToNative(val));
     } catch {
       return [];
@@ -319,7 +339,7 @@ export async function getRoles(
   try {
     const val = await simulateView("get_roles", [
       nativeToScVal(address, { type: "address" }),
-    ]);
+    ], contractId);
     return mapRoles(scValToNative(val));
   } catch {
     if (ownerAddresses.includes(address)) {
@@ -714,11 +734,12 @@ export async function getProposalApprovalProgress(
 export async function hasApproved(
   walletAddress: string,
   proposalId: number,
+  contractId: string = CONTRACT_ID,
 ): Promise<boolean> {
   const val = await simulateView("has_approved", [
     nativeToScVal(walletAddress, { type: "address" }),
     nativeToScVal(BigInt(proposalId), { type: "u64" }),
-  ]);
+  ], contractId);
   return scValToNative(val) as boolean;
 }
 

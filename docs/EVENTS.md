@@ -16,8 +16,8 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `revoked`      | `ProposalRevokedEvent`           | `{ id: u64, approver: Address, approvals: u32, weight: u32, cumulative_weight: u32, version: u32 }` |
 | `abstain`      | `ProposalAbstainedEvent`         | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
 | `unabst`       | `ProposalAbstentionRevokedEvent` | `{ id: u64, abstainer: Address, abstention_count: u32, weight: u32, cumulative_abstention_weight: u32, participation_weight: u32, version: u32 }` |
-| `softapr`      | `ProposalSoftApprovedEvent`       | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_approval_weight: u32, participation_weight: u32, version: u32 }` |
-| `unsftap`      | `ProposalSoftApprovalRevokedEvent` | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_approval_weight: u32, participation_weight: u32, version: u32 }` |
+| `softapr`      | `ProposalSoftApprovedEvent`       | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
+| `unsftap`      | `ProposalSoftApprovalRevokedEvent` | `{ id: u64, supporter: Address, soft_approval_count: u32, weight: u32, cumulative_soft_weight: u32, participation_weight: u32, version: u32 }` |
 | `executed`     | `ProposalExecutedEvent`          | `{ id: u64, executor: Address, version: u32 }` |
 | `guard_set`    | `GuardianSetEvent`               | `{ guardian: Address, version: u32 }` |
 | `frozen`       | `FrozenEvent`                    | `{ guardian: Address, version: u32 }` |
@@ -35,6 +35,9 @@ The events are mapped by their primary topic (a `symbol_short!` or `Symbol`) to 
 | `c_wgt`        | `OwnerWeightChangedEvent`        | `{ owner: Address, old_weight: u32, new_weight: u32, new_total_weight: u32, version: u32 }` |
 | `role_granted` | `RoleGrantedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
 | `role_revoked` | `RoleRevokedEvent`               | `{ target: Address, role: Role, before: Vec<Role>, after: Vec<Role>, version: u32 }` |
+| `p_deps`        | `ProposalDependenciesSetEvent`   | `{ id: u64, dependencies: Vec<u64>, version: u32 }` |
+| `tr_lim`        | `TreasurySpendingLimitExecutedEvent` | `{ token: Address, previous_limit: Option<i128>, new_limit: i128, window_secs: u64, version: u32 }` |
+| `tr_spnt`       | `TreasurySpendTrackedEvent`      | `{ token: Address, amount: i128, total_spent_window: i128, total_spent_lifetime: i128, version: u32 }` |
 
 Every payload carries a trailing `version: u32` field holding the event-schema version (see [Event Versioning Policy](#event-versioning-policy)).
 

@@ -221,12 +221,6 @@ export function PortfolioDashboardPage({
             className="min-h-11 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-400"
           />
         </div>
-        <div>
-          <dt className="text-xs text-zinc-500">Treasury USDC</dt>
-          <dd className="mt-1 font-mono text-zinc-100">
-            {row.summary.treasuryUsdc}
-          </dd>
-        </div>
         <button
           type="submit"
           disabled={!portfolioReady}

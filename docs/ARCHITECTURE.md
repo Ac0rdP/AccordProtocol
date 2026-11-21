@@ -54,6 +54,12 @@
 | `get_threshold()`                                                     | Returns approval threshold                       | Dashboard header stat        |
 | `is_owner(address)`                                                   | Checks ownership for a connected wallet          | Wallet-connected gating      |
 | `has_approved(proposal_id, owner)`                                    | Per-owner approval flag                          | Approval bar UI              |
+| `create_proposal_with_deps(proposer, ... deps)`                       | Creates proposal with parent dependencies        | Dependency graph composer    |
+| `set_proposal_dependencies(proposer, id, deps)`                        | Sets dependencies for a pending proposal         | Dependency graph editor      |
+| `get_proposal_dependencies(id)`                                       | Returns declared parent proposal IDs             | Dependency visualizer        |
+| `check_proposal_dependencies(id)`                                     | Validates if all dependencies have executed      | Execution gate check         |
+| `create_treasury_limit_proposal(proposer, token, limit, window, ...)`  | Creates per-asset treasury spend limit proposal  | Treasury policy settings     |
+| `get_asset_treasury_accounting(token)`                                | Returns per-asset treasury accounting record     | Treasury balance/limit panel |
 
 See [EVENTS.md](./EVENTS.md) for a full catalog of events emitted by the contract and parsed by the off-chain indexer.
 
@@ -159,6 +165,11 @@ Accord uses two patterns:
 | --------------------- | ------------------------------------------------------- |
 | `("PROP", id)`        | Proposal record keyed by proposal ID (u64)              |
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
+| `("PDEP", id)`        | Proposal dependency DAG parent IDs list (`Vec<u64>`)   |
+| `("TRLIM", token)`    | Per-asset treasury spending limit (`i128`)             |
+| `("TRWIND", token)`   | Per-asset treasury spending window seconds (`u64`)     |
+| `("TRSPENT", token)`  | Per-asset treasury spent tracker (`SpentTracker`)      |
+| `("TRTOT", token)`    | Per-asset treasury lifetime total spent (`i128`)       |
 
 Tuples are preferred over concatenated strings because Soroban hashes the entire key structure natively — string concatenation would require heap allocation and introduces ambiguity (`"PROP1"` vs `"PRO" + "P1"` are indistinguishable as strings, but distinct as tuples). Tuple keys are zero-copy, structurally unambiguous, and compose cleanly with Soroban's type-safe storage API.
 
@@ -172,13 +183,13 @@ The contract records an explicit **storage-schema version** in instance storage 
 | ------- | ---------- | ------------------------------- |
 | `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
 | `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
-| `2` (current) | `initialize`, `migrate_to_abstention_storage` | Per-proposal/per-owner abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`) are added without changing existing proposal or binding-approval keys. |
+| `2` (current) | `initialize`, `migrate_to_v2` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury spending limits and accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), and additive per-proposal/per-owner abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`). `migrate_to_abstention_storage` is kept as an equivalent entrypoint for deployments built from the abstention-only branch. |
 
 **Upgrade path between versions:**
 
 - **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
 - **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
-- **`1` → `2`:** deploy the current WASM with `upgrade`, then run `migrate_to_abstention_storage`. It re-stamps `STOVER = 2`; existing approvals and proposals remain unchanged.
+- **`1` → `2`:** deploy the updated WASM with `upgrade`, then invoke `migrate_to_v2` with co-owner approvers meeting quorum threshold. The migration verifies quorum, stamps `STOVER = 2`, and emits a `v2_migr` event. Existing approvals and proposals remain unchanged; abstention and soft-approval keys are created on demand. `migrate_to_abstention_storage` performs the same version stamp if a deployment used that entrypoint.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, type RefObject } from "react";
 import {
   createBatchProposal,
+  createProposalWithAttachment,
   createAddOwnerProposal,
   createRemoveOwnerProposal,
   createChangeThresholdProposal,
@@ -26,6 +27,7 @@ import {
 } from "./TransferActionBuilder";
 import { previewTransferProposal, type BalanceDeltaRow } from "../lib/transactionPreview";
 import { StrKey } from "@stellar/stellar-sdk";
+import { isPreviewableAttachment, uploadIpfsAttachment } from "../lib/ipfs";
 import type { ProposalKind } from "../types/accord";
 // Testnet token addresses — swap for mainnet when ready
 const TOKEN_ADDRESSES: Record<string, string> = {
@@ -157,6 +159,10 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
   const setAmount = (value: string) => updateFirstTransfer({ amount: value });
   const setToken = (value: string) => updateFirstTransfer({ token: value });
 
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [attachmentPreviewUrl, setAttachmentPreviewUrl] = useState<string | null>(null);
+  const [attachmentTextPreview, setAttachmentTextPreview] = useState<string | null>(null);
+
   // Add/Remove Owner fields
   const [ownerAddress, setOwnerAddress] = useState("");
   const [ownerTouched, setOwnerTouched] = useState(false);
@@ -190,6 +196,35 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
   const firstInputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!attachmentFile) {
+      setAttachmentPreviewUrl(null);
+      setAttachmentTextPreview(null);
+      return;
+    }
+
+    let active = true;
+    const url = URL.createObjectURL(attachmentFile);
+    setAttachmentPreviewUrl(url);
+    if (attachmentFile.type === "text/plain" || attachmentFile.type === "text/csv") {
+      void attachmentFile.text()
+        .then((text) => {
+          if (active) setAttachmentTextPreview(text.slice(0, 4000));
+        })
+        .catch((reason: unknown) => {
+          if (active) {
+            setError(reason instanceof Error ? `Could not preview file: ${reason.message}` : "Could not preview file.");
+          }
+        });
+    } else {
+      setAttachmentTextPreview(null);
+    }
+    return () => {
+      active = false;
+      URL.revokeObjectURL(url);
+    };
+  }, [attachmentFile]);
 
   // Load contract data for governance proposals
   useEffect(() => {
@@ -551,16 +586,33 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     try {
       switch (data.type) {
         case "transfer":
-          await createBatchProposal(
-            walletAddress!,
-            data.transfers.map((transfer) => ({
-              to: transfer.recipient,
-              tokenAddress: transfer.tokenAddr,
-              amount: transfer.amountStroops,
-            })),
-            data.description,
-            data.deadlineUnix
-          );
+          if (attachmentFile) {
+            if (data.transfers.length !== 1) {
+              throw new Error("Attachments are supported for a single transfer only");
+            }
+            const [only] = data.transfers;
+            const uploaded = await uploadIpfsAttachment(attachmentFile);
+            await createProposalWithAttachment(
+              walletAddress!,
+              only.recipient,
+              only.tokenAddr,
+              only.amountStroops,
+              data.description,
+              data.deadlineUnix,
+              uploaded.digest,
+            );
+          } else {
+            await createBatchProposal(
+              walletAddress!,
+              data.transfers.map((transfer) => ({
+                to: transfer.recipient,
+                tokenAddress: transfer.tokenAddr,
+                amount: transfer.amountStroops,
+              })),
+              data.description,
+              data.deadlineUnix
+            );
+          }
           break;
         case "add_owner":
           await createAddOwnerProposal(
@@ -1002,6 +1054,43 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {description.length} / {MAX_DESCRIPTION_LEN}
           </p>
         </div>
+        {formType === "transfer" && (
+          <div className="space-y-2 rounded-lg border border-zinc-700/70 bg-zinc-800/30 p-3">
+            <label htmlFor="proposal-attachment" className="block text-xs font-medium text-zinc-300">
+              Supporting document <span className="font-normal text-zinc-500">(optional)</span>
+            </label>
+            <input
+              id="proposal-attachment"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,application/pdf,image/png,image/jpeg,image/webp,text/plain,text/csv"
+              onChange={(event) => {
+                setAttachmentFile(event.target.files?.[0] ?? null);
+                clearError();
+              }}
+              className="block min-h-11 w-full text-sm text-zinc-300 file:mr-3 file:min-h-9 file:rounded-md file:border-0 file:bg-zinc-700 file:px-3 file:text-xs file:font-medium file:text-white hover:file:bg-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <p className="text-xs text-zinc-500">
+              Up to 20 MB. IPFS content is public and persistent; do not upload sensitive files. Only its SHA-256 digest is stored on-chain.
+            </p>
+            {attachmentFile && (
+              <div className="space-y-2">
+                <p className="break-all text-xs text-zinc-300">
+                  {attachmentFile.name} · {(attachmentFile.size / 1024).toFixed(1)} KB
+                  {!isPreviewableAttachment(attachmentFile) && " · Preview unavailable for this file type"}
+                </p>
+                {attachmentPreviewUrl && ["image/jpeg", "image/png", "image/webp"].includes(attachmentFile.type) && (
+                  <img src={attachmentPreviewUrl} alt={`Preview of ${attachmentFile.name}`} className="max-h-48 max-w-full rounded-lg border border-zinc-700 object-contain" />
+                )}
+                {attachmentPreviewUrl && attachmentFile.type === "application/pdf" && (
+                  <iframe title={`Preview of ${attachmentFile.name}`} src={attachmentPreviewUrl} sandbox="" className="h-48 w-full rounded-lg border border-zinc-700" />
+                )}
+                {attachmentTextPreview !== null && (
+                  <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-950 p-2 text-xs text-zinc-400">{attachmentTextPreview}</pre>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <label className="text-xs text-zinc-400 block mb-1.5">
@@ -1014,6 +1103,12 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
           />
         </div>
+        {attachmentFile && (
+          <div>
+            <dt className="text-xs text-zinc-600 dark:text-zinc-400">Attachment</dt>
+            <dd className="mt-1 break-all text-sm text-zinc-200">{attachmentFile.name}</dd>
+          </div>
+        )}
 
         {error && (
           <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
@@ -1220,7 +1315,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             }
             className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
-            {submitting ? "Submitting…" : "Confirm & Submit"}
+            {submitting ? (attachmentFile ? "Uploading & submitting…" : "Submitting…") : "Confirm & Submit"}
           </button>
         </div>
       </>
