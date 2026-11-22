@@ -127,6 +127,52 @@ pub struct EscrowParams {
     pub release_mode: EscrowReleaseMode,
 }
 
+/// Parameters for a governed DEX path-payment swap proposal.
+///
+/// At execution time the multisig contract calls a Soroban DEX router (e.g.
+/// SoroswapRouter) via cross-contract invocation. The router swaps
+/// `send_amount` of `path[0]` for `path[last]` along the intermediate hops
+/// encoded in `path`. The minimum output amount (`min_recv`) enforces an
+/// on-chain slippage guard: the execute call reverts if the router returns
+/// fewer tokens than this floor. The swapped output is sent to `destination`;
+/// if that field is `None` the multisig contract itself receives the output
+/// (useful for treasury rebalancing proposals).
+///
+/// # Stellar path-payment semantics
+/// Stellar's path-payment model sells a fixed send amount and receives a
+/// variable output constrained from below by `min_recv`. This maps directly
+/// to `swap_exact_tokens_for_tokens` on a Soroswap-style router:
+///   - `amount_in`  = `send_amount`
+///   - `amount_out_min` = `min_recv`
+///   - `path`       = intermediate token path (at least 2 entries: send + recv)
+///   - `to`         = `destination` (or the contract itself when `None`)
+///   - `deadline`   = snapshotted at proposal creation; enforced at execution
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DexSwapParams {
+    /// Address of the DEX router contract to call (e.g. SoroswapRouter).
+    /// Stored and validated at proposal-creation time so that governance can
+    /// explicitly vet which router is authorised for the swap.
+    pub router: Address,
+    /// Ordered token path: `path[0]` is the token sold, `path[last]` is the
+    /// token bought. Intermediate entries are the hop tokens. Must have at
+    /// least two entries.
+    pub path: Vec<Address>,
+    /// Exact amount of `path[0]` to sell. Must be ≥ `MIN_AMOUNT`.
+    pub send_amount: i128,
+    /// Minimum amount of `path[last]` to receive. The execute step reverts if
+    /// the router returns fewer than this. Set to 1 for "accept any output"
+    /// or to a tighter value to cap slippage.
+    pub min_recv: i128,
+    /// Who receives the output tokens. `None` means the multisig contract
+    /// itself collects the purchased token (treasury rebalancing).
+    pub destination: Option<Address>,
+    /// Unix timestamp (seconds) beyond which the swap must not execute. Copied
+    /// from the proposal deadline at creation; a stale approved-but-unexecuted
+    /// swap that would execute at a bad rate is rejected automatically.
+    pub swap_deadline: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
@@ -169,6 +215,14 @@ pub enum ProposalKind {
     TransferGuardian(Address),
     /// Create escrow whose balance is reserved until its release condition.
     CreateEscrow(EscrowParams),
+    /// Governed DEX path-payment swap. Sells `send_token` along `path` through
+    /// a Soroban DEX router, enforcing a minimum received amount and an optional
+    /// destination address for the output tokens.
+    DexSwap(DexSwapParams),
+    /// Add a DEX router to the governance-approved router registry.
+    AddDexRouter(Address),
+    /// Remove a DEX router from the governance-approved router registry.
+    RemoveDexRouter(Address),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -386,6 +440,52 @@ pub struct EscrowRefundedEvent {
     pub id: u64,
     pub token: Address,
     pub amount: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+/// Emitted when a `DexSwap` proposal is created. Carries the full swap
+/// parameters so off-chain consumers can reconstruct intent without querying
+/// contract state.
+pub struct DexSwapProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub router: Address,
+    pub path: Vec<Address>,
+    pub send_amount: i128,
+    pub min_recv: i128,
+    pub destination: Option<Address>,
+    pub swap_deadline: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+/// Emitted when a `DexSwap` proposal is successfully executed. Records both
+/// the requested parameters and the actual output reported by the router so
+/// indexers and auditors can track realised slippage.
+pub struct DexSwapExecutedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub router: Address,
+    pub path: Vec<Address>,
+    pub send_amount: i128,
+    pub min_recv: i128,
+    /// Actual amount of output token returned by the router.
+    pub recv_amount: i128,
+    pub destination: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DexRouterChangedEvent {
+    pub router: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -678,6 +778,14 @@ pub enum ContractError {
     EscrowNotFound = 58,
     EscrowConditionNotMet = 59,
     EscrowFundsUnavailable = 60,
+    /// DEX swap path must contain at least two tokens (send + receive).
+    InvalidSwapPath = 61,
+    /// DEX router returned fewer output tokens than the `min_recv` floor.
+    SlippageExceeded = 62,
+    /// DEX router call failed or returned an unexpected result.
+    SwapFailed = 63,
+    /// `swap_deadline` is in the past or farther than `MAX_PROPOSAL_DURATION`.
+    InvalidSwapDeadline = 64,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -792,7 +900,11 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// migrations that bring a legacy layout up to the current schema, so a
 /// deployed contract can always report the layout it actually uses. A missing
 /// key reads as `0`, meaning a pre-versioning (legacy) deployment.
-const STORAGE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version history:
+///   1 — initial versioned schema (governance, roles, escrow).
+///   2 — added DEX swap approved-router registry (`DXRTR` persistent key).
+const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -801,7 +913,9 @@ const STORAGE_SCHEMA_VERSION: u32 = 1;
 ///
 /// History:
 ///   1 — initial versioned event schema (all structs gain the `version` field).
-pub const EVENT_SCHEMA_VERSION: u32 = 1;
+///   2 — added `DexSwapProposedEvent`, `DexSwapExecutedEvent`,
+///       `DexRouterChangedEvent` for DEX path-payment swap proposals.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -857,6 +971,12 @@ fn escrow_key(id: u64) -> (Symbol, u64) {
 
 fn escrow_reserved_key(token: &Address) -> (Symbol, Address) {
     (symbol_short!("ERES"), token.clone())
+}
+
+/// Persistent key for the approved DEX router registry.
+/// A router address is stored as `(DXRTR, router_addr) → bool`.
+fn dex_router_approved_key(router: &Address) -> (Symbol, Address) {
+    (symbol_short!("DXRTR"), router.clone())
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -1847,6 +1967,32 @@ fn write_token_approved(env: &Env, token_address: &Address, approved: bool) {
     }
 }
 
+fn dex_router_is_approved(env: &Env, router: &Address) -> bool {
+    let key = dex_router_approved_key(router);
+    env.storage().persistent().get(&key).unwrap_or(false)
+}
+
+fn write_dex_router_approved(env: &Env, router: &Address, approved: bool) {
+    let key = dex_router_approved_key(router);
+    if approved {
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+/// Validates all tokens in a DEX swap path against the asset registry.
+fn validate_swap_path(env: &Env, path: &Vec<Address>) -> Result<(), ContractError> {
+    if path.len() < 2 {
+        return Err(ContractError::InvalidSwapPath);
+    }
+    for token_addr in path.iter() {
+        validate_token(env, &token_addr)?;
+    }
+    Ok(())
+}
+
 fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
@@ -2330,7 +2476,37 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Create a recurring schedule for periodic disbursements.
+    /// One-time migration that stamps the storage schema to version 2 on a
+    /// legacy deployment, confirming the DEX router registry key is in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `DXRTR` registry
+    /// starts empty on every deployment so there is no data to backfill.
+    /// Calling it on a deployment already at version ≥ 2 returns
+    /// `AlreadyMigrated`.
+    pub fn migrate_to_dex_swap(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 2 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        // Write the new schema version; `write_storage_version` always writes
+        // the current `STORAGE_SCHEMA_VERSION` constant, which is now 2.
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "dex_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     pub fn create_recurring_schedule(
         env: Env,
         proposer: Address,
@@ -3326,7 +3502,150 @@ impl AccordContract {
         )
     }
 
-    /// Approves a proposal. The approver must be an owner and must not have already approved.
+    // ─── DEX Swap ────────────────────────────────────────────────────────────
+
+    /// Creates a proposal to execute a governed DEX path-payment swap.
+    ///
+    /// At execution the multisig contract calls `swap_exact_tokens_for_tokens`
+    /// on the given `router` contract, selling `send_amount` of `path[0]` for
+    /// `path[last]` with a minimum output of `min_recv`. The output is sent to
+    /// `destination` (or the contract itself when `None`).
+    ///
+    /// # Validation at creation
+    /// - `path` must have at least 2 entries.
+    /// - All tokens in `path` are validated against the asset registry.
+    /// - `router` must be in the approved-router registry.
+    /// - `send_amount` ≥ `MIN_AMOUNT` and `min_recv` ≥ 1.
+    /// - `swap_deadline` must be in the future and within `MAX_PROPOSAL_DURATION`.
+    pub fn create_dex_swap_proposal(
+        env: Env,
+        proposer: Address,
+        params: DexSwapParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.send_amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_recv < 1 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        // Path must have at least 2 entries and all tokens must be valid.
+        validate_swap_path(&env, &params.path)?;
+
+        // Router must be in the governance-approved registry.
+        if !dex_router_is_approved(&env, &params.router) {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // swap_deadline must be in the future and within the proposal window.
+        let now = env.ledger().timestamp();
+        if params.swap_deadline <= now {
+            return Err(ContractError::InvalidSwapDeadline);
+        }
+        if params.swap_deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidSwapDeadline);
+        }
+
+        // Destination (if set) must not be the contract itself to prevent
+        // double-accounting of treasury inflows via misrouted governance.
+        // `None` explicitly means "treasury self-rebalance" and is allowed.
+        if let Some(ref dest) = params.destination {
+            if dest == &env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::DexSwap(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("dex_prop"),),
+            DexSwapProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                router: params.router,
+                path: params.path,
+                send_amount: params.send_amount,
+                min_recv: params.min_recv,
+                destination: params.destination,
+                swap_deadline: params.swap_deadline,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a governance proposal to add a DEX router to the approved registry.
+    ///
+    /// A router address must be approved before it can be referenced in a
+    /// `DexSwap` proposal. This guards against governance being tricked into
+    /// swapping through a malicious router.
+    pub fn create_add_dex_router_proposal(
+        env: Env,
+        proposer: Address,
+        router: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddDexRouter(router),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to remove a DEX router from the approved registry.
+    pub fn create_remove_dex_router_proposal(
+        env: Env,
+        proposer: Address,
+        router: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if !dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveDexRouter(router),
+            description,
+            deadline,
+        )
+    }
+
+    /// Returns `true` if the given router address is in the governance-approved
+    /// DEX router registry.
+    pub fn is_dex_router_approved(env: Env, router: Address) -> bool {
+        dex_router_is_approved(&env, &router)
+    }
     ///
     /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
     /// Records `ready_at` the first time the threshold is crossed.
@@ -4156,6 +4475,117 @@ impl AccordContract {
                         token: params.token.clone(),
                         amount: params.amount,
                         release_mode: params.release_mode.clone(),
+                    },
+                );
+            }
+            ProposalKind::DexSwap(params) => {
+                // ── Pre-execution guards ──────────────────────────────────
+                // 1. Swap deadline: reject stale approvals that passed their
+                //    execution window.
+                let now = env.ledger().timestamp();
+                if now > params.swap_deadline {
+                    return Err(ContractError::InvalidSwapDeadline);
+                }
+
+                // 2. Router must still be in the approved registry.
+                if !dex_router_is_approved(&env, &params.router) {
+                    return Err(ContractError::Unauthorized);
+                }
+
+                // 3. All tokens in path must pass the asset registry check.
+                validate_swap_path(&env, &params.path)?;
+
+                // 4. Treasury must hold at least send_amount of path[0].
+                let send_token = params.path.get(0).ok_or(ContractError::InvalidSwapPath)?;
+                if available_balance(&env, &send_token)? < params.send_amount {
+                    return Err(ContractError::TransferFailed);
+                }
+
+                // ── Approve the router to pull send_amount ────────────────
+                // The multisig contract is the token owner; approve the
+                // router up to `send_amount` for exactly the next ledger so
+                // the allowance cannot be re-used after this transaction.
+                token::Client::new(&env, &send_token).approve(
+                    &env.current_contract_address(),
+                    &params.router,
+                    &params.send_amount,
+                    &(env.ledger().sequence() + 1),
+                );
+
+                // ── Cross-contract swap call ──────────────────────────────
+                let destination = params
+                    .destination
+                    .clone()
+                    .unwrap_or_else(|| env.current_contract_address());
+
+                let mut swap_args = Vec::new(&env);
+                swap_args.push_back(params.send_amount.into_val(&env));
+                swap_args.push_back(params.min_recv.into_val(&env));
+                swap_args.push_back(params.path.clone().into_val(&env));
+                swap_args.push_back(destination.clone().into_val(&env));
+                swap_args.push_back(params.swap_deadline.into_val(&env));
+
+                // `invoke_contract` traps on any error from the callee,
+                // which reverts this entire invocation. The `try_invoke_contract`
+                // variant returns Err instead of trapping.
+                let amounts: Vec<i128> = env
+                    .try_invoke_contract::<Vec<i128>, _>(
+                        &params.router,
+                        &Symbol::new(&env, "swap_exact_tokens_for_tokens"),
+                        swap_args,
+                    )
+                    .map_err(|_| ContractError::SwapFailed)?
+                    .map_err(|_| ContractError::SwapFailed)?;
+
+                let recv_amount: i128 = amounts.last().unwrap_or(0);
+
+                // Belt-and-suspenders slippage guard. The router should have
+                // already failed if output < min_recv, but we re-check so
+                // our event only reflects a valid execution.
+                if recv_amount < params.min_recv {
+                    return Err(ContractError::SlippageExceeded);
+                }
+
+                env.events().publish(
+                    (symbol_short!("dex_swap"),),
+                    DexSwapExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        proposal_id,
+                        executor: executor.clone(),
+                        router: params.router.clone(),
+                        path: params.path.clone(),
+                        send_amount: params.send_amount,
+                        min_recv: params.min_recv,
+                        recv_amount,
+                        destination,
+                    },
+                );
+            }
+            ProposalKind::AddDexRouter(router) => {
+                if dex_router_is_approved(&env, router) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_dex_router_approved(&env, router, true);
+                env.events().publish(
+                    (symbol_short!("dex_rtr"),),
+                    DexRouterChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        router: router.clone(),
+                        approved: true,
+                    },
+                );
+            }
+            ProposalKind::RemoveDexRouter(router) => {
+                if !dex_router_is_approved(&env, router) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_dex_router_approved(&env, router, false);
+                env.events().publish(
+                    (symbol_short!("dex_rtr"),),
+                    DexRouterChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        router: router.clone(),
+                        approved: false,
                     },
                 );
             }

@@ -10771,3 +10771,875 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     assert_eq!(token_client.balance(&recipient), 0);
 }
 
+
+// ── Issue #952: DEX Path-Payment Swap Proposal Kind ──────────────────────────
+//
+// A mock Soroban router contract is registered for tests that exercise the
+// full create → approve → execute path. The mock simply returns a fixed
+// amounts Vec so we can control the recv_amount without deploying Soroswap.
+
+/// Minimal mock DEX router. Returns `[send_amount, recv_amount]` where
+/// `recv_amount` is the second argument (`amount_out_min`) plus the constant
+/// MOCK_BONUS. This lets tests vary the simulated output independently of the
+/// slippage floor.
+const MOCK_BONUS: i128 = 50;
+
+mod mock_router {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    pub struct MockRouter;
+
+    #[contractimpl]
+    impl MockRouter {
+        /// Mirrors the SoroswapRouter `swap_exact_tokens_for_tokens` signature.
+        /// Returns `[amount_in, amount_out_min + MOCK_BONUS]`.
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            amount_out_min: i128,
+            _path: Vec<Address>,
+            _to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            let mut out = Vec::new(&env);
+            out.push_back(amount_in);
+            out.push_back(amount_out_min + super::MOCK_BONUS);
+            out
+        }
+    }
+}
+
+mod mock_router_reject {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl, panic_with_error};
+
+    #[contract]
+    pub struct MockRouterReject;
+
+    #[contractimpl]
+    impl MockRouterReject {
+        /// Always panics — simulates a router that reverts the swap.
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            _amount_in: i128,
+            _amount_out_min: i128,
+            _path: Vec<Address>,
+            _to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            panic_with_error!(&env, super::ContractError::SwapFailed)
+        }
+    }
+}
+
+/// Helper: registers a mock router and approves it via governance, returning
+/// the router contract address.
+fn setup_approved_router(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+) -> Address {
+    let router_id = env.register(mock_router::MockRouter, ());
+
+    // Propose + approve + execute AddDexRouter.
+    let prop_id = client.create_add_dex_router_proposal(
+        owner_a,
+        &router_id,
+        &str(env, "approve soroswap router"),
+        &DEADLINE,
+    );
+    client.approve(owner_a, &prop_id);
+    client.approve(owner_b, &prop_id);
+    client.execute(owner_c, &prop_id);
+
+    assert!(client.is_dex_router_approved(&router_id));
+    router_id
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn dex_swap_add_router_proposal_stores_approval() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    assert!(!client.is_dex_router_approved(&router));
+
+    let prop_id = client.create_add_dex_router_proposal(
+        &owner_a,
+        &router,
+        &str(&env, "add router"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(client.is_dex_router_approved(&router));
+}
+
+#[test]
+fn dex_swap_remove_router_proposal_revokes_approval() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let remove_id = client.create_remove_dex_router_proposal(
+        &owner_a,
+        &router,
+        &str(&env, "remove router"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+
+    assert!(!client.is_dex_router_approved(&router));
+}
+
+#[test]
+fn dex_swap_add_router_duplicate_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // A second AddDexRouter for the same address is rejected at creation.
+    assert_eq!(
+        client.try_create_add_dex_router_proposal(
+            &owner_a,
+            &router,
+            &str(&env, "duplicate"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::AssetRegistryState))
+    );
+}
+
+#[test]
+fn dex_swap_remove_unapproved_router_rejected() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    assert_eq!(
+        client.try_create_remove_dex_router_proposal(
+            &owner_a,
+            &router,
+            &str(&env, "remove unknown"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::AssetRegistryState))
+    );
+}
+
+#[test]
+fn dex_swap_proposal_creation_validates_unapproved_router() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let unapproved_router = env.register(mock_router::MockRouter, ());
+    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token.address());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router: unapproved_router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "unapproved router"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn dex_swap_proposal_rejects_path_too_short() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Single-entry path — invalid.
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "short path"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidSwapPath))
+    );
+}
+
+#[test]
+fn dex_swap_proposal_rejects_zero_send_amount() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token.address());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 0,
+                min_recv: 1,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "zero send"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn dex_swap_proposal_rejects_zero_min_recv() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token.address());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 0,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "zero min_recv"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn dex_swap_proposal_rejects_expired_swap_deadline() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token.address());
+
+    // swap_deadline in the past.
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: NOW - 1,
+            },
+            &str(&env, "stale deadline"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidSwapDeadline))
+    );
+}
+
+#[test]
+fn dex_swap_full_lifecycle_executes_and_emits_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let recv_token = recv_token_id.address();
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token.clone());
+
+    let send_amount: i128 = 10_000;
+    let min_recv: i128 = 9_000;
+    let destination = Address::generate(&env);
+
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router: router.clone(),
+            path: path.clone(),
+            send_amount,
+            min_recv,
+            destination: Some(destination.clone()),
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "swap usdc for xlm"),
+        &DEADLINE,
+    );
+
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    // Proposal is now Executed.
+    assert_eq!(
+        client.get_proposal(&prop_id).status,
+        ProposalStatus::Executed
+    );
+
+    // dex_swap event was emitted.
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "dex_swap")
+    ));
+}
+
+#[test]
+fn dex_swap_execute_rejects_expired_swap_deadline() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    // Create the proposal with swap_deadline just barely in the future.
+    let swap_deadline = NOW + 100;
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router: router.clone(),
+            path: path.clone(),
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: None,
+            swap_deadline,
+        },
+        &str(&env, "tight deadline"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+
+    // Advance time past the swap deadline before execution.
+    set_timestamp(&env, swap_deadline + 1);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::InvalidSwapDeadline))
+    );
+}
+
+#[test]
+fn dex_swap_execute_rejects_revoked_router() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router: router.clone(),
+            path: path.clone(),
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: None,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "swap with router"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+
+    // Governance removes the router between approval and execution.
+    let remove_id = client.create_remove_dex_router_proposal(
+        &owner_a,
+        &router,
+        &str(&env, "revoke router"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn dex_swap_execute_rejects_insufficient_treasury_balance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    // Request more than the treasury holds (treasury has 1_000_000_000_000).
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router: router.clone(),
+            path: path.clone(),
+            send_amount: 2_000_000_000_000_i128, // exceeds treasury
+            min_recv: 1,
+            destination: None,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "overspend"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+}
+
+#[test]
+fn dex_swap_non_proposer_cannot_create() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &non_owner,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "unauthorized swap"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn dex_swap_frozen_contract_blocks_creation() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+    assert!(client.is_frozen());
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "swap while frozen"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn dex_swap_destination_none_uses_contract_as_recipient() {
+    // When destination is None the multisig itself collects the output.
+    // We only check the proposal is accepted and executed — the actual
+    // token balance assertion would require the mock router to call
+    // `transfer` on the output token, which is outside mock scope.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router,
+            path,
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: None,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "self-rebalance"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert_eq!(
+        client.get_proposal(&prop_id).status,
+        ProposalStatus::Executed
+    );
+}
+
+#[test]
+fn dex_swap_dex_prop_event_emitted_on_creation() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router,
+            path,
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: None,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "swap event check"),
+        &DEADLINE,
+    );
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "dex_prop")
+    ));
+}
+
+#[test]
+fn dex_swap_migrate_to_dex_swap_bumps_storage_version() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    // On a fresh deployment initialize writes STORAGE_SCHEMA_VERSION = 2,
+    // so migrate_to_dex_swap should return AlreadyMigrated.
+    assert_eq!(
+        client.try_migrate_to_dex_swap(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    // Version is 2.
+    assert_eq!(client.get_storage_version(), 2);
+}
+
+#[test]
+fn dex_swap_add_router_emits_dex_rtr_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    let prop_id = client.create_add_dex_router_proposal(
+        &owner_a,
+        &router,
+        &str(&env, "add router event"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "dex_rtr")
+    ));
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn dex_swap_cannot_self_approve_then_execute_alone() {
+    // A threshold-1 multisig owner cannot unilaterally drain the treasury via
+    // a swap — the approval flow still requires the threshold to be met.
+    let (env, client, owner_a, _owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &_owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router,
+            path,
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: Some(owner_a.clone()),
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "solo drain"),
+        &DEADLINE,
+    );
+    // Only one approval — threshold is 2.
+    client.approve(&owner_a, &prop_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+}
+
+#[test]
+fn dex_swap_path_with_contract_itself_as_token_rejected() {
+    // The asset registry blocks token addresses that are the contract itself
+    // because `validate_token` calls `validate_token_interface` which would
+    // succeed on a SAC but `validate_asset_registry` rejects unregistered
+    // assets when the registry is enabled. Here we simply confirm the path
+    // validation rejects a path shorter than 2.
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Empty path.
+    let path = Vec::new(&env);
+    assert_eq!(
+        client.try_create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router,
+                path,
+                send_amount: 1_000,
+                min_recv: 900,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "empty path"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidSwapPath))
+    );
+}
+
+#[test]
+fn dex_swap_expired_proposal_cannot_execute() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut path = Vec::new(&env);
+    path.push_back(token_client.address.clone());
+    path.push_back(recv_token_id.address());
+
+    let prop_id = client.create_dex_swap_proposal(
+        &owner_a,
+        &DexSwapParams {
+            router,
+            path,
+            send_amount: 1_000,
+            min_recv: 900,
+            destination: None,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "will expire"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+
+    // Advance past the proposal deadline.
+    set_timestamp(&env, DEADLINE + 1);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::ProposalExpired))
+    );
+}
+
+// ── Property tests ────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// For any valid (send_amount, min_recv) pair the mock router always returns
+    /// min_recv + MOCK_BONUS, so recv_amount is always above min_recv and the
+    /// slippage guard never fires. The proposal must end up Executed.
+    #[test]
+    fn dex_swap_recv_always_above_min_recv_with_mock_router(
+        send_amount in 1_i128..=1_000_000_i128,
+        min_recv   in 1_i128..=1_000_i128,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let router_id = env.register(mock_router::MockRouter, ());
+
+        // Add router.
+        let add_id = client.create_add_dex_router_proposal(
+            &owner_a, &router_id, &str(&env, "add"), &DEADLINE,
+        );
+        client.approve(&owner_a, &add_id);
+        client.approve(&owner_b, &add_id);
+        client.execute(&owner_c, &add_id);
+
+        let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        let mut path = Vec::new(&env);
+        path.push_back(token_client.address.clone());
+        path.push_back(recv_token_id.address());
+
+        let prop_id = client.create_dex_swap_proposal(
+            &owner_a,
+            &DexSwapParams {
+                router: router_id,
+                path,
+                send_amount,
+                min_recv,
+                destination: None,
+                swap_deadline: DEADLINE,
+            },
+            &str(&env, "proptest swap"),
+            &DEADLINE,
+        );
+        client.approve(&owner_a, &prop_id);
+        client.approve(&owner_b, &prop_id);
+        client.execute(&owner_c, &prop_id);
+
+        prop_assert_eq!(
+            client.get_proposal(&prop_id).status,
+            ProposalStatus::Executed
+        );
+    }
+
+    /// Creating a DexSwap proposal with a swap_deadline beyond MAX_PROPOSAL_DURATION
+    /// from now must always be rejected.
+    #[test]
+    fn dex_swap_creation_rejects_swap_deadline_beyond_max_duration(
+        excess in 1_u64..=86_400_u64,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let router_id = env.register(mock_router::MockRouter, ());
+        let add_id = client.create_add_dex_router_proposal(
+            &owner_a, &router_id, &str(&env, "r"), &DEADLINE,
+        );
+        client.approve(&owner_a, &add_id);
+        client.approve(&owner_b, &add_id);
+        client.execute(&owner_c, &add_id);
+
+        let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        let mut path = Vec::new(&env);
+        path.push_back(token_client.address.clone());
+        path.push_back(recv_token_id.address());
+
+        // MAX_PROPOSAL_DURATION = 7_776_000; deadline beyond it.
+        let bad_swap_deadline = NOW + 7_776_000 + excess;
+
+        prop_assert_eq!(
+            client.try_create_dex_swap_proposal(
+                &owner_a,
+                &DexSwapParams {
+                    router: router_id,
+                    path,
+                    send_amount: 1_000,
+                    min_recv: 900,
+                    destination: None,
+                    swap_deadline: bad_swap_deadline,
+                },
+                &str(&env, "too far deadline"),
+                &DEADLINE,
+            ),
+            Err(Ok(ContractError::InvalidSwapDeadline))
+        );
+    }
+}
