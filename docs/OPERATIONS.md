@@ -854,3 +854,44 @@ The [`.github/workflows/backup-restore.yml`](../.github/workflows/backup-restore
 1. **Incident Restore**: Fetch the target encrypted archive and manifest from `BACKUP_BUCKET_URI`, verify `sha256_encrypted`, decrypt with `BACKUP_ENCRYPTION_KEY`, pause the active indexer writer, restore with `psql -v ON_ERROR_STOP=1 -f db.sql`, and verify `/readyz` and `/reconciliation`.
 2. **Disable / Rollback**: `gh workflow disable "Multi-Region Backup & Restore Verification"`.
 - **Owner**: Infrastructure / SRE.
+
+---
+
+## Automated Disaster-Recovery Drills
+
+The [`.github/workflows/dr-drill.yml`](../.github/workflows/dr-drill.yml) workflow and [`scripts/dr/run-drill.sh`](../scripts/dr/run-drill.sh) run monthly (`04:00 UTC` on the 1st) to verify end-to-end rebuild of the Treasury Indexer and Analytics API from the secondary-region backup (#1036) in an isolated ephemeral environment.
+
+### Invariants Checked (`scripts/dr/invariants.json`)
+
+| ID | Invariant | Description |
+| --- | --- | --- |
+| `INV-DR-01` | API & Indexer Health Endpoints | Indexer (`/healthz`, `/readyz`, `/status`) and Analytics API (`/livez`, `/readyz`, `/status`) return HTTP `200`. |
+| `INV-DR-02` | Sampled Ledger Chain Parity | Indexed state matches Soroban RPC chain state at a sampled set of ledgers. |
+| `INV-DR-03` | Contract-to-API State Parity | Proposal counts, approvals, and role members read via the API match direct contract reads. |
+| `INV-DR-04` | Contiguous Indexed Ledger Range | No unexpected gaps exist in the indexed ledger sequence. |
+| `INV-DR-05` | Schema Version Match | Restored database schema migration version matches the deployed code. |
+| `INV-DR-06` | Known Test Proposal Retrievable | A known fixture proposal ID (`DR_KNOWN_PROPOSAL_ID`) is retrievable via the Analytics API. |
+
+### Security & Isolation Rules
+
+- **Read-Only Cloud Role**: The `dr-drill` job uses `id-token: write` to assume a **read-only** backup-fetch OIDC role. Never point DR drills at production credentials with write access.
+- **Always Cleaned Up**: Ephemeral scratch data is removed in an `if: always()` step; `dr-drill-report` artifacts contain only logs, timings (`drill-report.json`), and invariant results (`invariants-results.json`), never raw backup contents.
+
+### Required Variables & Secrets
+
+Reuses `BACKUP_SECONDARY_REGION`, `BACKUP_BUCKET_URI`, `BACKUP_FETCH_CMD`, and `BACKUP_ENCRYPTION_KEY` from Backup & Restore, plus:
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `DR_START_SERVICES_CMD` | Repo Variable | Operator command to start scratch Indexer & Analytics API against `$SCRATCH_DATABASE_URL` and catch up. |
+| `DR_INDEXER_URL` | Repo Variable | Scratch Indexer base URL for invariant checks. |
+| `DR_API_URL` | Repo Variable | Scratch Analytics API base URL for invariant checks. |
+| `DR_KNOWN_PROPOSAL_ID` | Repo Variable (optional) | Fixture proposal ID for `INV-DR-06` (default `1`). |
+
+### Drill Runbook
+
+1. **Who Runs It**: Automated monthly via GitHub Actions; Infrastructure / SRE owns triage and manual `workflow_dispatch` runs (`dry_run: true` default).
+2. **Reading Results**: Inspect the **Disaster-Recovery Drill Results** markdown table in the job summary (Full Rebuild RTO vs. `1800s` objective, RPO vs. `86400s` objective, and per-invariant PASS/FAIL) and download `dr-drill-report`.
+3. **On Failure**: Follow the `::error::` run link, determine whether the failure is in backup integrity (#1036), schema drift, or service startup (#1034), open a remediation issue, and update the backup/deployment runbooks with any findings.
+4. **Disable**: `gh workflow disable "Automated Disaster-Recovery Drill"`.
+- **Owner**: Infrastructure / SRE.

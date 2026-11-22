@@ -26,6 +26,7 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | Reproducible Contract Builds | `.github/workflows/reproducible-builds.yml` | pushes/PRs touching `contracts/**`, tags | Verifies byte-for-byte reproducible WASM artifacts across isolated build passes and supported toolchain versions with least-privilege permissions and failure artifact links. |
 | Blue/Green Indexer Deployment | `.github/workflows/blue-green-indexer.yml` | manual (`workflow_dispatch`, `dry_run: true` default) | Parameterized blue/green indexer rollout with shadow catch-up, parity gates, protected environment approval, auto-rollback, and soak period (see [OPERATIONS.md](OPERATIONS.md#bluegreen-indexer-deployment-runbook)). |
 | Multi-Region Backup & Restore | `.github/workflows/backup-restore.yml` | `schedule` (02:00 UTC daily), manual (`dry_run: true` default) | Encrypts PostgreSQL/config backups to a secondary region, verifies restore into an isolated scratch Postgres container, enforces RPO/RTO limits, and opens an issue on failure (see [OPERATIONS.md](OPERATIONS.md#multi-region-backup--restore-verification)). |
+| Automated DR Drill | `.github/workflows/dr-drill.yml` | `schedule` (monthly, 1st at 04:00 UTC), manual (`dry_run: true` default) | Restores secondary-region backup into an ephemeral scratch DB, starts/verifies indexer & API, evaluates DR invariants (`scripts/dr/invariants.json`), and reports full RTO/RPO (see [OPERATIONS.md](OPERATIONS.md#automated-disaster-recovery-drills)). |
 
 ## Testnet upgrade simulation
 
