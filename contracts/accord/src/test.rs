@@ -12415,3 +12415,691 @@ proptest! {
         );
     }
 }
+
+// ── Issue #950: Pull-Payment Requests with Claimant Approval ────────────────
+//
+// A pull-payment request lets a named claimant pull a pre-approved amount
+// from the treasury without a second governance vote. The request is opened
+// via a `CreatePullPayment` proposal, claimed via `claim_pull_payment` by
+// the claimant, and optionally cancelled via `CancelPullPayment`.
+
+/// Helper: build a PullPaymentParams for tests.
+fn pull_params(
+    env: &Env,
+    claimant: &Address,
+    token: &Address,
+    amount: i128,
+    expires_at: u64,
+) -> PullPaymentParams {
+    PullPaymentParams {
+        claimant: claimant.clone(),
+        token: token.clone(),
+        amount,
+        expires_at,
+        memo: str(env, "invoice #123"),
+    }
+}
+
+/// Helper: create + approve + execute a CreatePullPayment proposal, returning
+/// the assigned request_id.
+fn execute_pull_payment_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    params: &PullPaymentParams,
+) -> u64 {
+    let prop_id = client.create_pull_payment_proposal(
+        owner_a,
+        params,
+        &str(env, "pull payment"),
+        &DEADLINE,
+    );
+    client.approve(owner_a, &prop_id);
+    client.approve(owner_b, &prop_id);
+    client.execute(owner_c, &prop_id);
+
+    // The request_id is assigned sequentially starting at 1.
+    client.get_next_pull_payment_id() - 1
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn pull_payment_open_lifecycle_stores_request() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 10_000, DEADLINE),
+    );
+
+    let req = client.get_pull_payment(&req_id).expect("request should exist");
+    assert_eq!(req.id, req_id);
+    assert_eq!(req.claimant, claimant);
+    assert_eq!(req.token, token_client.address);
+    assert_eq!(req.amount, 10_000);
+    assert_eq!(req.status, PullPaymentStatus::Open);
+}
+
+#[test]
+fn pull_payment_claimant_can_claim() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    let balance_before = token_client.balance(&claimant);
+    client.claim_pull_payment(&claimant, &req_id);
+    assert_eq!(token_client.balance(&claimant), balance_before + 5_000);
+
+    let req = client.get_pull_payment(&req_id).unwrap();
+    assert_eq!(req.status, PullPaymentStatus::Claimed);
+}
+
+#[test]
+fn pull_payment_claim_emits_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
+    );
+
+    client.claim_pull_payment(&claimant, &req_id);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "pr_claim")
+    ));
+}
+
+#[test]
+fn pull_payment_open_emits_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
+    );
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "pr_open")
+    ));
+}
+
+#[test]
+fn pull_payment_wrong_claimant_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+    let impostor = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    assert_eq!(
+        client.try_claim_pull_payment(&impostor, &req_id),
+        Err(Ok(ContractError::PullPaymentWrongClaimant))
+    );
+}
+
+#[test]
+fn pull_payment_double_claim_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    client.claim_pull_payment(&claimant, &req_id);
+
+    // Second claim — request is now Claimed.
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &req_id),
+        Err(Ok(ContractError::PullPaymentNotOpen))
+    );
+}
+
+#[test]
+fn pull_payment_cancel_lifecycle() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    // Cancel the request via governance.
+    let cancel_id = client.create_cancel_pull_payment_proposal(
+        &owner_a,
+        &req_id,
+        &str(&env, "cancel"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
+
+    let req = client.get_pull_payment(&req_id).unwrap();
+    assert_eq!(req.status, PullPaymentStatus::Cancelled);
+
+    // Claim after cancel must fail.
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &req_id),
+        Err(Ok(ContractError::PullPaymentNotOpen))
+    );
+}
+
+#[test]
+fn pull_payment_cancel_emits_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    let cancel_id = client.create_cancel_pull_payment_proposal(
+        &owner_a,
+        &req_id,
+        &str(&env, "cancel"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "pr_cncl")
+    ));
+}
+
+#[test]
+fn pull_payment_expired_request_rejects_claim() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let short_expiry = NOW + 100;
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, short_expiry),
+    );
+
+    // Advance past the expiry.
+    set_timestamp(&env, short_expiry + 1);
+
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &req_id),
+        Err(Ok(ContractError::PullPaymentNotOpen))
+    );
+
+    // The view returns Expired.
+    let req = client.get_pull_payment(&req_id).unwrap();
+    assert_eq!(req.status, PullPaymentStatus::Expired);
+}
+
+#[test]
+fn pull_payment_cancel_expired_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let short_expiry = NOW + 100;
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, short_expiry),
+    );
+
+    // Advance past the expiry.
+    set_timestamp(&env, short_expiry + 1);
+
+    let cancel_id = client.create_cancel_pull_payment_proposal(
+        &owner_a,
+        &req_id,
+        &str(&env, "cancel expired"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &cancel_id),
+        Err(Ok(ContractError::PullPaymentNotOpen))
+    );
+}
+
+#[test]
+fn pull_payment_creation_rejects_zero_amount() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &owner_a,
+            &pull_params(&env, &claimant, &token_client.address, 0, DEADLINE),
+            &str(&env, "zero"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn pull_payment_creation_rejects_claimant_equal_to_contract() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &owner_a,
+            &pull_params(
+                &env,
+                &client.address,
+                &token_client.address,
+                1_000,
+                DEADLINE
+            ),
+            &str(&env, "self-claimant"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidRecipient))
+    );
+}
+
+#[test]
+fn pull_payment_creation_rejects_past_expiry() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &owner_a,
+            &pull_params(
+                &env,
+                &claimant,
+                &token_client.address,
+                1_000,
+                NOW - 1
+            ),
+            &str(&env, "past expiry"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidDeadline))
+    );
+}
+
+#[test]
+fn pull_payment_creation_rejects_excessively_far_expiry() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let far_expiry = NOW + 7_776_000 + 1;
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &owner_a,
+            &pull_params(
+                &env,
+                &claimant,
+                &token_client.address,
+                1_000,
+                far_expiry
+            ),
+            &str(&env, "far expiry"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+}
+
+#[test]
+fn pull_payment_non_proposer_cannot_create() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &non_owner,
+            &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
+            &str(&env, "unauthorized"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn pull_payment_frozen_contract_blocks_creation() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_create_pull_payment_proposal(
+            &owner_a,
+            &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
+            &str(&env, "frozen"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn pull_payment_frozen_contract_blocks_claim() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &req_id),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn pull_payment_next_id_starts_at_one() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    assert_eq!(client.get_next_pull_payment_id(), 1);
+}
+
+#[test]
+fn pull_payment_ids_are_sequential() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req1 = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
+    );
+    let req2 = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 2_000, DEADLINE),
+    );
+
+    assert_eq!(req1, 1);
+    assert_eq!(req2, 2);
+    assert_eq!(client.get_next_pull_payment_id(), 3);
+}
+
+#[test]
+fn pull_payment_migrate_already_migrated_on_fresh_deploy() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(
+        client.try_migrate_to_pull_payments(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_storage_version(), 4);
+}
+
+#[test]
+fn pull_payment_cancel_nonexistent_rejected_at_execute() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+
+    let cancel_id = client.create_cancel_pull_payment_proposal(
+        &owner_a,
+        &999, // nonexistent
+        &str(&env, "cancel ghost"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &cancel_id),
+        Err(Ok(ContractError::PullPaymentNotFound))
+    );
+}
+
+#[test]
+fn pull_payment_claim_nonexistent_rejected() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    let claimant = Address::generate(&env);
+
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &999),
+        Err(Ok(ContractError::PullPaymentNotFound))
+    );
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn pull_payment_claimant_need_not_be_owner() {
+    // The claimant is a non-owner external party. The multisig approves the
+    // pull-payment proposal and the claimant pulls independently.
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+
+    // non_owner is the claimant.
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &non_owner, &token_client.address, 7_000, DEADLINE),
+    );
+
+    let balance_before = token_client.balance(&non_owner);
+    client.claim_pull_payment(&non_owner, &req_id);
+    assert_eq!(token_client.balance(&non_owner), balance_before + 7_000);
+}
+
+#[test]
+fn pull_payment_cannot_claim_after_cancel() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let claimant = Address::generate(&env);
+
+    let req_id = execute_pull_payment_proposal(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
+    );
+
+    let cancel_id = client.create_cancel_pull_payment_proposal(
+        &owner_a,
+        &req_id,
+        &str(&env, "cancel"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
+
+    assert_eq!(
+        client.try_claim_pull_payment(&claimant, &req_id),
+        Err(Ok(ContractError::PullPaymentNotOpen))
+    );
+}
+
+#[test]
+fn pull_payment_solo_owner_cannot_create_and_self_execute() {
+    // Threshold-2 multisig: a single owner cannot unilaterally open a
+    // pull-payment to themselves.
+    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
+
+    let prop_id = client.create_pull_payment_proposal(
+        &owner_a,
+        &pull_params(&env, &owner_a, &token_client.address, 100_000, DEADLINE),
+        &str(&env, "solo drain"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+}
+
+// ── Property tests ────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// For any valid claim amount the claimant receives exactly that amount and
+    /// the request transitions to Claimed.
+    #[test]
+    fn pull_payment_claim_amount_matches(
+        amount in 1_i128..=100_000_i128,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let claimant = Address::generate(&env);
+
+        let req_id = execute_pull_payment_proposal(
+            &env, &client, &owner_a, &owner_b, &owner_c,
+            &pull_params(&env, &claimant, &token_client.address, amount, DEADLINE),
+        );
+
+        let balance_before = token_client.balance(&claimant);
+        client.claim_pull_payment(&claimant, &req_id);
+        prop_assert_eq!(token_client.balance(&claimant), balance_before + amount);
+
+        let req = client.get_pull_payment(&req_id).unwrap();
+        prop_assert_eq!(req.status, PullPaymentStatus::Claimed);
+    }
+
+    /// Claiming a non-existent request always fails regardless of the ID.
+    #[test]
+    fn pull_payment_claim_nonexistent_always_fails(
+        request_id in 1_u64..=10_000_u64,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+
+        let claimant = Address::generate(&env);
+
+        prop_assert_eq!(
+            client.try_claim_pull_payment(&claimant, &request_id),
+            Err(Ok(ContractError::PullPaymentNotFound))
+        );
+    }
+}

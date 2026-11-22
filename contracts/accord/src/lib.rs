@@ -248,6 +248,60 @@ pub struct YieldPosition {
     pub kind: YieldVenueKind,
 }
 
+/// Lifecycle state of a pull-payment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum PullPaymentStatus {
+    /// Open: the claimant may call `claim_pull_payment` before `expires_at`.
+    Open,
+    /// Claimed: the token transfer has executed; the request is terminal.
+    Claimed,
+    /// Cancelled: governance cancelled the request before it was claimed.
+    Cancelled,
+    /// Expired: the claimant did not claim before `expires_at`.
+    Expired,
+}
+
+/// Parameters for a `CreatePullPayment` proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentParams {
+    /// The address authorised to claim this payment. Only this address may
+    /// call `claim_pull_payment` for the generated request ID.
+    pub claimant: Address,
+    /// Token to transfer on claim.
+    pub token: Address,
+    /// Amount to transfer. Must be ≥ `MIN_AMOUNT`.
+    pub amount: i128,
+    /// Unix timestamp (seconds) after which the request can no longer be
+    /// claimed. Must be in the future and within `MAX_PROPOSAL_DURATION`.
+    pub expires_at: u64,
+    /// Optional human-readable memo stored with the request (≤ 300 chars).
+    pub memo: String,
+}
+
+/// On-chain record of an open (or terminal) pull-payment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentRequest {
+    /// Sequential ID assigned at creation time.
+    pub id: u64,
+    /// The owner who proposed this request.
+    pub proposer: Address,
+    /// The only address allowed to claim the payment.
+    pub claimant: Address,
+    /// Token to transfer.
+    pub token: Address,
+    /// Amount reserved for the claimant.
+    pub amount: i128,
+    /// Expiry timestamp.
+    pub expires_at: u64,
+    /// Current lifecycle status.
+    pub status: PullPaymentStatus,
+    /// Optional memo stored with the request.
+    pub memo: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
@@ -304,6 +358,12 @@ pub enum ProposalKind {
     AddYieldVenue(Address),
     /// Remove a yield venue from the governance-approved venue registry.
     RemoveYieldVenue(Address),
+    /// Open a pull-payment request that allows a named claimant to claim a
+    /// fixed amount of a token from the treasury without a second governance
+    /// vote.
+    CreatePullPayment(PullPaymentParams),
+    /// Cancel a pull-payment request before it is claimed or expires.
+    CancelPullPayment(u64),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -640,6 +700,42 @@ pub struct YieldVenueChangedEvent {
     pub version: u32,
 }
 
+/// Emitted when a `CreatePullPayment` proposal executes and the request is opened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentOpenedEvent {
+    pub request_id: u64,
+    pub proposer: Address,
+    pub claimant: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub expires_at: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a claimant successfully claims a pull-payment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentClaimedEvent {
+    pub request_id: u64,
+    pub claimant: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `CancelPullPayment` proposal executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentCancelledEvent {
+    pub request_id: u64,
+    pub executor: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct FrozenEvent {
@@ -948,6 +1044,14 @@ pub enum ContractError {
     YieldVenueFailed = 68,
     /// The withdrawal returned fewer tokens than the `min_return` floor.
     YieldReturnBelowMinimum = 69,
+    /// The referenced pull-payment request does not exist.
+    PullPaymentNotFound = 70,
+    /// The pull-payment request is not in the Open state.
+    PullPaymentNotOpen = 71,
+    /// The pull-payment request has expired.
+    PullPaymentExpired = 72,
+    /// The caller is not the designated claimant for this pull-payment request.
+    PullPaymentWrongClaimant = 73,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1068,7 +1172,9 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 ///   2 — added DEX swap approved-router registry (`DXRTR` persistent key).
 ///   3 — added yield venue approved-venue registry (`YVENUE` persistent key)
 ///       and yield position records (`YPOS` persistent key).
-const STORAGE_SCHEMA_VERSION: u32 = 3;
+///   4 — added pull-payment requests (`PULLREQ` persistent key) and next
+///       pull-payment ID counter (`PRNEXT` instance key).
+const STORAGE_SCHEMA_VERSION: u32 = 4;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -1082,7 +1188,9 @@ const STORAGE_SCHEMA_VERSION: u32 = 3;
 ///   3 — added `YieldDepositProposedEvent`, `YieldDepositedEvent`,
 ///       `YieldWithdrawProposedEvent`, `YieldWithdrawnEvent`,
 ///       `YieldVenueChangedEvent` for treasury yield allocation proposals.
-pub const EVENT_SCHEMA_VERSION: u32 = 3;
+///   4 — added `PullPaymentOpenedEvent`, `PullPaymentClaimedEvent`,
+///       `PullPaymentCancelledEvent` for pull-payment request proposals.
+pub const EVENT_SCHEMA_VERSION: u32 = 4;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1156,6 +1264,17 @@ fn yield_venue_approved_key(venue: &Address) -> (Symbol, Address) {
 /// Stored as `(YPOS, position_id) → YieldPosition`.
 fn yield_position_key(position_id: u64) -> (Symbol, u64) {
     (symbol_short!("YPOS"), position_id)
+}
+
+/// Persistent key for a pull-payment request record.
+/// Stored as `(PULLREQ, request_id) → PullPaymentRequest`.
+fn pull_payment_key(request_id: u64) -> (Symbol, u64) {
+    (symbol_short!("PULLREQ"), request_id)
+}
+
+/// Instance key for the next pull-payment request ID counter.
+fn pull_payment_next_id_key() -> Symbol {
+    symbol_short!("PRNEXT")
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -2203,7 +2322,46 @@ fn remove_yield_position(env: &Env, position_id: u64) {
     env.storage().persistent().remove(&key);
 }
 
-fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+fn read_next_pull_payment_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&pull_payment_next_id_key())
+        .unwrap_or(1_u64)
+}
+
+fn write_next_pull_payment_id(env: &Env, id: u64) {
+    env.storage()
+        .instance()
+        .set(&pull_payment_next_id_key(), &id);
+    bump_instance(env);
+}
+
+fn read_pull_payment(env: &Env, request_id: u64) -> Option<PullPaymentRequest> {
+    let key = pull_payment_key(request_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_pull_payment(env: &Env, req: &PullPaymentRequest) {
+    let key = pull_payment_key(req.id);
+    env.storage().persistent().set(&key, req);
+    bump_persistent(env, &key);
+}
+
+/// Derives the current status of a pull-payment request, taking the ledger
+/// timestamp into account. A stored `Open` request whose `expires_at` has
+/// passed is treated as `Expired` without any on-chain write.
+fn derive_pull_payment_status(env: &Env, req: &PullPaymentRequest) -> PullPaymentStatus {
+    match &req.status {
+        PullPaymentStatus::Open => {
+            if env.ledger().timestamp() >= req.expires_at {
+                PullPaymentStatus::Expired
+            } else {
+                PullPaymentStatus::Open
+            }
+        }
+        other => other.clone(),
+    }
+}
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
     if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
@@ -4072,6 +4230,216 @@ impl AccordContract {
         );
         Ok(())
     }
+
+    // ─── Pull-Payment Requests ────────────────────────────────────────────────
+
+    /// Creates a governance proposal to open a pull-payment request.
+    ///
+    /// When executed, the request is recorded as `Open` and the designated
+    /// `claimant` may call `claim_pull_payment` at any time before
+    /// `params.expires_at` to receive `params.amount` of `params.token`.
+    ///
+    /// # Validation at creation
+    /// - `claimant` must not be the contract itself.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `expires_at` must be in the future.
+    /// - `memo` (if non-empty) must be ≤ `MAX_DESCRIPTION_LEN` characters.
+    pub fn create_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        params: PullPaymentParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.claimant == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+        validate_token(&env, &params.token)?;
+
+        let now = env.ledger().timestamp();
+        if params.expires_at <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if params.expires_at - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+        if !params.memo.is_empty() && params.memo.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CreatePullPayment(params),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to cancel an open pull-payment request.
+    ///
+    /// Only requests that are currently `Open` can be cancelled. Expired or
+    /// already-claimed requests are rejected at execution time.
+    pub fn create_cancel_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        request_id: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CancelPullPayment(request_id),
+            description,
+            deadline,
+        )
+    }
+
+    /// Allows the designated claimant of an open pull-payment request to pull
+    /// the pre-approved amount from the treasury.
+    ///
+    /// This is a **non-governance entrypoint**: the claimant does not need to
+    /// be an owner. They only need to be the address named in the request and
+    /// to authorise this call via `require_auth()`.
+    ///
+    /// # Guards
+    /// - The request must exist.
+    /// - The request must be `Open` (not `Claimed`, `Cancelled`, or `Expired`).
+    /// - The caller must be the designated `claimant`.
+    /// - The treasury must hold at least `amount` of the token.
+    /// - The contract must not be frozen.
+    ///
+    /// On success the request transitions to `Claimed` (terminal) and a
+    /// `PullPaymentClaimedEvent` is emitted.
+    pub fn claim_pull_payment(
+        env: Env,
+        claimant: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        claimant.require_auth();
+        require_not_frozen(&env)?;
+
+        let mut req = read_pull_payment(&env, request_id)
+            .ok_or(ContractError::PullPaymentNotFound)?;
+
+        if claimant != req.claimant {
+            return Err(ContractError::PullPaymentWrongClaimant);
+        }
+
+        // Derive status — an Open request past expires_at is treated as Expired.
+        let status = derive_pull_payment_status(&env, &req);
+        if !matches!(status, PullPaymentStatus::Open) {
+            return Err(ContractError::PullPaymentNotOpen);
+        }
+
+        // Re-validate token in case the registry changed since the request opened.
+        validate_token(&env, &req.token)?;
+
+        if available_balance(&env, &req.token)? < req.amount {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Transfer the tokens to the claimant.
+        let treasury = env.current_contract_address();
+        if !transfer_succeeded(
+            token::Client::new(&env, &req.token)
+                .try_transfer(&treasury, &claimant, &req.amount),
+        ) {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Mark the request as claimed (terminal).
+        req.status = PullPaymentStatus::Claimed;
+        write_pull_payment(&env, &req);
+
+        env.events().publish(
+            (symbol_short!("pr_claim"),),
+            PullPaymentClaimedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                request_id,
+                claimant,
+                token: req.token.clone(),
+                amount: req.amount,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the pull-payment request record for the given `request_id`, or
+    /// `None` if no request with that ID exists.
+    pub fn get_pull_payment(
+        env: Env,
+        request_id: u64,
+    ) -> Option<PullPaymentRequest> {
+        let req = read_pull_payment(&env, request_id)?;
+        // Return the derived status so callers see Expired rather than Open
+        // when the expiry has passed.
+        let mut req = req;
+        req.status = derive_pull_payment_status(&env, &req);
+        Some(req)
+    }
+
+    /// Returns the next pull-payment request ID that will be assigned.
+    pub fn get_next_pull_payment_id(env: Env) -> u64 {
+        read_next_pull_payment_id(&env)
+    }
+
+    /// One-time migration that stamps storage schema to version 4 for legacy
+    /// deployments, confirming the pull-payment request keys are in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `PULLREQ` and
+    /// `PRNEXT` keys start empty/1 on every deployment so there is no data to
+    /// backfill. Returns `AlreadyMigrated` if the deployment is already at
+    /// schema version ≥ 4.
+    pub fn migrate_to_pull_payments(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 4 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        // Initialise the next-ID counter if it does not exist.
+        if env
+            .storage()
+            .instance()
+            .get::<_, u64>(&pull_payment_next_id_key())
+            .is_none()
+        {
+            write_next_pull_payment_id(&env, 1);
+        }
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "pullpay_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
@@ -5224,6 +5592,78 @@ impl AccordContract {
                         amount: params.amount,
                         recv_amount,
                         position_id: params.position_id,
+                    },
+                );
+            }
+            ProposalKind::CreatePullPayment(params) => {
+                // ── Validation ───────────────────────────────────────────
+                validate_token(&env, &params.token)?;
+                if params.amount < MIN_AMOUNT {
+                    return Err(ContractError::InvalidAmount);
+                }
+                if params.claimant == env.current_contract_address() {
+                    return Err(ContractError::InvalidRecipient);
+                }
+                let now = env.ledger().timestamp();
+                if params.expires_at <= now {
+                    return Err(ContractError::InvalidDeadline);
+                }
+                if available_balance(&env, &params.token)? < params.amount {
+                    return Err(ContractError::TransferFailed);
+                }
+
+                // ── Open the request ─────────────────────────────────────
+                let request_id = read_next_pull_payment_id(&env);
+                write_next_pull_payment_id(
+                    &env,
+                    request_id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+                );
+
+                write_pull_payment(
+                    &env,
+                    &PullPaymentRequest {
+                        id: request_id,
+                        proposer: proposal.proposer.clone(),
+                        claimant: params.claimant.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        expires_at: params.expires_at,
+                        status: PullPaymentStatus::Open,
+                        memo: params.memo.clone(),
+                    },
+                );
+
+                env.events().publish(
+                    (symbol_short!("pr_open"),),
+                    PullPaymentOpenedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        request_id,
+                        proposer: proposal.proposer.clone(),
+                        claimant: params.claimant.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        expires_at: params.expires_at,
+                    },
+                );
+            }
+            ProposalKind::CancelPullPayment(request_id) => {
+                let mut req = read_pull_payment(&env, *request_id)
+                    .ok_or(ContractError::PullPaymentNotFound)?;
+
+                let status = derive_pull_payment_status(&env, &req);
+                if !matches!(status, PullPaymentStatus::Open) {
+                    return Err(ContractError::PullPaymentNotOpen);
+                }
+
+                req.status = PullPaymentStatus::Cancelled;
+                write_pull_payment(&env, &req);
+
+                env.events().publish(
+                    (symbol_short!("pr_cncl"),),
+                    PullPaymentCancelledEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        request_id: *request_id,
+                        executor: executor.clone(),
                     },
                 );
             }
