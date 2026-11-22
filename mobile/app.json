@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Accord Protocol",
+    "slug": "accord-protocol",
+    "description": "Review and approve Accord multisig proposals on the go, reading the same Soroban contract as the web app.",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "accord",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.accordprotocol.mobile",
+      "infoPlist": {
+        "LSApplicationQueriesSchemes": ["web+stellar", "stellar"]
+      }
+    },
+    "android": {
+      "package": "com.accordprotocol.mobile",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [{ "scheme": "accord" }],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    },
+    "plugins": ["expo-secure-store"],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
