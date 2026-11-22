@@ -817,3 +817,40 @@ Running two indexers writing to the same database corrupts checkpoints and cause
 5. **Verify No Data Loss**: Confirm `accord_indexer_indexed_ledger` and `/reconciliation` drift (`0`) on the active instance and check `GET /webhooks/deliveries?status=dead`.
 
 - **Owner**: Infrastructure / Platform Engineering.
+
+---
+
+## Multi-Region Backup & Restore Verification
+
+The [`.github/workflows/backup-restore.yml`](../.github/workflows/backup-restore.yml) workflow and [`scripts/backup-restore.sh`](../scripts/backup-restore.sh) back up Accord's stores and configuration to a secondary region and verify restores into an isolated ephemeral PostgreSQL container on a daily schedule (`02:00 UTC`).
+
+### Stores & Configuration Scope
+
+- **In-Repo Stores**: PostgreSQL 16 (`accord_analytics` / `accord_indexer_test`, managed by `indexer/migrations/postgres/` and `analytics-api/migrations/`). SQLite (`STORE_BACKEND=sqlite`) is dev/replay-only.
+- **Configuration**: `docker-compose.yml`, `.env.example`, and `launch/mainnet-checklist.json`.
+- **Operator-Provisioned Targets**: Cloud object storage buckets, KMS/encryption keys, and OIDC IAM roles do **not** exist in this repository and must be provisioned by the operator.
+
+### Encryption, Cross-Region & Retention Design
+
+1. **Client-Side Encryption**: Backups are encrypted with `openssl enc -aes-256-cbc -pbkdf2 -salt` using `BACKUP_ENCRYPTION_KEY` before leaving the source. Keys are never echoed or written to artifacts.
+2. **Secondary Region & Object Lock**: Encrypted archives and JSON manifests (`timestamp`, `source_version`, `size_bytes`, `sha256_encrypted`, `region`, `schema_version`) are uploaded to `BACKUP_SECONDARY_REGION` / `BACKUP_BUCKET_URI`. Configure the target bucket with **versioning** and **Object Lock / immutable retention** (`BACKUP_RETENTION_DAYS`, default `30`).
+3. **OIDC Federation (No Long-Lived Cloud Keys)**: Jobs use `id-token: write`. Configure your cloud IAM trust policy to allow only `repo:Ac0rdP/AccordProtocol:ref:refs/heads/main` and `.github/workflows/backup-restore.yml` (use a read-only role for `verify-restore`).
+4. **RPO & RTO Enforcement**: `verify-restore` restores into an ephemeral `postgres:16-alpine` service container (`SCRATCH_DATABASE_URL`, never production), verifies the SHA-256 manifest, and fails if `RPO > MAX_RPO_SECONDS` (default `86400`s) or `RTO > MAX_RTO_SECONDS` (default `900`s).
+
+### Required Secrets & Variables
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | Repo/Env Secret | Passphrase/key for `openssl` AES-256-PBKDF2 backup encryption (rotate quarterly; keep previous key in vault for historical restores). |
+| `BACKUP_DATABASE_URL` | Repo/Env Secret | Read-only PostgreSQL connection string for `pg_dump`. |
+| `BACKUP_SECONDARY_REGION` | Repo Variable | Secondary cloud region identifier (e.g. `us-west-2`). |
+| `BACKUP_BUCKET_URI` | Repo Variable | Secondary-region bucket URI with versioning & Object Lock enabled. |
+| `BACKUP_UPLOAD_CMD` | Repo Variable | Operator command to upload `$BACKUP_FILE` and `$MANIFEST_FILE` after OIDC auth. |
+| `BACKUP_FETCH_CMD` | Repo Variable | Operator command to fetch latest `$BACKUP_FILE` and `$MANIFEST_FILE` (read-only role). |
+| `BACKUP_PRUNE_CMD` | Repo Variable | Operator command to prune objects older than `$RETENTION_DAYS` (if not using bucket lifecycle rules). |
+
+### Incident Restore Procedure & Disable Steps
+
+1. **Incident Restore**: Fetch the target encrypted archive and manifest from `BACKUP_BUCKET_URI`, verify `sha256_encrypted`, decrypt with `BACKUP_ENCRYPTION_KEY`, pause the active indexer writer, restore with `psql -v ON_ERROR_STOP=1 -f db.sql`, and verify `/readyz` and `/reconciliation`.
+2. **Disable / Rollback**: `gh workflow disable "Multi-Region Backup & Restore Verification"`.
+- **Owner**: Infrastructure / SRE.
