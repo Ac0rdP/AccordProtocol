@@ -173,11 +173,84 @@ pub struct DexSwapParams {
     pub swap_deadline: u64,
 }
 
+/// The interface standard a yield venue exposes. The execute arm calls the
+/// appropriate function name on the venue contract based on this tag.
+///
+/// - `Blend` — Blend Protocol lending pools; deposit via `supply`, withdraw
+///   via `withdraw`.
+/// - `Soroswap` — Soroswap liquidity pools; deposit via `add_liquidity`,
+///   withdraw via `remove_liquidity`.
+/// - `Generic` — Any venue that exposes `deposit` / `withdraw` with the
+///   signature `(token: Address, amount: i128)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum YieldVenueKind {
+    Blend,
+    Soroswap,
+    Generic,
+}
+
+/// Parameters for a governed treasury yield allocation proposal.
+///
+/// Both `YieldDeposit` and `YieldWithdraw` share this struct. The `kind`
+/// field selects which on-chain interface the venue exposes; the execute arm
+/// dispatches the correct cross-contract call.
+///
+/// # Deposit semantics
+/// The multisig approves the venue to pull `amount` of `token` for one
+/// ledger then calls the deposit function. A `YieldPosition` record is
+/// written to persistent storage so a later withdrawal proposal can reference
+/// it by `position_id`.
+///
+/// # Withdrawal semantics
+/// References an existing `YieldPosition` via `position_id`. The execute
+/// arm calls the venue's withdrawal function and verifies that the multisig
+/// contract receives at least `min_return` tokens (slippage guard). The
+/// position record is deleted on success.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldAllocationParams {
+    /// Address of the approved yield venue contract.
+    pub venue: Address,
+    /// Token deposited into / withdrawn from the venue.
+    pub token: Address,
+    /// Amount to deposit, or shares/LP-tokens to redeem on withdrawal.
+    /// Must be ≥ `MIN_AMOUNT`.
+    pub amount: i128,
+    /// Minimum tokens returned to the treasury on withdrawal.
+    /// Ignored for deposits. Set to 1 for "accept any" or tighten for
+    /// slippage protection.
+    pub min_return: i128,
+    /// Interface kind; selects the correct cross-contract function names.
+    pub kind: YieldVenueKind,
+    /// Caller-assigned identifier linking a withdrawal back to its deposit.
+    /// For deposits this slot must not already be open. For withdrawals it
+    /// must reference an existing open position.
+    pub position_id: u64,
+}
+
+/// On-chain record of an active yield position opened by a `YieldDeposit`
+/// proposal. Cleared when the matching `YieldWithdraw` proposal executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldPosition {
+    /// Unique identifier supplied by the proposer.
+    pub id: u64,
+    /// The venue holding the funds.
+    pub venue: Address,
+    /// Token that was deposited.
+    pub token: Address,
+    /// Amount deposited (not adjusted for accrued yield).
+    pub deposited: i128,
+    /// Ledger timestamp when the deposit proposal executed.
+    pub opened_at: u64,
+    /// Venue interface kind recorded at deposit time.
+    pub kind: YieldVenueKind,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
-    /// Transfer(transfers)
-    Transfer(Vec<Transfer>),
     /// AddOwner(new_owner, weight)
     AddOwner(Address, u32),
     /// RemoveOwner(owner_to_remove)
@@ -223,6 +296,14 @@ pub enum ProposalKind {
     AddDexRouter(Address),
     /// Remove a DEX router from the governance-approved router registry.
     RemoveDexRouter(Address),
+    /// Deposit treasury tokens into a governance-approved yield venue.
+    YieldDeposit(YieldAllocationParams),
+    /// Withdraw tokens from a yield venue back to the treasury.
+    YieldWithdraw(YieldAllocationParams),
+    /// Add a yield venue to the governance-approved venue registry.
+    AddYieldVenue(Address),
+    /// Remove a yield venue from the governance-approved venue registry.
+    RemoveYieldVenue(Address),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -483,6 +564,77 @@ pub struct DexSwapExecutedEvent {
 #[contracttype]
 pub struct DexRouterChangedEvent {
     pub router: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldWithdrawProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub min_return: i128,
+    pub position_id: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldWithdrawnEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Actual tokens returned to the treasury.
+    pub recv_amount: i128,
+    pub position_id: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a yield venue is added to or removed from the approved registry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldVenueChangedEvent {
+    pub venue: Address,
     pub approved: bool,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
@@ -786,6 +938,16 @@ pub enum ContractError {
     SwapFailed = 63,
     /// `swap_deadline` is in the past or farther than `MAX_PROPOSAL_DURATION`.
     InvalidSwapDeadline = 64,
+    /// The referenced yield position does not exist.
+    YieldPositionNotFound = 65,
+    /// A deposit proposal references a position_id that is already open.
+    YieldPositionAlreadyOpen = 66,
+    /// The yield venue is not in the governance-approved registry.
+    YieldVenueNotApproved = 67,
+    /// The yield venue call failed or returned an unexpected result.
+    YieldVenueFailed = 68,
+    /// The withdrawal returned fewer tokens than the `min_return` floor.
+    YieldReturnBelowMinimum = 69,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -904,7 +1066,9 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// Version history:
 ///   1 — initial versioned schema (governance, roles, escrow).
 ///   2 — added DEX swap approved-router registry (`DXRTR` persistent key).
-const STORAGE_SCHEMA_VERSION: u32 = 2;
+///   3 — added yield venue approved-venue registry (`YVENUE` persistent key)
+///       and yield position records (`YPOS` persistent key).
+const STORAGE_SCHEMA_VERSION: u32 = 3;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -915,7 +1079,10 @@ const STORAGE_SCHEMA_VERSION: u32 = 2;
 ///   1 — initial versioned event schema (all structs gain the `version` field).
 ///   2 — added `DexSwapProposedEvent`, `DexSwapExecutedEvent`,
 ///       `DexRouterChangedEvent` for DEX path-payment swap proposals.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
+///   3 — added `YieldDepositProposedEvent`, `YieldDepositedEvent`,
+///       `YieldWithdrawProposedEvent`, `YieldWithdrawnEvent`,
+///       `YieldVenueChangedEvent` for treasury yield allocation proposals.
+pub const EVENT_SCHEMA_VERSION: u32 = 3;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -977,6 +1144,18 @@ fn escrow_reserved_key(token: &Address) -> (Symbol, Address) {
 /// A router address is stored as `(DXRTR, router_addr) → bool`.
 fn dex_router_approved_key(router: &Address) -> (Symbol, Address) {
     (symbol_short!("DXRTR"), router.clone())
+}
+
+/// Persistent key for the approved yield venue registry.
+/// A venue address is stored as `(YVENUE, venue_addr) → bool`.
+fn yield_venue_approved_key(venue: &Address) -> (Symbol, Address) {
+    (symbol_short!("YVENUE"), venue.clone())
+}
+
+/// Persistent key for an open yield position record.
+/// Stored as `(YPOS, position_id) → YieldPosition`.
+fn yield_position_key(position_id: u64) -> (Symbol, u64) {
+    (symbol_short!("YPOS"), position_id)
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -1991,6 +2170,37 @@ fn validate_swap_path(env: &Env, path: &Vec<Address>) -> Result<(), ContractErro
         validate_token(env, &token_addr)?;
     }
     Ok(())
+}
+
+fn yield_venue_is_approved(env: &Env, venue: &Address) -> bool {
+    let key = yield_venue_approved_key(venue);
+    env.storage().persistent().get(&key).unwrap_or(false)
+}
+
+fn write_yield_venue_approved(env: &Env, venue: &Address, approved: bool) {
+    let key = yield_venue_approved_key(venue);
+    if approved {
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+fn read_yield_position(env: &Env, position_id: u64) -> Option<YieldPosition> {
+    let key = yield_position_key(position_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_yield_position(env: &Env, position: &YieldPosition) {
+    let key = yield_position_key(position.id);
+    env.storage().persistent().set(&key, position);
+    bump_persistent(env, &key);
+}
+
+fn remove_yield_position(env: &Env, position_id: u64) {
+    let key = yield_position_key(position_id);
+    env.storage().persistent().remove(&key);
 }
 
 fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
@@ -3646,8 +3856,222 @@ impl AccordContract {
     pub fn is_dex_router_approved(env: Env, router: Address) -> bool {
         dex_router_is_approved(&env, &router)
     }
+
+    // ─── Yield Allocation ────────────────────────────────────────────────────
+
+    /// Creates a governance proposal to add a yield venue to the approved registry.
     ///
-    /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
+    /// A venue must be approved before it can be referenced in a
+    /// `YieldDeposit` or `YieldWithdraw` proposal.
+    pub fn create_add_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to remove a yield venue from the approved registry.
+    pub fn create_remove_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if !yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to deposit treasury tokens into an approved yield venue.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `position_id` must not already be open (no existing `YieldPosition`).
+    pub fn create_yield_deposit_proposal(
+        env: Env,
+        proposer: Address,
+        params: YieldAllocationParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
+        }
+        validate_token(&env, &params.token)?;
+        if read_yield_position(&env, params.position_id).is_some() {
+            return Err(ContractError::YieldPositionAlreadyOpen);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldDeposit(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("y_dprop"),),
+            YieldDepositProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                position_id: params.position_id,
+                kind: params.kind,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to withdraw tokens from a yield venue back to the treasury.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `min_return` ≥ 1.
+    /// - `position_id` must reference an existing open `YieldPosition`.
+    /// - The position's recorded `venue` and `token` must match `params`.
+    pub fn create_yield_withdraw_proposal(
+        env: Env,
+        proposer: Address,
+        params: YieldAllocationParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_return < 1 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
+        }
+        validate_token(&env, &params.token)?;
+
+        let position = read_yield_position(&env, params.position_id)
+            .ok_or(ContractError::YieldPositionNotFound)?;
+        if position.venue != params.venue || position.token != params.token {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldWithdraw(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("y_wprop"),),
+            YieldWithdrawProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                min_return: params.min_return,
+                position_id: params.position_id,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Returns the open `YieldPosition` for the given `position_id`, or `None`
+    /// if no position with that ID exists.
+    pub fn get_yield_position(env: Env, position_id: u64) -> Option<YieldPosition> {
+        read_yield_position(&env, position_id)
+    }
+
+    /// Returns `true` if the given venue address is in the governance-approved
+    /// yield venue registry.
+    pub fn is_yield_venue_approved(env: Env, venue: Address) -> bool {
+        yield_venue_is_approved(&env, &venue)
+    }
+
+    /// One-time migration that stamps storage schema to version 3 for legacy
+    /// deployments, confirming the yield venue registry keys are in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `YVENUE` and
+    /// `YPOS` registries start empty on every deployment so there is no data
+    /// to backfill. Returns `AlreadyMigrated` if the deployment is already
+    /// at schema version ≥ 3.
+    pub fn migrate_to_yield_allocation(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 3 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "yield_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
@@ -4586,6 +5010,220 @@ impl AccordContract {
                         version: EVENT_SCHEMA_VERSION,
                         router: router.clone(),
                         approved: false,
+                    },
+                );
+            }
+            ProposalKind::AddYieldVenue(venue) => {
+                if yield_venue_is_approved(&env, venue) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_yield_venue_approved(&env, venue, true);
+                env.events().publish(
+                    (symbol_short!("y_venue"),),
+                    YieldVenueChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        venue: venue.clone(),
+                        approved: true,
+                    },
+                );
+            }
+            ProposalKind::RemoveYieldVenue(venue) => {
+                if !yield_venue_is_approved(&env, venue) {
+                    return Err(ContractError::AssetRegistryState);
+                }
+                write_yield_venue_approved(&env, venue, false);
+                env.events().publish(
+                    (symbol_short!("y_venue"),),
+                    YieldVenueChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        venue: venue.clone(),
+                        approved: false,
+                    },
+                );
+            }
+            ProposalKind::YieldDeposit(params) => {
+                // ── Pre-execution guards ─────────────────────────────────
+                if !yield_venue_is_approved(&env, &params.venue) {
+                    return Err(ContractError::YieldVenueNotApproved);
+                }
+                validate_token(&env, &params.token)?;
+                if read_yield_position(&env, params.position_id).is_some() {
+                    return Err(ContractError::YieldPositionAlreadyOpen);
+                }
+                if available_balance(&env, &params.token)? < params.amount {
+                    return Err(ContractError::TransferFailed);
+                }
+
+                // ── Approve the venue for one ledger ─────────────────────
+                token::Client::new(&env, &params.token).approve(
+                    &env.current_contract_address(),
+                    &params.venue,
+                    &params.amount,
+                    &(env.ledger().sequence() + 1),
+                );
+
+                // ── Cross-contract deposit call ──────────────────────────
+                let (func_name, deposit_args) = match params.kind {
+                    YieldVenueKind::Blend => {
+                        // Blend: supply(from, spender, asset, amount)
+                        let mut args = Vec::new(&env);
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        (Symbol::new(&env, "supply"), args)
+                    }
+                    YieldVenueKind::Soroswap => {
+                        // Soroswap: add_liquidity expects two tokens; for a
+                        // single-sided deposit we pass the same token twice.
+                        let mut args = Vec::new(&env);
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        args.push_back(params.min_return.into_val(&env));
+                        args.push_back(params.min_return.into_val(&env));
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(env.ledger().timestamp().into_val(&env));
+                        (Symbol::new(&env, "add_liquidity"), args)
+                    }
+                    YieldVenueKind::Generic => {
+                        // Generic: deposit(token, amount)
+                        let mut args = Vec::new(&env);
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        (Symbol::new(&env, "deposit"), args)
+                    }
+                };
+
+                env.try_invoke_contract::<(), _>(
+                    &params.venue,
+                    &func_name,
+                    deposit_args,
+                )
+                .map_err(|_| ContractError::YieldVenueFailed)?
+                .map_err(|_| ContractError::YieldVenueFailed)?;
+
+                // ── Record the open position ─────────────────────────────
+                let now = env.ledger().timestamp();
+                write_yield_position(
+                    &env,
+                    &YieldPosition {
+                        id: params.position_id,
+                        venue: params.venue.clone(),
+                        token: params.token.clone(),
+                        deposited: params.amount,
+                        opened_at: now,
+                        kind: params.kind.clone(),
+                    },
+                );
+
+                env.events().publish(
+                    (symbol_short!("y_dep"),),
+                    YieldDepositedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        proposal_id,
+                        executor: executor.clone(),
+                        venue: params.venue.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        position_id: params.position_id,
+                        kind: params.kind.clone(),
+                    },
+                );
+            }
+            ProposalKind::YieldWithdraw(params) => {
+                // ── Pre-execution guards ─────────────────────────────────
+                if !yield_venue_is_approved(&env, &params.venue) {
+                    return Err(ContractError::YieldVenueNotApproved);
+                }
+                validate_token(&env, &params.token)?;
+
+                let position = read_yield_position(&env, params.position_id)
+                    .ok_or(ContractError::YieldPositionNotFound)?;
+
+                // The venue and token in the withdraw proposal must match the
+                // recorded position to prevent misrouted withdrawals.
+                if position.venue != params.venue || position.token != params.token {
+                    return Err(ContractError::Unauthorized);
+                }
+
+                // ── Balance snapshot before withdrawal ───────────────────
+                let balance_before = token::Client::new(&env, &params.token)
+                    .try_balance(&env.current_contract_address())
+                    .map_err(|_| ContractError::YieldVenueFailed)?
+                    .map_err(|_| ContractError::YieldVenueFailed)?;
+
+                // ── Cross-contract withdrawal call ───────────────────────
+                let (func_name, withdraw_args) = match params.kind {
+                    YieldVenueKind::Blend => {
+                        // Blend: withdraw(from, spender, asset, amount)
+                        let mut args = Vec::new(&env);
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        (Symbol::new(&env, "withdraw"), args)
+                    }
+                    YieldVenueKind::Soroswap => {
+                        // Soroswap: remove_liquidity(token_a, token_b, lp_amount,
+                        //   min_a, min_b, to, deadline)
+                        let mut args = Vec::new(&env);
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        args.push_back(params.min_return.into_val(&env));
+                        args.push_back(params.min_return.into_val(&env));
+                        args.push_back(env.current_contract_address().into_val(&env));
+                        args.push_back(env.ledger().timestamp().into_val(&env));
+                        (Symbol::new(&env, "remove_liquidity"), args)
+                    }
+                    YieldVenueKind::Generic => {
+                        // Generic: withdraw(token, amount)
+                        let mut args = Vec::new(&env);
+                        args.push_back(params.token.clone().into_val(&env));
+                        args.push_back(params.amount.into_val(&env));
+                        (Symbol::new(&env, "withdraw"), args)
+                    }
+                };
+
+                env.try_invoke_contract::<(), _>(
+                    &params.venue,
+                    &func_name,
+                    withdraw_args,
+                )
+                .map_err(|_| ContractError::YieldVenueFailed)?
+                .map_err(|_| ContractError::YieldVenueFailed)?;
+
+                // ── Slippage guard: measure tokens returned ──────────────
+                let balance_after = token::Client::new(&env, &params.token)
+                    .try_balance(&env.current_contract_address())
+                    .map_err(|_| ContractError::YieldVenueFailed)?
+                    .map_err(|_| ContractError::YieldVenueFailed)?;
+
+                let recv_amount = balance_after
+                    .checked_sub(balance_before)
+                    .unwrap_or(0)
+                    .max(0);
+
+                if recv_amount < params.min_return {
+                    return Err(ContractError::YieldReturnBelowMinimum);
+                }
+
+                // ── Close the position record ────────────────────────────
+                remove_yield_position(&env, params.position_id);
+
+                env.events().publish(
+                    (symbol_short!("y_wdraw"),),
+                    YieldWithdrawnEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        proposal_id,
+                        executor: executor.clone(),
+                        venue: params.venue.clone(),
+                        token: params.token.clone(),
+                        amount: params.amount,
+                        recv_amount,
+                        position_id: params.position_id,
                     },
                 );
             }

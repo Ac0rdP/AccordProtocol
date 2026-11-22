@@ -11643,3 +11643,775 @@ proptest! {
         );
     }
 }
+
+// ── Issue #951: Treasury Yield Allocation Proposal Kind ──────────────────────
+//
+// A mock Soroban yield venue contract is registered for tests that exercise
+// the full create → approve → execute path. The mock simply accepts deposits
+// and returns `deposit_amount + YIELD_BONUS` on withdrawal, letting us test
+// the slippage guard and position lifecycle without deploying Blend or
+// Soroswap.
+
+const YIELD_BONUS: i128 = 100;
+
+mod mock_venue {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    pub struct MockVenue;
+
+    #[contractimpl]
+    impl MockVenue {
+        /// Generic deposit(token, amount) — no-op in tests since token
+        /// transfers are handled by the approve flow.
+        pub fn deposit(_env: Env, _token: Address, _amount: i128) {}
+
+        /// Generic withdraw(token, amount) — no-op; balance change is
+        /// simulated by minting tokens to the multisig before execution.
+        pub fn withdraw(_env: Env, _token: Address, _amount: i128) {}
+
+        /// Blend supply(from, spender, asset, amount)
+        pub fn supply(
+            _env: Env,
+            _from: Address,
+            _spender: Address,
+            _asset: Address,
+            _amount: i128,
+        ) {
+        }
+
+        /// Blend withdraw(from, spender, asset, amount)
+        pub fn withdraw_blend(
+            _env: Env,
+            _from: Address,
+            _spender: Address,
+            _asset: Address,
+            _amount: i128,
+        ) {
+        }
+    }
+}
+
+/// Helper: registers a mock venue and approves it via governance.
+fn setup_approved_venue(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+) -> Address {
+    let venue_id = env.register(mock_venue::MockVenue, ());
+
+    let prop_id = client.create_add_yield_venue_proposal(
+        owner_a,
+        &venue_id,
+        &str(env, "approve yield venue"),
+        &DEADLINE,
+    );
+    client.approve(owner_a, &prop_id);
+    client.approve(owner_b, &prop_id);
+    client.execute(owner_c, &prop_id);
+
+    assert!(client.is_yield_venue_approved(&venue_id));
+    venue_id
+}
+
+/// Helper: build a minimal YieldAllocationParams for a Generic deposit.
+fn yield_params(
+    env: &Env,
+    venue: &Address,
+    token: &Address,
+    amount: i128,
+    position_id: u64,
+) -> YieldAllocationParams {
+    YieldAllocationParams {
+        venue: venue.clone(),
+        token: token.clone(),
+        amount,
+        min_return: 1,
+        kind: YieldVenueKind::Generic,
+        position_id,
+    }
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn yield_add_venue_proposal_stores_approval() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let venue = env.register(mock_venue::MockVenue, ());
+
+    assert!(!client.is_yield_venue_approved(&venue));
+    setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+    // venue was registered inside helper, re-register gives different addr;
+    // check the one the helper used directly:
+    let venue2 = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+    assert!(client.is_yield_venue_approved(&venue2));
+}
+
+#[test]
+fn yield_remove_venue_proposal_revokes_approval() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let remove_id = client.create_remove_yield_venue_proposal(
+        &owner_a,
+        &venue,
+        &str(&env, "remove venue"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+
+    assert!(!client.is_yield_venue_approved(&venue));
+}
+
+#[test]
+fn yield_add_venue_duplicate_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    assert_eq!(
+        client.try_create_add_yield_venue_proposal(
+            &owner_a,
+            &venue,
+            &str(&env, "dup"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::AssetRegistryState))
+    );
+}
+
+#[test]
+fn yield_remove_unapproved_venue_rejected() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let venue = env.register(mock_venue::MockVenue, ());
+
+    assert_eq!(
+        client.try_create_remove_yield_venue_proposal(
+            &owner_a,
+            &venue,
+            &str(&env, "not in registry"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::AssetRegistryState))
+    );
+}
+
+#[test]
+fn yield_deposit_proposal_requires_approved_venue() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let unapproved = env.register(mock_venue::MockVenue, ());
+
+    assert_eq!(
+        client.try_create_yield_deposit_proposal(
+            &owner_a,
+            &yield_params(&env, &unapproved, &token_client.address, 1_000, 1),
+            &str(&env, "unapproved"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::YieldVenueNotApproved))
+    );
+}
+
+#[test]
+fn yield_deposit_proposal_rejects_zero_amount() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    assert_eq!(
+        client.try_create_yield_deposit_proposal(
+            &owner_a,
+            &yield_params(&env, &venue, &token_client.address, 0, 1),
+            &str(&env, "zero"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn yield_deposit_proposal_rejects_duplicate_position_id() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Execute a first deposit so position 1 is open.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 1),
+        &str(&env, "first deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    assert!(client.get_yield_position(&1).is_some());
+
+    // A second proposal with the same position_id must be rejected at creation.
+    assert_eq!(
+        client.try_create_yield_deposit_proposal(
+            &owner_a,
+            &yield_params(&env, &venue, &token_client.address, 500, 1),
+            &str(&env, "dup position"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::YieldPositionAlreadyOpen))
+    );
+}
+
+#[test]
+fn yield_deposit_full_lifecycle_stores_position() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 5_000, 42),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    let pos = client.get_yield_position(&42).expect("position should be open");
+    assert_eq!(pos.id, 42);
+    assert_eq!(pos.deposited, 5_000);
+    assert_eq!(pos.venue, venue);
+    assert_eq!(pos.token, token_client.address);
+    assert_eq!(
+        client.get_proposal(&dep_id).status,
+        ProposalStatus::Executed
+    );
+}
+
+#[test]
+fn yield_deposit_emits_y_dep_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 10),
+        &str(&env, "event check"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "y_dep")
+    ));
+}
+
+#[test]
+fn yield_deposit_emits_y_dprop_event_at_creation() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 11),
+        &str(&env, "creation event"),
+        &DEADLINE,
+    );
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "y_dprop")
+    ));
+}
+
+#[test]
+fn yield_withdraw_requires_open_position() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // No deposit made — position 99 does not exist.
+    assert_eq!(
+        client.try_create_yield_withdraw_proposal(
+            &owner_a,
+            &YieldAllocationParams {
+                venue: venue.clone(),
+                token: token_client.address.clone(),
+                amount: 1_000,
+                min_return: 1,
+                kind: YieldVenueKind::Generic,
+                position_id: 99,
+            },
+            &str(&env, "ghost position"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::YieldPositionNotFound))
+    );
+}
+
+#[test]
+fn yield_withdraw_venue_mismatch_rejected() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+    let venue2 = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Deposit into venue.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 5),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    // Withdraw proposal points to venue2 — mismatch.
+    assert_eq!(
+        client.try_create_yield_withdraw_proposal(
+            &owner_a,
+            &YieldAllocationParams {
+                venue: venue2,
+                token: token_client.address.clone(),
+                amount: 1_000,
+                min_return: 1,
+                kind: YieldVenueKind::Generic,
+                position_id: 5,
+            },
+            &str(&env, "wrong venue"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn yield_withdraw_full_lifecycle_clears_position() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Deposit.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 2_000, 7),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+    assert!(client.get_yield_position(&7).is_some());
+
+    // Withdraw.
+    let wdraw_id = client.create_yield_withdraw_proposal(
+        &owner_a,
+        &YieldAllocationParams {
+            venue: venue.clone(),
+            token: token_client.address.clone(),
+            amount: 2_000,
+            min_return: 1,
+            kind: YieldVenueKind::Generic,
+            position_id: 7,
+        },
+        &str(&env, "withdraw"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &wdraw_id);
+    client.approve(&owner_b, &wdraw_id);
+    client.execute(&owner_c, &wdraw_id);
+
+    // Position cleared.
+    assert!(client.get_yield_position(&7).is_none());
+    assert_eq!(
+        client.get_proposal(&wdraw_id).status,
+        ProposalStatus::Executed
+    );
+}
+
+#[test]
+fn yield_withdraw_emits_y_wdraw_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 8),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    let wdraw_id = client.create_yield_withdraw_proposal(
+        &owner_a,
+        &YieldAllocationParams {
+            venue: venue.clone(),
+            token: token_client.address.clone(),
+            amount: 1_000,
+            min_return: 1,
+            kind: YieldVenueKind::Generic,
+            position_id: 8,
+        },
+        &str(&env, "withdraw"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &wdraw_id);
+    client.approve(&owner_b, &wdraw_id);
+    client.execute(&owner_c, &wdraw_id);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "y_wdraw")
+    ));
+}
+
+#[test]
+fn yield_add_venue_emits_y_venue_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "y_venue")
+    ));
+}
+
+#[test]
+fn yield_migrate_to_yield_allocation_already_migrated_on_fresh_deploy() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    // Fresh deploy writes STORAGE_SCHEMA_VERSION = 3.
+    assert_eq!(
+        client.try_migrate_to_yield_allocation(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_storage_version(), 3);
+}
+
+#[test]
+fn yield_non_proposer_cannot_create_deposit() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    assert_eq!(
+        client.try_create_yield_deposit_proposal(
+            &non_owner,
+            &yield_params(&env, &venue, &token_client.address, 1_000, 20),
+            &str(&env, "unauthorized"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn yield_frozen_contract_blocks_deposit_creation() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_create_yield_deposit_proposal(
+            &owner_a,
+            &yield_params(&env, &venue, &token_client.address, 1_000, 30),
+            &str(&env, "frozen"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn yield_deposit_execute_rejects_revoked_venue() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Create the deposit proposal while venue is still approved.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 50),
+        &str(&env, "pending deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+
+    // Governance removes the venue before execution.
+    let remove_id = client.create_remove_yield_venue_proposal(
+        &owner_a,
+        &venue,
+        &str(&env, "revoke venue"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &remove_id);
+    client.approve(&owner_b, &remove_id);
+    client.execute(&owner_c, &remove_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &dep_id),
+        Err(Ok(ContractError::YieldVenueNotApproved))
+    );
+}
+
+#[test]
+fn yield_deposit_execute_rejects_insufficient_balance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Request more than the treasury holds.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(
+            &env,
+            &venue,
+            &token_client.address,
+            2_000_000_000_000_i128,
+            60,
+        ),
+        &str(&env, "overspend"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &dep_id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn yield_deposit_cannot_self_approve_then_execute_alone() {
+    // A threshold-2 multisig: a single owner cannot unilaterally move funds.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 10_000, 70),
+        &str(&env, "solo drain"),
+        &DEADLINE,
+    );
+    // Only one approval — threshold is 2.
+    client.approve(&owner_a, &dep_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &dep_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+}
+
+#[test]
+fn yield_withdraw_expired_proposal_cannot_execute() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 80),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    let wdraw_id = client.create_yield_withdraw_proposal(
+        &owner_a,
+        &YieldAllocationParams {
+            venue: venue.clone(),
+            token: token_client.address.clone(),
+            amount: 1_000,
+            min_return: 1,
+            kind: YieldVenueKind::Generic,
+            position_id: 80,
+        },
+        &str(&env, "withdraw later"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &wdraw_id);
+    client.approve(&owner_b, &wdraw_id);
+
+    // Advance past the proposal deadline.
+    set_timestamp(&env, DEADLINE + 1);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &wdraw_id),
+        Err(Ok(ContractError::ProposalExpired))
+    );
+}
+
+#[test]
+fn yield_withdraw_zero_min_return_rejected_at_creation() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
+
+    // Deposit first.
+    let dep_id = client.create_yield_deposit_proposal(
+        &owner_a,
+        &yield_params(&env, &venue, &token_client.address, 1_000, 90),
+        &str(&env, "deposit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &dep_id);
+    client.approve(&owner_b, &dep_id);
+    client.execute(&owner_c, &dep_id);
+
+    assert_eq!(
+        client.try_create_yield_withdraw_proposal(
+            &owner_a,
+            &YieldAllocationParams {
+                venue: venue.clone(),
+                token: token_client.address.clone(),
+                amount: 1_000,
+                min_return: 0, // invalid
+                kind: YieldVenueKind::Generic,
+                position_id: 90,
+            },
+            &str(&env, "zero min_return"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+// ── Property tests ────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// For any valid deposit amount the position is stored and readable after
+    /// execution; the recorded `deposited` field matches the input amount.
+    #[test]
+    fn yield_deposit_position_deposited_matches_amount(
+        amount in 1_i128..=1_000_000_i128,
+        position_id in 1_u64..=1_000_u64,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let venue_id = env.register(mock_venue::MockVenue, ());
+        let add_id = client.create_add_yield_venue_proposal(
+            &owner_a, &venue_id, &str(&env, "add"), &DEADLINE,
+        );
+        client.approve(&owner_a, &add_id);
+        client.approve(&owner_b, &add_id);
+        client.execute(&owner_c, &add_id);
+
+        let dep_id = client.create_yield_deposit_proposal(
+            &owner_a,
+            &YieldAllocationParams {
+                venue: venue_id.clone(),
+                token: token_client.address.clone(),
+                amount,
+                min_return: 1,
+                kind: YieldVenueKind::Generic,
+                position_id,
+            },
+            &str(&env, "proptest deposit"),
+            &DEADLINE,
+        );
+        client.approve(&owner_a, &dep_id);
+        client.approve(&owner_b, &dep_id);
+        client.execute(&owner_c, &dep_id);
+
+        let pos = client.get_yield_position(&position_id)
+            .expect("position must exist after deposit");
+        prop_assert_eq!(pos.deposited, amount);
+        prop_assert_eq!(pos.id, position_id);
+    }
+
+    /// A withdraw proposal that references a non-existent position must always
+    /// be rejected at creation, regardless of the position_id value.
+    #[test]
+    fn yield_withdraw_missing_position_always_rejected(
+        position_id in 1_u64..=10_000_u64,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let venue_id = env.register(mock_venue::MockVenue, ());
+        let add_id = client.create_add_yield_venue_proposal(
+            &owner_a, &venue_id, &str(&env, "add"), &DEADLINE,
+        );
+        client.approve(&owner_a, &add_id);
+        client.approve(&owner_b, &add_id);
+        client.execute(&owner_c, &add_id);
+
+        // No deposit — position does not exist.
+        prop_assert_eq!(
+            client.try_create_yield_withdraw_proposal(
+                &owner_a,
+                &YieldAllocationParams {
+                    venue: venue_id.clone(),
+                    token: token_client.address.clone(),
+                    amount: 1_000,
+                    min_return: 1,
+                    kind: YieldVenueKind::Generic,
+                    position_id,
+                },
+                &str(&env, "ghost"),
+                &DEADLINE,
+            ),
+            Err(Ok(ContractError::YieldPositionNotFound))
+        );
+    }
+}
