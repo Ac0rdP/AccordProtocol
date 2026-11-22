@@ -767,3 +767,53 @@ Before promoting a new HSM/MPC key to production (and quarterly thereafter):
 | **HSM / MPC Production Signer Custody** | Treasury Security Lead | Production Stellar owner and guardian keys | Fails closed on invalid `G...` StrKey, secret seed input, wrong network passphrase, tampered payload, or bad Ed25519 signature | `node --test scripts/verify-signer-evidence.test.mjs`; `node scripts/verify-signer-evidence.mjs verify-evidence` | Quarterly manual HSM/MPC Testnet signing drill evidence JSON + custody audit log export |
 
 The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.
+
+---
+
+## Blue/Green Indexer Deployment Runbook
+
+The [`.github/workflows/blue-green-indexer.yml`](../.github/workflows/blue-green-indexer.yml) workflow and [`scripts/blue-green-indexer.sh`](../scripts/blue-green-indexer.sh) implement zero-downtime, data-safe blue/green rollouts for the Treasury Indexer (`indexer/`).
+
+### Data Safety & Single-Writer Model
+
+Running two indexers writing to the same database corrupts checkpoints and causes duplicate webhook/notification deliveries. This deployment enforces:
+
+1. **Isolated Green Store & Shadow Catch-Up**: Green runs against its own isolated PostgreSQL database or schema (`INDEXER_GREEN_DATABASE_URL`) in shadow mode (outbound webhook/notification deliveries disabled) while Blue continues serving live traffic.
+2. **Single Active Writer**: Only one indexer holds the active writer/outbox role at any time, enforced by `indexer_leases` (`indexer/src/leader-election.js` fencing tokens) and explicit role configuration.
+3. **Pre-Switch Parity Gate (`scripts/blue-green-indexer.sh compare`)**:
+   - Green `/readyz` returns HTTP `200`.
+   - `accord_indexer_chain_tip_lag_ledgers` is within `max_tip_lag_ledgers` (default `10`).
+   - Blue vs. Green latest indexed ledger delta is within `MAX_LEDGER_DELTA` (default `2`).
+   - API parity passes on `/status`, `/ledger`, `/events`, and `/reconciliation`.
+   - Recent-range `accord_events` row counts and MD5 checksums match when `BLUE_DATABASE_URL` and `GREEN_DATABASE_URL` are provided.
+4. **Backward-Compatible Schema Migrations (Expand-then-Contract)**:
+   - All migrations applied during blue/green overlap must be backward compatible with Blue (additive columns/tables first; drop old columns only in a later release after Blue is retired).
+   - **If a migration is NOT backward compatible**: Do **not** use live blue/green overlap. Pause the active writer, take a verified `pg_dump`/snapshot, apply the migration in a maintenance window, and restore from snapshot if rollback is required.
+
+### Operator Contract & Required Settings
+
+> [!IMPORTANT]
+> This repository does not contain cloud infrastructure or ingress definitions. Operators must provision the target environments and configure the following GitHub settings before running `dry_run: false`:
+
+| Setting | Type | Purpose |
+| --- | --- | --- |
+| `production-indexer-traffic-shift` | GitHub Environment | **Must configure required reviewers** to gate the traffic-shift step. |
+| `INDEXER_BLUE_URL` | Repo/Env Variable | Base URL of the live Blue indexer (private ops endpoint). |
+| `INDEXER_GREEN_URL` | Repo/Env Variable | Base URL of the staging Green indexer. |
+| `INDEXER_DEPLOY_GREEN_CMD` | Repo/Env Variable | Operator command/hook to deploy Green at `NEW_VERSION` in shadow mode. |
+| `INDEXER_TRAFFIC_SHIFT_CMD` | Repo/Env Variable | Single, reversible command/hook receiving `TARGET_COLOR=green\|blue` to flip router/service/DNS weight. |
+| `INDEXER_TEARDOWN_BLUE_CMD` | Repo/Env Variable | Operator command/hook to retire Blue after the soak period passes. |
+| `INDEXER_BLUE_DATABASE_URL` | Repo/Env Secret | Read-only connection string for Blue parity checks (never echoed). |
+| `INDEXER_GREEN_DATABASE_URL` | Repo/Env Secret | Read-only connection string for Green parity checks (never echoed). |
+
+### Execution, Abort Criteria, and Rollback
+
+1. **Dispatch**: Run **Actions → Blue/Green Indexer Deployment** with `new_version`, `dry_run: true` first, then `dry_run: false` with `soak_period_minutes` (default `15`).
+2. **Abort Criteria**: Any `/readyz` failure, tip lag > `max_tip_lag_ledgers`, ledger delta > `MAX_LEDGER_DELTA`, or DB checksum mismatch aborts before traffic is shifted.
+3. **Automatic Rollback**: If post-shift `/healthz`, `/readyz`, or `/status` (`operational`) fails, the workflow automatically executes `scripts/blue-green-indexer.sh shift --target blue`.
+4. **Manual Rollback & Disable**:
+   - Flip traffic back immediately: `TARGET_COLOR=blue bash -c "$INDEXER_TRAFFIC_SHIFT_CMD"`.
+   - Disable the workflow if needed: `gh workflow disable "Blue/Green Indexer Deployment"`.
+5. **Verify No Data Loss**: Confirm `accord_indexer_indexed_ledger` and `/reconciliation` drift (`0`) on the active instance and check `GET /webhooks/deliveries?status=dead`.
+
+- **Owner**: Infrastructure / Platform Engineering.

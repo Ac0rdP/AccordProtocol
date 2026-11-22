@@ -24,6 +24,7 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | Release | `.github/workflows/release.yml` | `v*` tags, manual | Gates on all suites, builds the contract artifact + manifest, publishes the SDK to GitHub Packages, and creates a GitHub Release with generated notes. |
 | Status Page | `.github/workflows/status-page.yml` | `schedule` (every 15 minutes), manual | Probes the `/status` endpoints of the indexer and the analytics API and publishes the public status page when the status changed (see [STATUS.md](STATUS.md)). |
 | Reproducible Contract Builds | `.github/workflows/reproducible-builds.yml` | pushes/PRs touching `contracts/**`, tags | Verifies byte-for-byte reproducible WASM artifacts across isolated build passes and supported toolchain versions with least-privilege permissions and failure artifact links. |
+| Blue/Green Indexer Deployment | `.github/workflows/blue-green-indexer.yml` | manual (`workflow_dispatch`, `dry_run: true` default) | Parameterized blue/green indexer rollout with shadow catch-up, parity gates, protected environment approval, auto-rollback, and soak period (see [OPERATIONS.md](OPERATIONS.md#bluegreen-indexer-deployment-runbook)). |
 
 ## Testnet upgrade simulation
 
