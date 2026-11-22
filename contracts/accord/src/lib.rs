@@ -302,6 +302,29 @@ pub struct PullPaymentRequest {
     pub memo: String,
 }
 
+/// Structured reconciliation metadata attached to a payment proposal.
+///
+/// Any or all fields may be `None`. When set, each string must be non-empty
+/// and ≤ `MAX_DESCRIPTION_LEN` characters. The metadata is stored separately
+/// from the `Proposal` record so that existing proposal types — including
+/// transfers, recurring payments, escrows, DEX swaps, yield deposits, and
+/// pull-payment requests — can carry reconciliation context without changing
+/// their on-chain structs.
+///
+/// # Fields
+/// - `invoice_id` — an off-chain invoice or billing identifier (e.g.
+///   "INV-2024-0001").
+/// - `external_ref` — a reference into an external bookkeeping system
+///   (e.g. a purchase-order number or ERP document ID).
+/// - `memo` — free-form human-readable note for reviewers and indexers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PaymentMetadata {
+    pub invoice_id: Option<String>,
+    pub external_ref: Option<String>,
+    pub memo: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
@@ -736,6 +759,17 @@ pub struct PullPaymentCancelledEvent {
     pub version: u32,
 }
 
+/// Emitted when reconciliation metadata is attached to a proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PaymentMetadataSetEvent {
+    pub proposal_id: u64,
+    pub setter: Address,
+    pub metadata: PaymentMetadata,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct FrozenEvent {
@@ -1052,6 +1086,10 @@ pub enum ContractError {
     PullPaymentExpired = 72,
     /// The caller is not the designated claimant for this pull-payment request.
     PullPaymentWrongClaimant = 73,
+    /// The proposal has already been executed; metadata cannot be changed.
+    ProposalAlreadyExecuted = 74,
+    /// A metadata string field exceeded the maximum length.
+    MetadataTooLong = 75,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1174,7 +1212,8 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 ///       and yield position records (`YPOS` persistent key).
 ///   4 — added pull-payment requests (`PULLREQ` persistent key) and next
 ///       pull-payment ID counter (`PRNEXT` instance key).
-const STORAGE_SCHEMA_VERSION: u32 = 4;
+///   5 — added payment metadata store (`PAYMETA` persistent key per proposal).
+const STORAGE_SCHEMA_VERSION: u32 = 5;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -1190,7 +1229,9 @@ const STORAGE_SCHEMA_VERSION: u32 = 4;
 ///       `YieldVenueChangedEvent` for treasury yield allocation proposals.
 ///   4 — added `PullPaymentOpenedEvent`, `PullPaymentClaimedEvent`,
 ///       `PullPaymentCancelledEvent` for pull-payment request proposals.
-pub const EVENT_SCHEMA_VERSION: u32 = 4;
+///   5 — added `PaymentMetadataSetEvent` for invoice and payment-reference
+///       metadata.
+pub const EVENT_SCHEMA_VERSION: u32 = 5;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1275,6 +1316,12 @@ fn pull_payment_key(request_id: u64) -> (Symbol, u64) {
 /// Instance key for the next pull-payment request ID counter.
 fn pull_payment_next_id_key() -> Symbol {
     symbol_short!("PRNEXT")
+}
+
+/// Persistent key for payment metadata attached to a proposal.
+/// Stored as `(PAYMETA, proposal_id) → PaymentMetadata`.
+fn payment_metadata_key(proposal_id: u64) -> (Symbol, u64) {
+    (symbol_short!("PAYMETA"), proposal_id)
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -2361,6 +2408,43 @@ fn derive_pull_payment_status(env: &Env, req: &PullPaymentRequest) -> PullPaymen
         }
         other => other.clone(),
     }
+}
+
+fn read_payment_metadata(env: &Env, proposal_id: u64) -> Option<PaymentMetadata> {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_payment_metadata(env: &Env, proposal_id: u64, metadata: &PaymentMetadata) {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().set(&key, metadata);
+    bump_persistent(env, &key);
+}
+
+fn remove_payment_metadata(env: &Env, proposal_id: u64) {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().remove(&key);
+}
+
+/// Validates that each set string field is non-empty and within
+/// `MAX_DESCRIPTION_LEN`. `None` fields are always valid (meaning "not set").
+fn validate_payment_metadata(metadata: &PaymentMetadata) -> Result<(), ContractError> {
+    if let Some(ref inv) = metadata.invoice_id {
+        if inv.is_empty() || inv.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref ext) = metadata.external_ref {
+        if ext.is_empty() || ext.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref m) = metadata.memo {
+        if m.is_empty() || m.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    Ok(())
 }
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
@@ -4440,6 +4524,128 @@ impl AccordContract {
         );
         Ok(())
     }
+
+    // ─── Payment Metadata (Invoice & Reference) ──────────────────────────────
+
+    /// Attaches reconciliation metadata to an existing proposal.
+    ///
+    /// The caller must be the original proposer of the proposal and the
+    /// proposal must not have been executed yet. Metadata can be set or
+    /// overwritten any time before execution, allowing the proposer to correct
+    /// a typo or add a missing invoice reference after creation.
+    ///
+    /// # Validation
+    /// - Each non-`None` field must be non-empty and ≤ `MAX_DESCRIPTION_LEN`.
+    /// - The proposal must exist.
+    /// - The proposal must be in `Pending` or `Ready` status (not Executed,
+    ///   Expired, or Revoked).
+    /// - The caller must be the proposal's original proposer.
+    pub fn set_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+        metadata: PaymentMetadata,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Refresh derived status.
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        validate_payment_metadata(&metadata)?;
+        write_payment_metadata(&env, proposal_id, &metadata);
+
+        env.events().publish(
+            (symbol_short!("pymeta"),),
+            PaymentMetadataSetEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id,
+                setter,
+                metadata,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Clears all reconciliation metadata from a proposal.
+    ///
+    /// Same authorization and status constraints as `set_payment_metadata`.
+    pub fn clear_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        remove_payment_metadata(&env, proposal_id);
+        Ok(())
+    }
+
+    /// Returns the reconciliation metadata attached to a proposal, or `None`
+    /// if no metadata has been set.
+    pub fn get_payment_metadata(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<PaymentMetadata> {
+        read_payment_metadata(&env, proposal_id)
+    }
+
+    /// One-time migration that stamps storage schema to version 5 for legacy
+    /// deployments, confirming the payment metadata store is in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `PAYMETA` store
+    /// starts empty on every deployment so there is no data to backfill.
+    /// Returns `AlreadyMigrated` if the deployment is already at schema
+    /// version ≥ 5.
+    pub fn migrate_to_payment_metadata(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 5 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "meta_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
@@ -5673,6 +5879,11 @@ impl AccordContract {
         write_proposal(&env, &proposal);
 
         remove_active_proposal(&env, proposal_id);
+
+        // Clean up reconciliation metadata — it has served its purpose once the
+        // proposal is executed. Indexers that need it should read it from the
+        // event log (`PaymentMetadataSetEvent`) rather than from storage.
+        remove_payment_metadata(&env, proposal_id);
 
         let transfers = match &proposal.kind {
             ProposalKind::Transfer(transfers) => transfers.clone(),

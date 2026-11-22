@@ -13103,3 +13103,610 @@ proptest! {
         );
     }
 }
+
+// ── Issue #949: Invoice and Payment-Reference Metadata ────────────────────────
+//
+// Reconciliation metadata (invoice_id, external_ref, memo) can be attached
+// to any payment proposal before it is executed. The original proposer sets
+// it; it is cleaned up after execution.
+
+/// Helper: build a PaymentMetadata with all fields set.
+fn meta_full(env: &Env, invoice: &str, ext_ref: &str, memo: &str) -> PaymentMetadata {
+    PaymentMetadata {
+        invoice_id: Some(str(env, invoice)),
+        external_ref: Some(str(env, ext_ref)),
+        memo: Some(str(env, memo)),
+    }
+}
+
+/// Helper: build a PaymentMetadata with only invoice_id set.
+fn meta_invoice(env: &Env, invoice: &str) -> PaymentMetadata {
+    PaymentMetadata {
+        invoice_id: Some(str(env, invoice)),
+        external_ref: None,
+        memo: None,
+    }
+}
+
+/// Helper: create + return a transfer proposal ID (not yet executed).
+fn make_transfer_proposal(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    token: &Address,
+) -> u64 {
+    client.create_proposal(
+        owner_a,
+        &t(env, &Address::generate(env), 10_000, token),
+        &str(env, "transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    )
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn metadata_can_be_set_on_pending_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_full(&env, "INV-001", "PO-123", "Q4 payroll"),
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).expect("metadata should exist");
+    assert_eq!(meta.invoice_id, Some(str(&env, "INV-001")));
+    assert_eq!(meta.external_ref, Some(str(&env, "PO-123")));
+    assert_eq!(meta.memo, Some(str(&env, "Q4 payroll")));
+}
+
+#[test]
+fn metadata_can_be_overwritten_before_execution() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+
+    // Overwrite with a different invoice ID.
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-002"),
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id, Some(str(&env, "INV-002")));
+    assert_eq!(meta.external_ref, None);
+}
+
+#[test]
+fn metadata_can_be_cleared_before_execution() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+    assert!(client.get_payment_metadata(&prop_id).is_some());
+
+    client.clear_payment_metadata(&owner_a, &prop_id);
+    assert!(client.get_payment_metadata(&prop_id).is_none());
+}
+
+#[test]
+fn metadata_emits_pymeta_event() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+
+    assert!(has_contract_event(
+        &env,
+        &client.address,
+        Symbol::new(&env, "pymeta")
+    ));
+}
+
+#[test]
+fn metadata_non_proposer_cannot_set() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    // owner_b is an owner but not the proposer.
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_b,
+            &prop_id,
+            &meta_invoice(&env, "INV-001"),
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn metadata_non_owner_cannot_set() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &non_owner,
+            &prop_id,
+            &meta_invoice(&env, "INV-001"),
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn metadata_cannot_set_on_executed_proposal() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    // Execute the proposal.
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &meta_invoice(&env, "INV-001"),
+        ),
+        Err(Ok(ContractError::ProposalAlreadyExecuted))
+    );
+}
+
+#[test]
+fn metadata_cannot_set_on_nonexistent_proposal() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &999,
+            &meta_invoice(&env, "INV-001"),
+        ),
+        Err(Ok(ContractError::ProposalNotFound))
+    );
+}
+
+#[test]
+fn metadata_rejects_empty_invoice_id() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &PaymentMetadata {
+                invoice_id: Some(str(&env, "")),
+                external_ref: None,
+                memo: None,
+            },
+        ),
+        Err(Ok(ContractError::MetadataTooLong))
+    );
+}
+
+#[test]
+fn metadata_rejects_empty_external_ref() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &PaymentMetadata {
+                invoice_id: None,
+                external_ref: Some(str(&env, "")),
+                memo: None,
+            },
+        ),
+        Err(Ok(ContractError::MetadataTooLong))
+    );
+}
+
+#[test]
+fn metadata_rejects_empty_memo() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &PaymentMetadata {
+                invoice_id: None,
+                external_ref: None,
+                memo: Some(str(&env, "")),
+            },
+        ),
+        Err(Ok(ContractError::MetadataTooLong))
+    );
+}
+
+#[test]
+fn metadata_rejects_invoice_id_too_long() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    // 301 chars — exceeds MAX_DESCRIPTION_LEN (300).
+    let long = "x".repeat(301);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &PaymentMetadata {
+                invoice_id: Some(str(&env, &long)),
+                external_ref: None,
+                memo: None,
+            },
+        ),
+        Err(Ok(ContractError::MetadataTooLong))
+    );
+}
+
+#[test]
+fn metadata_accepts_max_length_invoice_id() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    // Exactly 300 chars — the boundary.
+    let max = "y".repeat(300);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &PaymentMetadata {
+            invoice_id: Some(str(&env, &max)),
+            external_ref: None,
+            memo: None,
+        },
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id.as_ref().unwrap().len(), 300);
+}
+
+#[test]
+fn metadata_all_none_is_valid() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &PaymentMetadata {
+            invoice_id: None,
+            external_ref: None,
+            memo: None,
+        },
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id, None);
+    assert_eq!(meta.external_ref, None);
+    assert_eq!(meta.memo, None);
+}
+
+#[test]
+fn metadata_cleared_after_execution() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+    assert!(client.get_payment_metadata(&prop_id).is_some());
+
+    // Execute the proposal.
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    // Metadata should be cleaned up after execution.
+    assert!(client.get_payment_metadata(&prop_id).is_none());
+}
+
+#[test]
+fn metadata_clear_cannot_clear_executed_proposal() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    // Cannot clear after execution (metadata already removed, but the guard
+    // should still prevent the call).
+    assert_eq!(
+        client.try_clear_payment_metadata(&owner_a, &prop_id),
+        Err(Ok(ContractError::ProposalAlreadyExecuted))
+    );
+}
+
+#[test]
+fn metadata_clear_non_proposer_rejected() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-001"),
+    );
+
+    assert_eq!(
+        client.try_clear_payment_metadata(&owner_b, &prop_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn metadata_can_be_set_on_recurring_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let prop_id = client.create_recurring_proposal(
+        &owner_a,
+        &recipient,
+        &token_client.address,
+        &1_000,
+        &3_600,
+        &NOW,
+        &0,
+        &0,
+        &0,
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "payroll"),
+        &DEADLINE,
+        &ProposalCategory::Payroll,
+    );
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_full(&env, "INV-PAY-001", "PO-456", "Monthly payroll"),
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id, Some(str(&env, "INV-PAY-001")));
+}
+
+#[test]
+fn metadata_can_be_set_on_escrow_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let prop_id = client.create_escrow_proposal(
+        &owner_a,
+        &EscrowParams {
+            recipient: recipient.clone(),
+            token: token_client.address.clone(),
+            amount: 5_000,
+            release_mode: EscrowReleaseMode::Deadline(DEADLINE),
+        },
+        &str(&env, "escrow"),
+        &DEADLINE,
+    );
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "ESC-001"),
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id, Some(str(&env, "ESC-001")));
+}
+
+#[test]
+fn metadata_migrate_already_migrated_on_fresh_deploy() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(
+        client.try_migrate_to_payment_metadata(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_storage_version(), 5);
+}
+
+#[test]
+fn metadata_get_returns_none_when_not_set() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    assert!(client.get_payment_metadata(&prop_id).is_none());
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn metadata_cannot_be_set_on_expired_proposal() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    // Advance past the proposal deadline.
+    set_timestamp(&env, DEADLINE + 1);
+
+    assert_eq!(
+        client.try_set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &meta_invoice(&env, "INV-001"),
+        ),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+}
+
+#[test]
+fn metadata_clear_cannot_clear_nonexistent_proposal() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+
+    assert_eq!(
+        client.try_clear_payment_metadata(&owner_a, &999),
+        Err(Ok(ContractError::ProposalNotFound))
+    );
+}
+
+#[test]
+fn metadata_does_not_persist_after_overwrite_then_clear() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
+
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_full(&env, "INV-001", "PO-123", "memo1"),
+    );
+    client.clear_payment_metadata(&owner_a, &prop_id);
+    client.set_payment_metadata(
+        &owner_a,
+        &prop_id,
+        &meta_invoice(&env, "INV-002"),
+    );
+
+    let meta = client.get_payment_metadata(&prop_id).unwrap();
+    assert_eq!(meta.invoice_id, Some(str(&env, "INV-002")));
+    // external_ref and memo should be None after the second set.
+    assert_eq!(meta.external_ref, None);
+    assert_eq!(meta.memo, None);
+}
+
+// ── Property tests ────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// For any non-empty invoice_id string within the length limit, setting
+    /// and reading back metadata must round-trip exactly.
+    #[test]
+    fn metadata_round_trips_invoice_id(
+        len in 1_u32..=300_u32,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let prop_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 100, &token_client.address),
+            &str(&env, "test"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+
+        let invoice = "z".repeat(len as usize);
+        client.set_payment_metadata(
+            &owner_a,
+            &prop_id,
+            &PaymentMetadata {
+                invoice_id: Some(str(&env, &invoice)),
+                external_ref: None,
+                memo: None,
+            },
+        );
+
+        let meta = client.get_payment_metadata(&prop_id).unwrap();
+        prop_assert_eq!(meta.invoice_id.as_ref().unwrap().len(), len);
+    }
+
+    /// Setting metadata on an executed proposal must always fail regardless
+    /// of the proposal_id.
+    #[test]
+    fn metadata_set_after_execute_always_rejected(
+        proposal_id_seed in 1_u64..=1_000_u64,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let prop_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 100, &token_client.address),
+            &str(&env, "test"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &prop_id);
+        client.approve(&owner_b, &prop_id);
+        client.execute(&owner_c, &prop_id);
+
+        // Try to set metadata on an executed proposal — must always fail.
+        prop_assert_eq!(
+            client.try_set_payment_metadata(
+                &owner_a,
+                &prop_id,
+                &meta_invoice(&env, "INV-001"),
+            ),
+            Err(Ok(ContractError::ProposalAlreadyExecuted))
+        );
+    }
+}
