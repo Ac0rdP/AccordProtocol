@@ -201,6 +201,8 @@ Client SDK: [`packages/sdk/`](./packages/sdk/README.md) (`@accord-protocol/sdk`)
 
 Example dApp: [`examples/multisig-dapp/`](./examples/multisig-dapp/README.md) — runnable React/Vite multisig application demonstrating SDK integration with Freighter wallet.
 
+Mobile app: [`mobile/`](./mobile/README.md) — Expo/React Native client for reviewing and approving proposals on the same contract. Build, configuration, test and release steps: [`docs/MOBILE.md`](./docs/MOBILE.md).
+
 
 ---
 
