@@ -91,10 +91,13 @@ without a new issue every night.
 
 `release.yml` and `release-notes.yml` need:
 
-- **Actions → General → Workflow permissions**: read and write, so the run can
-  create a release, upload assets, and publish to GitHub Packages.
-- **No extra secrets**: operations use the built-in `GITHUB_TOKEN`. The published
-  package name is scoped to the repository owner (`@<owner>/accord-sdk`).
+- **Least-privilege permissions**: `release.yml` sets `contents: read` at the top level and grants extra scopes per job only where needed:
+  - `build-and-attest`: `contents: read`, `id-token: write`, `attestations: write` (keyless OIDC provenance attestation via `actions/attest-build-provenance`)
+  - `release`: `contents: write` (creates the GitHub Release and uploads attested assets)
+  - `publish-sdk`: `contents: read`, `packages: write` (publishes `@<owner>/accord-sdk` to GitHub Packages)
+- **No extra secrets**: signing uses keyless OIDC (`id-token: write`), and release/package publishing use the built-in `GITHUB_TOKEN`.
+- **Dry-run mode**: `workflow_dispatch` on `release.yml` exposes `dry_run` (default `true`) to validate contract/frontend builds, `SHA256SUMS.txt` generation, and `scripts/verify-release.sh` without attesting or publishing.
+- **Owner & rollback/disable**: Owned by Release Engineering / Maintainers. To disable releases in an emergency, run `gh workflow disable "Release"` and delete any bad release/tag as described below.
 
 ### Automated release notes & dry run
 

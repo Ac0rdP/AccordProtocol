@@ -16,8 +16,14 @@ on:
     tags:
       - "v*"
   # Allow re-running a release manually (for example after a transient failure)
-  # against an existing tag.
+  # against an existing tag, or validating the pipeline in dry-run mode.
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate build and checksums without attesting or publishing a GitHub Release"
+        required: true
+        type: boolean
+        default: true
 
 # Releases are serialized per tag and never cancelled mid-flight: a partially
 # published release is worse than a queued run.
@@ -26,8 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # create the GitHub Release and upload its assets
-  packages: write # publish the SDK to GitHub Packages (npm registry)
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -144,10 +149,18 @@ jobs:
             node scripts/check-mainnet-checklist.mjs --release "$GITHUB_REF_NAME"
           fi
 
-  release:
-    name: Build artifact & publish release
+  build-and-attest:
+    name: Build release artifacts & attest provenance
     needs: [contract-tests, frontend-tests, indexer-tests, mainnet-checklist]
+    if: ${{ !github.event.repository.fork && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+      attestation_id: ${{ steps.attest.outputs.attestation-id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -160,8 +173,21 @@ jobs:
       - name: Install stellar-cli
         uses: stellar/stellar-cli@v28.1.0
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Build smart contracts
         run: stellar contract build
+
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
 
       - name: Generate wasm-manifest.json
         run: |
@@ -225,23 +251,100 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
+      - name: Stage release artifacts & generate SHA256SUMS.txt
+        run: |
+          mkdir -p release-assets
+          cp target/wasm32*/release/*.wasm release-assets/
+          cp wasm-manifest.json release-assets/
+          tar -czf release-assets/accord-frontend-dist.tar.gz -C frontend dist
+          (cd release-assets && sha256sum accord.wasm wasm-manifest.json accord-frontend-dist.tar.gz > SHA256SUMS.txt)
+          cat release-assets/SHA256SUMS.txt
+
+      - name: Attest build provenance (keyless OIDC)
+        id: attest
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            release-assets/accord.wasm
+            release-assets/wasm-manifest.json
+            release-assets/accord-frontend-dist.tar.gz
+            release-assets/SHA256SUMS.txt
+
+      - name: Enforce attestation presence
+        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        run: |
+          if [ -z "${{ steps.attest.outputs.attestation-id }}" ]; then
+            echo "::error::Provenance attestation failed to produce an attestation ID. Refusing to publish unsigned release." >&2
+            exit 1
+          fi
+
+      - name: Verify release artifacts (dry-run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        run: |
+          bash scripts/verify-release.sh --dir release-assets --artifact accord.wasm --dry-run
+          bash scripts/verify-release.test.sh
+
+      - name: Upload staged release assets
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: release-assets/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report failure link
+        if: failure()
+        run: |
+          echo "::error::Release build or provenance attestation failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "### Release Build / Attestation Failed"
+            echo "No release was published. Inspect logs and staged artifacts at [Action Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Publish attested GitHub Release
+    needs: [build-and-attest]
+    if: ${{ !github.event.repository.fork && (github.event_name == 'push' || inputs.dry_run == false) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release and upload its assets
+    steps:
+      - name: Download attested release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+
       - name: Create GitHub Release with generated notes
         uses: softprops/action-gh-release@v3
         with:
           # GitHub generates the notes from merged PRs since the previous tag.
           generate_release_notes: true
           files: |
-            target/wasm32*/release/*.wasm
-            wasm-manifest.json
+            release-assets/accord.wasm
+            release-assets/wasm-manifest.json
+            release-assets/accord-frontend-dist.tar.gz
+            release-assets/SHA256SUMS.txt
           fail_on_unmatched_files: false
+
+      - name: Report release publish failure
+        if: failure()
+        run: |
+          echo "::error::GitHub Release publishing failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # ---------------------------------------------------------------------------
   # Publish the SDK package (frontend client build) to GitHub Packages.
   # ---------------------------------------------------------------------------
   publish-sdk:
     name: Publish SDK to GitHub Packages
-    needs: [contract-tests, frontend-tests, indexer-tests, mainnet-checklist]
+    needs: [contract-tests, frontend-tests, indexer-tests, mainnet-checklist, build-and-attest]
+    if: ${{ !github.event.repository.fork && (github.event_name == 'push' || inputs.dry_run == false) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # publish the SDK to GitHub Packages (npm registry)
     defaults:
       run:
         working-directory: frontend

@@ -494,6 +494,50 @@ The following risks are currently unmitigated by the protocol design:
 - **The Validation Gap**: A token contract could be upgraded to malicious code between a proposal's creation (where it is validated) and its execution.
 - **Opt-in initialization weight review**: `initialize` enforces per-owner weight bounds and rejects a mismatched owners/weights length, but applies no cap on how concentrated the _initial_ weight distribution may be, and no cap prevents a colluding group of owners from accumulating a combined majority share through a sequence of individually-compliant `ChangeOwnerWeight` proposals after deployment (see "Weighted Governance Threat Model Addendum" above). Both are currently the deployer's and owners' operational responsibility rather than an on-chain guarantee.
 - **Role-Revocation Quorum Stranding**: While owner removals strictly enforce `WouldBreakThreshold` and `WouldBreakQuorum` at both creation and execution, revoking the `Approver` role from owners relies on operational verification that remaining Approver weight meets `threshold`. If Approver roles are revoked below `threshold`, regular proposal progression stalls until restored by owners via an emergency upgrade or role re-grant.
+- **CI/CD Release & Provenance Risk**: Release provenance attestations prove which GitHub Actions workflow and commit produced an artifact, not that the underlying source code or reviewed dependencies are free of bugs or malice. A compromised maintainer account or malicious merged code would still receive a valid attestation; mitigate via required PR reviews, branch protection, `supply-chain.yml`, and reproducible WASM verification (`scripts/verify-reproducible-build.sh`).
+
+## Release Signing & Build Provenance
+
+### Control, Owner, and Scope
+- **Control**: Keyless OIDC build provenance attestations via GitHub's `actions/attest-build-provenance` (Sigstore-backed DSSE bundles) paired with `SHA256SUMS.txt`.
+- **Owner**: Release Engineering / Repository Maintainers.
+- **Trigger & Isolation**: Runs only on `v*` tag pushes or manual `workflow_dispatch` (defaulting to `dry_run: true`) in `.github/workflows/release.yml`, never on pull requests or forks.
+- **Scoped Artifacts**:
+  - `accord.wasm` (compiled Soroban contract WASM)
+  - `wasm-manifest.json` (contract metadata and SHA-256 digest)
+  - `accord-frontend-dist.tar.gz` (built frontend static bundle)
+  - `SHA256SUMS.txt` (SHA-256 checksums for all release assets)
+
+### Threat Model & Coverage
+| Threat | Mitigation | Residual / Out-of-Scope |
+| --- | --- | --- |
+| **Swapped or tampered release asset** | Consumers verify `SHA256SUMS.txt` and `gh attestation verify` against `Ac0rdP/AccordProtocol/.github/workflows/release.yml` | None if verification is enforced before deployment |
+| **Compromised long-lived signing key** | Eliminated: keyless OIDC mints ephemeral short-lived certificates; no long-lived private signing key is stored in repository secrets | Compromised GitHub Actions runner or `GITHUB_TOKEN` during the build job |
+| **Compromised CI token / workflow** | `id-token: write` and `attestations: write` are scoped solely to `build-and-attest`; `release` has `contents: write` only; `main` and release tags require protection | Provenance proves **which workflow and commit** built the binary, **not** that the source code itself is honest |
+| **Malicious dependency or third-party action** | Enforced by `supply-chain.yml` (`--locked`, `npm ci`, SHA-pinned third-party actions) and `malware-scan.yml` | Zero-day upstream vulnerabilities require audit and `cargo audit`/`npm audit` |
+
+### Failure Behavior (Fail-Closed)
+- `build-and-attest` must produce a non-empty `attestation-id` before the `release` job can run.
+- If `actions/attest-build-provenance` fails or no attestation ID is recorded, the workflow fails immediately and **never publishes an unsigned/unattested GitHub Release**.
+
+### Operator & Consumer Process
+1. **Consumer Verification**:
+   ```bash
+   bash scripts/verify-release.sh --tag vX.Y.Z --repo Ac0rdP/AccordProtocol --artifact accord.wasm
+   ```
+   Or directly with the GitHub CLI:
+   ```bash
+   gh attestation verify accord.wasm --repo Ac0rdP/AccordProtocol --signer-workflow Ac0rdP/AccordProtocol/.github/workflows/release.yml
+   ```
+   Never omit `--repo` or `--signer-workflow` (accepting any identity defeats provenance checks).
+2. **Key / Identity Rotation**: Because signing is keyless OIDC, there is no static key to rotate. If the workflow path or repository changes, update `--signer-workflow` in `scripts/verify-release.sh` and release notes.
+3. **Compromised CI Token or Workflow Response**:
+   - Disable `.github/workflows/release.yml` immediately (`gh workflow disable "Release"`).
+   - Revoke/rotate any affected repository secrets or PATs, audit recent workflow runs and tag pushes, and delete any compromised GitHub Release (`gh release delete <tag> --yes`) and tag.
+   - Remediate the workflow or dependency issue on `main`, then cut a new patched tag.
+
+### Platform Limits
+- GitHub Artifact Attestations (`actions/attest-build-provenance`) are free for **public repositories** and require GitHub Enterprise Cloud / Team plans for private repositories.
 
 ## Responsible Disclosure
 
