@@ -1,0 +1,105 @@
+name: Automated Disaster-Recovery Drill
+
+# Monthly DR drill that restores the secondary-region backup into an isolated
+# ephemeral scratch environment, starts/verifies the indexer & analytics API,
+# evaluates DR invariants (scripts/dr/invariants.json), and reports full RTO/RPO.
+#
+# Uses read-only cloud credentials only; never points at production write roles.
+# See docs/OPERATIONS.md → "Automated Disaster-Recovery Drills".
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run DR drill against local fixture data without cloud credentials"
+        required: true
+        type: boolean
+        default: true
+      rto_objective_seconds:
+        description: "Full rebuild RTO objective in seconds"
+        required: true
+        type: string
+        default: "1800"
+      rpo_objective_seconds:
+        description: "Backup RPO objective in seconds"
+        required: true
+        type: string
+        default: "86400"
+
+concurrency:
+  group: dr-drill-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  dr-drill:
+    name: Ephemeral DR Rebuild & Invariant Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC federation to READ-ONLY backup fetch role only
+    services:
+      scratch-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_dr_scratch
+          POSTGRES_USER: accord_dr
+          POSTGRES_PASSWORD: accord_dr_ephemeral
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord_dr -d accord_dr_scratch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '0' }}
+      RTO_OBJECTIVE_SECONDS: ${{ inputs.rto_objective_seconds || '1800' }}
+      RPO_OBJECTIVE_SECONDS: ${{ inputs.rpo_objective_seconds || '86400' }}
+      BACKUP_SECONDARY_REGION: ${{ vars.BACKUP_SECONDARY_REGION }}
+      BACKUP_BUCKET_URI: ${{ vars.BACKUP_BUCKET_URI }}
+      BACKUP_FETCH_CMD: ${{ vars.BACKUP_FETCH_CMD }}
+      DR_START_SERVICES_CMD: ${{ vars.DR_START_SERVICES_CMD }}
+      DR_INDEXER_URL: ${{ vars.DR_INDEXER_URL }}
+      DR_API_URL: ${{ vars.DR_API_URL }}
+      DR_KNOWN_PROPOSAL_ID: ${{ vars.DR_KNOWN_PROPOSAL_ID || '1' }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+      SCRATCH_DATABASE_URL: postgres://accord_dr:accord_dr_ephemeral@localhost:5432/accord_dr_scratch
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run DR drill script unit tests
+        run: bash scripts/dr/run-drill.test.sh
+
+      - name: Execute DR drill & evaluate invariants
+        run: bash scripts/dr/run-drill.sh
+
+      - name: Tear down ephemeral scratch artifacts (always)
+        if: always()
+        run: |
+          rm -f target/dr-drill/backup-stage/*.enc target/dr-drill/backup-stage/*.tar.gz
+
+      - name: Upload DR drill report (logs, timings & invariants only)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dr-drill-report
+          path: |
+            target/dr-drill/drill-report.json
+            target/dr-drill/invariants-results.json
+            target/dr-drill/backup-stage/restore-report.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report DR drill failure
+        if: failure()
+        run: |
+          echo "::error::Automated DR drill failed. Review invariants and timings at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"

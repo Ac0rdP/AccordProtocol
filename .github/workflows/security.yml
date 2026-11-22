@@ -28,6 +28,14 @@ jobs:
       - name: Run security control and SSO control suites
         run: node --test scripts/security-controls.test.mjs scripts/sso-controls.test.mjs
 
+  release-verification:
+    name: Release verification script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run release verification fixture tests (dry-run and failure cases)
+        run: bash scripts/verify-release.test.sh
+
   gitleaks:
     name: Gitleaks secret scan
     runs-on: ubuntu-latest

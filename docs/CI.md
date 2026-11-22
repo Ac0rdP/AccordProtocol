@@ -24,6 +24,9 @@ For how to run any suite locally, see [CONTRIBUTING.md](../CONTRIBUTING.md) →
 | Release | `.github/workflows/release.yml` | `v*` tags, manual | Gates on all suites, builds the contract artifact + manifest, publishes the SDK to GitHub Packages, and creates a GitHub Release with generated notes. |
 | Status Page | `.github/workflows/status-page.yml` | `schedule` (every 15 minutes), manual | Probes the `/status` endpoints of the indexer and the analytics API and publishes the public status page when the status changed (see [STATUS.md](STATUS.md)). |
 | Reproducible Contract Builds | `.github/workflows/reproducible-builds.yml` | pushes/PRs touching `contracts/**`, tags | Verifies byte-for-byte reproducible WASM artifacts across isolated build passes and supported toolchain versions with least-privilege permissions and failure artifact links. |
+| Blue/Green Indexer Deployment | `.github/workflows/blue-green-indexer.yml` | manual (`workflow_dispatch`, `dry_run: true` default) | Parameterized blue/green indexer rollout with shadow catch-up, parity gates, protected environment approval, auto-rollback, and soak period (see [OPERATIONS.md](OPERATIONS.md#bluegreen-indexer-deployment-runbook)). |
+| Multi-Region Backup & Restore | `.github/workflows/backup-restore.yml` | `schedule` (02:00 UTC daily), manual (`dry_run: true` default) | Encrypts PostgreSQL/config backups to a secondary region, verifies restore into an isolated scratch Postgres container, enforces RPO/RTO limits, and opens an issue on failure (see [OPERATIONS.md](OPERATIONS.md#multi-region-backup--restore-verification)). |
+| Automated DR Drill | `.github/workflows/dr-drill.yml` | `schedule` (monthly, 1st at 04:00 UTC), manual (`dry_run: true` default) | Restores secondary-region backup into an ephemeral scratch DB, starts/verifies indexer & API, evaluates DR invariants (`scripts/dr/invariants.json`), and reports full RTO/RPO (see [OPERATIONS.md](OPERATIONS.md#automated-disaster-recovery-drills)). |
 
 ## Testnet upgrade simulation
 
@@ -91,10 +94,13 @@ without a new issue every night.
 
 `release.yml` and `release-notes.yml` need:
 
-- **Actions → General → Workflow permissions**: read and write, so the run can
-  create a release, upload assets, and publish to GitHub Packages.
-- **No extra secrets**: operations use the built-in `GITHUB_TOKEN`. The published
-  package name is scoped to the repository owner (`@<owner>/accord-sdk`).
+- **Least-privilege permissions**: `release.yml` sets `contents: read` at the top level and grants extra scopes per job only where needed:
+  - `build-and-attest`: `contents: read`, `id-token: write`, `attestations: write` (keyless OIDC provenance attestation via `actions/attest-build-provenance`)
+  - `release`: `contents: write` (creates the GitHub Release and uploads attested assets)
+  - `publish-sdk`: `contents: read`, `packages: write` (publishes `@<owner>/accord-sdk` to GitHub Packages)
+- **No extra secrets**: signing uses keyless OIDC (`id-token: write`), and release/package publishing use the built-in `GITHUB_TOKEN`.
+- **Dry-run mode**: `workflow_dispatch` on `release.yml` exposes `dry_run` (default `true`) to validate contract/frontend builds, `SHA256SUMS.txt` generation, and `scripts/verify-release.sh` without attesting or publishing.
+- **Owner & rollback/disable**: Owned by Release Engineering / Maintainers. To disable releases in an emergency, run `gh workflow disable "Release"` and delete any bad release/tag as described below.
 
 ### Automated release notes & dry run
 

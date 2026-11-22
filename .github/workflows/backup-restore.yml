@@ -1,0 +1,147 @@
+name: Multi-Region Backup & Restore Verification
+
+# Encrypts database and configuration backups before upload to a secondary
+# region with versioning/retention, and verifies restores into an isolated
+# ephemeral PostgreSQL container on a schedule.
+#
+# See docs/OPERATIONS.md → "Multi-Region Backup & Restore Verification".
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run local fixture backup/restore verification without cloud credentials"
+        required: true
+        type: boolean
+        default: true
+      max_rpo_seconds:
+        description: "Maximum allowed backup age (RPO) in seconds"
+        required: true
+        type: string
+        default: "86400"
+      max_rto_seconds:
+        description: "Maximum allowed restore duration (RTO) in seconds"
+        required: true
+        type: string
+        default: "900"
+
+concurrency:
+  group: backup-restore-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: Encrypted Multi-Region Backup
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC federation to cloud backup role (no long-lived keys)
+    env:
+      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '0' }}
+      BACKUP_SECONDARY_REGION: ${{ vars.BACKUP_SECONDARY_REGION }}
+      BACKUP_BUCKET_URI: ${{ vars.BACKUP_BUCKET_URI }}
+      BACKUP_RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS || '30' }}
+      BACKUP_UPLOAD_CMD: ${{ vars.BACKUP_UPLOAD_CMD }}
+      BACKUP_PRUNE_CMD: ${{ vars.BACKUP_PRUNE_CMD }}
+      BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run backup/restore script unit tests
+        run: bash scripts/backup-restore.test.sh
+
+      - name: Create encrypted backup and upload to secondary region
+        run: bash scripts/backup-restore.sh backup
+
+      - name: Enforce backup retention policy
+        run: bash scripts/backup-restore.sh prune
+
+      - name: Upload backup manifest and logs (never raw backup contents)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backup-manifest-report
+          path: |
+            target/backup-restore/backup-manifest.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  verify-restore:
+    name: Isolated Scratch Restore Verification
+    needs: [backup]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC federation (read-only backup fetch role)
+    services:
+      scratch-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: accord_restore_scratch
+          POSTGRES_USER: accord_scratch
+          POSTGRES_PASSWORD: accord_scratch_ephemeral
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accord_scratch -d accord_restore_scratch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '0' }}
+      BACKUP_SECONDARY_REGION: ${{ vars.BACKUP_SECONDARY_REGION }}
+      BACKUP_BUCKET_URI: ${{ vars.BACKUP_BUCKET_URI }}
+      BACKUP_FETCH_CMD: ${{ vars.BACKUP_FETCH_CMD }}
+      BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+      MAX_RPO_SECONDS: ${{ inputs.max_rpo_seconds || '86400' }}
+      MAX_RTO_SECONDS: ${{ inputs.max_rto_seconds || '900' }}
+      SCRATCH_DATABASE_URL: postgres://accord_scratch:accord_scratch_ephemeral@localhost:5432/accord_restore_scratch
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install postgresql-client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Verify restore in isolated scratch container & check RPO/RTO
+        run: bash scripts/backup-restore.sh verify-restore
+
+      - name: Upload restore verification report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: restore-verification-report
+          path: |
+            target/backup-restore/restore-report.json
+            target/backup-restore/backup-manifest.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report restore verification failure
+        if: failure()
+        run: |
+          echo "::error::Backup restore verification failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+
+  notify-failure:
+    name: Notify on Backup/Restore Failure
+    if: failure()
+    needs: [backup, verify-restore]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open failure tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Backup/Restore Verification Failed (run ${{ github.run_id }})" \
+            --body "Automated backup or isolated restore verification failed. Inspect logs and artifacts at ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}."

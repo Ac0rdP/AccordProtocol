@@ -767,3 +767,131 @@ Before promoting a new HSM/MPC key to production (and quarterly thereafter):
 | **HSM / MPC Production Signer Custody** | Treasury Security Lead | Production Stellar owner and guardian keys | Fails closed on invalid `G...` StrKey, secret seed input, wrong network passphrase, tampered payload, or bad Ed25519 signature | `node --test scripts/verify-signer-evidence.test.mjs`; `node scripts/verify-signer-evidence.mjs verify-evidence` | Quarterly manual HSM/MPC Testnet signing drill evidence JSON + custody audit log export |
 
 The control owner reviews this evidence monthly and after any incident or policy change. Automated verification runs in CI on every push and pull request.
+
+---
+
+## Blue/Green Indexer Deployment Runbook
+
+The [`.github/workflows/blue-green-indexer.yml`](../.github/workflows/blue-green-indexer.yml) workflow and [`scripts/blue-green-indexer.sh`](../scripts/blue-green-indexer.sh) implement zero-downtime, data-safe blue/green rollouts for the Treasury Indexer (`indexer/`).
+
+### Data Safety & Single-Writer Model
+
+Running two indexers writing to the same database corrupts checkpoints and causes duplicate webhook/notification deliveries. This deployment enforces:
+
+1. **Isolated Green Store & Shadow Catch-Up**: Green runs against its own isolated PostgreSQL database or schema (`INDEXER_GREEN_DATABASE_URL`) in shadow mode (outbound webhook/notification deliveries disabled) while Blue continues serving live traffic.
+2. **Single Active Writer**: Only one indexer holds the active writer/outbox role at any time, enforced by `indexer_leases` (`indexer/src/leader-election.js` fencing tokens) and explicit role configuration.
+3. **Pre-Switch Parity Gate (`scripts/blue-green-indexer.sh compare`)**:
+   - Green `/readyz` returns HTTP `200`.
+   - `accord_indexer_chain_tip_lag_ledgers` is within `max_tip_lag_ledgers` (default `10`).
+   - Blue vs. Green latest indexed ledger delta is within `MAX_LEDGER_DELTA` (default `2`).
+   - API parity passes on `/status`, `/ledger`, `/events`, and `/reconciliation`.
+   - Recent-range `accord_events` row counts and MD5 checksums match when `BLUE_DATABASE_URL` and `GREEN_DATABASE_URL` are provided.
+4. **Backward-Compatible Schema Migrations (Expand-then-Contract)**:
+   - All migrations applied during blue/green overlap must be backward compatible with Blue (additive columns/tables first; drop old columns only in a later release after Blue is retired).
+   - **If a migration is NOT backward compatible**: Do **not** use live blue/green overlap. Pause the active writer, take a verified `pg_dump`/snapshot, apply the migration in a maintenance window, and restore from snapshot if rollback is required.
+
+### Operator Contract & Required Settings
+
+> [!IMPORTANT]
+> This repository does not contain cloud infrastructure or ingress definitions. Operators must provision the target environments and configure the following GitHub settings before running `dry_run: false`:
+
+| Setting | Type | Purpose |
+| --- | --- | --- |
+| `production-indexer-traffic-shift` | GitHub Environment | **Must configure required reviewers** to gate the traffic-shift step. |
+| `INDEXER_BLUE_URL` | Repo/Env Variable | Base URL of the live Blue indexer (private ops endpoint). |
+| `INDEXER_GREEN_URL` | Repo/Env Variable | Base URL of the staging Green indexer. |
+| `INDEXER_DEPLOY_GREEN_CMD` | Repo/Env Variable | Operator command/hook to deploy Green at `NEW_VERSION` in shadow mode. |
+| `INDEXER_TRAFFIC_SHIFT_CMD` | Repo/Env Variable | Single, reversible command/hook receiving `TARGET_COLOR=green\|blue` to flip router/service/DNS weight. |
+| `INDEXER_TEARDOWN_BLUE_CMD` | Repo/Env Variable | Operator command/hook to retire Blue after the soak period passes. |
+| `INDEXER_BLUE_DATABASE_URL` | Repo/Env Secret | Read-only connection string for Blue parity checks (never echoed). |
+| `INDEXER_GREEN_DATABASE_URL` | Repo/Env Secret | Read-only connection string for Green parity checks (never echoed). |
+
+### Execution, Abort Criteria, and Rollback
+
+1. **Dispatch**: Run **Actions → Blue/Green Indexer Deployment** with `new_version`, `dry_run: true` first, then `dry_run: false` with `soak_period_minutes` (default `15`).
+2. **Abort Criteria**: Any `/readyz` failure, tip lag > `max_tip_lag_ledgers`, ledger delta > `MAX_LEDGER_DELTA`, or DB checksum mismatch aborts before traffic is shifted.
+3. **Automatic Rollback**: If post-shift `/healthz`, `/readyz`, or `/status` (`operational`) fails, the workflow automatically executes `scripts/blue-green-indexer.sh shift --target blue`.
+4. **Manual Rollback & Disable**:
+   - Flip traffic back immediately: `TARGET_COLOR=blue bash -c "$INDEXER_TRAFFIC_SHIFT_CMD"`.
+   - Disable the workflow if needed: `gh workflow disable "Blue/Green Indexer Deployment"`.
+5. **Verify No Data Loss**: Confirm `accord_indexer_indexed_ledger` and `/reconciliation` drift (`0`) on the active instance and check `GET /webhooks/deliveries?status=dead`.
+
+- **Owner**: Infrastructure / Platform Engineering.
+
+---
+
+## Multi-Region Backup & Restore Verification
+
+The [`.github/workflows/backup-restore.yml`](../.github/workflows/backup-restore.yml) workflow and [`scripts/backup-restore.sh`](../scripts/backup-restore.sh) back up Accord's stores and configuration to a secondary region and verify restores into an isolated ephemeral PostgreSQL container on a daily schedule (`02:00 UTC`).
+
+### Stores & Configuration Scope
+
+- **In-Repo Stores**: PostgreSQL 16 (`accord_analytics` / `accord_indexer_test`, managed by `indexer/migrations/postgres/` and `analytics-api/migrations/`). SQLite (`STORE_BACKEND=sqlite`) is dev/replay-only.
+- **Configuration**: `docker-compose.yml`, `.env.example`, and `launch/mainnet-checklist.json`.
+- **Operator-Provisioned Targets**: Cloud object storage buckets, KMS/encryption keys, and OIDC IAM roles do **not** exist in this repository and must be provisioned by the operator.
+
+### Encryption, Cross-Region & Retention Design
+
+1. **Client-Side Encryption**: Backups are encrypted with `openssl enc -aes-256-cbc -pbkdf2 -salt` using `BACKUP_ENCRYPTION_KEY` before leaving the source. Keys are never echoed or written to artifacts.
+2. **Secondary Region & Object Lock**: Encrypted archives and JSON manifests (`timestamp`, `source_version`, `size_bytes`, `sha256_encrypted`, `region`, `schema_version`) are uploaded to `BACKUP_SECONDARY_REGION` / `BACKUP_BUCKET_URI`. Configure the target bucket with **versioning** and **Object Lock / immutable retention** (`BACKUP_RETENTION_DAYS`, default `30`).
+3. **OIDC Federation (No Long-Lived Cloud Keys)**: Jobs use `id-token: write`. Configure your cloud IAM trust policy to allow only `repo:Ac0rdP/AccordProtocol:ref:refs/heads/main` and `.github/workflows/backup-restore.yml` (use a read-only role for `verify-restore`).
+4. **RPO & RTO Enforcement**: `verify-restore` restores into an ephemeral `postgres:16-alpine` service container (`SCRATCH_DATABASE_URL`, never production), verifies the SHA-256 manifest, and fails if `RPO > MAX_RPO_SECONDS` (default `86400`s) or `RTO > MAX_RTO_SECONDS` (default `900`s).
+
+### Required Secrets & Variables
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | Repo/Env Secret | Passphrase/key for `openssl` AES-256-PBKDF2 backup encryption (rotate quarterly; keep previous key in vault for historical restores). |
+| `BACKUP_DATABASE_URL` | Repo/Env Secret | Read-only PostgreSQL connection string for `pg_dump`. |
+| `BACKUP_SECONDARY_REGION` | Repo Variable | Secondary cloud region identifier (e.g. `us-west-2`). |
+| `BACKUP_BUCKET_URI` | Repo Variable | Secondary-region bucket URI with versioning & Object Lock enabled. |
+| `BACKUP_UPLOAD_CMD` | Repo Variable | Operator command to upload `$BACKUP_FILE` and `$MANIFEST_FILE` after OIDC auth. |
+| `BACKUP_FETCH_CMD` | Repo Variable | Operator command to fetch latest `$BACKUP_FILE` and `$MANIFEST_FILE` (read-only role). |
+| `BACKUP_PRUNE_CMD` | Repo Variable | Operator command to prune objects older than `$RETENTION_DAYS` (if not using bucket lifecycle rules). |
+
+### Incident Restore Procedure & Disable Steps
+
+1. **Incident Restore**: Fetch the target encrypted archive and manifest from `BACKUP_BUCKET_URI`, verify `sha256_encrypted`, decrypt with `BACKUP_ENCRYPTION_KEY`, pause the active indexer writer, restore with `psql -v ON_ERROR_STOP=1 -f db.sql`, and verify `/readyz` and `/reconciliation`.
+2. **Disable / Rollback**: `gh workflow disable "Multi-Region Backup & Restore Verification"`.
+- **Owner**: Infrastructure / SRE.
+
+---
+
+## Automated Disaster-Recovery Drills
+
+The [`.github/workflows/dr-drill.yml`](../.github/workflows/dr-drill.yml) workflow and [`scripts/dr/run-drill.sh`](../scripts/dr/run-drill.sh) run monthly (`04:00 UTC` on the 1st) to verify end-to-end rebuild of the Treasury Indexer and Analytics API from the secondary-region backup (#1036) in an isolated ephemeral environment.
+
+### Invariants Checked (`scripts/dr/invariants.json`)
+
+| ID | Invariant | Description |
+| --- | --- | --- |
+| `INV-DR-01` | API & Indexer Health Endpoints | Indexer (`/healthz`, `/readyz`, `/status`) and Analytics API (`/livez`, `/readyz`, `/status`) return HTTP `200`. |
+| `INV-DR-02` | Sampled Ledger Chain Parity | Indexed state matches Soroban RPC chain state at a sampled set of ledgers. |
+| `INV-DR-03` | Contract-to-API State Parity | Proposal counts, approvals, and role members read via the API match direct contract reads. |
+| `INV-DR-04` | Contiguous Indexed Ledger Range | No unexpected gaps exist in the indexed ledger sequence. |
+| `INV-DR-05` | Schema Version Match | Restored database schema migration version matches the deployed code. |
+| `INV-DR-06` | Known Test Proposal Retrievable | A known fixture proposal ID (`DR_KNOWN_PROPOSAL_ID`) is retrievable via the Analytics API. |
+
+### Security & Isolation Rules
+
+- **Read-Only Cloud Role**: The `dr-drill` job uses `id-token: write` to assume a **read-only** backup-fetch OIDC role. Never point DR drills at production credentials with write access.
+- **Always Cleaned Up**: Ephemeral scratch data is removed in an `if: always()` step; `dr-drill-report` artifacts contain only logs, timings (`drill-report.json`), and invariant results (`invariants-results.json`), never raw backup contents.
+
+### Required Variables & Secrets
+
+Reuses `BACKUP_SECONDARY_REGION`, `BACKUP_BUCKET_URI`, `BACKUP_FETCH_CMD`, and `BACKUP_ENCRYPTION_KEY` from Backup & Restore, plus:
+
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| `DR_START_SERVICES_CMD` | Repo Variable | Operator command to start scratch Indexer & Analytics API against `$SCRATCH_DATABASE_URL` and catch up. |
+| `DR_INDEXER_URL` | Repo Variable | Scratch Indexer base URL for invariant checks. |
+| `DR_API_URL` | Repo Variable | Scratch Analytics API base URL for invariant checks. |
+| `DR_KNOWN_PROPOSAL_ID` | Repo Variable (optional) | Fixture proposal ID for `INV-DR-06` (default `1`). |
+
+### Drill Runbook
+
+1. **Who Runs It**: Automated monthly via GitHub Actions; Infrastructure / SRE owns triage and manual `workflow_dispatch` runs (`dry_run: true` default).
+2. **Reading Results**: Inspect the **Disaster-Recovery Drill Results** markdown table in the job summary (Full Rebuild RTO vs. `1800s` objective, RPO vs. `86400s` objective, and per-invariant PASS/FAIL) and download `dr-drill-report`.
+3. **On Failure**: Follow the `::error::` run link, determine whether the failure is in backup integrity (#1036), schema drift, or service startup (#1034), open a remediation issue, and update the backup/deployment runbooks with any findings.
+4. **Disable**: `gh workflow disable "Automated Disaster-Recovery Drill"`.
+- **Owner**: Infrastructure / SRE.
