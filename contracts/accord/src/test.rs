@@ -13710,3 +13710,689 @@ proptest! {
         );
     }
 }
+
+// ── Issue #956: Configurable Spend Policy Engine ──────────────────────────────
+//
+// A composed multi-window spend policy (daily/weekly/monthly) can be set per
+// (owner, token) pair via governance. At execution time the engine evaluates
+// all windows and rejects the proposal if any window's cumulative spend would
+// exceed its limit.
+
+/// Helper: build a SpendPolicy with one limit.
+fn policy_one(env: &Env, owner: &Address, token: &Address, window: SpendWindowKind, limit: i128) -> SpendPolicy {
+    let mut limits = Vec::new(env);
+    limits.push_back(SpendLimit { window, limit });
+    SpendPolicy {
+        owner: owner.clone(),
+        token: token.clone(),
+        limits,
+    }
+}
+
+/// Helper: build a SpendPolicy with daily + monthly limits.
+fn policy_daily_monthly(env: &Env, owner: &Address, token: &Address, daily: i128, monthly: i128) -> SpendPolicy {
+    let mut limits = Vec::new(env);
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: daily });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: monthly });
+    SpendPolicy {
+        owner: owner.clone(),
+        token: token.clone(),
+        limits,
+    }
+}
+
+/// Helper: set a spend policy via governance.
+fn execute_set_spend_policy(
+    env: &Env,
+    client: &AccordContractClient,
+    owner_a: &Address,
+    owner_b: &Address,
+    owner_c: &Address,
+    policy: &SpendPolicy,
+) {
+    let prop_id = client.create_set_spend_policy_proposal(
+        owner_a, policy, &str(env, "set policy"), &DEADLINE,
+    );
+    client.approve(owner_a, &prop_id);
+    client.approve(owner_b, &prop_id);
+    client.execute(owner_c, &prop_id);
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[test]
+fn spend_policy_set_and_read() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
+    );
+
+    let policy = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
+    assert_eq!(policy.limits.len(), 1);
+    let l = policy.limits.get(0).unwrap();
+    assert_eq!(l.window, SpendWindowKind::Daily);
+    assert_eq!(l.limit, 10_000);
+}
+
+#[test]
+fn spend_policy_set_emits_sp_set_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Weekly, 50_000),
+    );
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_set")));
+}
+
+#[test]
+fn spend_policy_clear_removes_policy() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
+    );
+    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_some());
+
+    let clear_id = client.create_clear_spend_policy_proposal(
+        &owner_a, &owner_a, &token_client.address,
+        &str(&env, "clear policy"), &DEADLINE,
+    );
+    client.approve(&owner_a, &clear_id);
+    client.approve(&owner_b, &clear_id);
+    client.execute(&owner_c, &clear_id);
+
+    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_none());
+}
+
+#[test]
+fn spend_policy_clear_emits_sp_clr_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
+    );
+
+    let clear_id = client.create_clear_spend_policy_proposal(
+        &owner_a, &owner_a, &token_client.address,
+        &str(&env, "clear"), &DEADLINE,
+    );
+    client.approve(&owner_a, &clear_id);
+    client.approve(&owner_b, &clear_id);
+    client.execute(&owner_c, &clear_id);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_clr")));
+}
+
+#[test]
+fn spend_policy_rejects_empty_limits() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let policy = SpendPolicy {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        limits: Vec::new(&env),
+    };
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &owner_a, &policy, &str(&env, "empty"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::EmptySpendPolicy))
+    );
+}
+
+#[test]
+fn spend_policy_rejects_too_many_windows() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let mut limits = Vec::new(&env);
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 100 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: 500 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: 2000 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 999 }); // 4th — too many
+    let policy = SpendPolicy {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        limits,
+    };
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &owner_a, &policy, &str(&env, "too many"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::TooManySpendWindows))
+    );
+}
+
+#[test]
+fn spend_policy_rejects_duplicate_windows() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let mut limits = Vec::new(&env);
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 100 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 200 }); // duplicate
+    let policy = SpendPolicy {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        limits,
+    };
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &owner_a, &policy, &str(&env, "dup"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidSpendWindow))
+    );
+}
+
+#[test]
+fn spend_policy_rejects_zero_limit() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 0);
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &owner_a, &policy, &str(&env, "zero"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn spend_policy_blocks_transfer_exceeding_daily_limit() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 5_000),
+    );
+
+    // First transfer of 3_000 — under the limit.
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 3_000, &token_client.address),
+        &str(&env, "first"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+    client.execute(&owner_c, &p1);
+
+    // Second transfer of 3_000 — cumulative 6_000 > 5_000 daily limit.
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 3_000, &token_client.address),
+        &str(&env, "second"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &p2),
+        Err(Ok(ContractError::SpendPolicyExceeded))
+    );
+}
+
+#[test]
+fn spend_policy_allows_transfer_under_limit() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
+    );
+
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 5_000, &token_client.address),
+        &str(&env, "under limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+
+    assert_eq!(
+        client.get_spend_policy_spent(&owner_a, &token_client.address, &SpendWindowKind::Daily),
+        5_000
+    );
+}
+
+#[test]
+fn spend_policy_multi_window_daily_passes_monthly_fails() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // Daily 10_000, Monthly 20_000
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_daily_monthly(&env, &owner_a, &token_client.address, 10_000, 20_000),
+    );
+
+    // Spend 12_000 — under daily? No, 12_000 > 10_000 daily.
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 12_000, &token_client.address),
+        &str(&env, "exceeds daily"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+
+    // Daily limit 10_000 < 12_000 → rejected.
+    assert_eq!(
+        client.try_execute(&owner_c, &p1),
+        Err(Ok(ContractError::SpendPolicyExceeded))
+    );
+
+    // Now try 8_000 — under daily (10_000) and under monthly (20_000).
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 8_000, &token_client.address),
+        &str(&env, "under both"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+    client.execute(&owner_c, &p2);
+
+    // Try another 8_000 — cumulative daily = 16_000 > 10_000 → rejected.
+    let p3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 8_000, &token_client.address),
+        &str(&env, "daily exceeded"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p3);
+    client.approve(&owner_b, &p3);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &p3),
+        Err(Ok(ContractError::SpendPolicyExceeded))
+    );
+}
+
+#[test]
+fn spend_policy_daily_window_resets() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 5_000),
+    );
+
+    // Spend 5_000 (exactly at limit).
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 5_000, &token_client.address),
+        &str(&env, "at limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+    client.execute(&owner_c, &p1);
+
+    // Another 1_000 immediately → cumulative 6_000 > 5_000 → rejected.
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000, &token_client.address),
+        &str(&env, "over"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+    assert_eq!(
+        client.try_execute(&owner_c, &p2),
+        Err(Ok(ContractError::SpendPolicyExceeded))
+    );
+
+    // Advance past daily window (86_400 seconds).
+    set_timestamp(&env, NOW + 86_401);
+
+    // Same 1_000 should now pass — window reset.
+    let p3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000, &token_client.address),
+        &str(&env, "after reset"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p3);
+    client.approve(&owner_b, &p3);
+    client.execute(&owner_c, &p3);
+}
+
+#[test]
+fn spend_policy_remaining_returns_headroom() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
+    );
+
+    // No spend yet → remaining = 10_000.
+    assert_eq!(
+        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
+        Some(10_000)
+    );
+
+    // Spend 4_000.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 4_000, &token_client.address),
+        &str(&env, "spend"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+
+    // Remaining = 10_000 - 4_000 = 6_000.
+    assert_eq!(
+        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
+        Some(6_000)
+    );
+}
+
+#[test]
+fn spend_policy_remaining_none_without_policy() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    assert_eq!(
+        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
+        None
+    );
+}
+
+#[test]
+fn spend_policy_rejected_emits_sp_rej_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
+    );
+
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 2_000, &token_client.address),
+        &str(&env, "over"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    let _ = client.try_execute(&owner_c, &p);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_rej")));
+}
+
+#[test]
+fn spend_policy_non_proposer_cannot_create() {
+    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
+    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000);
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &non_owner, &policy, &str(&env, "unauthorized"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn spend_policy_frozen_blocks_creation() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+
+    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000);
+
+    assert_eq!(
+        client.try_create_set_spend_policy_proposal(
+            &owner_a, &policy, &str(&env, "frozen"), &DEADLINE,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn spend_policy_migrate_already_migrated_on_fresh_deploy() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(
+        client.try_migrate_to_spend_policy(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_storage_version(), 6);
+}
+
+#[test]
+fn spend_policy_get_returns_none_without_policy() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_none());
+}
+
+#[test]
+fn spend_policy_all_three_windows() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let mut limits = Vec::new(&env);
+    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 1_000 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: 5_000 });
+    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: 20_000 });
+    let policy = SpendPolicy {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        limits,
+    };
+    execute_set_spend_policy(&env, &client, &owner_a, &owner_b, &owner_c, &policy);
+
+    let read = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
+    assert_eq!(read.limits.len(), 3);
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn spend_policy_solo_owner_cannot_bypass() {
+    // Threshold-2: a single owner cannot set a policy and then drain.
+    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
+    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000);
+
+    let prop_id = client.create_set_spend_policy_proposal(
+        &owner_a, &policy, &str(&env, "solo"), &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+}
+
+#[test]
+fn spend_policy_does_not_affect_other_owners() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // Set policy for owner_a only.
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
+    );
+
+    // owner_b can spend freely — no policy set for them.
+    let p = client.create_proposal(
+        &owner_b,
+        &t(&env, &Address::generate(&env), 50_000, &token_client.address),
+        &str(&env, "owner_b free"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+
+    assert_eq!(
+        client.get_spend_policy_spent(&owner_b, &token_client.address, &SpendWindowKind::Daily),
+        0
+    );
+}
+
+#[test]
+fn spend_policy_clear_then_spend_unrestricted() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    execute_set_spend_policy(
+        &env, &client, &owner_a, &owner_b, &owner_c,
+        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
+    );
+
+    // Clear the policy.
+    let clear_id = client.create_clear_spend_policy_proposal(
+        &owner_a, &owner_a, &token_client.address,
+        &str(&env, "clear"), &DEADLINE,
+    );
+    client.approve(&owner_a, &clear_id);
+    client.approve(&owner_b, &clear_id);
+    client.execute(&owner_c, &clear_id);
+
+    // Now a large transfer should pass — no policy active.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 100_000, &token_client.address),
+        &str(&env, "unrestricted"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+}
+
+// ── Property tests ────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// For any valid daily limit, a single transfer at exactly the limit always
+    /// succeeds, and a second transfer of any positive amount is always rejected.
+    #[test]
+    fn spend_policy_at_limit_then_next_rejected(
+        limit in 1_i128..=100_000_i128,
+        second_amount in 1_i128..=100_000_i128,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        // Set policy with the given limit.
+        execute_set_spend_policy(
+            &env, &client, &owner_a, &owner_b, &owner_c,
+            &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, limit),
+        );
+
+        // Transfer exactly `limit` — should pass.
+        let p1 = client.create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), limit, &token_client.address),
+            &str(&env, "at limit"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &p1);
+        client.approve(&owner_b, &p1);
+        client.execute(&owner_c, &p1);
+
+        // Second transfer of `second_amount` — cumulative > limit → rejected.
+        let p2 = client.create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), second_amount, &token_client.address),
+            &str(&env, "second"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &p2);
+        client.approve(&owner_b, &p2);
+
+        prop_assert_eq!(
+            client.try_execute(&owner_c, &p2),
+            Err(Ok(ContractError::SpendPolicyExceeded))
+        );
+    }
+
+    /// Setting a policy with three distinct windows always succeeds and the
+    /// stored limits match exactly.
+    #[test]
+    fn spend_policy_three_windows_always_valid(
+        daily in 1_i128..=1_000_i128,
+        weekly in 1_i128..=10_000_i128,
+        monthly in 1_i128..=100_000_i128,
+    ) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        for _ in 0..3u32 { weights.push_back(1u32); }
+        client.initialize(&owners, &weights, &2, &0);
+        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
+
+        let mut limits = Vec::new(&env);
+        limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: daily });
+        limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: weekly });
+        limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: monthly });
+        let policy = SpendPolicy {
+            owner: owner_a.clone(),
+            token: token_client.address.clone(),
+            limits,
+        };
+
+        execute_set_spend_policy(&env, &client, &owner_a, &owner_b, &owner_c, &policy);
+
+        let read = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
+        prop_assert_eq!(read.limits.len(), 3);
+        prop_assert_eq!(read.limits.get(0).unwrap().limit, daily);
+        prop_assert_eq!(read.limits.get(1).unwrap().limit, weekly);
+        prop_assert_eq!(read.limits.get(2).unwrap().limit, monthly);
+    }
+}

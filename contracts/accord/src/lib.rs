@@ -325,6 +325,60 @@ pub struct PaymentMetadata {
     pub memo: Option<String>,
 }
 
+/// Labels a rolling-window limit in a spend policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum SpendWindowKind {
+    /// 24-hour rolling window (86 400 s).
+    Daily,
+    /// 7-day rolling window (604 800 s).
+    Weekly,
+    /// 30-day rolling window (2 592 000 s).
+    Monthly,
+}
+
+impl SpendWindowKind {
+    /// Returns the window duration in seconds.
+    fn duration_secs(&self) -> u64 {
+        match self {
+            SpendWindowKind::Daily => 86_400,
+            SpendWindowKind::Weekly => 604_800,
+            SpendWindowKind::Monthly => 2_592_000,
+        }
+    }
+}
+
+/// A single (window, limit) pair within a spend policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendLimit {
+    /// Which rolling window this limit applies to.
+    pub window: SpendWindowKind,
+    /// Maximum cumulative spend allowed within the window for this token.
+    pub limit: i128,
+}
+
+/// A composed spend policy for one (owner, token) pair.
+///
+/// Multiple `limits` can be set simultaneously — e.g. a daily cap of 1 000
+/// and a monthly cap of 20 000. At execution time the engine evaluates
+/// **all** windows and rejects the proposal if any single window would be
+/// exceeded by the cumulative spend including this proposal's amount.
+///
+/// Each window maintains its own independent `SpentTracker` (epoch + spent)
+/// keyed by `(owner, token, window_kind)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicy {
+    /// The owner whose spending is constrained.
+    pub owner: Address,
+    /// The token being spent.
+    pub token: Address,
+    /// One to three rolling-window limits. Must be non-empty and contain
+    /// at most one entry per `SpendWindowKind`.
+    pub limits: Vec<SpendLimit>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
@@ -387,6 +441,10 @@ pub enum ProposalKind {
     CreatePullPayment(PullPaymentParams),
     /// Cancel a pull-payment request before it is claimed or expires.
     CancelPullPayment(u64),
+    /// Set a composed multi-window spend policy for an (owner, token) pair.
+    SetSpendPolicy(SpendPolicy),
+    /// Clear all spend-policy limits for an (owner, token) pair.
+    ClearSpendPolicy(Address, Address),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -770,6 +828,45 @@ pub struct PaymentMetadataSetEvent {
     pub version: u32,
 }
 
+/// Emitted when a composed spend policy is set via governance proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicySetEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub limits: Vec<SpendLimit>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a spend policy is cleared via governance proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicyClearedEvent {
+    pub owner: Address,
+    pub token: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when the spend policy engine rejects a proposed spend because
+/// one or more rolling-window limits would be exceeded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicyRejectedEvent {
+    pub proposal_id: u64,
+    pub owner: Address,
+    pub token: Address,
+    /// The window kind whose limit was breached.
+    pub window: SpendWindowKind,
+    /// The configured limit for this window.
+    pub limit: i128,
+    /// The cumulative spend that would have resulted (including this proposal).
+    pub cumulative: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct FrozenEvent {
@@ -1090,6 +1187,16 @@ pub enum ContractError {
     ProposalAlreadyExecuted = 74,
     /// A metadata string field exceeded the maximum length.
     MetadataTooLong = 75,
+    /// A spend policy references an unknown owner or token.
+    SpendPolicyNotFound = 76,
+    /// A spend policy window duration is outside the allowed range.
+    InvalidSpendWindow = 77,
+    /// A proposed spend exceeds one or more rolling-window limits in the policy.
+    SpendPolicyExceeded = 78,
+    /// A spend policy has no limits configured (must have at least one).
+    EmptySpendPolicy = 79,
+    /// Too many windows in a single spend policy (max 3: daily/weekly/monthly).
+    TooManySpendWindows = 80,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1213,7 +1320,9 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 ///   4 — added pull-payment requests (`PULLREQ` persistent key) and next
 ///       pull-payment ID counter (`PRNEXT` instance key).
 ///   5 — added payment metadata store (`PAYMETA` persistent key per proposal).
-const STORAGE_SCHEMA_VERSION: u32 = 5;
+///   6 — added spend policy engine (`SPOL` persistent key per owner+token,
+///       `SPTRK` persistent key per owner+token+window).
+const STORAGE_SCHEMA_VERSION: u32 = 6;
 
 /// Event-schema version. Bump this constant whenever any event struct gains,
 /// loses, or renames a field. Off-chain consumers (indexer, analytics API)
@@ -1231,7 +1340,9 @@ const STORAGE_SCHEMA_VERSION: u32 = 5;
 ///       `PullPaymentCancelledEvent` for pull-payment request proposals.
 ///   5 — added `PaymentMetadataSetEvent` for invoice and payment-reference
 ///       metadata.
-pub const EVENT_SCHEMA_VERSION: u32 = 5;
+///   6 — added `SpendPolicySetEvent`, `SpendPolicyClearedEvent`,
+///       `SpendPolicyRejectedEvent` for the multi-window spend policy engine.
+pub const EVENT_SCHEMA_VERSION: u32 = 6;
 
 fn max_single_owner_weight_pct_key() -> Symbol {
     symbol_short!("MAXOWNP")
@@ -1322,6 +1433,22 @@ fn pull_payment_next_id_key() -> Symbol {
 /// Stored as `(PAYMETA, proposal_id) → PaymentMetadata`.
 fn payment_metadata_key(proposal_id: u64) -> (Symbol, u64) {
     (symbol_short!("PAYMETA"), proposal_id)
+}
+
+/// Persistent key for a spend policy.
+/// Stored as `(SPOL, owner, token) → SpendPolicy`.
+fn spend_policy_key(owner: &Address, token: &Address) -> (Symbol, Address, Address) {
+    (symbol_short!("SPOL"), owner.clone(), token.clone())
+}
+
+/// Persistent key for a per-window spent tracker within a spend policy.
+/// Stored as `(SPTRK, owner, token, window_kind) → SpentTracker`.
+fn spend_policy_tracker_key(
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+) -> (Symbol, Address, Address, SpendWindowKind) {
+    (symbol_short!("SPTRK"), owner.clone(), token.clone(), window.clone())
 }
 
 fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
@@ -2446,6 +2573,169 @@ fn validate_payment_metadata(metadata: &PaymentMetadata) -> Result<(), ContractE
     }
     Ok(())
 }
+
+// ─── Spend Policy Engine ───────────────────────────────────────────────────
+
+/// Maximum number of windows allowed in a single spend policy.
+const MAX_SPEND_WINDOWS: u32 = 3;
+
+fn read_spend_policy(env: &Env, owner: &Address, token: &Address) -> Option<SpendPolicy> {
+    let key = spend_policy_key(owner, token);
+    let policy: Option<SpendPolicy> = env.storage().persistent().get(&key);
+    if policy.is_some() {
+        bump_persistent(env, &key);
+    }
+    policy
+}
+
+fn write_spend_policy(env: &Env, policy: &SpendPolicy) {
+    let key = spend_policy_key(&policy.owner, &policy.token);
+    env.storage().persistent().set(&key, policy);
+    bump_persistent(env, &key);
+}
+
+fn remove_spend_policy(env: &Env, owner: &Address, token: &Address) {
+    let key = spend_policy_key(owner, token);
+    env.storage().persistent().remove(&key);
+}
+
+fn read_spend_policy_tracker(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+) -> SpentTracker {
+    let key = spend_policy_tracker_key(owner, token, window);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
+}
+
+fn write_spend_policy_tracker(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+    tracker: &SpentTracker,
+) {
+    let key = spend_policy_tracker_key(owner, token, window);
+    env.storage().persistent().set(&key, tracker);
+    bump_persistent(env, &key);
+}
+
+/// Computes the effective spent amount within a window, resetting the
+/// epoch if the window has expired.
+fn effective_spend_policy_spent(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+) -> i128 {
+    let tracker = read_spend_policy_tracker(env, owner, token, window);
+    if tracker.epoch == 0 {
+        return 0;
+    }
+    let now = env.ledger().timestamp();
+    if now > tracker.epoch.saturating_add(window.duration_secs()) {
+        return 0;
+    }
+    tracker.spent
+}
+
+/// Validates a spend policy: non-empty, at most MAX_SPEND_WINDOWS entries,
+/// no duplicate window kinds, and all limits ≥ MIN_AMOUNT.
+fn validate_spend_policy(policy: &SpendPolicy) -> Result<(), ContractError> {
+    if policy.limits.is_empty() {
+        return Err(ContractError::EmptySpendPolicy);
+    }
+    if policy.limits.len() > MAX_SPEND_WINDOWS as u32 {
+        return Err(ContractError::TooManySpendWindows);
+    }
+    for i in 0..policy.limits.len() {
+        let limit = policy.limits.get(i).unwrap();
+        if limit.limit < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        // Check for duplicate window kinds.
+        for j in (i + 1)..policy.limits.len() {
+            let other = policy.limits.get(j).unwrap();
+            if limit.window == other.window {
+                return Err(ContractError::InvalidSpendWindow);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluates a spend policy against a proposed spend. If any window's
+/// cumulative spend (including `amount`) would exceed its limit, returns
+/// the breached window. Otherwise returns `Ok`.
+fn check_spend_policy(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    amount: i128,
+) -> Result<(), (SpendWindowKind, i128, i128)> {
+    let policy = match read_spend_policy(env, owner, token) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    for i in 0..policy.limits.len() {
+        let limit_entry = policy.limits.get(i).unwrap();
+        let already_spent = effective_spend_policy_spent(env, owner, token, &limit_entry.window);
+        let cumulative = already_spent
+            .checked_add(amount)
+            .unwrap_or(i128::MAX);
+        if cumulative > limit_entry.limit {
+            return Err((limit_entry.window.clone(), limit_entry.limit, cumulative));
+        }
+    }
+    Ok(())
+}
+
+/// Records a spend against all windows in the policy. Called after a
+/// successful transfer execution.
+fn record_spend_policy_spend(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    amount: i128,
+) {
+    let policy = match read_spend_policy(env, owner, token) {
+        Some(p) => p,
+        None => return,
+    };
+    let now = env.ledger().timestamp();
+    for i in 0..policy.limits.len() {
+        let limit_entry = policy.limits.get(i).unwrap();
+        let tracker = read_spend_policy_tracker(env, owner, token, &limit_entry.window);
+        let window = limit_entry.window.clone();
+        let window_secs = window.duration_secs();
+        let epoch = if tracker.epoch == 0 || now > tracker.epoch.saturating_add(window_secs) {
+            now
+        } else {
+            tracker.epoch
+        };
+        let spent = if now > epoch.saturating_add(window_secs) {
+            amount
+        } else {
+            tracker
+                .spent
+                .checked_add(amount)
+                .unwrap_or(i128::MAX)
+        };
+        write_spend_policy_tracker(
+            env,
+            owner,
+            token,
+            &limit_entry.window,
+            &SpentTracker { spent, epoch },
+        );
+    }
+}
+
+fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
     let client = token::Client::new(env, token_address);
     // Require decimals, symbol, and name to all succeed to consider this a valid token.
     if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
@@ -4646,6 +4936,140 @@ impl AccordContract {
         );
         Ok(())
     }
+
+    // ─── Spend Policy Engine ─────────────────────────────────────────────────
+
+    /// Creates a governance proposal to set a composed multi-window spend
+    /// policy for an (owner, token) pair.
+    ///
+    /// The policy can contain up to three rolling-window limits (daily,
+    /// weekly, monthly). At execution time every window is evaluated: if
+    /// the cumulative spend including the proposed amount exceeds any
+    /// window's limit, the proposal is rejected with `SpendPolicyExceeded`.
+    ///
+    /// # Validation at creation
+    /// - `limits` must be non-empty (at least one window).
+    /// - `limits` must contain at most `MAX_SPEND_WINDOWS` (3) entries.
+    /// - No duplicate `SpendWindowKind` values.
+    /// - Each limit must be ≥ `MIN_AMOUNT`.
+    /// - `token` must pass the asset registry check.
+    pub fn create_set_spend_policy_proposal(
+        env: Env,
+        proposer: Address,
+        policy: SpendPolicy,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        validate_spend_policy(&policy)?;
+        validate_token(&env, &policy.token)?;
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::SetSpendPolicy(policy),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to clear all spend-policy limits for an
+    /// (owner, token) pair.
+    pub fn create_clear_spend_policy_proposal(
+        env: Env,
+        proposer: Address,
+        owner: Address,
+        token: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::ClearSpendPolicy(owner, token),
+            description,
+            deadline,
+        )
+    }
+
+    /// Returns the active spend policy for an (owner, token) pair, or `None`
+    /// if no policy is configured.
+    pub fn get_spend_policy(
+        env: Env,
+        owner: Address,
+        token: Address,
+    ) -> Option<SpendPolicy> {
+        read_spend_policy(&env, &owner, &token)
+    }
+
+    /// Returns the effective spent amount within the given window for an
+    /// (owner, token) pair. Returns 0 if no policy or no tracker exists, or
+    /// if the window has expired.
+    pub fn get_spend_policy_spent(
+        env: Env,
+        owner: Address,
+        token: Address,
+        window: SpendWindowKind,
+    ) -> i128 {
+        effective_spend_policy_spent(&env, &owner, &token, &window)
+    }
+
+    /// Returns the remaining spend headroom for a specific window, or `None`
+    /// if no policy is configured for this (owner, token) pair.
+    pub fn get_spend_policy_remaining(
+        env: Env,
+        owner: Address,
+        token: Address,
+        window: SpendWindowKind,
+    ) -> Option<i128> {
+        let policy = read_spend_policy(&env, &owner, &token)?;
+        for i in 0..policy.limits.len() {
+            let limit_entry = policy.limits.get(i).unwrap();
+            if limit_entry.window == window {
+                let spent = effective_spend_policy_spent(&env, &owner, &token, &window);
+                return Some(limit_entry.limit.saturating_sub(spent));
+            }
+        }
+        None
+    }
+
+    /// One-time migration that stamps storage schema to version 6 for legacy
+    /// deployments, confirming the spend policy engine keys are in use.
+    ///
+    /// Returns `AlreadyMigrated` if the deployment is already at schema
+    /// version ≥ 6.
+    pub fn migrate_to_spend_policy(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 6 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "spendpol_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
@@ -4853,6 +5277,30 @@ impl AccordContract {
                             return Err(ContractError::SpendingLimitExceeded);
                         }
                     }
+                    // ── Spend Policy Engine evaluation ─────────────────────
+                    // If a composed multi-window spend policy is active for
+                    // this (proposer, token) pair, evaluate every window.
+                    // The proposal is rejected if any window's cumulative
+                    // spend (including this proposal's amount) would exceed
+                    // its configured limit.
+                    match check_spend_policy(&env, &proposal.proposer, &token, amount) {
+                        Ok(()) => {}
+                        Err((window, limit, cumulative)) => {
+                            env.events().publish(
+                                (symbol_short!("sp_rej"),),
+                                SpendPolicyRejectedEvent {
+                                    version: EVENT_SCHEMA_VERSION,
+                                    proposal_id,
+                                    owner: proposal.proposer.clone(),
+                                    token: token.clone(),
+                                    window: window.clone(),
+                                    limit,
+                                    cumulative,
+                                },
+                            );
+                            return Err(ContractError::SpendPolicyExceeded);
+                        }
+                    }
                 }
                 // Check the treasury can cover the full per-token total before
                 // any funds move, so a shortfall is rejected up front rather
@@ -4900,6 +5348,12 @@ impl AccordContract {
                             .ok_or(ContractError::ArithmeticError)?
                     };
                     write_spent_tracker(&env, &proposer, &token, &SpentTracker { spent, epoch });
+                }
+                // Record spend against the multi-window spend policy trackers.
+                for j in 0..tracked_tokens.len() {
+                    let token = tracked_tokens.get(j).unwrap();
+                    let amount = tracked_amounts.get(j).unwrap();
+                    record_spend_policy_spend(&env, &proposer, &token, amount);
                 }
             }
             ProposalKind::AddOwner(new_owner, weight) => {
@@ -5870,6 +6324,56 @@ impl AccordContract {
                         version: EVENT_SCHEMA_VERSION,
                         request_id: *request_id,
                         executor: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::SetSpendPolicy(policy) => {
+                validate_spend_policy(policy)?;
+                write_spend_policy(&env, policy);
+
+                // Reset all trackers for this (owner, token) pair when a new
+                // policy is set, so the epoch starts fresh.
+                for i in 0..policy.limits.len() {
+                    let limit_entry = policy.limits.get(i).unwrap();
+                    let now = env.ledger().timestamp();
+                    write_spend_policy_tracker(
+                        &env,
+                        &policy.owner,
+                        &policy.token,
+                        &limit_entry.window,
+                        &SpentTracker { spent: 0, epoch: now },
+                    );
+                }
+
+                env.events().publish(
+                    (symbol_short!("sp_set"),),
+                    SpendPolicySetEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        owner: policy.owner.clone(),
+                        token: policy.token.clone(),
+                        limits: policy.limits.clone(),
+                    },
+                );
+            }
+            ProposalKind::ClearSpendPolicy(owner, token) => {
+                remove_spend_policy(&env, owner, token);
+
+                // Also remove any per-window trackers.
+                for window in [
+                    SpendWindowKind::Daily,
+                    SpendWindowKind::Weekly,
+                    SpendWindowKind::Monthly,
+                ] {
+                    let key = spend_policy_tracker_key(owner, token, &window);
+                    env.storage().persistent().remove(&key);
+                }
+
+                env.events().publish(
+                    (symbol_short!("sp_clr"),),
+                    SpendPolicyClearedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        owner: owner.clone(),
+                        token: token.clone(),
                     },
                 );
             }
