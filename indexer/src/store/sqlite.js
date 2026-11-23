@@ -214,6 +214,23 @@ export function openLedgerStore(databasePath) {
       PRIMARY KEY (key_id, window_start)
     );
     CREATE INDEX IF NOT EXISTS api_key_usage_window_idx ON api_key_usage (window_start);
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK (kind IN ('api_call', 'report', 'webhook')),
+      subject TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1),
+      occurred_at TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'emitted', 'dead')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT NOT NULL,
+      last_error TEXT,
+      emitted_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS usage_events_due_idx ON usage_events (status, next_attempt_at, id);
+    CREATE INDEX IF NOT EXISTS usage_events_kind_idx ON usage_events (kind, occurred_at);
     CREATE TABLE IF NOT EXISTS indexer_leases (
       name TEXT PRIMARY KEY,
       holder_id TEXT NOT NULL,
@@ -1149,6 +1166,68 @@ export function openLedgerStore(databasePath) {
     /** Drops usage counters for windows that started before `before` (epoch seconds). */
     async pruneApiKeyUsage({ before }) {
       return Number(database.prepare("DELETE FROM api_key_usage WHERE window_start < ?").run(before).changes);
+    },
+
+    /** @returns {boolean} false when `eventId` was already recorded (idempotent). */
+    async recordUsageEvent({ eventId, kind, subject, quantity = 1, occurredAt, metadata = {}, now }) {
+      return database.prepare(`
+        INSERT INTO usage_events (event_id, kind, subject, quantity, occurred_at, metadata, next_attempt_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (event_id) DO NOTHING
+      `).run(eventId, kind, subject, quantity, occurredAt, JSON.stringify(metadata), now, now).changes > 0;
+    },
+
+    /** Pending usage whose next attempt is due, oldest first. */
+    async claimDueUsageEvents({ now, limit }) {
+      return database.prepare(`
+        SELECT id, event_id, kind, subject, quantity, occurred_at, metadata, attempts
+        FROM usage_events WHERE status = 'pending' AND next_attempt_at <= ? ORDER BY id ASC LIMIT ?
+      `).all(now, limit).map((row) => ({
+        id: Number(row.id),
+        eventId: row.event_id,
+        kind: row.kind,
+        subject: row.subject,
+        quantity: Number(row.quantity),
+        occurredAt: row.occurred_at,
+        metadata: JSON.parse(row.metadata ?? "{}"),
+        attempts: Number(row.attempts),
+      }));
+    },
+
+    async completeUsageEvent({ id, outcome, attempts, nextAttemptAt = null, error = null, now }) {
+      database.prepare(`
+        UPDATE usage_events SET status = ?, attempts = ?, last_error = ?,
+          next_attempt_at = COALESCE(?, next_attempt_at),
+          emitted_at = CASE WHEN ? = 'emitted' THEN ? ELSE emitted_at END
+        WHERE id = ?
+      `).run(outcome === "retry" ? "pending" : outcome, attempts, error, nextAttemptAt, outcome, now, id);
+    },
+
+    /** Revives dead-lettered usage so the hook is tried again. @returns {number} rows requeued */
+    async requeueDeadUsageEvents({ now }) {
+      return Number(database.prepare(
+        "UPDATE usage_events SET status = 'pending', attempts = 0, next_attempt_at = ? WHERE status = 'dead'"
+      ).run(now).changes);
+    },
+
+    async countUsageEvents() {
+      const counts = { pending: 0, emitted: 0, dead: 0 };
+      for (const row of database.prepare("SELECT status, COUNT(*) AS count FROM usage_events GROUP BY status").all()) {
+        counts[row.status] = Number(row.count);
+      }
+      return counts;
+    },
+
+    /** Usage per kind and subject in `[from, to)`. */
+    async summarizeUsage({ from, to, kind, subject }) {
+      const where = ["occurred_at >= ?", "occurred_at < ?"];
+      const values = [from ?? "0000-01-01T00:00:00.000Z", to ?? "9999-12-31T23:59:59.999Z"];
+      if (kind) { where.push("kind = ?"); values.push(kind); }
+      if (subject) { where.push("subject = ?"); values.push(subject); }
+      return database.prepare(`
+        SELECT kind, subject, COUNT(*) AS events, SUM(quantity) AS quantity FROM usage_events
+        WHERE ${where.join(" AND ")} GROUP BY kind, subject ORDER BY kind, subject
+      `).all(...values).map((row) => ({ kind: row.kind, subject: row.subject, events: Number(row.events), quantity: Number(row.quantity) }));
     },
 
     /**

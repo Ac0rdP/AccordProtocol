@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /treasury/kpis` serves daily treasury KPI snapshots with period-over-period deltas for balance, spend and runway. `GET /benchmarks/peers` compares the treasury's governance metrics against anonymous peer aggregates. `GET /costs/attribution` breaks spend down by category, owner or recipient with drill-down. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
@@ -68,7 +68,7 @@ Every endpoint except `/`, `/health`, `/livez`, `/readyz`, `/status` and `/metri
 }
 ```
 
-Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
+Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel`, `GET /spend/by-category`, `GET /treasury/kpis`, `GET /benchmarks/peers` and `GET /costs/attribution` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ Every endpoint uses one error shape for invalid input and request errors:
 | 405 | `METHOD_NOT_ALLOWED` | A non-`GET` method was used. |
 | 500 | `INTERNAL_ERROR` | The server failed while fetching or processing data. |
 
-**Validation detail codes:** `INVALID_LIMIT`, `INVALID_OFFSET`, `INVALID_SORT`, `INVALID_ORDER`, `INVALID_STATUS`, `INVALID_CATEGORY`, `INVALID_DATE`, `INVALID_DATE_RANGE`, `UNKNOWN_PARAMETER`, `INVALID_CONTRACT_ID` (a contract this deployment does not serve), `INVALID_NETWORK` (a network this deployment does not serve), `INVALID_FORMAT` (a report format other than `csv` or `pdf`), and `INVALID_PERIOD_DAYS`.
+**Validation detail codes:** `INVALID_LIMIT`, `INVALID_OFFSET`, `INVALID_SORT`, `INVALID_ORDER`, `INVALID_STATUS`, `INVALID_CATEGORY`, `INVALID_DATE`, `INVALID_DATE_RANGE`, `UNKNOWN_PARAMETER`, `INVALID_CONTRACT_ID` (a contract this deployment does not serve), `INVALID_NETWORK` (a network this deployment does not serve), `INVALID_FORMAT` (a report format other than `csv` or `pdf`), `INVALID_METRIC` (an unknown benchmark metric), and `INVALID_PERIOD_DAYS`.
 
 The frontend's `AnalyticsApiError` (`frontend/src/lib/analyticsClient.ts`) carries the HTTP status, the parsed body, and the server's `error.message` where available; network and abort errors propagate instead of being wrapped.
 
@@ -242,6 +242,34 @@ Spend aggregated by proposal category, over executed transfers only.
 `share` is the category's percentage of total spend for the same token within the filtered range (0–100).
 The response includes all five categories (`Transfer`, `Payroll`, `Grant`, `Ops`, `Other`) for every matching token, using a zero total/count/share when there is no spend. If no token has been indexed yet, it returns zero rows for `XLM`; a requested token with no activity also receives zero rows. `startDate` and `endDate` filter by execution time, with date-only bounds inclusive of the whole day.
 
+### `GET /costs/attribution`
+
+Cost attribution: executed transfer spend broken down by category, proposing owner or recipient, with drill-down.
+
+**Query parameters:** `groupBy` (`category` by default, `owner` or `recipient`), `category`, `owner`, `recipient`, `token`, `startDate`, `endDate`, `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the rows. `startDate`/`endDate` bound the execution time, with date-only bounds inclusive of the whole day. Unlike `GET /proposals/funnel`, the `owner` and `recipient` filters are exact address matches, so a drill-down never widens. Validation failures are reported together in one `400 VALIDATION_ERROR`; `groupBy` failures use `INVALID_GROUP_BY`.
+
+**Response (`CostAttributionPage`):**
+
+```json
+{
+  "groupBy": "recipient",
+  "items": [
+    { "key": "GRECIPIENT...", "token": "USDC", "total": "7500.0000000", "count": 3, "share": 60.0 },
+    { "key": "GOTHER...", "token": "USDC", "total": "5000.0000000", "count": 2, "share": 40.0 }
+  ],
+  "totals": [ { "token": "USDC", "total": "12500.0000000", "count": 5 } ],
+  "total": 2,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- Every row is one `(key, token)` pair: amounts of different tokens are never added together, and `share` (0–100, two places) is the row's part of *that token's* spend in the filtered range.
+- **Drill-down** is a filter on one dimension combined with a grouping by another: `?category=Payroll&groupBy=owner` shows who proposed the Payroll spend, `?category=Payroll&owner=G...&groupBy=recipient` shows who that owner paid.
+- `totals` is the spend per token across every matching proposal regardless of paging; `total` is the number of rows. Rows are ordered by amount descending, then key and token, so pages tile exactly.
+- Only executed transfer proposals count, the same spend as [`GET /spend/by-category`](#get-spendby-category).
+- Successful responses carry `Cache-Control: private, max-age=60`, `X-Cache` and the `X-RateLimit-*` headers.
+
 ### `GET /spend/by-owner`
 
 Spend aggregated by proposer/owner address, over executed transfers only.
@@ -284,6 +312,83 @@ Report owner response times, approval rates, and inactive-owner trends across pr
   "offset": 0
 }
 ```
+
+### `GET /treasury/kpis`
+
+Daily treasury KPI snapshots and period-over-period trend deltas for balance, spend and runway.
+
+**Query parameters:** `token`, `periodDays` (1–365, default `30`), `endDate` (last day of the current period; defaults to today in UTC and later dates are clamped to today), `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the *daily snapshots* of the current period. Validation failures are reported together in one `400 VALIDATION_ERROR`; `periodDays` failures use the code `INVALID_PERIOD_DAYS`.
+
+Two consecutive periods of `periodDays` days are compared: the **current** period ends on `endDate`, the **previous** one ends where the current one starts.
+
+**Response (`TreasuryKpiPage`):**
+
+```json
+{
+  "periodDays": 30,
+  "currentPeriod": { "start": "2026-09-02", "end": "2026-10-01" },
+  "previousPeriod": { "start": "2026-08-03", "end": "2026-09-01" },
+  "trends": [
+    {
+      "token": "USDC",
+      "balance": { "current": "600", "previous": "900", "delta": "-300", "deltaPercent": -33.33 },
+      "spend": { "current": "300", "previous": "100", "delta": "200", "deltaPercent": 200.0 },
+      "runway": { "currentDays": 60.0, "previousDays": null, "deltaDays": null }
+    }
+  ],
+  "items": [
+    {
+      "network": "testnet", "contractId": "C...", "token": "USDC", "date": "2026-10-01",
+      "balance": "600", "inflow": "0", "spend": "0", "spendCount": 0,
+      "netBurnRate": "10", "runwayDays": 60.0
+    }
+  ],
+  "total": 30,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- Snapshots are persisted in `treasury_kpi_snapshots`, one row per network, contract, token and day. Each request recomputes the snapshots for the window it needs with an upsert, so repeating a request, replaying the indexer or indexing a late event never duplicates or drifts a row.
+- `balance` is the cumulative deposits (`deposit` events) minus transfers up to and including the day, so it is only an absolute balance once deposits are indexed. `spend` is what was transferred out on the day; `netBurnRate` is the trailing 30-day average of `spend - inflow` per day; `runwayDays` is `balance / netBurnRate`, or `null` when the treasury is not burning or has no positive balance.
+- `trends` has one entry per token across the requested scope. `balance` and `runway` are read at the last day of each period; `spend` is summed over each period. `delta` is `current - previous`; `deltaPercent` is `null` when the previous value is zero.
+- Items are ordered by date (newest first), then token, network and contract. Successful responses carry `Cache-Control: private, max-age=60`, `X-Cache` and the `X-RateLimit-*` headers.
+
+### `GET /benchmarks/peers`
+
+Privacy-preserving peer benchmarking: the requested scope's proposal metrics next to the aggregate of every *other* contract indexed in the same database.
+
+**Query parameters:** `metric` (`proposalCount`, `approvalRate`, `executionRate` or `avgSecondsToExecute`), `category`, `token`, `periodDays` (1–365, default `30`), `endDate` (defaults to now; later values are clamped), `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `contractId` and `network` choose what is compared; peers are always every contract outside that scope. `limit` and `offset` page through the metrics. Validation failures are reported together in one `400 VALIDATION_ERROR`; an unknown `metric` uses `INVALID_METRIC`.
+
+**Response (`PeerBenchmarkPage`):**
+
+```json
+{
+  "periodDays": 30,
+  "cohort": { "size": 12, "minimumSize": 5, "suppressed": false },
+  "items": [
+    {
+      "metric": "executionRate",
+      "unit": "percent",
+      "own": 62.5,
+      "peers": { "p25": 48.0, "median": 60.0, "p75": 71.43 },
+      "deltaFromMedian": 2.5
+    }
+  ],
+  "total": 4,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+**Privacy guarantees**
+
+- Peers are only exposed as the 25th percentile, median and 75th percentile over *per-contract* values. No contract, network, address, individual value, minimum or maximum is ever returned.
+- A cohort smaller than `BENCHMARK_MIN_PEERS` (default `5`, never below `3`) is **suppressed**: `peers` is `null` for every metric and `cohort.suppressed` is `true`. `cohort.size` still reports how many peers had activity, so "no peers" and "too few peers" can be told apart. The service refuses to start with a value below `3`.
+- Narrowing the window with `category`, `token` or dates can only shrink the cohort, and a narrowed cohort below the minimum is suppressed like any other.
+- `own` is `null` when the scope had no proposals in the window, and `deltaFromMedian` is `own - peers.median` (`null` when either side is missing).
+- Metrics are per contract over proposals created in the window: `proposalCount`, `approvalRate` and `executionRate` (percent of created proposals approved / executed, using the same definitions as [`GET /proposals/funnel`](#get-proposalsfunnel)), and `avgSecondsToExecute`.
+- Successful responses carry `Cache-Control: private, max-age=60`, `X-Cache` and the `X-RateLimit-*` headers.
 
 ### `GET /treasury/balance`
 
