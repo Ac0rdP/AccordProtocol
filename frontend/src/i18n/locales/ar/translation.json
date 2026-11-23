@@ -1,10 +1,20 @@
 {
   "nav": {
     "dashboard": "لوحة التحكم",
+    "portfolio": "المحفظة",
+    "inbox": "صندوق المقترحات",
     "recurring": "المتكررة",
     "history": "السجل",
+    "audit": "سجل التدقيق",
     "analytics": "التحليلات",
     "owners": "الملاك",
+    "bulk": "إجراءات جماعية",
+    "availability": "التوفر",
+    "templates": "القوالب",
+    "integrations": "التكاملات",
+    "notifications": "الإشعارات",
+    "alerts": "قواعد التنبيه",
+    "freshness": "حداثة البيانات",
     "settings": "الإعدادات",
     "docs": "المستندات"
   },
@@ -15,7 +25,14 @@
     "connecting": "جاري الاتصال…"
   },
   "common": {
-    "retry": "إعادة المحاولة"
+    "retry": "إعادة المحاولة",
+    "dismiss": "تجاهل",
+    "back": "السابق",
+    "next": "التالي",
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "loading": "جاري التحميل…",
+    "error": "خطأ"
   },
   "languageSwitcher": {
     "label": "اللغة"
@@ -34,5 +51,131 @@
       "proposal_executed": "تم تنفيذ المقترح",
       "owner_weight_changed": "تم تغيير وزن المالك"
     }
+  },
+  "onboarding": {
+    "bannerTitle": "لم يتم تكوين متعدد التوقيع بعد",
+    "bannerDesc": "استخدم معالج الإعداد الإرشادي لتهيئة الملاك، ونصاب النصاب القانوني، ومقترحك الأول.",
+    "bannerCta": "بدء معالج الإعداد ←",
+    "title": "معالج إعداد متعدد التوقيع",
+    "subtitle": "إعداد خطوة بخطوة للفرق التي تنشر أول محفظة متعددة التوقيع على Accord.",
+    "loadingTitle": "جاري تحميل معالج الإعداد…",
+    "errorTitle": "تعذر تحميل إعداد التهيئة",
+    "steps": {
+      "wallet": "ربط المحفظة",
+      "owners": "تكوين الملاك",
+      "threshold": "نصاب النصاب القانوني",
+      "proposal": "المقترح الأول"
+    },
+    "completed": {
+      "title": "اكتمل إعداد متعدد التوقيع!",
+      "description": "تكوينك الأولي المكون من {{count}} من الملاك ونصاب {{threshold}} من إجمالي {{total}} من أصوات النصاب القانوني جاهز.",
+      "goToDashboard": "الانتقال إلى لوحة التحكم",
+      "reviewSetup": "مراجعة الإعداد"
+    },
+    "wallet": {
+      "title": "ربط محفظة المنشئ",
+      "subtitle": "اربط محفظة Stellar Freighter لبدء إنشاء متعدد التوقيع.",
+      "connectedLabel": "المحفظة المتصلة",
+      "connected": "متصلة",
+      "notConnected": "لا توجد محفظة متصلة حالياً.",
+      "connecting": "جاري الاتصال…",
+      "connect": "ربط Freighter"
+    },
+    "owners": {
+      "title": "ملاك متعدد التوقيع وأوزان التصويت",
+      "subtitle": "أضف عناوين Stellar التي ستحمل مفاتيح التوقيع وحدد وزن التصويت لكل منها.",
+      "addOwner": "إضافة مالك",
+      "ownerAddressLabel": "عنوان المالك {{index}}",
+      "ownerAddressPlaceholder": "المفتاح العام لـ Stellar (مثال: ...G)",
+      "ownerWeightLabel": "وزن المالك {{index}}",
+      "removeOwnerAria": "إزالة المالك {{index}}",
+      "totalSigners": "إجمالي الموقعين: {{count}}",
+      "totalWeight": "إجمالي وزن التصويت: {{weight}}",
+      "empty": "لم تتم إضافة أي ملاك بعد. يرجى إضافة مالك واحد على الأقل."
+    },
+    "quorum": {
+      "title": "نصاب النصاب القانوني وتأخير التنفيذ",
+      "subtitle": "حدد عدد الموافقات أو وزن التصويت المطلوب لتنفيذ المقترح.",
+      "thresholdLabel": "وزن النصاب القانوني المطلوب",
+      "ofTotal": "من إجمالي وزن {{total}} ({{percent}}%)",
+      "timelockLabel": "تأخير القفل الزمني (بالثواني)",
+      "timelockHelp": "فترة سماح اختيارية بين الموافقة على المقترح وتنفيذه (0 للتنفيذ الفوري)."
+    },
+    "proposal": {
+      "title": "المقترح الأول ومراجعة التكوين",
+      "subtitle": "قم بصياغة مقترح أولي وراجع معلمات متعدد التوقيع قبل الانتهاء.",
+      "initialHeader": "المقترح الأولي (اختياري)",
+      "recipientLabel": "عنوان المستلم",
+      "recipientPlaceholder": "G... أو اتركه فارغاً",
+      "amountLabel": "المبلغ",
+      "amountPlaceholder": "مثال: 100",
+      "memoLabel": "الوصف / الملاحظة",
+      "summaryHeader": "ملخص تكوين متعدد التوقيع",
+      "summarySigners": "الموقعون:",
+      "summarySignersCount": "{{count}} ملاك",
+      "summaryQuorum": "متطلبات النصاب القانوني:",
+      "summaryQuorumVal": "{{threshold}} من إجمالي وزن {{total}} ({{percent}}%)",
+      "summaryTimelock": "تأخير القفل الزمني:",
+      "summaryTimelockVal": "{{seconds}} ثانية"
+    },
+    "errors": {
+      "walletRequired": "يرجى ربط محفظتك قبل المتابعة.",
+      "minOwners": "يرجى إضافة مالك واحد على الأقل.",
+      "addressEmpty": "لا يمكن أن يكون عنوان المالك رقم {{index}} فارغاً.",
+      "weightMin": "يجب أن يكون وزن المالك رقم {{index}} 1 على الأقل.",
+      "duplicateAddress": "يجب أن يكون كل عنوان مالك فريداً.",
+      "thresholdPositive": "يجب أن يكون نصاب النصاب أكبر من 0.",
+      "thresholdExceeds": "لا يمكن لنصاب النصاب القانوني ({{threshold}}) أن يتجاوز إجمالي وزن التصويت ({{total}})."
+    },
+    "actions": {
+      "back": "السابق",
+      "next": "التالي",
+      "complete": "إكمال الإعداد"
+    }
+  },
+  "governance": {
+    "proposals": "المقترحات",
+    "activeProposals": "المقترحات النشطة",
+    "noActiveProposals": "لا توجد مقترحات نشطة",
+    "noProposalsFound": "لم يتم العثور على مقترحات",
+    "proposalNotFound": "المقترح غير موجود",
+    "loadingProposals": "جاري تحميل المقترحات…",
+    "loadingProposal": "جاري تحميل المقترح…",
+    "errorLoadingDashboard": "تعذر تحميل بيانات لوحة التحكم",
+    "errorLoadingProposal": "تعذر تحميل المقترح",
+    "createProposal": "مقترح جديد",
+    "approve": "موافقة",
+    "execute": "تنفيذ",
+    "revoke": "إلغاء",
+    "status": {
+      "active": "نشط",
+      "approved": "تمت الموافقة",
+      "executed": "تم التنفيذ",
+      "rejected": "مرفوض",
+      "expired": "منتهي الصلاحية",
+      "ready": "جاهز للتنفيذ"
+    },
+    "types": {
+      "transfer": "تحويل",
+      "addOwner": "إضافة مالك",
+      "removeOwner": "إزالة مالك",
+      "changeThreshold": "تغيير النصاب",
+      "changeOwnerWeight": "تغيير وزن المالك",
+      "upgrade": "ترقية العقد"
+    },
+    "quorum": "النصاب القانوني",
+    "approvals": "الموافقات",
+    "threshold": "النصاب",
+    "votingPower": "القوة التصويتية",
+    "timelock": "القفل الزمني"
+  },
+  "errors": {
+    "unexpected": "حدث خطأ غير متوقع.",
+    "network": "فُقد الاتصال بالشبكة. يرجى التحقق من اتصالك.",
+    "wallet": "فشل الاتصال بالمحفظة أو تم رفضه.",
+    "contractFrozen": "العقد مجمد حالياً. يُسمح بعمليات الطوارئ فقط.",
+    "staleData": "قد تكون بيانات العقد قديمة.",
+    "unauthorized": "ليس لديك الصلاحية لتنفيذ هذا الإجراء.",
+    "notFound": "الصفحة غير موجودة"
   }
 }

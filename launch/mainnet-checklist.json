@@ -1,0 +1,109 @@
+{
+  "release": "",
+  "items": [
+    {
+      "id": "C-1",
+      "category": "code",
+      "requirement": "Independent third-party audit is complete and every Critical/High finding is fixed and re-verified",
+      "evidence": "docs/audit/REMEDIATION.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "C-2",
+      "category": "code",
+      "requirement": "Open residual risks in the threat model are fixed or explicitly accepted",
+      "evidence": "docs/THREAT_MODEL_RBAC_DELEGATION_RECURRING.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "C-3",
+      "category": "code",
+      "requirement": "Protocol invariants are documented and their property test passes on the release commit",
+      "evidence": "docs/INVARIANTS.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "C-4",
+      "category": "code",
+      "requirement": "Dependencies pass the supply-chain policy with no unreviewed or expired exceptions",
+      "evidence": "supply-chain/exceptions.json",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "C-5",
+      "category": "code",
+      "requirement": "Release WASM hash is recorded and the upgrade procedure is reviewed",
+      "evidence": "docs/UPGRADE_SAFETY.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "T-1",
+      "category": "tests",
+      "requirement": "Contract suite (flat and skewed fixtures), coverage and size gates are green on the release commit",
+      "evidence": "docs/CI.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "T-2",
+      "category": "tests",
+      "requirement": "Testnet smoke test and upgrade simulation pass on the release commit",
+      "evidence": "docs/CI.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "T-3",
+      "category": "tests",
+      "requirement": "Manual end-to-end run (create, approve, execute) against the deployed testnet contract is recorded",
+      "evidence": "docs/DEPLOYMENT.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "O-1",
+      "category": "operations",
+      "requirement": "Owner keys are on hardware wallets and the key-management guide is followed",
+      "evidence": "docs/guides/owner-key-management.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "O-2",
+      "category": "operations",
+      "requirement": "Guardian is set and a freeze/unfreeze drill has been run",
+      "evidence": "docs/runbooks/INCIDENT_RESPONSE.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "O-3",
+      "category": "operations",
+      "requirement": "Key rotation and upgrade rollback runbooks are rehearsed",
+      "evidence": "docs/runbooks/KEY_ROTATION.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "O-4",
+      "category": "operations",
+      "requirement": "Monitoring and alerting for the deployed contract and indexer are live",
+      "evidence": "docs/OPERATIONS.md",
+      "status": "pending",
+      "signOff": null
+    },
+    {
+      "id": "O-5",
+      "category": "operations",
+      "requirement": "Mainnet deployment steps are dry-run and the contract ID is recorded",
+      "evidence": "docs/DEPLOYMENT.md",
+      "status": "pending",
+      "signOff": null
+    }
+  ]
+}

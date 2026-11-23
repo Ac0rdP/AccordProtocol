@@ -39,13 +39,13 @@ function ModalShell({ title, scheduleId, onClose, children }: ModalShellProps) {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h2 className="text-white font-semibold text-lg">{title}</h2>
-            <p className="text-xs text-zinc-500 font-mono mt-0.5">Schedule #{scheduleId}</p>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400 font-mono mt-0.5">Schedule #{scheduleId}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-md"
+            className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-md"
           >
             ✕
           </button>
@@ -75,7 +75,7 @@ function ProposalFields({
     <>
       <div>
         <label className="text-xs text-zinc-400 block mb-1.5">
-          Description <span className="text-zinc-600">(optional)</span>
+          Description <span className="text-zinc-600 dark:text-zinc-400">(optional)</span>
         </label>
         <textarea
           value={description}

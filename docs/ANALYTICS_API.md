@@ -5,14 +5,14 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /reports`, `POST /reports/run`, `GET /alerts` and `GET /alerts/rules` serve the scheduled treasury reports and the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators.
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
 ## Conventions
 
 - **Base URL** — set by `VITE_API_BASE_URL` on the frontend; requests are same-origin (relative paths) when unset.
-- **Method** — every data endpoint is `GET`, except `POST /reports/run` and `POST /graphql`. Any other method returns `405 METHOD_NOT_ALLOWED`.
+- **Method** — every data endpoint is `GET`, except `POST /reports/run`, `POST /graphql` and the `PUT`/`DELETE` writes on `/report-templates` and the writes on `/alert-rules`. Any other method returns `405 METHOD_NOT_ALLOWED`.
 - **OpenAPI** — the machine-readable contract is [analytics-api.openapi.json](analytics-api.openapi.json) (see [OpenAPI specification](#openapi-specification)).
 - **Rate limits and caching** — every endpoint except the probes and `/metrics` is rate limited per client and the heavy reads are cached; see [Rate limiting and caching](#rate-limiting-and-caching).
 - **Amounts** — token amounts are decimal token-unit strings (for example `"1500.0000000"`), never JSON numbers and never raw stroops. See [ARCHITECTURE.md §9 — Token Handling](ARCHITECTURE.md#9-token-handling).
@@ -56,7 +56,7 @@ When you add or change an endpoint or parameter, update the spec in the same pul
 
 ## Rate limiting and caching
 
-Every endpoint except `/`, `/health`, `/livez`, `/readyz` and `/metrics` is limited **per client** with a fixed window. The client is the socket peer address, or the first `X-Forwarded-For` entry when `RATE_LIMIT_TRUST_PROXY=true` (set it only behind a proxy that overwrites that header). Allowed responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (seconds). A client over its quota gets `429` with a `Retry-After` header and the standard error body:
+Every endpoint except `/`, `/health`, `/livez`, `/readyz`, `/status` and `/metrics` is limited **per client** with a fixed window. The client is the socket peer address, or the first `X-Forwarded-For` entry when `RATE_LIMIT_TRUST_PROXY=true` (set it only behind a proxy that overwrites that header). Allowed responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` (seconds). A client over its quota gets `429` with a `Retry-After` header and the standard error body:
 
 ```json
 {
@@ -68,7 +68,7 @@ Every endpoint except `/`, `/health`, `/livez`, `/readyz` and `/metrics` is limi
 }
 ```
 
-Successful `GET /proposals`, `GET /proposals/:id` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
+Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -183,6 +183,47 @@ A single proposal plus its full event timeline.
 `timeline` entries follow `ProposalEvent` (`frontend/src/types/accord.ts`) — see [Event Payload Schemas](#event-payload-schemas) for how each `type` maps back to a contract-emitted event. Returns `404 NOT_FOUND` if no proposal with that ID has been indexed.
 Timeline records are ordered by ledger sequence and event index, oldest first.
 
+### `GET /proposals/funnel`
+
+Proposal funnel and conversion analytics: how many proposals created in a period went on to be approved and executed, and how many left the funnel through cancellation or expiry, grouped by category or by proposing owner.
+
+**Query parameters:** `groupBy` (`category` by default, or `owner`), `category`, `owner`, `token`, `startDate`, `endDate`, `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the *groups*; `startDate`/`endDate` bound the proposals' creation time, so every row is a cohort ("proposals created in this window"). Unknown parameters, an unsupported `groupBy`, an unknown `category` and the other usual validation failures are all reported together in one `400 VALIDATION_ERROR`; `groupBy` failures use the code `INVALID_GROUP_BY`.
+
+**Response (`ProposalFunnelPage`):**
+
+```json
+{
+  "groupBy": "category",
+  "items": [
+    {
+      "key": "Payroll",
+      "created": 10,
+      "approved": 8,
+      "executed": 6,
+      "cancelled": 1,
+      "expired": 1,
+      "open": 2,
+      "approvalRate": 80.0,
+      "executionRate": 60.0,
+      "cancellationRate": 10.0,
+      "approvalToExecutionRate": 75.0,
+      "avgSecondsToExecute": 43200
+    }
+  ],
+  "totals": { "key": "all", "created": 10, "approved": 8, "executed": 6, "cancelled": 1, "expired": 1, "open": 2, "approvalRate": 80.0, "executionRate": 60.0, "cancellationRate": 10.0, "approvalToExecutionRate": 75.0, "avgSecondsToExecute": 43200 },
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- `created` is every proposal in the cohort. `executed`, `cancelled` (revoked), `expired` and `open` (still pending or ready) partition it, so they always add up to `created`.
+- `approved` counts proposals that reached their approval threshold (status `ready` or `executed`, or `approvals >= threshold`), even if they were later revoked or expired, so `approved` is not a subset of any one status.
+- Rates are percentages in the range 0–100 rounded to two places. `approvalRate`, `executionRate` and `cancellationRate` are fractions of `created`; `approvalToExecutionRate` is `executed / approved`. A rate with an empty denominator is `0`, never `NaN`.
+- `avgSecondsToExecute` is the mean time from creation to execution, or `null` when nothing in the group was executed.
+- `totals` covers every matching proposal regardless of paging; `total` is the number of groups. Rows are ordered by `created` descending, then by `key`, so pages tile exactly.
+- Like `GET /proposals`, successful responses are cached and carry `X-Cache`, and every response carries the `X-RateLimit-*` headers.
+
 ### `GET /spend/by-category`
 
 Spend aggregated by proposal category, over executed transfers only.
@@ -213,6 +254,35 @@ Spend aggregated by proposer/owner address, over executed transfers only.
 [
   { "owner": "GABC...PROPOSER", "token": "USDC", "total": "9000.0000000", "count": 4 }
 ]
+```
+
+### `GET /owners/participation`
+
+Report owner response times, approval rates, and inactive-owner trends across proposals.
+
+**Query parameters:** `limit`, `offset`, `startDate`, `endDate`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)).
+
+**Response (`OwnerParticipationPage`):**
+
+```json
+{
+  "items": [
+    {
+      "owner": "GABC...OWNER",
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "totalProposals": 12,
+      "approvedProposals": 10,
+      "participationRate": 83.33,
+      "avgLatencySeconds": 3600.5,
+      "isInactive": false,
+      "lastApprovedAt": "2026-11-19T08:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
 ```
 
 ### `GET /treasury/balance`
@@ -284,9 +354,112 @@ The dashboard stat-card rollup in a single response. This is the one endpoint wi
 - `ownerCount` — total count of multisig owners.
 - `largestOutflow` — the single executed transfer with the highest amount within the range, or `null` if none.
 
+## Data freshness and SLA
+
+### `GET /freshness`
+
+How fresh the analytics data is, judged against service level objectives. For every network and contract in scope it reports **ingestion lag** (the age of the indexer's checkpoint) and **report freshness** (the age of the last generated or delivered treasury report; a failed run does not count), and it reports the **API's own latency**.
+
+**Query parameters:** `limit`, `offset` (they page through the network and contract pairs), `contractId`, `network`. Validation and errors are as for the other endpoints. The response is live health, so it is not cached; it is rate limited like the other endpoints.
+
+```json
+{
+  "generatedAt": "2026-11-19T12:00:00Z",
+  "slo": { "ingestionLagSeconds": 120, "apiP95Ms": 500, "reportMaxAgeSeconds": 2764800 },
+  "status": "ok",
+  "api": { "requests": 1840, "p50Ms": 10, "p95Ms": 100, "status": "ok" },
+  "items": [
+    {
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "lastLedger": 4242,
+      "lastCheckpointAt": "2026-11-19T11:59:50Z",
+      "ingestionLagSeconds": 10,
+      "ingestionStatus": "ok",
+      "lastReportAt": "2026-11-01T06:00:02Z",
+      "reportAgeSeconds": 1555198,
+      "reportStatus": "ok",
+      "status": "ok"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- A status is `ok` (within its objective), `breach` or `unknown` (nothing to judge yet: no checkpoint, no report, no requests). An item's `status` is the worse of its two; the top-level `status` is the worst across the API and **every** pair in scope, not just the page returned. A breach outranks unknown.
+- `api` covers every route except the probes, `/metrics` and `/freshness`, since the process started. Percentiles are latency-histogram bucket upper bounds, so they never understate latency.
+- Objectives come from the environment: `SLO_INGESTION_LAG_SECS` (default `120`), `SLO_API_P95_MS` (default `500`) and `SLO_REPORT_MAX_AGE_SECS` (default 32 days). A missing or invalid value uses the default.
+- The dashboard's *Data freshness* page (`/app/freshness`) shows this endpoint.
+
+## Branded report templates
+
+Scheduled and manual treasury reports (`REPORT_SCHEDULE`, `POST /reports/run`) render the same default layout for everyone until a workspace customises it. A **workspace** is one network + contract pair and has at most one template; a pair without one keeps the default layout, so existing deployments are unaffected.
+
+A template controls what a workspace's CSV, PDF and delivery email look like:
+
+| Field | Type | Limits | Effect |
+| --- | --- | --- | --- |
+| `brandName` | string | ≤ 80 chars | Brand line above the title (PDF, CSV `brand` row, email). |
+| `title` | string | ≤ 120 chars | Replaces the default title (also the email subject). May use `{network}`, `{contract}` and `{period}`; other `{…}` placeholders are rejected. |
+| `headerText` | string | ≤ 500 chars | One line under the title. |
+| `footerText` | string | ≤ 500 chars | Printed at the bottom of every PDF page and at the end of the CSV and email. |
+| `logoUrl` | string | `https://` URL, ≤ 2048 chars | The workspace logo, **referenced** in the PDF header, the CSV `logo` row and the email. It is not embedded as an image and the service never fetches it. |
+| `accentColor` | string | `#rrggbb` | Colour of the PDF brand and title. |
+| `sections` | string[] | non-empty, unique | Which blocks to include, in order: `summary`, `token_totals`, `category_totals`, `transactions`. Defaults to all four. |
+
+Text fields are trimmed, an empty string means "not set", and they must be a single line without control characters, so a template can never inject extra email headers or CSV rows. In the CSV, template text that begins with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet does not run it as a formula. With a template the CSV starts with `brand`/`title`/`header`/`logo` identity rows, then each chosen section as its own block in the template's order, then a `footer` row. In the PDF the summary blocks (`summary`, `token_totals`, `category_totals`) follow the template's order and the transaction rows always follow them.
+
+### `GET /report-templates`
+
+**Query parameters:** `limit`, `offset`, `contractId`, `network`.
+
+**Response (`ReportTemplatePage`):**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "network": "testnet",
+      "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+      "brandName": "Acme Treasury",
+      "title": "{network} statement, {period}",
+      "headerText": "Confidential",
+      "footerText": "Acme Inc.",
+      "logoUrl": "https://cdn.example.com/logo.png",
+      "accentColor": "#1a73e8",
+      "sections": ["summary", "transactions"],
+      "createdAt": "2026-11-19T08:30:00Z",
+      "updatedAt": "2026-11-19T08:30:00Z"
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+Templates are ordered by network and contract. This endpoint is rate limited like the others but **not cached**, so an edit shows on the next read.
+
+### `PUT /report-templates`
+
+Creates or replaces a workspace's template. **Query parameters:** `contractId` and `network` name the workspace; each is required when the deployment serves more than one (otherwise it defaults to the only one) and `400 MISSING_PARAMETER` says which is missing. The JSON body (≤ 16 KiB) holds the fields above. A `PUT` replaces the whole template, so a field you leave out returns to its default. Returns `200` with the stored template.
+
+Validation reports every problem at once as `400 VALIDATION_ERROR`, with one detail per field: `INVALID_BODY` (malformed JSON, an unknown field or a wrong type), `INVALID_TEMPLATE_FIELD`, `INVALID_LOGO_URL`, `INVALID_COLOR` or `INVALID_SECTION`. A body over 16 KiB gets `413`.
+
+### `DELETE /report-templates`
+
+Removes the workspace's template so its reports return to the default layout. Same query parameters as `PUT`. Returns `204`, or `404 NOT_FOUND` when the workspace has no template.
+
+### Securing the writes
+
+Reads are open like every other endpoint. When `ADMIN_TOKEN` is set, `PUT` and `DELETE /report-templates` require `Authorization: Bearer <ADMIN_TOKEN>` and otherwise answer `401 UNAUTHORIZED`. With `ADMIN_TOKEN` unset the writes are as open as `POST /reports/run`, so set it on any deployment reachable beyond a trusted network.
+
 ## Alerting
 
-The analytics API watches indexed data and raises alerts for **spend over a threshold** and **unusual approval patterns**. Alerting is off until rules are configured with `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` (a path to a JSON file): a JSON array of rules.
+The analytics API watches indexed data and raises alerts for **spend over a threshold** and **unusual approval patterns**. Rules come from two places: the deployment configuration, `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` (a path to a JSON file), a JSON array of rules; and the rules created, edited, paused and tested through the [alert rule management](#alert-rule-management) API, which the dashboard's alert rules page uses. With neither, alerting is idle: no rule is evaluated and no alert is raised.
 
 ```json
 [
@@ -305,7 +478,7 @@ The analytics API watches indexed data and raises alerts for **spend over a thre
 | `approval_burst` | one owner approves more than `maxApprovals` proposals within `windowSecs` | `maxApprovals`, `windowSecs` |
 | `off_hours_approval` | an approval lands in the UTC hours `[startHour, endHour)` (wraps past midnight when `startHour > endHour`) | `startHour`, `endHour` |
 
-Every rule also takes `id` (unique), `severity` (`info`, `warning` — the default — or `critical`) and an optional `cooldownSecs`. Invalid or unknown fields stop the service at startup with an error naming the rule.
+Every rule also takes `id` (unique), `severity` (`info`, `warning` — the default — or `critical`) and an optional `cooldownSecs`. Invalid or unknown fields in the configuration stop the service at startup with an error naming the rule. `spend_threshold` is a *threshold* rule; `approval_burst` and `off_hours_approval` are *anomaly* rules.
 
 **Evaluation.** A watcher polls the `transfers` and `proposal_approvals` tables every `ALERT_POLL_SECS` (default 15) seconds for rows past its saved cursor (`alert_cursors`), evaluates each against the rules in ledger order, and stores every alert in the `alerts` table. Windows and cooldowns use the *event* time, so replaying history behaves exactly like live indexing. The first time alerting runs it starts at the newest indexed ledger and does not replay old history; set `ALERT_BACKFILL=true` to evaluate it.
 
@@ -326,6 +499,46 @@ Raised alerts, newest first. **Query parameters:** `limit`, `offset`, `ruleId`, 
 ### `GET /alerts/rules`
 
 The configured rules and storm settings (`enabled: false` with no rules when alerting is off).
+
+### Alert rule management
+
+Rules from `ALERT_RULES` are read-only (`source: "config"`). Operators can add *managed* rules (`source: "managed"`), which are stored in the `alert_rules` table and evaluated alongside the configured ones. A change takes effect immediately on the instance that received it, and the watcher reloads the stored rules every `ALERT_POLL_SECS`, so other instances follow. Editing a rule discards the samples and cooldowns counted under its old definition, so a new threshold never inherits old totals. A paused rule is kept but not evaluated. Up to 200 managed rules may exist.
+
+A rule is the same object `ALERT_RULES` takes (see the table above), plus an optional `enabled`. The id is 1–64 letters, digits, `.`, `_` or `-` (`test` is reserved). A managed rule's `windowSecs` and `cooldownSecs` may not exceed 30 days. Rules are global, like configured ones: they apply to every contract and network the deployment serves.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /alert-rules` | Configured and managed rules by id. **Query parameters:** `limit`, `offset`, `status` (`active`, `paused`), `type`, `category` (`threshold`, `anomaly`), `source` (`config`, `managed`), `severity`. Not cached. |
+| `POST /alert-rules` | Create a rule: `201` with the rule, active unless `enabled` is `false`. `409 CONFLICT` when the id is taken by a managed *or configured* rule. |
+| `GET /alert-rules/{id}` | One rule. `404` when unknown. |
+| `PUT /alert-rules/{id}` | Replace a managed rule. `id` may be left out of the body (it must match the path if present); `enabled` keeps its value when left out. `404` when unknown. |
+| `DELETE /alert-rules/{id}` | Delete a managed rule: `204`. Alerts it already raised are kept. |
+| `POST /alert-rules/{id}/pause`, `POST /alert-rules/{id}/resume` | Stop or restart evaluating a managed rule; returns the rule. |
+| `POST /alert-rules/test` | Dry-run the draft rule in the body (not stored). |
+| `POST /alert-rules/{id}/test` | Dry-run a saved or configured rule. |
+
+Changing or deleting a configured rule answers `409 CONFLICT`. Validation reports one detail per problem as `400 VALIDATION_ERROR`: `INVALID_RULE_ID`, `INVALID_RULE` (the `field` names the setting, such as `threshold` or `windowSecs`), `INVALID_BODY` (malformed JSON, an unknown field or a wrong type) and, on the test endpoints, `INVALID_LOOKBACK`; a body over 8 KiB gets `413`. The writes (`POST`, `PUT`, `DELETE`, pause, resume) require `Authorization: Bearer <ADMIN_TOKEN>` when `ADMIN_TOKEN` is set, as for [report templates](#securing-the-writes), and otherwise `401 UNAUTHORIZED`. The test endpoints change nothing and need no token.
+
+**Testing a rule.** The test replays the indexed transfers and approvals of the last `lookbackHours` (1–168, default 24) for the scoped contracts (`contractId`, `network`) through a fresh engine holding only that rule, with the deployment's cooldown and storm settings. Nothing is stored and no channel is notified.
+
+```json
+{
+  "ruleId": "large-usdc-spend",
+  "lookbackHours": 24,
+  "eventsEvaluated": 128,
+  "truncated": false,
+  "wouldFire": 2,
+  "suppressed": 5,
+  "alerts": [
+    { "ruleId": "large-usdc-spend", "kind": "spend_threshold", "severity": "critical",
+      "network": "testnet", "contractId": "CD4Y…", "subject": "USDC",
+      "message": "Spend of 52000000000 USDC in the last 86400s reached the 50000000000 threshold on CD4Y… (testnet)",
+      "details": { "total": "52000000000" }, "firedAt": "2026-11-19T08:30:00Z" }
+  ]
+}
+```
+
+`wouldFire` counts every alert the rule would have raised, `alerts` lists the first `limit` (1–100, default 20) oldest first, and `suppressed` counts matches held back by the cooldown or storm cap. `truncated` is `true` when a source had more than 20 000 events in the window and the test read only the oldest ones.
 
 ## GraphQL
 
@@ -445,7 +658,9 @@ The indexer decodes and stores every event the Accord contract emits (`contracts
 | `created` | `ProposalCreatedEvent` | `id: u64`, `proposer: Address`, `threshold: u32`, `category: ProposalCategory`, `transfers: Vec<Transfer>` (`{ to, token, amount: i128 }` each), `quorum_weight: u32`, `total_weight_at_creation: u32` |
 | `approved` | `ProposalApprovedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `threshold: u32`, `weight: u32`, `cumulative_weight: u32` |
 | `revoked` | `ProposalRevokedEvent` | `id: u64`, `approver: Address`, `approvals: u32`, `weight: u32`, `cumulative_weight: u32` |
-| `executed` | `ProposalExecutedEvent` | `id: u64`, `executor: Address`, `transfers: Vec<Transfer>` |
+| `executed` | `ProposalExecutedEvent` | `id: u64`, `executor: Address` |
+| `p_canc` | `ProposalCancelledEvent` | `id: u64`, `proposer: Address` |
+| `exp_sw` | `ExpiredProposalsSweptEvent` | `swept: u32` |
 
 ### Governance and ownership
 
@@ -472,6 +687,7 @@ The indexer decodes and stores every event the Accord contract emits (`contracts
 | --- | --- | --- |
 | `r_crt` | `RecurringPaymentCreatedEvent` | `id: u64`, `proposer: Address`, `recipient: Address`, `token: Address`, `amount: i128`, `interval_secs: u64`, `start_time: u64`, `end_time: u64`, `cliff_time: u64`, `total_cap: i128`, `kind: RecurringKind` |
 | `rpay` | `RecurringPaymentDisbursedEvent` | `schedule_id: u64`, `recipient: Address`, `token: Address`, `amount: i128`, `total_disbursed: i128`, `periods_disbursed: u32` |
+| `str_clm` | `RecurringStreamClaimedEvent` | `schedule_id: u64`, `recipient: Address`, `token: Address`, `amount: i128`, `total_disbursed: i128` |
 | `r_pause` | `RecurringPaymentPausedEvent` | `id: u64`, `caller: Address` |
 | `r_resum` | `RecurringPaymentResumedEvent` | `id: u64`, `caller: Address` |
 | `r_mod` | `RecurringPaymentModifiedEvent` | `schedule_id: u64`, `previous_amount: i128`, `new_amount: i128`, `previous_interval: u64`, `new_interval: u64`, `previous_end_time: u64`, `new_end_time: u64` |

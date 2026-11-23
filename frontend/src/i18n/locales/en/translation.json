@@ -1,10 +1,20 @@
 {
   "nav": {
     "dashboard": "dashboard",
+    "portfolio": "portfolio",
+    "inbox": "proposal inbox",
     "recurring": "recurring",
     "history": "history",
+    "audit": "audit log",
     "analytics": "analytics",
     "owners": "owners",
+    "bulk": "bulk actions",
+    "availability": "availability",
+    "templates": "templates",
+    "integrations": "integrations",
+    "notifications": "notifications",
+    "alerts": "alert rules",
+    "freshness": "data freshness",
     "settings": "settings",
     "docs": "docs"
   },
@@ -15,7 +25,14 @@
     "connecting": "Connecting…"
   },
   "common": {
-    "retry": "Retry"
+    "retry": "Retry",
+    "dismiss": "Dismiss",
+    "back": "Back",
+    "next": "Next",
+    "save": "Save",
+    "cancel": "Cancel",
+    "loading": "Loading…",
+    "error": "Error"
   },
   "languageSwitcher": {
     "label": "Language"
@@ -34,5 +51,131 @@
       "proposal_executed": "Proposal executed",
       "owner_weight_changed": "Owner weight changed"
     }
+  },
+  "onboarding": {
+    "bannerTitle": "No multisig configured yet",
+    "bannerDesc": "Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.",
+    "bannerCta": "Start Setup Wizard →",
+    "title": "Multisig Setup Wizard",
+    "subtitle": "Step-by-step onboarding for teams deploying their first Accord multisig.",
+    "loadingTitle": "Loading setup wizard…",
+    "errorTitle": "Could not load onboarding setup",
+    "steps": {
+      "wallet": "Connect Wallet",
+      "owners": "Configure Owners",
+      "threshold": "Quorum Threshold",
+      "proposal": "First Proposal"
+    },
+    "completed": {
+      "title": "Multisig Setup Complete!",
+      "description": "Your initial configuration with {{count}} owners and a {{threshold}} of {{total}} quorum threshold is ready.",
+      "goToDashboard": "Go to Dashboard",
+      "reviewSetup": "Review Setup"
+    },
+    "wallet": {
+      "title": "Connect Deployer Wallet",
+      "subtitle": "Connect your Stellar Freighter wallet to initiate the multisig.",
+      "connectedLabel": "Connected Wallet",
+      "connected": "Connected",
+      "notConnected": "No wallet currently connected.",
+      "connecting": "Connecting…",
+      "connect": "Connect Freighter"
+    },
+    "owners": {
+      "title": "Multisig Owners & Voting Weights",
+      "subtitle": "Add the Stellar addresses that will hold signing keys and define their voting weight.",
+      "addOwner": "Add Owner",
+      "ownerAddressLabel": "Owner {{index}} address",
+      "ownerAddressPlaceholder": "Stellar Public Key (e.g. G...)",
+      "ownerWeightLabel": "Owner {{index}} weight",
+      "removeOwnerAria": "Remove owner {{index}}",
+      "totalSigners": "Total Signers: {{count}}",
+      "totalWeight": "Total Voting Weight: {{weight}}",
+      "empty": "No owners added yet. Please add at least one owner."
+    },
+    "quorum": {
+      "title": "Quorum Threshold & Execution Delay",
+      "subtitle": "Specify how many approvals or voting weight are required to execute a proposal.",
+      "thresholdLabel": "Required Quorum Weight",
+      "ofTotal": "of {{total}} total weight ({{percent}}%)",
+      "timelockLabel": "Time-Lock Delay (seconds)",
+      "timelockHelp": "Optional grace period between proposal approval and execution (0 for instant execution)."
+    },
+    "proposal": {
+      "title": "First Proposal & Configuration Review",
+      "subtitle": "Draft a first proposal and review your multisig parameters before finalization.",
+      "initialHeader": "Initial Proposal (Optional)",
+      "recipientLabel": "Recipient Address",
+      "recipientPlaceholder": "G... or leave blank",
+      "amountLabel": "Amount",
+      "amountPlaceholder": "e.g. 100",
+      "memoLabel": "Description / Memo",
+      "summaryHeader": "Multisig Configuration Summary",
+      "summarySigners": "Signers:",
+      "summarySignersCount": "{{count}} owners",
+      "summaryQuorum": "Quorum Requirement:",
+      "summaryQuorumVal": "{{threshold}} of {{total}} weight ({{percent}}%)",
+      "summaryTimelock": "Time-Lock Delay:",
+      "summaryTimelockVal": "{{seconds}} seconds"
+    },
+    "errors": {
+      "walletRequired": "Please connect your wallet before proceeding.",
+      "minOwners": "Please add at least one owner.",
+      "addressEmpty": "Owner #{{index}} address cannot be empty.",
+      "weightMin": "Owner #{{index}} weight must be at least 1.",
+      "duplicateAddress": "Each owner address must be unique.",
+      "thresholdPositive": "Quorum threshold must be greater than 0.",
+      "thresholdExceeds": "Quorum threshold ({{threshold}}) cannot exceed total voting weight ({{total}})."
+    },
+    "actions": {
+      "back": "Back",
+      "next": "Next",
+      "complete": "Complete Setup"
+    }
+  },
+  "governance": {
+    "proposals": "Proposals",
+    "activeProposals": "Active Proposals",
+    "noActiveProposals": "No active proposals",
+    "noProposalsFound": "No proposals found",
+    "proposalNotFound": "Proposal not found",
+    "loadingProposals": "Loading proposals…",
+    "loadingProposal": "Loading proposal…",
+    "errorLoadingDashboard": "Could not load dashboard data",
+    "errorLoadingProposal": "Could not load proposal",
+    "createProposal": "New Proposal",
+    "approve": "Approve",
+    "execute": "Execute",
+    "revoke": "Revoke",
+    "status": {
+      "active": "Active",
+      "approved": "Approved",
+      "executed": "Executed",
+      "rejected": "Rejected",
+      "expired": "Expired",
+      "ready": "Ready to Execute"
+    },
+    "types": {
+      "transfer": "Transfer",
+      "addOwner": "Add Owner",
+      "removeOwner": "Remove Owner",
+      "changeThreshold": "Change Threshold",
+      "changeOwnerWeight": "Change Owner Weight",
+      "upgrade": "Upgrade Contract"
+    },
+    "quorum": "Quorum",
+    "approvals": "Approvals",
+    "threshold": "Threshold",
+    "votingPower": "Voting Power",
+    "timelock": "Time-Lock"
+  },
+  "errors": {
+    "unexpected": "An unexpected error occurred.",
+    "network": "Network connection lost. Please verify your connection.",
+    "wallet": "Wallet connection failed or was rejected.",
+    "contractFrozen": "The contract is currently frozen. Emergency operations only.",
+    "staleData": "Contract data may be stale.",
+    "unauthorized": "You are not authorized to perform this action.",
+    "notFound": "Page not found"
   }
 }

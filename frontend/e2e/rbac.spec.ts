@@ -1,5 +1,4 @@
-import { Keypair } from "@stellar/stellar-sdk";
-import type { xdr } from "@stellar/stellar-sdk";
+import { Keypair, xdr } from "@stellar/stellar-sdk";
 import { expect, test, TEST_WALLET } from "./setup";
 import {
   VOID,
@@ -126,7 +125,7 @@ test("owners can grant and revoke the Owner role via role proposals", async ({ p
     timeout: 15_000,
   });
   // Threshold is read from the "Threshold" dashboard stat: "1 of 3".
-  await expect(page.getByText("Requires 1 of 3 signers")).toBeVisible();
+  await expect(page.getByText("Requires 1 of 3 voting weight")).toBeVisible();
 
   // ─── Grant ────────────────────────────────────────────────────────────────
   // The first "Manage Roles" button targets OWNER_A (an existing owner), so the

@@ -31,7 +31,7 @@ export function TreasuryBalanceChart({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-semibold text-sm">Treasury Balance Over Time</h3>
-          <p className="text-xs text-zinc-500 mt-0.5">
+          <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
             Historical XLM and USDC treasury holdings over time
           </p>
         </div>

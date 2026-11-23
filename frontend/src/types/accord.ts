@@ -45,6 +45,8 @@ export type Proposal = {
   amount: string;
   /** Original on-chain stroop integer as a string (1 unit = 10,000,000 stroops). */
   rawAmount?: string;
+  tokenAddress?: string;
+  recipientAddress?: string;
   token: string;
   description: string;
   approvals: number;
@@ -62,6 +64,8 @@ export type Proposal = {
   approverWeights?: Record<string, number>;
   executedAt?: string | null;
   category?: ProposalCategory;
+  /** SHA-256 digest stored by the contract for an off-chain IPFS attachment. */
+  attachmentHash?: string;
 };
 
 export type Owner = {
@@ -85,6 +89,7 @@ export type ProposalEventType =
   | "owner_weight_changed"
   | "recurring_payment_created"
   | "recurring_payment_disbursed"
+  | "recurring_stream_claimed"
   | "recurring_payment_paused"
   | "recurring_payment_cancelled"
   | (string & {});
@@ -121,7 +126,7 @@ export type RecurringStatus = Lowercase<ContractRecurringStatus>;
  * is asserted against the generated contract type by
  * `src/types/contract.generated.test.ts`.
  */
-export type RecurringKind = "fixed_amount_per_period" | "linear_vesting";
+export type RecurringKind = "fixed_amount_per_period" | "linear_vesting" | "continuous_stream";
 
 export type RecurringPayment = {
   id: number;

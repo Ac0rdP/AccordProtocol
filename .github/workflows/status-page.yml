@@ -1,0 +1,66 @@
+name: Status Page
+
+# Probes the health endpoints of the indexer and the analytics API and
+# refreshes the public status page. The page is only rewritten when the status
+# changed, so the repository does not collect a commit every few minutes.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: status-page
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    name: Update the public status page
+    runs-on: ubuntu-latest
+    env:
+      INDEXER_STATUS_URL: ${{ vars.INDEXER_STATUS_URL }}
+      ANALYTICS_API_STATUS_URL: ${{ vars.ANALYTICS_API_STATUS_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js toolchain
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check that the health endpoints are configured
+        id: config
+        run: |
+          if [ -z "${INDEXER_STATUS_URL}" ] || [ -z "${ANALYTICS_API_STATUS_URL}" ]; then
+            echo "probe=false" >> "$GITHUB_OUTPUT"
+            echo "The health endpoints are not configured; the probe is skipped."
+            echo "Set the INDEXER_STATUS_URL and ANALYTICS_API_STATUS_URL repository variables."
+          else
+            echo "probe=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Probe the health endpoints
+        if: steps.config.outputs.probe == 'true'
+        run: node scripts/status-page.mjs probe
+
+      - name: Run the status page tests
+        if: steps.config.outputs.probe == 'true'
+        run: node --test scripts/status-page.test.mjs
+
+      - name: Publish the status page
+        if: steps.config.outputs.probe == 'true'
+        run: |
+          if git diff --quiet -- docs/status; then
+            echo "The status did not change; nothing to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/status
+          git commit -m "chore: update the public status page"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

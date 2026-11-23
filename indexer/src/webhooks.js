@@ -227,10 +227,8 @@ export function createWebhookDispatcher({
     } catch (cause) {
       error = cause?.name === "TimeoutError" ? `timed out after ${timeoutMs}ms` : String(cause?.message ?? cause);
     }
-    metrics?.webhookDeliveryDuration.observe(
-      { subscription: subscription.id },
-      (performance.now() - startedAt) / 1000
-    );
+    const elapsedMs = performance.now() - startedAt;
+    metrics?.webhookDeliveryDuration.observe({ subscription: subscription.id }, elapsedMs / 1000);
 
     const completedAt = new Date(now()).toISOString();
     let outcome = "delivered";
@@ -244,7 +242,8 @@ export function createWebhookDispatcher({
       }
     }
     await store.completeWebhookDelivery({
-      id: delivery.id, outcome, attempts, nextAttemptAt, statusCode, error: error?.slice(0, 500), now: completedAt,
+      id: delivery.id, outcome, attempts, nextAttemptAt, statusCode, error: error?.slice(0, 500),
+      durationMs: Math.round(elapsedMs), now: completedAt,
     });
     metrics?.webhookDeliveries.inc({ subscription: subscription.id, result: outcome });
     if (outcome === "dead") {

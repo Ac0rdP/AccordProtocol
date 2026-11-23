@@ -163,7 +163,7 @@ export function CommandPalette({ commands, suspended = false }: Props) {
             aria-activedescendant={results[activeIndex] ? `command-${results[activeIndex].id}` : undefined}
             className="w-full bg-transparent text-sm text-white placeholder-zinc-500 focus:outline-none"
           />
-          <kbd className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+          <kbd className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
             Esc
           </kbd>
         </div>
@@ -175,14 +175,14 @@ export function CommandPalette({ commands, suspended = false }: Props) {
           className="max-h-80 overflow-y-auto"
         >
           {results.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-zinc-500">No matching commands.</p>
+            <p className="px-3 py-6 text-center text-sm text-zinc-600 dark:text-zinc-400">No matching commands.</p>
           ) : (
             (Object.keys(GROUP_LABELS) as CommandGroup[]).map((group) => {
               const items = grouped[group];
               if (items.length === 0) return null;
               return (
                 <div key={group} className="border-b border-zinc-800/60 py-1 last:border-b-0">
-                  <p className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                  <p className="px-3 pt-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-400">
                     {GROUP_LABELS[group]}
                   </p>
                   <ul>
@@ -202,11 +202,11 @@ export function CommandPalette({ commands, suspended = false }: Props) {
                             <span className="min-w-0">
                               <span className="block truncate font-medium">{command.title}</span>
                               {command.subtitle && (
-                                <span className="block truncate text-xs text-zinc-500">{command.subtitle}</span>
+                                <span className="block truncate text-xs text-zinc-600 dark:text-zinc-400">{command.subtitle}</span>
                               )}
                             </span>
                             {command.shortcut && (
-                              <kbd className="shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+                              <kbd className="shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:text-zinc-400">
                                 {command.shortcut}
                               </kbd>
                             )}

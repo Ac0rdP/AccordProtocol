@@ -63,7 +63,7 @@ export function EditableOwnerLabel({ address, label, onSaved, className }: Props
           type="button"
           onClick={cancel}
           aria-label="Cancel editing label"
-          className="text-zinc-500 hover:text-zinc-300"
+          className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300"
         >
           <X size={14} />
         </button>
@@ -81,7 +81,7 @@ export function EditableOwnerLabel({ address, label, onSaved, className }: Props
       <span>{label}</span>
       <Pencil
         size={12}
-        className="text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+        className="text-zinc-600 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
       />
     </button>
   );

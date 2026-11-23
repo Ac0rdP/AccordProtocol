@@ -77,7 +77,7 @@ export function SpendByOwnerChart({
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
       <div className="mb-4">
         <h3 className="font-semibold text-sm">Spend by Proposing Owner</h3>
-        <p className="text-xs text-zinc-500 mt-0.5">
+        <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
           Treasury activity and total spend driven per owner address
         </p>
         <p className="sr-only">
@@ -155,7 +155,7 @@ export function SpendByOwnerChart({
               <span className="text-zinc-400 tabular-nums">
                 {row.total.toFixed(2)}
               </span>
-              <span className="text-zinc-500 text-[11px] tabular-nums ml-2">
+              <span className="text-zinc-600 dark:text-zinc-400 text-[11px] tabular-nums ml-2">
                 ({row.count} tx)
               </span>
             </li>

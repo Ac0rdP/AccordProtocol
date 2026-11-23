@@ -1,0 +1,177 @@
+name: Status Page Incident Automation
+
+# Monitors the Indexer and Analytics API health endpoints independently and
+# automatically opens, updates, or resolves status-page incidents after
+# consecutive failure/recovery thresholds are met.
+#
+# Note on GitHub Actions schedules:
+# Scheduled workflows may be delayed under load or automatically disabled after
+# 60 days of repository inactivity. Monitor workflow health separately from
+# service outages (see docs/CI.md and docs/OPERATIONS.md).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Evaluate health and incident transitions without writing or posting"
+        required: true
+        default: true
+        type: boolean
+      provider:
+        description: "Status page target (repo-status-page or external)"
+        required: true
+        default: "repo-status-page"
+        type: choice
+        options:
+          - repo-status-page
+          - external
+
+concurrency:
+  group: status-incident-automation
+  cancel-in-progress: false
+
+# Least-privilege default: jobs request only what they strictly need.
+permissions: {}
+
+jobs:
+  evaluate:
+    name: Evaluate health & incident transitions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      incidents_changed: ${{ steps.run_monitor.outputs.incidents_changed }}
+      should_publish: ${{ steps.run_monitor.outputs.should_publish }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: Run incident automation unit tests
+        run: node --test scripts/status-incident-automation.test.mjs
+
+      - name: Evaluate component health & incident state
+        id: run_monitor
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_PROVIDER: ${{ inputs.provider }}
+          INDEXER_STATUS_URL: ${{ vars.INDEXER_STATUS_URL }}
+          ANALYTICS_API_STATUS_URL: ${{ vars.ANALYTICS_API_STATUS_URL }}
+          INCIDENT_FAILURE_THRESHOLD: ${{ vars.INCIDENT_FAILURE_THRESHOLD }}
+          INCIDENT_RECOVERY_THRESHOLD: ${{ vars.INCIDENT_RECOVERY_THRESHOLD }}
+          STATUS_PAGE_PROVIDER: ${{ vars.STATUS_PAGE_PROVIDER }}
+          STATUS_PAGE_ID: ${{ vars.STATUS_PAGE_ID }}
+          STATUS_PAGE_API_TOKEN: ${{ secrets.STATUS_PAGE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/status-incident-automation
+
+          EFFECTIVE_DRY_RUN="false"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${INPUT_DRY_RUN}" = "true" ]; then
+            EFFECTIVE_DRY_RUN="true"
+          fi
+
+          EFFECTIVE_PROVIDER="${INPUT_PROVIDER:-${STATUS_PAGE_PROVIDER:-repo-status-page}}"
+
+          if [ "${EFFECTIVE_DRY_RUN}" != "true" ]; then
+            if [ -z "${INDEXER_STATUS_URL}" ] || [ -z "${ANALYTICS_API_STATUS_URL}" ]; then
+              echo "::notice::Health endpoints are not configured (set INDEXER_STATUS_URL and ANALYTICS_API_STATUS_URL). Skipping live incident probe."
+              echo "incidents_changed=false" >> "$GITHUB_OUTPUT"
+              echo "should_publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          DRY_FLAG=""
+          if [ "${EFFECTIVE_DRY_RUN}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+
+          node scripts/status-incident-automation.mjs run \
+            ${DRY_FLAG} \
+            --provider="${EFFECTIVE_PROVIDER}" \
+            --out=target/status-incident-automation/report.json
+
+          CHANGED="$(node -e 'const r = JSON.parse(require("fs").readFileSync("target/status-incident-automation/report.json", "utf8")); console.log(Boolean(r.incidentsChanged));')"
+          echo "incidents_changed=${CHANGED}" >> "$GITHUB_OUTPUT"
+
+          if [ "${EFFECTIVE_DRY_RUN}" != "true" ] && [ "${EFFECTIVE_PROVIDER}" = "repo-status-page" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report monitor status (distinct from service outage)
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### Status Page Incident Automation"
+            echo "- **Monitor Workflow Status**: \`${JOB_STATUS}\` *(a workflow failure indicates a monitoring/config error, not necessarily a service outage)*"
+            echo "- **Run URL**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload incident automation evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: status-incident-automation-report
+          path: |
+            target/status-incident-automation/report.json
+            docs/status/incidents.json
+            docs/status/incident-automation-state.json
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish updated incident state to docs/status
+    needs: [evaluate]
+    if: needs.evaluate.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: Download updated incident state
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: status-incident-automation-report
+          path: target/status-incident-automation-in
+
+      - name: Sync state, re-render status page, and commit if changed
+        run: |
+          set -euo pipefail
+          if [ -f target/status-incident-automation-in/docs/status/incident-automation-state.json ]; then
+            cp target/status-incident-automation-in/docs/status/incident-automation-state.json docs/status/incident-automation-state.json
+          fi
+          if [ -f target/status-incident-automation-in/docs/status/incidents.json ]; then
+            cp target/status-incident-automation-in/docs/status/incidents.json docs/status/incidents.json
+          fi
+
+          node scripts/status-page.mjs render
+
+          if git diff --quiet -- docs/status; then
+            echo "No status-page incident changes to publish."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/status/incidents.json docs/status/incident-automation-state.json docs/status/index.html
+          git commit -m "chore(status): update automated incident state"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

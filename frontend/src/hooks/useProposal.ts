@@ -1,12 +1,17 @@
 import { useState, useEffect } from "react";
 import { getProposal, getProposalApprovalProgress } from "../lib/contract";
+import { getActiveContractId } from "../lib/activeContract";
 import type { Proposal } from "../types/accord";
 
-const proposalCache = new Map<number, Proposal>();
+const proposalCache = new Map<string, Proposal>();
 
 export function useProposal(id: number) {
-  const [proposal, setProposal] = useState<Proposal | null>(() => proposalCache.get(id) || null);
-  const [loading, setLoading] = useState(id > 0 && !proposalCache.has(id));
+  const contractId = getActiveContractId();
+  const cacheKey = `${contractId}:${id}`;
+  const [proposal, setProposal] = useState<Proposal | null>(
+    () => proposalCache.get(cacheKey) || null,
+  );
+  const [loading, setLoading] = useState(id > 0 && !proposalCache.has(cacheKey));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -19,8 +24,8 @@ export function useProposal(id: number) {
       return;
     }
 
-    if (proposalCache.has(id)) {
-      setProposal(proposalCache.get(id)!);
+    if (proposalCache.has(cacheKey)) {
+      setProposal(proposalCache.get(cacheKey)!);
       setLoading(false);
       setError(null);
       return;
@@ -63,7 +68,7 @@ export function useProposal(id: number) {
         };
 
         if (!cancelled) {
-          proposalCache.set(id, merged);
+          proposalCache.set(cacheKey, merged);
           setProposal(merged);
           setLoading(false);
         }
@@ -78,7 +83,7 @@ export function useProposal(id: number) {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [cacheKey, id]);
 
   return { proposal, loading, error };
 }

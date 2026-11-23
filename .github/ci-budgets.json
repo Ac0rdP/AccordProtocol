@@ -1,0 +1,155 @@
+{
+  "$comment": "CI Time and Cost Budgets configuration. Runner rates in USD per minute are editable assumptions and must be checked against GitHub's billing page (public repos may incur $0 cost).",
+  "rates_per_minute_usd": {
+    "ubuntu-latest": 0.008,
+    "windows-latest": 0.016,
+    "macos-latest": 0.080
+  },
+  "default_budget": {
+    "warn_minutes": 10.0,
+    "fail_minutes": 20.0,
+    "runner_type": "ubuntu-latest"
+  },
+  "jobs": {
+    "Contract CI": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Contract Snapshot Verification": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Contract Coverage": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Contract Benchmarks": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Detect testnet upgrade paths": {
+      "warn_minutes": 3.0,
+      "fail_minutes": 6.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Testnet Upgrade Simulation": {
+      "warn_minutes": 15.0,
+      "fail_minutes": 25.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Testnet Smoke Test": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Weight Invariant Gate": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "ABI Compatibility": {
+      "warn_minutes": 4.0,
+      "fail_minutes": 8.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "ABI Checker Tests": {
+      "warn_minutes": 3.0,
+      "fail_minutes": 6.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Mutation Testing (cargo-mutants)": {
+      "warn_minutes": 90.0,
+      "fail_minutes": 130.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Generate Release Notes": {
+      "warn_minutes": 4.0,
+      "fail_minutes": 8.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Secret heuristic scan": {
+      "warn_minutes": 3.0,
+      "fail_minutes": 6.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Security and SSO control tests": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Gitleaks secret scan": {
+      "warn_minutes": 4.0,
+      "fail_minutes": 8.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Pinning policy": {
+      "warn_minutes": 3.0,
+      "fail_minutes": 6.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "npm provenance (frontend)": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "npm provenance (indexer)": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Cargo sources and lockfile": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Exception changes need an approving review": {
+      "warn_minutes": 3.0,
+      "fail_minutes": 6.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Frontend Lint & Typecheck": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Frontend Unit & Component Tests": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Production Bundle Budget": {
+      "warn_minutes": 5.0,
+      "fail_minutes": 10.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Responsive Visual Regression Checks": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "E2E Playwright Tests": {
+      "warn_minutes": 15.0,
+      "fail_minutes": 25.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Indexer SQLite & Analytics Tests": {
+      "warn_minutes": 8.0,
+      "fail_minutes": 15.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Indexer Postgres Tests": {
+      "warn_minutes": 10.0,
+      "fail_minutes": 20.0,
+      "runner_type": "ubuntu-latest"
+    },
+    "Analytics API Rust Checks & Tests": {
+      "warn_minutes": 10.0,
+      "fail_minutes": 20.0,
+      "runner_type": "ubuntu-latest"
+    }
+  }
+}

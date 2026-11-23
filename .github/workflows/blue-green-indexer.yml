@@ -1,0 +1,177 @@
+name: Blue/Green Indexer Deployment
+
+# Parameterized blue/green rollout for the Treasury Indexer (indexer/).
+# Enforces single-writer safety, pre-switch parity checks, manual approval
+# before traffic shift, automatic rollback on post-shift failure, and a soak
+# period before tearing down the old (blue) instance.
+#
+# See docs/OPERATIONS.md → "Blue/Green Indexer Deployment" for operator setup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: "Target indexer version or container tag to deploy as green"
+        required: true
+        type: string
+      dry_run:
+        description: "Simulate deployment, parity checks, and traffic shift without touching live environments"
+        required: true
+        type: boolean
+        default: true
+      soak_period_minutes:
+        description: "Minutes to monitor green before tearing down blue"
+        required: true
+        type: string
+        default: "15"
+      max_tip_lag_ledgers:
+        description: "Maximum allowed chain-tip lag (ledgers) for green before traffic shift"
+        required: true
+        type: string
+        default: "10"
+
+concurrency:
+  group: blue-green-indexer-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  precheck-and-deploy-green:
+    name: Precheck, Deploy Green & Verify Parity
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      NEW_VERSION: ${{ inputs.new_version }}
+      MAX_TIP_LAG_LEDGERS: ${{ inputs.max_tip_lag_ledgers }}
+      BLUE_URL: ${{ vars.INDEXER_BLUE_URL }}
+      GREEN_URL: ${{ vars.INDEXER_GREEN_URL }}
+      BLUE_DATABASE_URL: ${{ secrets.INDEXER_BLUE_DATABASE_URL }}
+      GREEN_DATABASE_URL: ${{ secrets.INDEXER_GREEN_DATABASE_URL }}
+      DEPLOY_GREEN_CMD: ${{ vars.INDEXER_DEPLOY_GREEN_CMD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run blue/green script unit tests
+        run: bash scripts/blue-green-indexer.test.sh
+
+      - name: Run precheck
+        run: bash scripts/blue-green-indexer.sh precheck
+
+      - name: Deploy green indexer in shadow mode (isolated store)
+        run: |
+          if [ "$DRY_RUN" = "1" ]; then
+            echo "[dry-run] Would deploy green version '$NEW_VERSION' with INDEXER_ROLE=shadow against isolated GREEN_DATABASE_URL."
+          else
+            if [ -z "${DEPLOY_GREEN_CMD:-}" ]; then
+              echo "::error::INDEXER_DEPLOY_GREEN_CMD variable is not configured." >&2
+              exit 1
+            fi
+            bash -c "$DEPLOY_GREEN_CMD"
+          fi
+
+      - name: Wait for green catch-up & compare parity with blue
+        run: bash scripts/blue-green-indexer.sh compare
+
+      - name: Upload precheck and parity report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blue-green-parity-report
+          path: target/blue-green/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Blue/green precheck or parity verification failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "### Blue/Green Indexer Precheck or Parity Failed"
+            echo "Traffic was **not** shifted. Inspect logs and parity artifacts at [Action Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  traffic-shift:
+    name: Shift Traffic to Green (Protected)
+    needs: [precheck-and-deploy-green]
+    runs-on: ubuntu-latest
+    # Operator must configure this GitHub Environment with required reviewers.
+    environment: production-indexer-traffic-shift
+    env:
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      GREEN_URL: ${{ vars.INDEXER_GREEN_URL }}
+      TRAFFIC_SHIFT_CMD: ${{ vars.INDEXER_TRAFFIC_SHIFT_CMD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Shift traffic to green
+        run: bash scripts/blue-green-indexer.sh shift --target green
+
+      - name: Post-shift health check (auto-rollback on failure)
+        id: post_health
+        run: |
+          if ! bash scripts/blue-green-indexer.sh health; then
+            echo "::error::Post-shift health check failed! Rolling back traffic to blue..."
+            bash scripts/blue-green-indexer.sh shift --target blue
+            exit 1
+          fi
+
+      - name: Upload traffic shift report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blue-green-shift-report
+          path: target/blue-green/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Traffic shift or post-shift health check failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "### Blue/Green Traffic Shift Failed"
+            echo "Automatic rollback to Blue was triggered. Inspect [Action Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  soak-and-finalize:
+    name: Soak Period & Blue Teardown
+    needs: [traffic-shift]
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      GREEN_URL: ${{ vars.INDEXER_GREEN_URL }}
+      SOAK_PERIOD_MINUTES: ${{ inputs.soak_period_minutes }}
+      TEARDOWN_BLUE_CMD: ${{ vars.INDEXER_TEARDOWN_BLUE_CMD }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Monitor green during soak period
+        run: bash scripts/blue-green-indexer.sh soak --minutes "$SOAK_PERIOD_MINUTES"
+
+      - name: Tear down blue instance after clean soak
+        run: |
+          if [ "$DRY_RUN" = "1" ]; then
+            echo "[dry-run] Would tear down blue indexer instance after ${SOAK_PERIOD_MINUTES}m soak."
+          else
+            if [ -z "${TEARDOWN_BLUE_CMD:-}" ]; then
+              echo "::warning::INDEXER_TEARDOWN_BLUE_CMD not set; blue instance left in standby."
+            else
+              bash -c "$TEARDOWN_BLUE_CMD"
+            fi
+          fi
+
+      - name: Append deployment summary
+        if: always()
+        run: |
+          {
+            echo "### Blue/Green Indexer Deployment Summary"
+            echo "- **Target Version**: \`${{ inputs.new_version }}\`"
+            echo "- **Dry Run**: \`${{ inputs.dry_run }}\`"
+            echo "- **Soak Period**: \`${{ inputs.soak_period_minutes }}m\`"
+            echo "- **Run URL**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"

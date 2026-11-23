@@ -1,0 +1,243 @@
+# Instructions
+
+- Following Playwright test failed.
+- Explain why, be concise, respect Playwright best practices.
+- Provide a snippet of code with the fix, if possible.
+
+# Test info
+
+- Name: delegation.spec.ts >> an owner can delegate their voting weight to another owner
+- Location: e2e/delegation.spec.ts:44:1
+
+# Error details
+
+```
+Test timeout of 60000ms exceeded.
+```
+
+```
+Error: locator.click: Test timeout of 60000ms exceeded.
+Call log:
+  - waiting for getByRole('button', { name: 'Delegate You voting weight' })
+
+```
+
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "A Accord testnet" [ref=e6]:
+        - /url: /
+        - generic [ref=e7]: A
+        - generic [ref=e8]: Accord
+        - generic [ref=e9]: testnet
+      - generic [ref=e10]:
+        - generic [ref=e11]: Search proposals, owners, and recipients
+        - generic [ref=e12]:
+          - img
+          - combobox "Search proposals, owners, and recipients" [ref=e13]
+          - generic: ⌘K
+      - navigation [ref=e14]:
+        - link "dashboard" [ref=e15]:
+          - /url: /app
+        - link "recurring" [ref=e16]:
+          - /url: /app/recurring
+        - link "history" [ref=e17]:
+          - /url: /app/history
+        - link "analytics" [ref=e18]:
+          - /url: /app/analytics
+        - link "owners" [ref=e19]:
+          - /url: /app/owners
+        - link "settings" [ref=e20]:
+          - /url: /app/settings
+        - link "docs" [ref=e21]:
+          - /url: /docs
+        - radiogroup "Theme selection" [ref=e22]:
+          - radio "Light theme" [ref=e23]:
+            - img [ref=e24]
+            - generic [ref=e30]: Light
+          - radio "System theme" [checked] [ref=e31]:
+            - img [ref=e32]
+            - generic [ref=e34]: System
+          - radio "Dark theme" [ref=e35]:
+            - img [ref=e36]
+            - generic [ref=e38]: Dark
+        - combobox "Language" [ref=e39]:
+          - option "English" [selected]
+          - option "Español"
+          - option "العربية"
+      - button "What's new, 29 unread entries" [ref=e41]:
+        - img [ref=e42]
+        - generic [ref=e45]: "29"
+      - button "Send feedback" [ref=e46]:
+        - img [ref=e47]
+        - generic [ref=e49]: Feedback
+      - button "Notifications" [ref=e51]:
+        - img [ref=e52]
+      - button "GDJSB2…C7JD" [ref=e55]
+  - main [ref=e56]:
+    - generic [ref=e57]:
+      - generic [ref=e58]:
+        - paragraph [ref=e59]: No multisig configured yet
+        - paragraph [ref=e60]: Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.
+      - link "Start Setup Wizard →" [ref=e61]:
+        - /url: /app/onboarding
+    - generic [ref=e62]:
+      - heading "Multisig Owners" [level=1] [ref=e63]
+      - paragraph [ref=e64]: Requires 0 of 0 voting weight
+    - status [ref=e65]:
+      - heading "No owners found" [level=3] [ref=e66]
+      - paragraph [ref=e67]: Owners will appear here once the multisig is initialized.
+    - generic [ref=e68]:
+      - generic [ref=e69]:
+        - heading "Spending Limits" [level=2] [ref=e70]
+        - button "Set Spending Limit" [ref=e71]
+      - paragraph [ref=e72]: Configure per-owner spending limits for specific tokens. All changes require multisig approval.
+```
+
+# Test source
+
+```ts
+  2   | import type { xdr } from "@stellar/stellar-sdk";
+  3   | import { expect, test, TEST_WALLET } from "./setup";
+  4   | import {
+  5   |   VOID,
+  6   |   addrVec,
+  7   |   emptyVec,
+  8   |   installGovernanceRpc,
+  9   |   native,
+  10  |   symbolVec,
+  11  |   u32,
+  12  |   u64,
+  13  | } from "./gov-harness";
+  14  | 
+  15  | /**
+  16  |  * Voting-weight delegation end-to-end coverage (issue #789).
+  17  |  *
+  18  |  * The UI exposes a "Delegate" action on the connected owner's row. Submitting
+  19  |  * it must call the contract's `create_delegation(delegator, delegate, weight,
+  20  |  * expiry)` entry point with the delegator's full voting weight.
+  21  |  *
+  22  |  * There is no dedicated "undelegate" control: revocation happens on-chain and
+  23  |  * the delegation disappears from `get_active_delegations`. The second half of
+  24  |  * this test models that by clearing the active delegation and reloading, then
+  25  |  * asserting the Owners page still renders (the record is simply gone).
+  26  |  */
+  27  | 
+  28  | const OWNER_A = TEST_WALLET;
+  29  | const OWNER_B = Keypair.fromRawEd25519Seed(
+  30  |   Buffer.from("accord-protocol-owner-2-seed-12x", "ascii"),
+  31  | ).publicKey();
+  32  | const OWNER_C = Keypair.fromRawEd25519Seed(
+  33  |   Buffer.from("accord-protocol-owner-3-seed-12x", "ascii"),
+  34  | ).publicKey();
+  35  | 
+  36  | const OWNERS = [OWNER_A, OWNER_B, OWNER_C];
+  37  | const WEIGHTS: Record<string, number> = {
+  38  |   [OWNER_A]: 2,
+  39  |   [OWNER_B]: 3,
+  40  |   [OWNER_C]: 1,
+  41  | };
+  42  | const QUORUM = 4;
+  43  | 
+  44  | test("an owner can delegate their voting weight to another owner", async ({ page }) => {
+  45  |   const state = { delegated: false };
+  46  |   const sent: Array<{ fn: string; args: unknown[] }> = [];
+  47  |   let activeDelegationReads = 0;
+  48  | 
+  49  |   await installGovernanceRpc(page, {
+  50  |     simulate: (fn, args): xdr.ScVal => {
+  51  |       switch (fn) {
+  52  |         case "get_owners":
+  53  |           return addrVec(OWNERS);
+  54  |         case "get_threshold":
+  55  |           return u32(QUORUM);
+  56  |         case "get_total_weight":
+  57  |           return u32(6);
+  58  |         case "get_total_proposals":
+  59  |           return u64(0);
+  60  |         case "get_proposals_paged":
+  61  |           return emptyVec();
+  62  |         case "get_owner_weight":
+  63  |           return u32(WEIGHTS[String(args[0] ?? "")] ?? 0);
+  64  |         case "get_owner_weights":
+  65  |           return native(
+  66  |             OWNERS.map((owner) => ({ address: owner, weight: WEIGHTS[owner] })),
+  67  |           );
+  68  |         case "get_roles":
+  69  |           return symbolVec(["Owner"]);
+  70  |         case "get_recurring_payments":
+  71  |           return emptyVec();
+  72  |         case "get_active_delegations": {
+  73  |           activeDelegationReads += 1;
+  74  |           if (!state.delegated) return emptyVec();
+  75  |           return native([
+  76  |             {
+  77  |               delegator: OWNER_A,
+  78  |               delegate: OWNER_B,
+  79  |               weight: WEIGHTS[OWNER_A],
+  80  |               expiry: BigInt(Math.floor(Date.now() / 1000) + 365 * 86_400),
+  81  |             },
+  82  |           ]);
+  83  |         }
+  84  |         default:
+  85  |           return VOID;
+  86  |       }
+  87  |     },
+  88  |     send: (fn, args) => {
+  89  |       sent.push({ fn, args });
+  90  |       if (fn === "create_delegation") {
+  91  |         state.delegated = true;
+  92  |       }
+  93  |     },
+  94  |   });
+  95  | 
+  96  |   await page.goto("/app/owners");
+  97  |   await expect(page.getByRole("heading", { name: "Multisig Owners" })).toBeVisible({
+  98  |     timeout: 15_000,
+  99  |   });
+  100 | 
+  101 |   // The Delegate control only appears on the connected wallet's own row.
+> 102 |   await page.getByRole("button", { name: "Delegate You voting weight" }).click();
+      |                                                                          ^ Error: locator.click: Test timeout of 60000ms exceeded.
+  103 |   await expect(
+  104 |     page.getByRole("heading", { name: "Delegate Voting Weight" }),
+  105 |   ).toBeVisible();
+  106 | 
+  107 |   // Defaults to the first available candidate (OWNER_B).
+  108 |   await expect(page.getByLabel("Delegate to owner")).toHaveValue(OWNER_B);
+  109 | 
+  110 |   await page.getByRole("button", { name: "Create delegation" }).click();
+  111 | 
+  112 |   await expect
+  113 |     .poll(() => sent.filter((call) => call.fn === "create_delegation").length, {
+  114 |       timeout: 20_000,
+  115 |     })
+  116 |     .toBeGreaterThanOrEqual(1);
+  117 | 
+  118 |   const delegation = sent.find((call) => call.fn === "create_delegation");
+  119 |   expect(delegation, "create_delegation was submitted").toBeTruthy();
+  120 |   // Contract signature: (delegator, delegate, weight, expiry)
+  121 |   expect(delegation!.args[0]).toBe(OWNER_A);
+  122 |   expect(delegation!.args[1]).toBe(OWNER_B);
+  123 |   expect(Number(delegation!.args[2])).toBe(WEIGHTS[OWNER_A]);
+  124 |   expect(Number(delegation!.args[3])).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  125 | 
+  126 |   // ─── Undelegate (on-chain revocation) ──────────────────────────────────────
+  127 |   // The app has no explicit undelegate button; when the delegation lapses or is
+  128 |   // revoked the contract stops returning it from get_active_delegations.
+  129 |   state.delegated = false;
+  130 |   const readsBefore = activeDelegationReads;
+  131 |   await page.reload();
+  132 | 
+  133 |   await expect(page.getByRole("heading", { name: "Multisig Owners" })).toBeVisible({
+  134 |     timeout: 15_000,
+  135 |   });
+  136 |   await expect
+  137 |     .poll(() => activeDelegationReads, { timeout: 15_000 })
+  138 |     .toBeGreaterThan(readsBefore);
+  139 | });
+  140 | 
+```

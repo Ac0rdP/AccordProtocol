@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, type RefObject } from "react";
 import {
-  createProposal,
+  createBatchProposal,
+  createProposalWithAttachment,
   createAddOwnerProposal,
   createRemoveOwnerProposal,
   createChangeThresholdProposal,
@@ -17,10 +18,16 @@ import {
 } from "../lib/contract";
 import { displayToStroops, formatWeightPercent } from "../lib/soroban";
 import { VotingPowerPreview } from "./VotingPowerPreview";
-import { AddressBookField } from "./AddressBookField";
+import { MarkdownDescription } from "./MarkdownDescription";
 import { ProposalTemplatePicker } from "./ProposalTemplatePicker";
+import {
+  createTransferDraft,
+  TransferActionBuilder,
+  type TransferDraft,
+} from "./TransferActionBuilder";
 import { previewTransferProposal, type BalanceDeltaRow } from "../lib/transactionPreview";
 import { StrKey } from "@stellar/stellar-sdk";
+import { isPreviewableAttachment, uploadIpfsAttachment } from "../lib/ipfs";
 import type { ProposalKind } from "../types/accord";
 // Testnet token addresses — swap for mainnet when ready
 const TOKEN_ADDRESSES: Record<string, string> = {
@@ -43,9 +50,12 @@ type FormType = ProposalKind;
 
 type TransferFormData = {
   type: "transfer";
-  recipient: string;
-  tokenAddr: string;
-  amountStroops: bigint;
+  transfers: Array<{
+    recipient: string;
+    tokenAddr: string;
+    tokenSymbol: string;
+    amountStroops: bigint;
+  }>;
   description: string;
   deadlineUnix: bigint;
 };
@@ -131,10 +141,27 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
   const [deadline, setDeadline] = useState(defaultDeadline);
 
   // Transfer fields
-  const [to, setTo] = useState("");
-  const [recipientTouched, setRecipientTouched] = useState(false);
-  const [amount, setAmount] = useState("");
-  const [token, setToken] = useState("XLM");
+  const [transferActions, setTransferActions] = useState<TransferDraft[]>(() => [
+    createTransferDraft(),
+  ]);
+  const firstTransfer = transferActions[0];
+  const to = firstTransfer?.recipient ?? "";
+  const amount = firstTransfer?.amount ?? "";
+  const token = firstTransfer?.token ?? "XLM";
+  const updateFirstTransfer = (patch: Partial<TransferDraft>) => {
+    setTransferActions((current) =>
+      current.map((transfer, index) =>
+        index === 0 ? { ...transfer, ...patch } : transfer,
+      ),
+    );
+  };
+  const setTo = (recipient: string) => updateFirstTransfer({ recipient });
+  const setAmount = (value: string) => updateFirstTransfer({ amount: value });
+  const setToken = (value: string) => updateFirstTransfer({ token: value });
+
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [attachmentPreviewUrl, setAttachmentPreviewUrl] = useState<string | null>(null);
+  const [attachmentTextPreview, setAttachmentTextPreview] = useState<string | null>(null);
 
   // Add/Remove Owner fields
   const [ownerAddress, setOwnerAddress] = useState("");
@@ -169,6 +196,35 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
   const firstInputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!attachmentFile) {
+      setAttachmentPreviewUrl(null);
+      setAttachmentTextPreview(null);
+      return;
+    }
+
+    let active = true;
+    const url = URL.createObjectURL(attachmentFile);
+    setAttachmentPreviewUrl(url);
+    if (attachmentFile.type === "text/plain" || attachmentFile.type === "text/csv") {
+      void attachmentFile.text()
+        .then((text) => {
+          if (active) setAttachmentTextPreview(text.slice(0, 4000));
+        })
+        .catch((reason: unknown) => {
+          if (active) {
+            setError(reason instanceof Error ? `Could not preview file: ${reason.message}` : "Could not preview file.");
+          }
+        });
+    } else {
+      setAttachmentTextPreview(null);
+    }
+    return () => {
+      active = false;
+      URL.revokeObjectURL(url);
+    };
+  }, [attachmentFile]);
 
   // Load contract data for governance proposals
   useEffect(() => {
@@ -303,32 +359,40 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     }
 
     if (formType === "transfer") {
-      if (!to.trim() || !amount.trim() || !description.trim()) {
-        setError("Recipient, amount, and description are required.");
+      if (transferActions.length === 0 || !description.trim()) {
+        setError("Add at least one transfer and enter a description.");
         return null;
       }
-      if (!StrKey.isValidEd25519PublicKey(to.trim())) {
-        setError("Enter a valid Stellar address");
-        return null;
-      }
-      const amountNum = parseFloat(amount);
-      if (isNaN(amountNum) || amountNum <= 0) {
-        setError("Enter a valid amount.");
-        return null;
-      }
-      const tokenAddr = TOKEN_ADDRESSES[token];
-      if (!tokenAddr) {
-        setError("Unknown token.");
-        return null;
+
+      const transfers: TransferFormData["transfers"] = [];
+      for (const [index, transfer] of transferActions.entries()) {
+        if (!StrKey.isValidEd25519PublicKey(transfer.recipient.trim())) {
+          setError(`Enter a valid Stellar address for transfer ${index + 1}.`);
+          return null;
+        }
+        const amountNum = Number(transfer.amount);
+        if (!Number.isFinite(amountNum) || amountNum <= 0) {
+          setError(`Enter a valid amount for transfer ${index + 1}.`);
+          return null;
+        }
+        const tokenAddr = TOKEN_ADDRESSES[transfer.token];
+        if (!tokenAddr) {
+          setError(`Choose a supported token for transfer ${index + 1}.`);
+          return null;
+        }
+        transfers.push({
+          recipient: transfer.recipient.trim(),
+          tokenAddr,
+          tokenSymbol: transfer.token,
+          amountStroops: displayToStroops(amountNum),
+        });
       }
       const dlErr = validateDeadline(deadline);
       if (dlErr) { setError(dlErr); return null; }
 
       return {
         type: "transfer",
-        recipient: to.trim(),
-        tokenAddr,
-        amountStroops: displayToStroops(amountNum),
+        transfers,
         description: description.trim(),
         deadlineUnix: BigInt(Math.floor(new Date(deadline).getTime() / 1000)),
       } satisfies TransferFormData;
@@ -427,6 +491,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
   async function handleCalculateFee() {
     if (formType !== "transfer") return;
+    if (transferActions.length !== 1) return;
     if (!walletAddress || !to.trim() || !amount.trim() || !description.trim()) return;
 
     const tokenAddr = TOKEN_ADDRESSES[token];
@@ -472,10 +537,10 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     try {
       const preview = await previewTransferProposal({
         callerAddress: walletAddress!,
-        recipient: data.recipient,
-        tokenAddress: data.tokenAddr,
-        tokenSymbol: token,
-        amountStroops: data.amountStroops,
+        recipient: data.transfers[0].recipient,
+        tokenAddress: data.transfers[0].tokenAddr,
+        tokenSymbol: data.transfers[0].tokenSymbol,
+        amountStroops: data.transfers[0].amountStroops,
         description: data.description,
         deadlineUnix: data.deadlineUnix,
       });
@@ -495,7 +560,14 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     clearError();
     setStep("preview");
     if (data.type === "transfer") {
-      void runTransferPreview(data);
+      if (data.transfers.length === 1) {
+        void runTransferPreview(data);
+      } else {
+        setPreviewLoading(false);
+        setPreviewFeeEstimate(null);
+        setPreviewFeeError(null);
+        setPreviewBalances([]);
+      }
     }
   }
 
@@ -514,14 +586,33 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
     try {
       switch (data.type) {
         case "transfer":
-          await createProposal(
-            walletAddress!,
-            data.recipient,
-            data.tokenAddr,
-            data.amountStroops,
-            data.description,
-            data.deadlineUnix
-          );
+          if (attachmentFile) {
+            if (data.transfers.length !== 1) {
+              throw new Error("Attachments are supported for a single transfer only");
+            }
+            const [only] = data.transfers;
+            const uploaded = await uploadIpfsAttachment(attachmentFile);
+            await createProposalWithAttachment(
+              walletAddress!,
+              only.recipient,
+              only.tokenAddr,
+              only.amountStroops,
+              data.description,
+              data.deadlineUnix,
+              uploaded.digest,
+            );
+          } else {
+            await createBatchProposal(
+              walletAddress!,
+              data.transfers.map((transfer) => ({
+                to: transfer.recipient,
+                tokenAddress: transfer.tokenAddr,
+                amount: transfer.amountStroops,
+              })),
+              data.description,
+              data.deadlineUnix
+            );
+          }
           break;
         case "add_owner":
           await createAddOwnerProposal(
@@ -584,39 +675,42 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
           <h3 className="text-sm font-medium text-zinc-200">Confirm Weight Change</h3>
           <dl className="space-y-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3">
             <div>
-              <dt className="text-xs text-zinc-500">Target Owner</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Target Owner</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono break-all">{target}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Owner Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Owner Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{oldWeight}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Proposed New Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Proposed New Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{isNaN(newWeight) ? "—" : newWeight}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Total Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Total Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{currentTotal}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Resulting Total Weight</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Resulting Total Weight</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{resultingTotal}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Current Quorum Requirement</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Current Quorum Requirement</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{currentQuorum}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Resulting Quorum Requirement</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Resulting Quorum Requirement</dt>
               <dd className="mt-1 text-sm text-zinc-200 font-mono">{resultingQuorum}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Description</dt>
-              <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-200">{description.trim()}</dd>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Description</dt>
+              <MarkdownDescription
+                text={description}
+                className="mt-1 text-sm text-zinc-200"
+              />
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Deadline</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{formatDeadlineDate(deadline)}</dd>
             </div>
           </dl>
@@ -644,7 +738,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             {submitting ? "Submitting…" : "Confirm & Submit"}
           </button>
@@ -668,7 +762,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               className="rounded-xl border border-zinc-700 bg-zinc-800/50 p-3.5 sm:p-4 min-h-[48px] text-sm font-medium text-zinc-200 transition-colors hover:border-emerald-500/50 hover:bg-zinc-800 disabled:opacity-50 focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-between sm:justify-center"
             >
               <span>{label}</span>
-              <span className="text-zinc-500 sm:hidden">→</span>
+              <span className="text-zinc-600 dark:text-zinc-400 sm:hidden">→</span>
             </button>
           ))}
         </div>
@@ -685,7 +779,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             className={`w-full border rounded-lg px-3 py-2.5 text-sm ${
               walletAddress
                 ? "bg-zinc-800/60 border-zinc-700/60 text-zinc-300 font-mono"
-                : "bg-zinc-800/30 border-zinc-700/30 text-zinc-500"
+                : "bg-zinc-800/30 border-zinc-700/30 text-zinc-600 dark:text-zinc-400"
             } truncate`}
           >
             {truncateAddress(walletAddress)}
@@ -701,83 +795,23 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               onApply={(fields) => {
                 if (fields.recipient) {
                   setTo(fields.recipient);
-                  setRecipientTouched(true);
                 }
                 if (fields.amount) setAmount(fields.amount);
                 if (fields.token) setToken(fields.token);
                 if (fields.description) setDescription(fields.description);
               }}
             />
+            <TransferActionBuilder
+              transfers={transferActions}
+              onChange={setTransferActions}
+              firstInputRef={firstInputRef}
+            />
 
-            <div>
-              <label className="text-xs text-zinc-400 block mb-1.5">
-                Recipient Address
-              </label>
-              <AddressBookField
-                idPrefix="proposal-recipient"
-                address={to}
-                isValidAddress={StrKey.isValidEd25519PublicKey(to.trim())}
-                onSelectAddress={(addr) => {
-                  setTo(addr);
-                  setRecipientTouched(true);
-                }}
-              />
-              <input
-                ref={firstInputRef}
-                value={to}
-                onChange={(e) => {
-                  setTo(e.target.value);
-                  setRecipientTouched(true);
-                }}
-                onBlur={() => setRecipientTouched(true)}
-                placeholder="G..."
-                className="mt-1.5 w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
-              />
-              {recipientTouched && !StrKey.isValidEd25519PublicKey(to.trim()) && (
-                <p className="text-xs text-red-400 mt-1">Enter a valid Stellar address</p>
-              )}
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="flex-1">
-                <label className="text-xs text-zinc-400 block mb-1.5 font-sans">Amount</label>
-                <input
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="0.00"
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="any"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
-                />
-              </div>
-              <div className="w-full sm:w-36">
-                <label className="text-xs text-zinc-400 block mb-1.5 font-sans">Token</label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(["XLM", "USDC", "EURC"] as const).map((symbol) => {
-                    const active = token === symbol;
-                    return (
-                      <button
-                        key={symbol}
-                        type="button"
-                        onClick={() => setToken(symbol)}
-                        aria-pressed={active}
-                        className={`min-h-[44px] rounded-lg border px-2 py-2 text-xs font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none ${
-                          active
-                            ? "border-emerald-500 bg-emerald-500/20 text-emerald-300"
-                            : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-                        }`}
-                      >
-                        {symbol}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {walletAddress && to.trim() && amount.trim() && description.trim() && (
+            {walletAddress &&
+              to.trim() &&
+              amount.trim() &&
+              description.trim() &&
+              transferActions.length === 1 && (
               <div className="flex items-center justify-between bg-zinc-800/50 p-3 rounded-lg border border-zinc-700/50">
                 <div className="text-sm">
                   {feeLoading ? (
@@ -789,7 +823,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                       Estimated fee: <span className="text-white font-mono">~{feeEstimate.toFixed(7)} XLM</span>
                     </span>
                   ) : (
-                    <span className="text-zinc-500">No estimate yet</span>
+                    <span className="text-zinc-600 dark:text-zinc-400">No estimate yet</span>
                   )}
                 </div>
                 <button
@@ -801,6 +835,13 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                   Calculate fee
                 </button>
               </div>
+            )}
+            {transferActions.length > 1 && (
+              <p className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+                The final review validates every action. Network fee simulation
+                is shown for single transfers only; the transaction is still
+                simulated before wallet approval.
+              </p>
             )}
           </>
         )}
@@ -902,7 +943,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
               max={totalOwners}
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm font-mono placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
             />
-            <p className="text-xs text-zinc-500 mt-1 font-sans">
+            <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1 font-sans">
               Threshold must be between 1 and {totalOwners}
             </p>
           </div>
@@ -977,26 +1018,79 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
 
         {/* Common fields */}
         <div>
-          <label className="text-xs text-zinc-400 block mb-1.5">
+          <label
+            htmlFor="proposal-description-input"
+            className="text-xs text-zinc-400 block mb-1.5"
+          >
             Description
           </label>
-          <input
+          <textarea
+            id="proposal-description-input"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             maxLength={MAX_DESCRIPTION_LEN}
             placeholder={formType === "transfer" ? "What is this payment for?" : "Reason for this change"}
-            className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
+            rows={3}
+            className="w-full resize-y bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
           />
+          {description.trim() && (
+            <div className="mt-3 rounded-lg border border-zinc-700 bg-zinc-900/70 p-3">
+              <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Markdown preview
+              </p>
+              <MarkdownDescription
+                text={description}
+                className="text-sm text-zinc-300"
+              />
+            </div>
+          )}
           <p
             className={`mt-1 text-right text-xs ${
               description.length >= MAX_DESCRIPTION_LEN
                 ? "text-red-400"
-                : "text-zinc-500"
+                : "text-zinc-600 dark:text-zinc-400"
             }`}
           >
             {description.length} / {MAX_DESCRIPTION_LEN}
           </p>
         </div>
+        {formType === "transfer" && (
+          <div className="space-y-2 rounded-lg border border-zinc-700/70 bg-zinc-800/30 p-3">
+            <label htmlFor="proposal-attachment" className="block text-xs font-medium text-zinc-300">
+              Supporting document <span className="font-normal text-zinc-500">(optional)</span>
+            </label>
+            <input
+              id="proposal-attachment"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,application/pdf,image/png,image/jpeg,image/webp,text/plain,text/csv"
+              onChange={(event) => {
+                setAttachmentFile(event.target.files?.[0] ?? null);
+                clearError();
+              }}
+              className="block min-h-11 w-full text-sm text-zinc-300 file:mr-3 file:min-h-9 file:rounded-md file:border-0 file:bg-zinc-700 file:px-3 file:text-xs file:font-medium file:text-white hover:file:bg-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <p className="text-xs text-zinc-500">
+              Up to 20 MB. IPFS content is public and persistent; do not upload sensitive files. Only its SHA-256 digest is stored on-chain.
+            </p>
+            {attachmentFile && (
+              <div className="space-y-2">
+                <p className="break-all text-xs text-zinc-300">
+                  {attachmentFile.name} · {(attachmentFile.size / 1024).toFixed(1)} KB
+                  {!isPreviewableAttachment(attachmentFile) && " · Preview unavailable for this file type"}
+                </p>
+                {attachmentPreviewUrl && ["image/jpeg", "image/png", "image/webp"].includes(attachmentFile.type) && (
+                  <img src={attachmentPreviewUrl} alt={`Preview of ${attachmentFile.name}`} className="max-h-48 max-w-full rounded-lg border border-zinc-700 object-contain" />
+                )}
+                {attachmentPreviewUrl && attachmentFile.type === "application/pdf" && (
+                  <iframe title={`Preview of ${attachmentFile.name}`} src={attachmentPreviewUrl} sandbox="" className="h-48 w-full rounded-lg border border-zinc-700" />
+                )}
+                {attachmentTextPreview !== null && (
+                  <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-zinc-950 p-2 text-xs text-zinc-400">{attachmentTextPreview}</pre>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <label className="text-xs text-zinc-400 block mb-1.5">
@@ -1009,6 +1103,12 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-base sm:text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500 min-h-[44px]"
           />
         </div>
+        {attachmentFile && (
+          <div>
+            <dt className="text-xs text-zinc-600 dark:text-zinc-400">Attachment</dt>
+            <dd className="mt-1 break-all text-sm text-zinc-200">{attachmentFile.name}</dd>
+          </div>
+        )}
 
         {error && (
           <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
@@ -1031,7 +1131,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             title={
               walletAddress ? undefined : "Connect your Freighter wallet to submit"
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
             Review Proposal
           </button>
@@ -1052,24 +1152,40 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "transfer" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
-                  <dd className="mt-1 break-all text-sm text-zinc-200">Transfer {amount} {token} to {to}</dd>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
+                  <dd>
+                    <ol className="mt-1 space-y-2">
+                      {transferActions.map((transfer, index) => (
+                        <li
+                          key={transfer.id}
+                          className="break-all text-sm text-zinc-200"
+                        >
+                          Transfer {index + 1}: {transfer.amount} {transfer.token}{" "}
+                          to {transfer.recipient}
+                        </li>
+                      ))}
+                    </ol>
+                  </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">Estimated Fee</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Estimated Fee</dt>
                   <dd className="mt-1 text-sm text-zinc-200">
-                    {previewLoading ? (
+                    {transferActions.length > 1 ? (
+                      <span className="text-zinc-400">
+                        Simulated when the batch is submitted
+                      </span>
+                    ) : previewLoading ? (
                       <span className="text-zinc-400">Simulating transaction…</span>
                     ) : previewFeeEstimate !== null ? (
                       <span className="font-mono">~{previewFeeEstimate.toFixed(7)} XLM</span>
                     ) : (
-                      <span className="text-zinc-500">—</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">—</span>
                     )}
                   </dd>
                 </div>
                 {!previewLoading && previewBalances.length > 0 && (
                   <div>
-                    <dt className="text-xs text-zinc-500">Balance Impact</dt>
+                    <dt className="text-xs text-zinc-600 dark:text-zinc-400">Balance Impact</dt>
                     <dd className="mt-1.5 space-y-2">
                       {previewBalances.map((row) => (
                         <div
@@ -1078,7 +1194,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                         >
                           <div className="text-zinc-400">{row.label}</div>
                           <div className="mt-0.5 font-mono text-zinc-200">
-                            {row.before} <span className="text-zinc-500">→</span> {row.after} {row.token}
+                            {row.before} <span className="text-zinc-600 dark:text-zinc-400">→</span> {row.after} {row.token}
                           </div>
                         </div>
                       ))}
@@ -1090,11 +1206,11 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "add_owner" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200">Add new owner</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">New Owner Address</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">New Owner Address</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{ownerAddress.trim()}</dd>
                 </div>
               </>
@@ -1102,11 +1218,11 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "remove_owner" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200">Remove owner</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500">Owner to Remove</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400">Owner to Remove</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{selectedOwner}</dd>
                 </div>
               </>
@@ -1114,7 +1230,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "change_threshold" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200 font-sans">Change approval threshold to {newThreshold} of {totalOwners}</dd>
                 </div>
               </>
@@ -1122,31 +1238,32 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             {formType === "change_owner_weight" && (
               <>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Action</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Action</dt>
                   <dd className="mt-1 text-sm text-zinc-200 font-sans font-medium">Propose owner weight change</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">Target Owner</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">Target Owner</dt>
                   <dd className="mt-1 break-all font-mono text-sm text-zinc-200">{selectedOwner}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-zinc-500 font-sans">New Weight</dt>
+                  <dt className="text-xs text-zinc-600 dark:text-zinc-400 font-sans">New Weight</dt>
                   <dd className="mt-1 font-mono text-sm text-zinc-200 font-medium">{newWeightInput}</dd>
                 </div>
               </>
             )}
             <div>
-              <dt className="text-xs text-zinc-500">Description</dt>
-              <dd className="mt-1 whitespace-pre-wrap break-words text-sm text-zinc-200">
-                {description.trim()}
-              </dd>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Description</dt>
+              <MarkdownDescription
+                text={description}
+                className="mt-1 text-sm text-zinc-200"
+              />
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Deadline</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Deadline</dt>
               <dd className="mt-1 text-sm text-zinc-200">{dl}</dd>
             </div>
             <div>
-              <dt className="text-xs text-zinc-500">Required Quorum</dt>
+              <dt className="text-xs text-zinc-600 dark:text-zinc-400">Required Quorum</dt>
               <dd className="mt-1 text-sm text-zinc-200">
                 {quorumWeight > 0 ? (
                   <>
@@ -1196,9 +1313,9 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
                 ? "Resolve the simulation error before submitting"
                 : undefined
             }
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
+            className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white min-h-[44px] py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none flex items-center justify-center"
           >
-            {submitting ? "Submitting…" : "Confirm & Submit"}
+            {submitting ? (attachmentFile ? "Uploading & submitting…" : "Submitting…") : "Confirm & Submit"}
           </button>
         </div>
       </>
@@ -1220,7 +1337,7 @@ export function CreateProposalModal({ walletAddress, onClose, onSubmitted, trigg
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-lg min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2"
+            className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-lg min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2"
           >
             ✕
           </button>

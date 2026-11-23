@@ -25,7 +25,7 @@ export function LoadingState({
       role="status"
       aria-live="polite"
       aria-busy="true"
-      className={`${sizing} text-center text-sm text-zinc-500`}
+      className={`${sizing} text-center text-sm text-zinc-600 dark:text-zinc-400`}
     >
       <span className="inline-flex items-center gap-2">
         <svg

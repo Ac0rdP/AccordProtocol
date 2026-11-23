@@ -33,7 +33,7 @@ const PRUNE_THRESHOLD: usize = 10_000;
 
 /// Paths that are never limited or cached: probes and the scrape endpoint must
 /// keep answering when the API is under load.
-const EXEMPT_PATHS: &[&str] = &["/", "/health", "/livez", "/readyz", "/metrics"];
+const EXEMPT_PATHS: &[&str] = &["/", "/health", "/livez", "/readyz", "/status", "/metrics"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LimitsConfig {
@@ -552,6 +552,7 @@ mod tests {
     fn only_database_backed_reads_are_cacheable() {
         assert!(is_cacheable(&Method::GET, "/proposals"));
         assert!(is_cacheable(&Method::GET, "/proposals/7"));
+        assert!(is_cacheable(&Method::GET, "/proposals/funnel"));
         assert!(is_cacheable(&Method::GET, "/spend/by-category"));
         assert!(!is_cacheable(&Method::POST, "/proposals"));
         assert!(!is_cacheable(&Method::POST, "/reports/run"));

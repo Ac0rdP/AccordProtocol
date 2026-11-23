@@ -1,11 +1,20 @@
 import { createServer } from "node:http";
+import { computeAnomalies } from "./anomalies.js";
+import { resolveAnomalyConfig, resolveRunwayConfig } from "./config.js";
 import { METRICS_CONTENT_TYPE } from "./metrics.js";
+import { computeRunway } from "./runway.js";
 import { parseDestination, sendTestNotification } from "./notifications.js";
+import { defaultValidator, QUARANTINE_REASONS } from "./event-validation.js";
+import { createSubscriptionManager } from "./subscriptions.js";
+import { apiKeyOpsRouteLabel, createApiKeyOps, extractApiKey } from "./api-keys.js";
+import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
 
 const ROUTES = new Set([
-  "/health", "/healthz", "/readyz", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
-  "/notifications/destinations", "/notifications/deliveries",
+  "/health", "/healthz", "/readyz", "/status", "/lag", "/runway", "/anomalies", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
+  "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
+  "/schemas", "/quarantine",
 ]);
+const QUARANTINE_STATUSES = ["quarantined", "released", "discarded"];
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
 const DESTINATION_PATH = /^\/notifications\/destinations\/([^/]+)$/;
 const DESTINATION_TEST_PATH = /^\/notifications\/destinations\/([^/]+)\/test$/;
@@ -36,6 +45,8 @@ function redactDestination(destination) {
 
 function routeLabelFor(pathname) {
   if (ROUTES.has(pathname)) return pathname;
+  const webhookOpsLabel = webhookOpsRouteLabel(pathname) ?? apiKeyOpsRouteLabel(pathname);
+  if (webhookOpsLabel) return webhookOpsLabel;
   if (DESTINATION_TEST_PATH.test(pathname)) return "/notifications/destinations/:id/test";
   if (DESTINATION_PATH.test(pathname)) return "/notifications/destinations/:id";
   return "unmatched";
@@ -57,19 +68,157 @@ function parsePage(searchParams) {
   return { limit, offset };
 }
 
+/** The monitor's evaluation as served by `/lag` and embedded in `/status`. */
+function lagSummary(lag) {
+  return {
+    level: lag.level,
+    latestLedger: lag.latestLedger,
+    indexedLedger: lag.indexedLedger,
+    tipLagLedgers: lag.tipLagLedgers,
+    tipLagSeconds: lag.tipLagSeconds,
+    finalityDepth: lag.finalityDepth,
+    finalityLag: lag.finalityLag,
+    checkpointAgeSeconds: lag.checkpointAgeSeconds,
+    checks: lag.checks,
+    observedAt: lag.observedAt,
+  };
+}
+
+/**
+ * Structured status for the public status page.
+ *
+ * `/healthz` and `/readyz` answer a single boolean; the status page has to
+ * know *which* dependency is unhappy, so every check is reported on its own.
+ * A broken store is an outage, a store that answers while indexing lags is
+ * degraded, everything else is operational.
+ */
+async function buildStatus({ store, readiness, startLedger, finalityLag, election = null, lagMonitor = null }) {
+  const { checks } = await readiness.check();
+  // Lag is reported once the monitor has seen a batch; a critical level degrades the service.
+  const lag = lagMonitor?.current() ?? null;
+  if (lag) {
+    checks.lag = lag.level === "critical"
+      ? { ok: false, level: lag.level, detail: "indexer is behind the chain tip beyond the critical threshold" }
+      : { ok: true, level: lag.level };
+  }
+  const status = !checks.store?.ok
+    ? "outage"
+    : Object.values(checks).every((check) => check.ok)
+      ? "operational"
+      : "degraded";
+
+  // The store can be exactly what is broken, so reading its state is best effort.
+  let nextLedger = String(startLedger);
+  let latestLedger = null;
+  try {
+    nextLedger = (await store.getState("next_ledger")) ?? String(startLedger);
+    latestLedger = Number(await store.getState("last_seen_ledger") ?? 0) || null;
+  } catch {
+    // The checks above already say whether the store is healthy.
+  }
+
+  return {
+    service: "indexer",
+    status,
+    checks,
+    updatedAt: new Date().toISOString(),
+    nextLedger,
+    latestLedger,
+    finalityLag,
+    ...(election ? { leader: election.status() } : {}),
+    ...(lag ? { lag: lagSummary(lag) } : {}),
+  };
+}
+
 /**
  * Builds (without starting) the indexer's HTTP server.
  *
- *   /health /healthz /readyz /metrics   operations
+ *   /health /healthz /readyz /status /metrics   operations
  *   /ledger /events /reconciliation     indexed data
- *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue)
+ *   /ledger /events /reconciliation and the subscriptions stream need an API key when API_KEYS_ENABLED (see api-keys.js);
+ *   /admin/api-keys...                   issue, list, rotate and revoke keys (OPS_ADMIN_TOKEN)
+ *   /schemas                             the event schema registry (topics, versions, fields) and validation mode
+ *   /quarantine                          events that failed validation (?status=, ?reason=, ?topic=, ?raw=true)
+ *   /webhooks/deliveries                 outbox inspection (?status=dead for the dead-letter queue,
+ *                                        ?subscription=, ?event=, ?order=desc)
+ *   /ops/webhooks and /webhooks/deliveries/...  delivery dashboard, attempt history and retry controls (see webhook-ops.js)
  *   GET/PUT/POST /notifications/destinations          list / create / upsert destinations
  *   GET/PUT/POST/DELETE /notifications/destinations/:id  read / upsert / delete one destination
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false, lagMonitor = null, runwayConfig = resolveRunwayConfig({}), anomalyConfig = resolveAnomalyConfig({}) }) {
+  const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
+  const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
+
+  const apiKeyOps = apiKeys
+    ? createApiKeyOps({ service: apiKeys, adminToken: webhookDashboard.adminToken, readJson: readJsonBody, parsePage })
+    : null;
+
+  /**
+   * Applies API-key auth, scope and quota to an analytics read. Does nothing
+   * unless API_KEYS_ENABLED. Answers the request itself when it refuses.
+   *
+   * @returns {Promise<boolean>} true when the request may proceed
+   */
+  async function enforceApiKey(request, response, scope) {
+    if (!apiKeysEnabled || !apiKeys) return true;
+    const result = await apiKeys.check(extractApiKey(request), scope);
+    if (result.quota) {
+      response.setHeader("x-ratelimit-limit", String(result.quota.limit));
+      response.setHeader("x-ratelimit-remaining", String(result.quota.remaining));
+      response.setHeader("x-ratelimit-reset", String(result.quota.resetAt));
+    }
+    if (result.ok) return true;
+    if (result.status === 401) response.setHeader("www-authenticate", 'Bearer realm="accord-indexer-api"');
+    if (result.status === 429) response.setHeader("retry-after", String(result.retryAfterSeconds));
+    sendJson(response, result.status, { error: result.error });
+    return false;
+  }
+
   async function route(request, response, url) {
+    if (
+      url.pathname === "/graphql/subscriptions" ||
+      (url.pathname === "/graphql" && request.headers.accept?.includes("text/event-stream"))
+    ) {
+      if (!(await enforceApiKey(request, response, "subscriptions"))) return;
+      return activeSubscriptions.handleSseRequest(request, response, url);
+    }
+
+    if (url.pathname === "/graphql") {
+      if (request.method === "POST") {
+        const body = await readJsonBody(request);
+        const query = body.query ?? "";
+        if (/^\s*subscription/i.test(query)) {
+          return sendJson(response, 400, {
+            error: "For GraphQL subscriptions, please connect to /graphql/subscriptions via GET or with Accept: text/event-stream",
+          });
+        }
+        if (/introspection|__schema/i.test(query)) {
+          return sendJson(response, 200, {
+            data: {
+              __schema: {
+                queryType: { name: "Query" },
+                mutationType: null,
+                subscriptionType: { name: "Subscription" },
+              },
+            },
+          });
+        }
+        return sendJson(response, 200, { data: { status: "ok" } });
+      }
+      if (request.method === "GET") {
+        return sendJson(response, 200, {
+          schema: "GraphQL Subscriptions available at /graphql/subscriptions",
+          types: ["Subscription"],
+          subscriptions: ["proposalEvents", "approvalEvents", "treasuryEvents", "liveEvents"],
+        });
+      }
+    }
+
+    if (await webhookOps.handle(request, response, url)) return;
+    if (apiKeyOps && (await apiKeyOps.handle(request, response, url))) return;
+
     const destinationMatch = url.pathname.match(DESTINATION_PATH);
     const destinationTestMatch = url.pathname.match(DESTINATION_TEST_PATH);
 
@@ -142,6 +291,19 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         return sendJson(response, result.ready ? 200 : 503, result);
       }
 
+      case "/status": {
+        const status = await buildStatus({ store, readiness, startLedger, finalityLag, election, lagMonitor });
+        return sendJson(response, status.status === "outage" ? 503 : 200, status);
+      }
+
+      case "/lag": {
+        if (lagMonitor && !lagMonitor.enabled) return sendJson(response, 200, { status: "disabled" });
+        const lag = lagMonitor?.current() ?? null;
+        // 200 even when behind: the level is the answer. 503 only before the first observation.
+        if (!lag) return sendJson(response, 503, { status: "unknown", detail: "no indexing batch observed yet" });
+        return sendJson(response, 200, { status: lag.level, ...lagSummary(lag) });
+      }
+
       case "/metrics":
         response.writeHead(200, { "content-type": METRICS_CONTENT_TYPE });
         return response.end(metrics.render());
@@ -155,6 +317,7 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         });
 
       case "/ledger": {
+        if (!(await enforceApiKey(request, response, "ledger"))) return;
         const token = url.searchParams.get("token")?.toUpperCase();
         if (token && !tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
         const entries = await store.getEntries({
@@ -166,7 +329,20 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         return sendJson(response, 200, { entries });
       }
 
+      case "/runway": {
+        const token = (url.searchParams.get("token") ?? "USDC").toUpperCase();
+        if (!tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
+        return sendJson(response, 200, await computeRunway({ store, token, config: runwayConfig }));
+      }
+
+      case "/anomalies": {
+        const token = (url.searchParams.get("token") ?? "USDC").toUpperCase();
+        if (!tokenAddresses.has(token)) throw new Error("token must be XLM or USDC");
+        return sendJson(response, 200, await computeAnomalies({ store, token, config: anomalyConfig }));
+      }
+
       case "/events": {
+        if (!(await enforceApiKey(request, response, "events"))) return;
         const events = await store.getAccordEvents({
           topic: url.searchParams.get("topic"),
           from: parseDateParam(url.searchParams.get("from"), "from"),
@@ -176,7 +352,36 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         return sendJson(response, 200, { events });
       }
 
+      case "/schemas":
+        return sendJson(response, 200, {
+          mode: validator.mode,
+          strict: validator.strict,
+          allowUnversioned: validator.allowUnversioned,
+          currentVersion: validator.registry.currentVersion,
+          schemas: validator.registry.describe(),
+        });
+
+      case "/quarantine": {
+        const status = url.searchParams.get("status") ?? undefined;
+        if (status && !QUARANTINE_STATUSES.includes(status)) {
+          throw new Error(`status must be one of: ${QUARANTINE_STATUSES.join(", ")}`);
+        }
+        const reason = url.searchParams.get("reason") ?? undefined;
+        if (reason && !QUARANTINE_REASONS.includes(reason)) {
+          throw new Error(`reason must be one of: ${QUARANTINE_REASONS.join(", ")}`);
+        }
+        const events = await store.listQuarantinedEvents({
+          status,
+          reason,
+          topic: url.searchParams.get("topic") ?? undefined,
+          includeRaw: url.searchParams.get("raw") === "true",
+          ...parsePage(url.searchParams),
+        });
+        return sendJson(response, 200, { counts: await store.countQuarantinedEvents(), events });
+      }
+
       case "/reconciliation":
+        if (!(await enforceApiKey(request, response, "reconciliation"))) return;
         return sendJson(response, 200, { results: await store.getLatestReconciliations() });
 
       case "/webhooks/deliveries": {
@@ -184,9 +389,13 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         if (status && !DELIVERY_STATUSES.includes(status)) {
           throw new Error(`status must be one of: ${DELIVERY_STATUSES.join(", ")}`);
         }
+        const order = url.searchParams.get("order") ?? "asc";
+        if (!["asc", "desc"].includes(order)) throw new Error("order must be asc or desc");
         const deliveries = await store.listWebhookDeliveries({
           status,
           subscriptionId: url.searchParams.get("subscription") ?? undefined,
+          eventId: url.searchParams.get("event") ?? undefined,
+          order,
           ...parsePage(url.searchParams),
         });
         return sendJson(response, 200, { deliveries });

@@ -104,7 +104,7 @@ test("the app renders a contract migrated to the role-aware weighted schema", as
   await expect(page.getByRole("heading", { name: "Multisig Owners" })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText(`Requires ${QUORUM} of ${OWNERS.length} signers`)).toBeVisible();
+  await expect(page.getByText(`Requires ${QUORUM} of 6 voting weight`)).toBeVisible();
   await expect(page.getByText("Weight 2")).toBeVisible();
   await expect(page.getByText("Weight 3")).toBeVisible();
   await expect(page.getByText("Weight 1")).toBeVisible();

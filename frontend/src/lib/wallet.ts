@@ -1,4 +1,4 @@
-import Server from "@stellar/stellar-sdk";
+import { Horizon } from "@stellar/stellar-sdk";
 import {
   isConnected,
   getAddress,
@@ -6,6 +6,10 @@ import {
   signTransaction,
   getNetworkDetails,
 } from "@stellar/freighter-api";
+import {
+  getActiveSigningSession,
+  signWithActiveSession,
+} from "./walletProviders";
 
 export type WalletResult<T> =
   | { ok: true; value: T }
@@ -47,6 +51,11 @@ export async function signTx(
   xdrStr: string,
   network: "TESTNET" | "PUBLIC" = "TESTNET"
 ): Promise<WalletResult<string>> {
+  const activeSession = getActiveSigningSession();
+  if (activeSession && activeSession.provider !== "freighter") {
+    return signWithActiveSession(activeSession, xdrStr, network);
+  }
+
   try {
     const passphrase =
       network === "TESTNET"
@@ -72,7 +81,7 @@ export async function getWalletNetworkPassphrase(): Promise<string | null> {
 }
 
 export async function getAccountBalances(address: string): Promise<{ xlm: string; usdc: string }>{
-  const server = new Server("https://horizon-testnet.stellar.org");
+  const server = new Horizon.Server("https://horizon-testnet.stellar.org");
   const acct = await server.loadAccount(address);
   let xlm = "0.00";
   let usdc = "0.00";

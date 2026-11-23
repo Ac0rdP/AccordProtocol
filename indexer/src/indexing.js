@@ -1,4 +1,5 @@
-import { parseAccordEvent, parseTokenTransferEvent } from "./events.js";
+import { ingestAccordEvent } from "./event-validation.js";
+import { parseTokenTransferEvent } from "./events.js";
 import { DEFAULT_FINALITY_LAG, detectReorg, finalLedgerFor } from "./finality.js";
 
 /** Builds the contract filter covering both the token contracts and the treasury. */
@@ -19,8 +20,12 @@ export function buildContractFilters({ tokens, treasuryAddress }) {
  * head moving backwards) rewinds the store to the new final ledger before the
  * walk restarts.
  *
+ * Contract events are validated against the schema registry (`validator`, see
+ * event-validation.js); ones that do not fit are quarantined, not dropped.
+ *
  * @returns {Promise<{pages: number, latestLedger: number, finalLedger: number,
- *   indexed: number, heldBack: number, reorg: object|null}>}
+ *   indexed: number, heldBack: number, reorg: object|null, quarantined: number,
+ *   quarantineReasons: object, validationWarnings: number}>}
  */
 export async function indexEventBatch({
   stellar,
@@ -31,6 +36,9 @@ export async function indexEventBatch({
   pageLimit = 1000,
   maxPages = 100,
   finalityLag = DEFAULT_FINALITY_LAG,
+  subscriptions = null,
+  onEvent = null,
+  validator = undefined,
 }) {
   const tokenNames = new Map(tokens.map(({ name, address }) => [address.toLowerCase(), name]));
   const filters = buildContractFilters({ tokens, treasuryAddress });
@@ -44,6 +52,9 @@ export async function indexEventBatch({
   let pages = 0;
   let indexed = 0;
   let heldBack = 0;
+  let quarantined = 0;
+  let validationWarnings = 0;
+  const quarantineReasons = {};
   let reorg = null;
   let firstHeldBackLedger = Number.POSITIVE_INFINITY;
   let reorgChecked = false;
@@ -99,10 +110,23 @@ export async function indexEventBatch({
       }
 
       const transferEntry = parseTokenTransferEvent(event, tokenNames, treasuryAddress);
-      if (transferEntry && (await store.recordTransfer(transferEntry))) indexed += 1;
+      if (transferEntry && (await store.recordTransfer(transferEntry))) {
+        indexed += 1;
+        subscriptions?.publish?.(transferEntry);
+        onEvent?.(transferEntry);
+      }
 
-      const accordEntry = parseAccordEvent(event, treasuryAddress);
-      if (accordEntry && (await store.recordAccordEvent(accordEntry))) indexed += 1;
+      const accord = await ingestAccordEvent({ event, treasuryAddress, store, validator });
+      if (accord.recorded) {
+        indexed += 1;
+        subscriptions?.publish?.(accord.entry);
+        onEvent?.(accord.entry);
+      }
+      if (accord.newlyQuarantined) {
+        quarantined += 1;
+        quarantineReasons[accord.quarantined] = (quarantineReasons[accord.quarantined] ?? 0) + 1;
+      }
+      validationWarnings += accord.warnings.length > 0 ? 1 : 0;
     }
 
     if (response.events.length === pageLimit) {
@@ -135,5 +159,8 @@ export async function indexEventBatch({
     indexed,
     heldBack,
     reorg,
+    quarantined,
+    quarantineReasons,
+    validationWarnings,
   };
 }

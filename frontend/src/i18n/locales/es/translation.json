@@ -1,10 +1,20 @@
 {
   "nav": {
     "dashboard": "panel",
+    "portfolio": "cartera",
+    "inbox": "bandeja de propuestas",
     "recurring": "recurrentes",
     "history": "historial",
+    "audit": "registro de auditoría",
     "analytics": "análisis",
     "owners": "propietarios",
+    "bulk": "acciones masivas",
+    "availability": "disponibilidad",
+    "templates": "plantillas",
+    "integrations": "integraciones",
+    "notifications": "notificaciones",
+    "alerts": "reglas de alerta",
+    "freshness": "frescura de datos",
     "settings": "configuración",
     "docs": "documentación"
   },
@@ -15,7 +25,14 @@
     "connecting": "Conectando…"
   },
   "common": {
-    "retry": "Reintentar"
+    "retry": "Reintentar",
+    "dismiss": "Descartar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "loading": "Cargando…",
+    "error": "Error"
   },
   "languageSwitcher": {
     "label": "Idioma"
@@ -34,5 +51,131 @@
       "proposal_executed": "Propuesta ejecutada",
       "owner_weight_changed": "Peso del propietario modificado"
     }
+  },
+  "onboarding": {
+    "bannerTitle": "Aún no se ha configurado ninguna firma múltiple",
+    "bannerDesc": "Sigue el asistente de incorporación para configurar propietarios, quórum y tu primera propuesta.",
+    "bannerCta": "Iniciar asistente de configuración →",
+    "title": "Asistente de configuración de firma múltiple",
+    "subtitle": "Incorporación paso a paso para equipos que despliegan su primera firma múltiple en Accord.",
+    "loadingTitle": "Cargando asistente de configuración…",
+    "errorTitle": "No se pudo cargar la configuración de incorporación",
+    "steps": {
+      "wallet": "Conectar billetera",
+      "owners": "Configurar propietarios",
+      "threshold": "Quórum requerido",
+      "proposal": "Primera propuesta"
+    },
+    "completed": {
+      "title": "¡Configuración de firma múltiple completada!",
+      "description": "Tu configuración inicial con {{count}} propietarios y un quórum de {{threshold}} de {{total}} está lista.",
+      "goToDashboard": "Ir al panel",
+      "reviewSetup": "Revisar configuración"
+    },
+    "wallet": {
+      "title": "Conectar billetera del implementador",
+      "subtitle": "Conecta tu billetera Stellar Freighter para iniciar la firma múltiple.",
+      "connectedLabel": "Billetera conectada",
+      "connected": "Conectado",
+      "notConnected": "No hay ninguna billetera conectada actualmente.",
+      "connecting": "Conectando…",
+      "connect": "Conectar Freighter"
+    },
+    "owners": {
+      "title": "Propietarios de firma múltiple y pesos de voto",
+      "subtitle": "Agrega las direcciones de Stellar que tendrán claves de firma y define su peso de voto.",
+      "addOwner": "Agregar propietario",
+      "ownerAddressLabel": "Dirección del propietario {{index}}",
+      "ownerAddressPlaceholder": "Clave pública de Stellar (ej. G...)",
+      "ownerWeightLabel": "Peso del propietario {{index}}",
+      "removeOwnerAria": "Eliminar propietario {{index}}",
+      "totalSigners": "Total de firmantes: {{count}}",
+      "totalWeight": "Peso de voto total: {{weight}}",
+      "empty": "Aún no hay propietarios. Agrega al menos un propietario."
+    },
+    "quorum": {
+      "title": "Quórum y retardo de ejecución",
+      "subtitle": "Especifica cuántas aprobaciones o peso de votación se requieren para ejecutar una propuesta.",
+      "thresholdLabel": "Peso de quórum requerido",
+      "ofTotal": "de {{total}} de peso total ({{percent}}%)",
+      "timelockLabel": "Retardo de bloqueo temporal (segundos)",
+      "timelockHelp": "Período de gracia opcional entre la aprobación de la propuesta y la ejecución (0 para ejecución instantánea)."
+    },
+    "proposal": {
+      "title": "Primera propuesta y revisión de configuración",
+      "subtitle": "Redacta una primera propuesta y revisa los parámetros de tu firma múltiple antes de finalizar.",
+      "initialHeader": "Propuesta inicial (opcional)",
+      "recipientLabel": "Dirección del destinatario",
+      "recipientPlaceholder": "G... o dejar en blanco",
+      "amountLabel": "Monto",
+      "amountPlaceholder": "ej. 100",
+      "memoLabel": "Descripción / Memo",
+      "summaryHeader": "Resumen de configuración de firma múltiple",
+      "summarySigners": "Firmantes:",
+      "summarySignersCount": "{{count}} propietarios",
+      "summaryQuorum": "Requisito de quórum:",
+      "summaryQuorumVal": "{{threshold}} de {{total}} de peso ({{percent}}%)",
+      "summaryTimelock": "Retardo de bloqueo temporal:",
+      "summaryTimelockVal": "{{seconds}} segundos"
+    },
+    "errors": {
+      "walletRequired": "Por favor conecta tu billetera antes de continuar.",
+      "minOwners": "Por favor agrega al menos un propietario.",
+      "addressEmpty": "La dirección del propietario #{{index}} no puede estar vacía.",
+      "weightMin": "El peso del propietario #{{index}} debe ser al menos 1.",
+      "duplicateAddress": "Cada dirección de propietario debe ser única.",
+      "thresholdPositive": "El quórum debe ser mayor que 0.",
+      "thresholdExceeds": "El quórum ({{threshold}}) no puede exceder el peso de voto total ({{total}})."
+    },
+    "actions": {
+      "back": "Atrás",
+      "next": "Siguiente",
+      "complete": "Completar configuración"
+    }
+  },
+  "governance": {
+    "proposals": "Propuestas",
+    "activeProposals": "Propuestas activas",
+    "noActiveProposals": "No hay propuestas activas",
+    "noProposalsFound": "No se encontraron propuestas",
+    "proposalNotFound": "Propuesta no encontrada",
+    "loadingProposals": "Cargando propuestas…",
+    "loadingProposal": "Cargando propuesta…",
+    "errorLoadingDashboard": "No se pudieron cargar los datos del panel",
+    "errorLoadingProposal": "No se pudo cargar la propuesta",
+    "createProposal": "Nueva propuesta",
+    "approve": "Aprobar",
+    "execute": "Ejecutar",
+    "revoke": "Revocar",
+    "status": {
+      "active": "Activa",
+      "approved": "Aprobada",
+      "executed": "Ejecutada",
+      "rejected": "Rechazada",
+      "expired": "Vencida",
+      "ready": "Lista para ejecutar"
+    },
+    "types": {
+      "transfer": "Transferencia",
+      "addOwner": "Agregar propietario",
+      "removeOwner": "Eliminar propietario",
+      "changeThreshold": "Cambiar quórum",
+      "changeOwnerWeight": "Cambiar peso del propietario",
+      "upgrade": "Actualizar contrato"
+    },
+    "quorum": "Quórum",
+    "approvals": "Aprobaciones",
+    "threshold": "Umbral",
+    "votingPower": "Poder de voto",
+    "timelock": "Bloqueo temporal"
+  },
+  "errors": {
+    "unexpected": "Ocurrió un error inesperado.",
+    "network": "Conexión de red perdida. Por favor verifica tu conexión.",
+    "wallet": "La conexión de billetera falló o fue rechazada.",
+    "contractFrozen": "El contrato está actualmente congelado. Solo operaciones de emergencia.",
+    "staleData": "Los datos del contrato pueden estar desactualizados.",
+    "unauthorized": "No estás autorizado para realizar esta acción.",
+    "notFound": "Página no encontrada"
   }
 }

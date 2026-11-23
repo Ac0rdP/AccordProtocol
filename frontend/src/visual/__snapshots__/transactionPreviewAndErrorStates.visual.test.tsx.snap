@@ -1,0 +1,1420 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Boundary Cases > renders exact threshold boundary preview (100% quorum required) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        5
+        /
+        5
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Governance upgrade requiring unanimous quorum
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="font-mono text-zinc-200"
+        >
+          ~
+          0.0000000
+           XLM
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Boundary Cases > renders voting power removal preview at minimum threshold boundary 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="mobile"
+>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Owner's current weight:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          2
+        </span>
+        .
+      </p>
+      <p>
+        Resulting total voting weight:
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          2
+        </span>
+         (threshold: 
+        <span
+          class="font-mono text-zinc-200"
+        >
+          2
+        </span>
+        ).
+      </p>
+      <p
+        class="text-amber-400 font-medium font-sans pt-1"
+      >
+        Warning: Resulting total weight equals minimum required quorum
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Boundary Cases > renders whale warning right at the 50% boundary 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="mobile"
+>
+  <div
+    aria-label="No whale warning active"
+    class="inline-flex items-center gap-1.5 rounded-md border border-zinc-700/50 bg-zinc-800/40 px-2.5 py-1 text-xs text-zinc-400 font-mono"
+    role="status"
+  >
+    <span
+      class="h-2 w-2 rounded-full bg-zinc-500"
+    />
+    <span>
+      Balanced Voting Power
+    </span>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Boundary Cases > renders whale warning right at the 50% boundary 2`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="mobile"
+>
+  <div
+    aria-label="Whale warning active"
+    class="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-300 shadow-sm"
+    role="alert"
+  >
+    <svg
+      aria-hidden="true"
+      class="h-4 w-4 shrink-0 text-amber-400"
+      fill="currentColor"
+      viewBox="0 0 20 20"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        clip-rule="evenodd"
+        d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+        fill-rule="evenodd"
+      />
+    </svg>
+    <span>
+      Whale Warning: Single owner controls 51% of voting power (exceeds 50% threshold)
+    </span>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders transaction preview with balance delta (dark, desktop) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Transfer 10 XLM to core development pool
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="font-mono text-zinc-200"
+        >
+          ~
+          0.0000100
+           XLM
+        </span>
+      </div>
+      <div
+        class="mt-2 space-y-1.5"
+      >
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Projected Balance Impact:
+        </span>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Treasury
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            100.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            90.0000000
+             
+            XLM
+          </span>
+        </div>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Recipient
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            5.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            15.0000000
+             
+            XLM
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders transaction preview with balance delta (dark, mobile) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="mobile"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Transfer 10 XLM to core development pool
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="font-mono text-zinc-200"
+        >
+          ~
+          0.0000100
+           XLM
+        </span>
+      </div>
+      <div
+        class="mt-2 space-y-1.5"
+      >
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Projected Balance Impact:
+        </span>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Treasury
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            100.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            90.0000000
+             
+            XLM
+          </span>
+        </div>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Recipient
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            5.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            15.0000000
+             
+            XLM
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders transaction preview with balance delta (light, desktop) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="desktop"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Transfer 10 XLM to core development pool
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="font-mono text-zinc-200"
+        >
+          ~
+          0.0000100
+           XLM
+        </span>
+      </div>
+      <div
+        class="mt-2 space-y-1.5"
+      >
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Projected Balance Impact:
+        </span>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Treasury
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            100.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            90.0000000
+             
+            XLM
+          </span>
+        </div>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Recipient
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            5.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            15.0000000
+             
+            XLM
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders transaction preview with balance delta (light, mobile) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="mobile"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Transfer 10 XLM to core development pool
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="font-mono text-zinc-200"
+        >
+          ~
+          0.0000100
+           XLM
+        </span>
+      </div>
+      <div
+        class="mt-2 space-y-1.5"
+      >
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Projected Balance Impact:
+        </span>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Treasury
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            100.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            90.0000000
+             
+            XLM
+          </span>
+        </div>
+        <div
+          class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+        >
+          <span
+            class="text-zinc-400"
+          >
+            Recipient
+          </span>
+          <span
+            class="text-zinc-200"
+          >
+            5.0000000
+             
+            <span
+              class="text-zinc-500"
+            >
+              →
+            </span>
+             
+            15.0000000
+             
+            XLM
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders voting power preview for adding an owner (dark, desktop) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Total voting weight will increase from
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          3
+        </span>
+         to
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          4
+        </span>
+        .
+      </p>
+      <p>
+        New owner percentage share:
+         
+        <span
+          class="font-mono text-zinc-300"
+        >
+          25.0%
+        </span>
+        .
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders voting power preview for adding an owner (dark, mobile) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="mobile"
+>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Total voting weight will increase from
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          3
+        </span>
+         to
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          4
+        </span>
+        .
+      </p>
+      <p>
+        New owner percentage share:
+         
+        <span
+          class="font-mono text-zinc-300"
+        >
+          25.0%
+        </span>
+        .
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders voting power preview for adding an owner (light, desktop) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="desktop"
+>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Total voting weight will increase from
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          3
+        </span>
+         to
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          4
+        </span>
+        .
+      </p>
+      <p>
+        New owner percentage share:
+         
+        <span
+          class="font-mono text-zinc-300"
+        >
+          25.0%
+        </span>
+        .
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Preview States — Success > renders voting power preview for adding an owner (light, mobile) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="mobile"
+>
+  <div
+    class="mt-3 text-xs space-y-1"
+  >
+    <div
+      class="bg-zinc-800/40 border border-zinc-700/50 rounded-lg p-3"
+    >
+      <p
+        class="text-zinc-300 font-medium font-sans mb-1"
+      >
+        Live Impact Preview
+      </p>
+      <p>
+        Total voting weight will increase from
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          3
+        </span>
+         to
+         
+        <span
+          class="font-mono text-zinc-200"
+        >
+          4
+        </span>
+        .
+      </p>
+      <p>
+        New owner percentage share:
+         
+        <span
+          class="font-mono text-zinc-300"
+        >
+          25.0%
+        </span>
+        .
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Regression Fixture > REGRESSION_FIXTURE_PREVIEW_TRUNCATION_AND_THEME: 56-char address and huge amount on mobile light theme 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="mobile"
+>
+  <div
+    class="space-y-4"
+  >
+    <div
+      aria-label="Whale warning active"
+      class="inline-flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-300 shadow-sm"
+      role="alert"
+    >
+      <svg
+        aria-hidden="true"
+        class="h-4 w-4 shrink-0 text-amber-400"
+        fill="currentColor"
+        viewBox="0 0 20 20"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          clip-rule="evenodd"
+          d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+          fill-rule="evenodd"
+        />
+      </svg>
+      <span>
+        Whale concentration alert: GBJGVY77Z54XW6X4FY2ZPQW2R7W5C4XY6789ABCDEF0123456789WHL7 controls 85% of voting weight
+      </span>
+    </div>
+    <div
+      class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+    >
+      <div
+        class="flex items-center justify-between border-b border-zinc-800 pb-2"
+      >
+        <h4
+          class="text-sm font-semibold text-zinc-200"
+        >
+          Transaction Preview
+        </h4>
+        <span
+          class="text-xs text-zinc-400 font-mono"
+        >
+          Quorum: 
+          4
+          /
+          5
+        </span>
+      </div>
+      <div
+        class="space-y-2 text-xs"
+      >
+        <div>
+          <span
+            class="text-zinc-400 font-medium"
+          >
+            Action: 
+          </span>
+          <span
+            class="text-zinc-200 break-all"
+          >
+            Transfer 1,000,000,000,000.0000000 USDC to GBJGVY77Z54XW6X4FY2ZPQW2R7W5C4XY6789ABCDEF0123456789WHL7
+          </span>
+        </div>
+        <div>
+          <span
+            class="text-zinc-400 font-medium"
+          >
+            Estimated Network Fee: 
+          </span>
+          <span
+            class="font-mono text-zinc-200"
+          >
+            ~
+            0.0001250
+             XLM
+          </span>
+        </div>
+        <div
+          class="mt-2 space-y-1.5"
+        >
+          <span
+            class="text-zinc-400 font-medium"
+          >
+            Projected Balance Impact:
+          </span>
+          <div
+            class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+          >
+            <span
+              class="text-zinc-400"
+            >
+              Treasury
+            </span>
+            <span
+              class="text-zinc-200"
+            >
+              10,000,000,000,000.0000000
+               
+              <span
+                class="text-zinc-500"
+              >
+                →
+              </span>
+               
+              9,000,000,000,000.0000000
+               
+              USDC
+            </span>
+          </div>
+          <div
+            class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-2.5 py-1.5 font-mono text-[11px]"
+          >
+            <span
+              class="text-zinc-400"
+            >
+              Recipient (Whale Address)
+            </span>
+            <span
+              class="text-zinc-200"
+            >
+              0.0000000
+               
+              <span
+                class="text-zinc-500"
+              >
+                →
+              </span>
+               
+              1,000,000,000,000.0000000
+               
+              USDC
+            </span>
+          </div>
+        </div>
+        <div
+          class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+          role="alert"
+        >
+          <strong>
+            Simulation Failed:
+          </strong>
+           
+          Warning: Transfer exceeds standard daily rolling limit threshold
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders ErrorBoundary fallback display when child crashes 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4"
+  >
+    <div
+      class="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-xl p-6 text-center space-y-4"
+    >
+      <div
+        class="inline-flex items-center justify-center w-12 h-12 rounded-full bg-red-500/10 text-red-400"
+      >
+        <svg
+          class="lucide lucide-shield-alert w-6 h-6"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+          />
+          <path
+            d="M12 8v4"
+          />
+          <path
+            d="M12 16h.01"
+          />
+        </svg>
+      </div>
+      <div>
+        <h2
+          class="text-lg font-semibold text-zinc-100"
+        >
+          Something went wrong
+        </h2>
+        <p
+          class="text-sm text-zinc-400 mt-1"
+        >
+          An unexpected error occurred. You can reload the page or reset the app to try again.
+        </p>
+      </div>
+      <div
+        class="flex gap-3 justify-center"
+      >
+        <button
+          class="px-4 py-2 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          type="button"
+        >
+          Try Again
+        </button>
+        <button
+          class="px-4 py-2 text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          type="button"
+        >
+          Reload Page
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders ErrorState banner and card variants (dark) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="mb-6 flex items-center justify-between gap-3 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400"
+    role="alert"
+  >
+    <span>
+      RPC connection degraded: unable to verify contract state
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-3"
+    >
+      <button
+        class="underline hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+        type="button"
+      >
+        Retry
+      </button>
+      <button
+        aria-label="Dismiss error"
+        class="underline hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+        type="button"
+      >
+        Dismiss
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders ErrorState banner and card variants (dark) 2`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="mobile"
+>
+  <div
+    class="flex flex-col items-center justify-center gap-3 text-center py-16"
+    role="alert"
+  >
+    <p
+      class="max-w-md text-sm text-red-400"
+    >
+      Contract deployment not found on current network
+    </p>
+    <div
+      class="flex items-center gap-3"
+    >
+      <button
+        class="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+        type="button"
+      >
+        Retry
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders ErrorState banner and card variants (light) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="desktop"
+>
+  <div
+    class="mb-6 flex items-center justify-between gap-3 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400"
+    role="alert"
+  >
+    <span>
+      RPC connection degraded: unable to verify contract state
+    </span>
+    <div
+      class="flex shrink-0 items-center gap-3"
+    >
+      <button
+        class="underline hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+        type="button"
+      >
+        Retry
+      </button>
+      <button
+        aria-label="Dismiss error"
+        class="underline hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 rounded"
+        type="button"
+      >
+        Dismiss
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders ErrorState banner and card variants (light) 2`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[375px] max-w-[375px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="mobile"
+>
+  <div
+    class="flex flex-col items-center justify-center gap-3 text-center py-16"
+    role="alert"
+  >
+    <p
+      class="max-w-md text-sm text-red-400"
+    >
+      Contract deployment not found on current network
+    </p>
+    <div
+      class="flex items-center gap-3"
+    >
+      <button
+        class="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+        type="button"
+      >
+        Retry
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders governance impact badges across risk levels (dark) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="flex flex-wrap gap-2"
+  >
+    <span
+      aria-label="Governance Impact: low"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-blue-500/10 text-blue-400 border-blue-500/20"
+      role="status"
+    >
+      Governance Impact: low
+    </span>
+    <span
+      aria-label="Governance Impact: medium"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/20"
+      role="status"
+    >
+      Governance Impact: medium
+    </span>
+    <span
+      aria-label="Governance Impact: high"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-orange-500/10 text-orange-400 border-orange-500/20"
+      role="status"
+    >
+      Governance Impact: high
+    </span>
+    <span
+      aria-label="Governance Impact: critical"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-red-500/10 text-red-400 border-red-500/20"
+      role="status"
+    >
+      Governance Impact: critical
+    </span>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders governance impact badges across risk levels (light) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="desktop"
+>
+  <div
+    class="flex flex-wrap gap-2"
+  >
+    <span
+      aria-label="Governance Impact: low"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-blue-500/10 text-blue-400 border-blue-500/20"
+      role="status"
+    >
+      Governance Impact: low
+    </span>
+    <span
+      aria-label="Governance Impact: medium"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/20"
+      role="status"
+    >
+      Governance Impact: medium
+    </span>
+    <span
+      aria-label="Governance Impact: high"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-orange-500/10 text-orange-400 border-orange-500/20"
+      role="status"
+    >
+      Governance Impact: high
+    </span>
+    <span
+      aria-label="Governance Impact: critical"
+      class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-medium uppercase tracking-wider bg-red-500/10 text-red-400 border-red-500/20"
+      role="status"
+    >
+      Governance Impact: critical
+    </span>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders transaction simulation fee error (dark) 1`] = `
+<div
+  class="dark bg-zinc-950 text-zinc-100 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="dark"
+  data-viewport="desktop"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Large disbursement exceeding treasury balance
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="text-zinc-500"
+        >
+          —
+        </span>
+      </div>
+      <div
+        class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+        role="alert"
+      >
+        <strong>
+          Simulation Failed:
+        </strong>
+         
+        Insufficient treasury balance for transfer
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`Visual Regression: Transaction Preview, Risk, and Error States > Risk and Error States > renders transaction simulation fee error (light) 1`] = `
+<div
+  class="light bg-white text-zinc-900 border-zinc-200 w-[1024px] max-w-[1024px] p-4 font-sans transition-colors"
+  data-testid="visual-harness"
+  data-theme="light"
+  data-viewport="desktop"
+>
+  <div
+    class="space-y-3 rounded-xl border border-zinc-700/60 bg-zinc-900/50 p-4 shadow-sm"
+  >
+    <div
+      class="flex items-center justify-between border-b border-zinc-800 pb-2"
+    >
+      <h4
+        class="text-sm font-semibold text-zinc-200"
+      >
+        Transaction Preview
+      </h4>
+      <span
+        class="text-xs text-zinc-400 font-mono"
+      >
+        Quorum: 
+        2
+        /
+        3
+      </span>
+    </div>
+    <div
+      class="space-y-2 text-xs"
+    >
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Action: 
+        </span>
+        <span
+          class="text-zinc-200 break-all"
+        >
+          Large disbursement exceeding treasury balance
+        </span>
+      </div>
+      <div>
+        <span
+          class="text-zinc-400 font-medium"
+        >
+          Estimated Network Fee: 
+        </span>
+        <span
+          class="text-zinc-500"
+        >
+          —
+        </span>
+      </div>
+      <div
+        class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+        role="alert"
+      >
+        <strong>
+          Simulation Failed:
+        </strong>
+         
+        Insufficient treasury balance for transfer
+      </div>
+    </div>
+  </div>
+</div>
+`;

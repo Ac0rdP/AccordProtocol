@@ -47,7 +47,7 @@ export function ThemeControl({
             className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-zinc-400 ${
               isSelected
                 ? "bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-xs"
-                : "text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+                : "text-zinc-600 dark:text-zinc-400 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
             }`}
           >
             <Icon size={13} className="shrink-0" aria-hidden="true" />

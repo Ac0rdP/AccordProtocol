@@ -8,9 +8,8 @@ extern crate std;
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events, Ledger as _, MockAuth, MockAuthInvoke};
 use proptest::prelude::*;
-use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Val, Vec};
+use soroban_sdk::{token, xdr, Address, Bytes, BytesN, Env, IntoVal, String, Vec};
 use std::format;
-use std::string::ToString;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -29,6 +28,130 @@ fn non_snapshot_env() -> Env {
     Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
         capture_snapshot_at_drop: false,
     })
+}
+
+#[test]
+fn abstention_counts_participation_but_never_approval_weight() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "abstention"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert!(client.has_abstained(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.abstention_count, 1);
+    assert_eq!(progress.abstention_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+
+    let abstainers = client.get_abstainers(&id);
+    assert_eq!(abstainers.len(), 1);
+    assert_eq!(abstainers.get(0), Some(owner_a.clone()));
+    assert_eq!(client.get_approvers(&id).len(), 0);
+}
+
+#[test]
+fn abstention_and_approval_are_mutually_exclusive_and_typed() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "exclusive vote"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
+
+    client.revoke_abstention(&owner_a, &id);
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_abstention(&owner_a, &id),
+        Err(Ok(ContractError::NotAbstained))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+#[test]
+fn soft_approval_is_support_only_and_mutually_exclusive() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "soft support"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    client.soft_approve(&owner_a, &id);
+    assert!(client.has_soft_approved(&id, &owner_a));
+    assert!(!client.has_approved(&id, &owner_a));
+    assert!(!client.has_abstained(&id, &owner_a));
+    assert_eq!(
+        client.get_proposal(&id).status,
+        ProposalStatus::Pending
+    );
+
+    let progress = client.get_proposal_approval_progress(&id);
+    assert_eq!(progress.approval_weight, 0);
+    assert_eq!(progress.soft_approval_count, 1);
+    assert_eq!(progress.soft_approval_weight, 1);
+    assert_eq!(progress.participation_weight, 1);
+    assert_eq!(client.get_approvers(&id).len(), 0);
+    assert_eq!(client.get_soft_approvers(&id).len(), 1);
+
+    assert_eq!(
+        client.try_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_abstain(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadySoftApproved))
+    );
+
+    client.revoke_soft_approval(&owner_a, &id);
+    assert!(!client.has_soft_approved(&id, &owner_a));
+    assert_eq!(
+        client.try_revoke_soft_approval(&owner_a, &id),
+        Err(Ok(ContractError::NotSoftApproved))
+    );
+
+    client.approve(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+
+    client.revoke(&owner_a, &id);
+    client.abstain(&owner_a, &id);
+    assert_eq!(
+        client.try_soft_approve(&owner_a, &id),
+        Err(Ok(ContractError::AlreadyAbstained))
+    );
 }
 
 #[test]
@@ -172,6 +295,31 @@ fn has_contract_event(env: &Env, contract: &Address, expected_topic: Symbol) -> 
             })
             .unwrap_or(false)
     })
+}
+
+/// A minimal, structurally valid Soroban Wasm module: the magic header and
+/// version, plus the `contractenvmetav0` custom section carrying the current
+/// environment interface version. There is no code in it.
+///
+/// `upload_contract_wasm` parses and validates the bytes it is given, so the
+/// empty buffer the upgrade tests used to pass is rejected as malformed on
+/// current SDK versions. This placeholder parses and validates cleanly without
+/// coupling the unit test suite to a prior `stellar contract build` artifact.
+fn minimal_wasm(env: &Env) -> Bytes {
+    let mut bytes: std::vec::Vec<u8> = std::vec::Vec::new();
+    // Wasm magic number and binary format version.
+    bytes.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+    let name = b"contractenvmetav0";
+    // XDR `ScEnvMetaEntry::ScEnvMetaKindInterfaceVersion` with protocol 29
+    // (the protocol this SDK targets) and pre-release 0.
+    let meta: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 29, 0, 0, 0, 0];
+    // Custom section (id 0), with a LEB128 payload length that fits in one byte.
+    bytes.push(0x00);
+    bytes.push((1 + name.len() + meta.len()) as u8);
+    bytes.push(name.len() as u8);
+    bytes.extend_from_slice(name);
+    bytes.extend_from_slice(&meta);
+    Bytes::from_slice(env, &bytes)
 }
 
 /// Sets up an env with 3 owners, a threshold, and a funded token.
@@ -1429,7 +1577,7 @@ fn approve_sponsored_rejects_unauthorized_address() {
 
     assert_eq!(
         client.try_approve_sponsored(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
     assert!(!client.has_approved(&id, &non_owner));
 }
@@ -1535,7 +1683,7 @@ fn approve_rejects_non_owner() {
     );
     assert_eq!(
         client.try_approve(&non_owner, &id),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -2337,7 +2485,7 @@ fn expired_status_takes_priority_over_ready() {
 #[test]
 fn get_version_returns_current_version() {
     let (_, client, _, _, _, _, _) = setup(2);
-    assert_eq!(client.get_version(), 1);
+    assert_eq!(client.get_version(), 2);
 }
 
 // ─── Storage-schema version (#737) ────────────────────────────────────────────
@@ -3054,7 +3202,7 @@ fn upgrade_succeeds_with_threshold_many_owners() {
 #[test]
 fn upgrade_emits_event() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    let dummy_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+    let dummy_hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
     let mut approvers = Vec::new(&env);
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b);
@@ -5368,6 +5516,9 @@ fn multi_transfer_failure_atomic() {
 #[test]
 fn create_proposal_rejects_invalid_transfer_count() {
     let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    // Building and passing maximum-size batches consumes more than the default
+    // test budget, so lift it: this test exercises validation, not metering.
+    env.budget().reset_unlimited();
 
     // Empty transfer list should be rejected.
     let empty: Vec<Transfer> = Vec::new(&env);
@@ -5382,9 +5533,9 @@ fn create_proposal_rejects_invalid_transfer_count() {
         Err(Ok(ContractError::InvalidAmount))
     );
 
-    // More than 3 transfers should be rejected.
+    // More than the documented batch maximum should be rejected.
     let mut too_many = Vec::new(&env);
-    for _ in 0..4 {
+    for _ in 0..=MAX_BATCH_TRANSFERS {
         too_many.push_back(Transfer {
             to: Address::generate(&env),
             token: token_client.address.clone(),
@@ -5402,7 +5553,7 @@ fn create_proposal_rejects_invalid_transfer_count() {
         Err(Ok(ContractError::InvalidAmount))
     );
 
-    // Exactly 1 and 3 should succeed (boundary check).
+    // A single transfer and the maximum batch size should be accepted.
     let mut one = Vec::new(&env);
     one.push_back(Transfer {
         to: Address::generate(&env),
@@ -5419,9 +5570,9 @@ fn create_proposal_rejects_invalid_transfer_count() {
         )
         .is_ok());
 
-    let mut three = Vec::new(&env);
-    for _ in 0..3 {
-        three.push_back(Transfer {
+    let mut maximum = Vec::new(&env);
+    for _ in 0..MAX_BATCH_TRANSFERS {
+        maximum.push_back(Transfer {
             to: Address::generate(&env),
             token: token_client.address.clone(),
             amount: 1_000_000,
@@ -5430,12 +5581,67 @@ fn create_proposal_rejects_invalid_transfer_count() {
     assert!(client
         .try_create_proposal(
             &owner_a,
-            &three,
-            &str(&env, "Three transfers"),
+            &maximum,
+            &str(&env, "Maximum batch"),
             &DEADLINE,
             &ProposalCategory::Transfer,
         )
         .is_ok());
+}
+
+#[test]
+fn batch_proposal_executes_all_maximum_size_transfers() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // A maximum-size batch needs more than the default test budget.
+    env.budget().reset_unlimited();
+    let mut transfers = Vec::new(&env);
+    let mut recipients = Vec::new(&env);
+    for _ in 0..MAX_BATCH_TRANSFERS {
+        let recipient = Address::generate(&env);
+        recipients.push_back(recipient.clone());
+        transfers.push_back(Transfer {
+            to: recipient,
+            token: token_client.address.clone(),
+            amount: 10,
+        });
+    }
+
+    let proposal_id = client.create_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "Maximum payroll batch"),
+        &DEADLINE,
+        &ProposalCategory::Payroll,
+    );
+    client.approve(&owner_a, &proposal_id);
+    client.approve(&owner_b, &proposal_id);
+    client.execute(&owner_c, &proposal_id);
+
+    for recipient in recipients.iter() {
+        assert_eq!(token_client.balance(&recipient), 10);
+    }
+}
+
+#[test]
+fn batch_proposal_rejects_invalid_entry_at_creation() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let mut transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+    transfers.push_back(Transfer {
+        to: Address::generate(&env),
+        token: Address::generate(&env),
+        amount: 10,
+    });
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &transfers,
+            &str(&env, "Invalid batch"),
+            &DEADLINE,
+            &ProposalCategory::Payroll,
+        ),
+        Err(Ok(ContractError::InvalidToken))
+    );
 }
 
 #[test]
@@ -7789,7 +7995,7 @@ fn migrate_to_rbac_emits_event() {
             return false;
         };
         let topic: Symbol = topic.clone().into_val(&env);
-        topic == symbol_short!("rbac_mig")
+        topic == Symbol::new(&env, "rbac_migrated")
     });
     let event = rbac_event.expect("expected an 'rbac_mig' event to be emitted");
     let event_data = match &event.body {
@@ -7797,8 +8003,8 @@ fn migrate_to_rbac_emits_event() {
     };
     let event: RbacMigratedEvent = event_data.into_val(&env);
     assert_eq!(event.version, EVENT_SCHEMA_VERSION);
-    assert_eq!(event.owners_count, 3);
-    assert_eq!(event.migrated_at, NOW);
+    assert_eq!(event.owner_count, 3);
+    assert_eq!(event.role_version, RBAC_VERSION);
 }
 
 #[test]
@@ -8261,14 +8467,11 @@ fn migration_preserves_approval_outcomes_across_approve_revoke_sequence() {
 /// coupling the unit test suite to a prebuilt artifact at compile time and
 /// breaking `cargo test` for anyone who runs it without that build step
 /// first — and would still only be testing this crate against itself rather
-/// than a genuinely prior version. A hand-written byte buffer can't stand in
-/// for one either: `upload_contract_wasm` validates real WASM structure (the
-/// magic header, then a Soroban contract metadata section), so only an
-/// actual compiled contract binary is accepted. The closest achievable
-/// equivalent implemented here performs a real `upload_contract_wasm` +
-/// `upgrade` call (using the same empty-bytes placeholder the pre-existing
-/// upgrade tests use, since that's what the host accepts without a real
-/// second build) followed by the real `migrate_to_weighted_governance` call
+/// than a genuinely prior version. A minimal, structurally valid Wasm module
+/// is accepted by `upload_contract_wasm` in place of a real second build, so
+/// the equivalent implemented here performs a real `upload_contract_wasm` +
+/// `upgrade` call with that placeholder followed by the real
+/// `migrate_to_weighted_governance` call
 /// and continued approve/revoke traffic against a proposal that existed
 /// before either step — exercising the storage- and quorum-continuity
 /// behavior that actually matters for a live deployment through the real
@@ -8290,19 +8493,21 @@ fn upgrade_and_migrate_preserves_in_flight_proposal() {
     client.approve(&owner_a, &id);
     assert_eq!(client.get_proposal(&id).status, ProposalStatus::Pending);
 
-    // `upload_contract_wasm` validates real WASM structure (magic header,
-    // then a Soroban contract metadata section), so a hand-written byte
-    // buffer can't stand in for a real second contract build — confirming,
-    // in practice, the limitation documented above. Follow the same
-    // placeholder pattern the pre-existing upgrade tests use (empty bytes)
-    // for the upload/hash step; the substance under test is the migration
-    // and proposal-continuity behavior around the upgrade call, not WASM
-    // validation itself.
-    let new_wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+    // Use a minimal-but-valid module: `upload_contract_wasm` parses and links
+    // what it is given, so empty bytes are rejected as malformed. The
+    // substance under test is the migration and proposal-continuity behavior
+    // around the upgrade call, not WASM validation itself.
+    let new_wasm_hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
     let mut upgrade_approvers = Vec::new(&env);
     upgrade_approvers.push_back(owner_a.clone());
     upgrade_approvers.push_back(owner_b.clone());
     client.upgrade(&upgrade_approvers, &new_wasm_hash);
+
+    // The placeholder module carries no code, so the test harness must dispatch
+    // subsequent calls back to this crate's native implementation. Re-registering
+    // at the same id is a test-only capability (it does not exist on-chain) and
+    // leaves the contract's storage, including the in-flight proposal, intact.
+    env.register_at(&client.address, AccordContract, ());
 
     // The in-flight proposal's snapshot survives the upgrade unchanged.
     let proposal_after_upgrade = client.get_proposal(&id);
@@ -8427,10 +8632,13 @@ fn completed_recurring_schedule_cannot_disburse() {
     );
 
     // First disburse should succeed and mark Completed (occurrences == 1)
-    client.disburse_recurring(&owner_a, &id);
+    client.disburse_recurring_schedule(&id);
 
     // A subsequent disburse must be rejected.
-    assert_eq!(client.try_disburse_recurring(&owner_a, &id), Err(Ok(ContractError::ProposalNotActive)));
+    assert_eq!(
+        client.try_disburse_recurring_schedule(&id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
 }
 
 
@@ -9936,7 +10144,7 @@ fn governance_weight_sum_uses_owner_weight_not_roles() {
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 }
 
@@ -10039,10 +10247,12 @@ fn grant_and_revoke_role_lifecycle() {
     client.approve(&owner_b, &grant_id);
     client.execute(&owner_c, &grant_id);
 
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.has_role(&non_owner, &Role::Viewer));
     assert!(client.get_role_members(&Role::Viewer).contains(&non_owner));
-    
-    let contract_events = env.events().all().filter_by_contract(&client.address);
+
     let role_granted_found = contract_events.events().iter().any(|event| {
         let event_topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -10066,10 +10276,10 @@ fn grant_and_revoke_role_lifecycle() {
     client.approve(&owner_b, &revoke_id);
     client.execute(&owner_c, &revoke_id);
 
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(!client.has_role(&non_owner, &Role::Viewer));
     assert!(!client.get_role_members(&Role::Viewer).contains(&non_owner));
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let role_revoked_found = contract_events.events().iter().any(|event| {
         let event_topics = match &event.body {
             xdr::ContractEventBody::V0(body) => body.topics.clone(),
@@ -10228,7 +10438,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     assert!(!client.get_asset_registry_enabled());
     assert!(!client.is_token_approved(&token_client.address));
 
-    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+    let registry_proposal = client.create_asset_registry_proposal(
         &owner_a,
         &true,
         &str(&env, "Enable approved tokens"),
@@ -10237,6 +10447,10 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &registry_proposal);
     client.approve(&owner_b, &registry_proposal);
     client.execute(&owner_c, &registry_proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let registry_enabled_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.get_asset_registry_enabled());
     assert_eq!(
         client.try_create_spending_limit_proposal(
@@ -10267,7 +10481,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         Err(Ok(ContractError::AssetNotApproved))
     );
 
-    let add_proposal = client.create_add_approved_token_proposal(
+    let add_proposal = client.create_approve_token_proposal(
         &owner_a,
         &token_client.address,
         &str(&env, "Approve treasury token"),
@@ -10276,6 +10490,10 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &add_proposal);
     client.approve(&owner_b, &add_proposal);
     client.execute(&owner_c, &add_proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(client.is_token_approved(&token_client.address));
 
     let approved_transfer = client.create_proposal(
@@ -10293,7 +10511,6 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         ProposalStatus::Executed
     );
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let registry_event = contract_events
         .events()
         .iter()
@@ -10317,7 +10534,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     assert_eq!(event.token, token_client.address);
     assert!(event.approved);
 
-    let remove_proposal = client.create_remove_approved_token_proposal(
+    let remove_proposal = client.create_unapprove_token_proposal(
         &owner_a,
         &token_client.address,
         &str(&env, "Remove treasury token"),
@@ -10326,6 +10543,7 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
     client.approve(&owner_a, &remove_proposal);
     client.approve(&owner_b, &remove_proposal);
     client.execute(&owner_c, &remove_proposal);
+    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
     assert!(!client.is_token_approved(&token_client.address));
     assert_eq!(
         client.try_create_proposal(
@@ -10337,7 +10555,6 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
         ),
         Err(Ok(ContractError::AssetNotApproved))
     );
-    let latest_contract_events = env.events().all().filter_by_contract(&client.address);
     let token_events = latest_contract_events
         .events()
         .iter()
@@ -10354,9 +10571,9 @@ fn asset_registry_is_optional_and_enforces_governed_approvals() {
                 .unwrap_or(false)
         })
         .count();
-    assert_eq!(token_events, 2);
+    assert_eq!(token_events, 1);
 
-    let registry_event = latest_contract_events
+    let registry_event = registry_enabled_events
         .events()
         .iter()
         .find(|event| {
@@ -10407,7 +10624,7 @@ fn asset_registry_is_rechecked_when_transfer_executes() {
     client.approve(&owner_a, &pending_transfer);
     client.approve(&owner_b, &pending_transfer);
 
-    let registry_proposal = client.create_set_asset_registry_enabled_proposal(
+    let registry_proposal = client.create_asset_registry_proposal(
         &owner_a,
         &true,
         &str(&env, "Enable approved tokens"),
@@ -10433,7 +10650,7 @@ fn asset_registry_is_rechecked_when_transfer_executes() {
 fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
     let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
     let guardian = Address::generate(&env);
-    let id = client.create_transfer_guardian_proposal(
+    let id = client.create_change_guardian_proposal(
         &owner_a,
         &guardian,
         &str(&env, "Rotate guardian"),
@@ -10448,9 +10665,12 @@ fn transfer_guardian_proposal_requires_quorum_and_emits_guardian_event() {
 
     client.approve(&owner_b, &id);
     client.execute(&owner_c, &id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(client.get_guardian(), Some(guardian.clone()));
 
-    let contract_events = env.events().all().filter_by_contract(&client.address);
     let event = contract_events
         .events()
         .iter()
@@ -10495,9 +10715,13 @@ fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
     client.approve(&owner_a, &proposal);
     client.approve(&owner_b, &proposal);
     client.execute(&owner_c, &proposal);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let escrow_created_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_crt"));
     let escrow_id = 1_u64;
     assert_eq!(client.get_escrow(&escrow_id).amount, 1_000);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_crt")));
+    assert!(escrow_created_emitted);
 
     let competing_transfer = client.create_proposal(
         &owner_a,
@@ -10529,8 +10753,9 @@ fn quorum_escrow_releases_only_with_quorum_and_reserves_treasury_funds() {
     approvers.push_back(owner_a);
     approvers.push_back(owner_b);
     client.release_escrow(&approvers, &escrow_id);
+    let escrow_released_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_rel"));
     assert_eq!(token_client.balance(&recipient), 1_000);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_rel")));
+    assert!(escrow_released_emitted);
     assert_eq!(
         client.try_get_escrow(&escrow_id),
         Err(Ok(ContractError::EscrowNotFound))
@@ -10597,8 +10822,9 @@ fn expired_quorum_escrow_can_be_refunded_without_payout() {
     );
     client.refund_escrow(&owner_c, &1);
 
+    let escrow_refunded_emitted = has_contract_event(&env, &client.address, symbol_short!("esc_ref"));
     assert_eq!(token_client.balance(&client.address), treasury_balance);
-    assert!(has_contract_event(&env, &client.address, symbol_short!("esc_ref")));
+    assert!(escrow_refunded_emitted);
     assert_eq!(
         client.try_get_escrow(&1),
         Err(Ok(ContractError::EscrowNotFound))
@@ -10613,7 +10839,9 @@ fn adversarial_non_owner_cannot_drain_funds() {
     let initial_balance = token_client.balance(&client.address);
     let attacker_recipient = Address::generate(&env);
 
-    // Attacker attempts to create a transfer proposal to themselves
+    // Attacker attempts to create a transfer proposal to themselves.
+    // Proposal creation is role-gated, and the attacker holds no role, so the
+    // caller is rejected by the role check before ownership is considered.
     assert_eq!(
         client.try_create_proposal(
             &attacker,
@@ -10622,7 +10850,7 @@ fn adversarial_non_owner_cannot_drain_funds() {
             &DEADLINE,
             &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::Unauthorized))
+        Err(Ok(ContractError::MissingRole))
     );
 
     // State & balance unchanged
@@ -10667,20 +10895,9 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup_weighted();
     let recipient = Address::generate(&env);
 
-    // Set a spending limit of 50_000 for owner_a
-    let limit_proposal = client.create_spending_limit_proposal(
-        &owner_a,
-        &owner_a,
-        &token_client.address,
-        &Some(50_000_i128),
-        &str(&env, "set limit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &limit_proposal);
-    client.approve(&owner_b, &limit_proposal);
-    client.execute(&owner_a, &limit_proposal);
-
-    // Attempt to execute a transfer exceeding spending limit (100_000 > 50_000)
+    // Queue and fully approve a transfer *before* any limit exists, so the
+    // rejection below must come from the execute-time cumulative check rather
+    // than the creation-time cap.
     let id = client.create_proposal(
         &owner_a,
         &t(&env, &recipient, 100_000, &token_client.address),
@@ -10691,6 +10908,19 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
     client.approve(&owner_a, &id);
     client.approve(&owner_b, &id);
 
+    // Set a spending limit of 50_000 for owner_a
+    let limit_proposal = client.create_spending_limit_proposal(
+        &owner_a,
+        &owner_a,
+        &token_client.address,
+        &50_000_i128,
+        &str(&env, "set limit"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &limit_proposal);
+    client.approve(&owner_b, &limit_proposal);
+    client.execute(&owner_a, &limit_proposal);
+
     assert_eq!(
         client.try_execute(&owner_a, &id),
         Err(Ok(ContractError::SpendingLimitExceeded))
@@ -10700,37 +10930,56 @@ fn adversarial_cannot_bypass_spending_limit_on_transfer() {
 
 #[test]
 fn adversarial_cannot_execute_premature_or_unauthorized_recurring_disbursement() {
-    let (env, client, owner_a, _owner_b, _, _attacker, token_client) = setup_weighted();
+    let (env, client, owner_a, owner_b, owner_c, _attacker, token_client) = setup_weighted();
     let recipient = Address::generate(&env);
     let amount = 10_000_i128;
     let interval = 86400_u64;
 
-    // Create recurring schedule
-    let schedule_id = client.create_recurring_schedule(
+    // Create a recurring payment through the governance flow.
+    let create_id = client.create_recurring_proposal(
         &owner_a,
-        &token_client.address,
         &recipient,
+        &token_client.address,
         &amount,
         &interval,
-        &Some(5_u32),
+        &NOW,
+        &(NOW + interval * 5),
+        &0_u64,
+        &(amount * 5),
+        &RecurringKind::FixedAmountPerPeriod,
+        &str(&env, "Adversarial recurring schedule"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
     );
+    client.approve(&owner_a, &create_id);
+    client.approve(&owner_b, &create_id);
+    client.execute(&owner_c, &create_id);
+    let schedule_id = 1_u64;
 
-    // Try to disburse before interval has passed
+    // A disbursement before the first interval has elapsed is rejected.
     assert_eq!(
-        client.try_disburse_recurring_schedule(&schedule_id),
-        Err(Ok(ContractError::RecurringPaymentNotDue))
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
     );
+    assert_eq!(token_client.balance(&recipient), 0);
 
-    // Cancel schedule
-    client.cancel_recurring_schedule(&owner_a, &schedule_id);
+    // Cancel the schedule through governance.
+    let cancel_id = client.create_cancel_recurring_proposal(
+        &owner_a,
+        &schedule_id,
+        &str(&env, "Cancel recurring schedule"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &cancel_id);
+    client.approve(&owner_b, &cancel_id);
+    client.execute(&owner_c, &cancel_id);
 
-    // Advance time past interval
+    // Advance time past the interval: a cancelled schedule still refuses to
+    // disburse and no funds move.
     set_timestamp(&env, NOW + interval + 10);
-
-    // Try to disburse after cancellation
     assert_eq!(
-        client.try_disburse_recurring_schedule(&schedule_id),
-        Err(Ok(ContractError::RecurringPaymentComplete))
+        client.try_disburse_recurring(&owner_a, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
     );
     assert_eq!(token_client.balance(&recipient), 0);
 }
@@ -10741,7 +10990,7 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     let recipient = Address::generate(&env);
     let guardian = Address::generate(&env);
 
-    client.set_guardian(&owner_a, &guardian);
+    client.set_guardian(&Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]), &guardian);
 
     let id = client.create_proposal(
         &owner_a,
@@ -10757,12 +11006,14 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     client.freeze(&guardian);
     assert!(client.is_frozen());
 
-    // Attacker tries to execute transfer while frozen
+    // Attacker tries to execute transfer while frozen. The role check runs
+    // before the freeze check, so a caller without the Executor role is
+    // rejected with MissingRole rather than ContractFrozen.
     assert_eq!(
         client.try_execute(&attacker, &id),
-        Err(Ok(ContractError::ContractFrozen))
+        Err(Ok(ContractError::MissingRole))
     );
-    // Even an owner cannot execute transfer while frozen
+    // An owner holds the Executor role, so it reaches the freeze check.
     assert_eq!(
         client.try_execute(&owner_a, &id),
         Err(Ok(ContractError::ContractFrozen))
@@ -10771,4462 +11022,1530 @@ fn adversarial_cannot_drain_funds_while_frozen_or_in_recovery() {
     assert_eq!(token_client.balance(&recipient), 0);
 }
 
-
-// ── Issue #952: DEX Path-Payment Swap Proposal Kind ──────────────────────────
-//
-// A mock Soroban router contract is registered for tests that exercise the
-// full create → approve → execute path. The mock simply returns a fixed
-// amounts Vec so we can control the recv_amount without deploying Soroswap.
-
-/// Minimal mock DEX router. Returns `[send_amount, recv_amount]` where
-/// `recv_amount` is the second argument (`amount_out_min`) plus the constant
-/// MOCK_BONUS. This lets tests vary the simulated output independently of the
-/// slippage floor.
-const MOCK_BONUS: i128 = 50;
-
-mod mock_router {
-    use super::*;
-    use soroban_sdk::{contract, contractimpl};
-
-    #[contract]
-    pub struct MockRouter;
-
-    #[contractimpl]
-    impl MockRouter {
-        /// Mirrors the SoroswapRouter `swap_exact_tokens_for_tokens` signature.
-        /// Returns `[amount_in, amount_out_min + MOCK_BONUS]`.
-        pub fn swap_exact_tokens_for_tokens(
-            env: Env,
-            amount_in: i128,
-            amount_out_min: i128,
-            _path: Vec<Address>,
-            _to: Address,
-            _deadline: u64,
-        ) -> Vec<i128> {
-            let mut out = Vec::new(&env);
-            out.push_back(amount_in);
-            out.push_back(amount_out_min + super::MOCK_BONUS);
-            out
-        }
-    }
-}
-
-mod mock_router_reject {
-    use super::*;
-    use soroban_sdk::{contract, contractimpl, panic_with_error};
-
-    #[contract]
-    pub struct MockRouterReject;
-
-    #[contractimpl]
-    impl MockRouterReject {
-        /// Always panics — simulates a router that reverts the swap.
-        pub fn swap_exact_tokens_for_tokens(
-            env: Env,
-            _amount_in: i128,
-            _amount_out_min: i128,
-            _path: Vec<Address>,
-            _to: Address,
-            _deadline: u64,
-        ) -> Vec<i128> {
-            panic_with_error!(&env, super::ContractError::SwapFailed)
-        }
-    }
-}
-
-/// Helper: registers a mock router and approves it via governance, returning
-/// the router contract address.
-fn setup_approved_router(
+fn create_test_stream(
     env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-) -> Address {
-    let router_id = env.register(mock_router::MockRouter, ());
-
-    // Propose + approve + execute AddDexRouter.
-    let prop_id = client.create_add_dex_router_proposal(
-        owner_a,
-        &router_id,
-        &str(env, "approve soroswap router"),
-        &DEADLINE,
-    );
-    client.approve(owner_a, &prop_id);
-    client.approve(owner_b, &prop_id);
-    client.execute(owner_c, &prop_id);
-
-    assert!(client.is_dex_router_approved(&router_id));
-    router_id
-}
-
-// ── Unit tests ───────────────────────────────────────────────────────────────
-
-#[test]
-fn dex_swap_add_router_proposal_stores_approval() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
-
-    assert!(!client.is_dex_router_approved(&router));
-
-    let prop_id = client.create_add_dex_router_proposal(
-        &owner_a,
-        &router,
-        &str(&env, "add router"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert!(client.is_dex_router_approved(&router));
-}
-
-#[test]
-fn dex_swap_remove_router_proposal_revokes_approval() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let remove_id = client.create_remove_dex_router_proposal(
-        &owner_a,
-        &router,
-        &str(&env, "remove router"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &remove_id);
-    client.approve(&owner_b, &remove_id);
-    client.execute(&owner_c, &remove_id);
-
-    assert!(!client.is_dex_router_approved(&router));
-}
-
-#[test]
-fn dex_swap_add_router_duplicate_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // A second AddDexRouter for the same address is rejected at creation.
-    assert_eq!(
-        client.try_create_add_dex_router_proposal(
-            &owner_a,
-            &router,
-            &str(&env, "duplicate"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::AssetRegistryState))
-    );
-}
-
-#[test]
-fn dex_swap_remove_unapproved_router_rejected() {
-    let (env, client, owner_a, _, _, _, _) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
-
-    assert_eq!(
-        client.try_create_remove_dex_router_proposal(
-            &owner_a,
-            &router,
-            &str(&env, "remove unknown"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::AssetRegistryState))
-    );
-}
-
-#[test]
-fn dex_swap_proposal_creation_validates_unapproved_router() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let unapproved_router = env.register(mock_router::MockRouter, ());
-    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token.address());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router: unapproved_router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "unapproved router"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn dex_swap_proposal_rejects_path_too_short() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Single-entry path — invalid.
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "short path"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidSwapPath))
-    );
-}
-
-#[test]
-fn dex_swap_proposal_rejects_zero_send_amount() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token.address());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 0,
-                min_recv: 1,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "zero send"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-#[test]
-fn dex_swap_proposal_rejects_zero_min_recv() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token.address());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 0,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "zero min_recv"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-#[test]
-fn dex_swap_proposal_rejects_expired_swap_deadline() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token.address());
-
-    // swap_deadline in the past.
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: NOW - 1,
-            },
-            &str(&env, "stale deadline"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidSwapDeadline))
-    );
-}
-
-#[test]
-fn dex_swap_full_lifecycle_executes_and_emits_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-    let recv_token = recv_token_id.address();
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token.clone());
-
-    let send_amount: i128 = 10_000;
-    let min_recv: i128 = 9_000;
-    let destination = Address::generate(&env);
-
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router: router.clone(),
-            path: path.clone(),
-            send_amount,
-            min_recv,
-            destination: Some(destination.clone()),
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "swap usdc for xlm"),
-        &DEADLINE,
-    );
-
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    // Proposal is now Executed.
-    assert_eq!(
-        client.get_proposal(&prop_id).status,
-        ProposalStatus::Executed
-    );
-
-    // dex_swap event was emitted.
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "dex_swap")
-    ));
-}
-
-#[test]
-fn dex_swap_execute_rejects_expired_swap_deadline() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    // Create the proposal with swap_deadline just barely in the future.
-    let swap_deadline = NOW + 100;
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router: router.clone(),
-            path: path.clone(),
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: None,
-            swap_deadline,
-        },
-        &str(&env, "tight deadline"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-
-    // Advance time past the swap deadline before execution.
-    set_timestamp(&env, swap_deadline + 1);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::InvalidSwapDeadline))
-    );
-}
-
-#[test]
-fn dex_swap_execute_rejects_revoked_router() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router: router.clone(),
-            path: path.clone(),
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: None,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "swap with router"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-
-    // Governance removes the router between approval and execution.
-    let remove_id = client.create_remove_dex_router_proposal(
-        &owner_a,
-        &router,
-        &str(&env, "revoke router"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &remove_id);
-    client.approve(&owner_b, &remove_id);
-    client.execute(&owner_c, &remove_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn dex_swap_execute_rejects_insufficient_treasury_balance() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    // Request more than the treasury holds (treasury has 1_000_000_000_000).
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router: router.clone(),
-            path: path.clone(),
-            send_amount: 2_000_000_000_000_i128, // exceeds treasury
-            min_recv: 1,
-            destination: None,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "overspend"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::TransferFailed))
-    );
-}
-
-#[test]
-fn dex_swap_non_proposer_cannot_create() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &non_owner,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "unauthorized swap"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn dex_swap_frozen_contract_blocks_creation() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
-    assert!(client.is_frozen());
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "swap while frozen"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-}
-
-#[test]
-fn dex_swap_destination_none_uses_contract_as_recipient() {
-    // When destination is None the multisig itself collects the output.
-    // We only check the proposal is accepted and executed — the actual
-    // token balance assertion would require the mock router to call
-    // `transfer` on the output token, which is outside mock scope.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router,
-            path,
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: None,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "self-rebalance"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert_eq!(
-        client.get_proposal(&prop_id).status,
-        ProposalStatus::Executed
-    );
-}
-
-#[test]
-fn dex_swap_dex_prop_event_emitted_on_creation() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router,
-            path,
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: None,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "swap event check"),
-        &DEADLINE,
-    );
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "dex_prop")
-    ));
-}
-
-#[test]
-fn dex_swap_migrate_to_dex_swap_bumps_storage_version() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    // On a fresh deployment initialize writes STORAGE_SCHEMA_VERSION = 2,
-    // so migrate_to_dex_swap should return AlreadyMigrated.
-    assert_eq!(
-        client.try_migrate_to_dex_swap(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
-        ),
-        Err(Ok(ContractError::AlreadyMigrated))
-    );
-    // Version is 2.
-    assert_eq!(client.get_storage_version(), 2);
-}
-
-#[test]
-fn dex_swap_add_router_emits_dex_rtr_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
-
-    let prop_id = client.create_add_dex_router_proposal(
-        &owner_a,
-        &router,
-        &str(&env, "add router event"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "dex_rtr")
-    ));
-}
-
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn dex_swap_cannot_self_approve_then_execute_alone() {
-    // A threshold-1 multisig owner cannot unilaterally drain the treasury via
-    // a swap — the approval flow still requires the threshold to be met.
-    let (env, client, owner_a, _owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &_owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router,
-            path,
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: Some(owner_a.clone()),
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "solo drain"),
-        &DEADLINE,
-    );
-    // Only one approval — threshold is 2.
-    client.approve(&owner_a, &prop_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-}
-
-#[test]
-fn dex_swap_path_with_contract_itself_as_token_rejected() {
-    // The asset registry blocks token addresses that are the contract itself
-    // because `validate_token` calls `validate_token_interface` which would
-    // succeed on a SAC but `validate_asset_registry` rejects unregistered
-    // assets when the registry is enabled. Here we simply confirm the path
-    // validation rejects a path shorter than 2.
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Empty path.
-    let path = Vec::new(&env);
-    assert_eq!(
-        client.try_create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router,
-                path,
-                send_amount: 1_000,
-                min_recv: 900,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "empty path"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidSwapPath))
-    );
-}
-
-#[test]
-fn dex_swap_expired_proposal_cannot_execute() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut path = Vec::new(&env);
-    path.push_back(token_client.address.clone());
-    path.push_back(recv_token_id.address());
-
-    let prop_id = client.create_dex_swap_proposal(
-        &owner_a,
-        &DexSwapParams {
-            router,
-            path,
-            send_amount: 1_000,
-            min_recv: 900,
-            destination: None,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "will expire"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-
-    // Advance past the proposal deadline.
-    set_timestamp(&env, DEADLINE + 1);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::ProposalExpired))
-    );
-}
-
-// ── Property tests ────────────────────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// For any valid (send_amount, min_recv) pair the mock router always returns
-    /// min_recv + MOCK_BONUS, so recv_amount is always above min_recv and the
-    /// slippage guard never fires. The proposal must end up Executed.
-    #[test]
-    fn dex_swap_recv_always_above_min_recv_with_mock_router(
-        send_amount in 1_i128..=1_000_000_i128,
-        min_recv   in 1_i128..=1_000_i128,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let router_id = env.register(mock_router::MockRouter, ());
-
-        // Add router.
-        let add_id = client.create_add_dex_router_proposal(
-            &owner_a, &router_id, &str(&env, "add"), &DEADLINE,
-        );
-        client.approve(&owner_a, &add_id);
-        client.approve(&owner_b, &add_id);
-        client.execute(&owner_c, &add_id);
-
-        let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-        let mut path = Vec::new(&env);
-        path.push_back(token_client.address.clone());
-        path.push_back(recv_token_id.address());
-
-        let prop_id = client.create_dex_swap_proposal(
-            &owner_a,
-            &DexSwapParams {
-                router: router_id,
-                path,
-                send_amount,
-                min_recv,
-                destination: None,
-                swap_deadline: DEADLINE,
-            },
-            &str(&env, "proptest swap"),
-            &DEADLINE,
-        );
-        client.approve(&owner_a, &prop_id);
-        client.approve(&owner_b, &prop_id);
-        client.execute(&owner_c, &prop_id);
-
-        prop_assert_eq!(
-            client.get_proposal(&prop_id).status,
-            ProposalStatus::Executed
-        );
-    }
-
-    /// Creating a DexSwap proposal with a swap_deadline beyond MAX_PROPOSAL_DURATION
-    /// from now must always be rejected.
-    #[test]
-    fn dex_swap_creation_rejects_swap_deadline_beyond_max_duration(
-        excess in 1_u64..=86_400_u64,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let router_id = env.register(mock_router::MockRouter, ());
-        let add_id = client.create_add_dex_router_proposal(
-            &owner_a, &router_id, &str(&env, "r"), &DEADLINE,
-        );
-        client.approve(&owner_a, &add_id);
-        client.approve(&owner_b, &add_id);
-        client.execute(&owner_c, &add_id);
-
-        let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-        let mut path = Vec::new(&env);
-        path.push_back(token_client.address.clone());
-        path.push_back(recv_token_id.address());
-
-        // MAX_PROPOSAL_DURATION = 7_776_000; deadline beyond it.
-        let bad_swap_deadline = NOW + 7_776_000 + excess;
-
-        prop_assert_eq!(
-            client.try_create_dex_swap_proposal(
-                &owner_a,
-                &DexSwapParams {
-                    router: router_id,
-                    path,
-                    send_amount: 1_000,
-                    min_recv: 900,
-                    destination: None,
-                    swap_deadline: bad_swap_deadline,
-                },
-                &str(&env, "too far deadline"),
-                &DEADLINE,
-            ),
-            Err(Ok(ContractError::InvalidSwapDeadline))
-        );
-    }
-}
-
-// ── Issue #951: Treasury Yield Allocation Proposal Kind ──────────────────────
-//
-// A mock Soroban yield venue contract is registered for tests that exercise
-// the full create → approve → execute path. The mock simply accepts deposits
-// and returns `deposit_amount + YIELD_BONUS` on withdrawal, letting us test
-// the slippage guard and position lifecycle without deploying Blend or
-// Soroswap.
-
-const YIELD_BONUS: i128 = 100;
-
-mod mock_venue {
-    use super::*;
-    use soroban_sdk::{contract, contractimpl};
-
-    #[contract]
-    pub struct MockVenue;
-
-    #[contractimpl]
-    impl MockVenue {
-        /// Generic deposit(token, amount) — no-op in tests since token
-        /// transfers are handled by the approve flow.
-        pub fn deposit(_env: Env, _token: Address, _amount: i128) {}
-
-        /// Generic withdraw(token, amount) — no-op; balance change is
-        /// simulated by minting tokens to the multisig before execution.
-        pub fn withdraw(_env: Env, _token: Address, _amount: i128) {}
-
-        /// Blend supply(from, spender, asset, amount)
-        pub fn supply(
-            _env: Env,
-            _from: Address,
-            _spender: Address,
-            _asset: Address,
-            _amount: i128,
-        ) {
-        }
-
-        /// Blend withdraw(from, spender, asset, amount)
-        pub fn withdraw_blend(
-            _env: Env,
-            _from: Address,
-            _spender: Address,
-            _asset: Address,
-            _amount: i128,
-        ) {
-        }
-    }
-}
-
-/// Helper: registers a mock venue and approves it via governance.
-fn setup_approved_venue(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-) -> Address {
-    let venue_id = env.register(mock_venue::MockVenue, ());
-
-    let prop_id = client.create_add_yield_venue_proposal(
-        owner_a,
-        &venue_id,
-        &str(env, "approve yield venue"),
-        &DEADLINE,
-    );
-    client.approve(owner_a, &prop_id);
-    client.approve(owner_b, &prop_id);
-    client.execute(owner_c, &prop_id);
-
-    assert!(client.is_yield_venue_approved(&venue_id));
-    venue_id
-}
-
-/// Helper: build a minimal YieldAllocationParams for a Generic deposit.
-fn yield_params(
-    env: &Env,
-    venue: &Address,
+    client: &AccordContractClient<'static>,
+    proposer: &Address,
+    approver: &Address,
+    executor: &Address,
+    recipient: &Address,
     token: &Address,
-    amount: i128,
-    position_id: u64,
-) -> YieldAllocationParams {
-    YieldAllocationParams {
-        venue: venue.clone(),
-        token: token.clone(),
-        amount,
-        min_return: 1,
-        kind: YieldVenueKind::Generic,
-        position_id,
-    }
-}
-
-// ── Unit tests ───────────────────────────────────────────────────────────────
-
-#[test]
-fn yield_add_venue_proposal_stores_approval() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let venue = env.register(mock_venue::MockVenue, ());
-
-    assert!(!client.is_yield_venue_approved(&venue));
-    setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-    // venue was registered inside helper, re-register gives different addr;
-    // check the one the helper used directly:
-    let venue2 = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-    assert!(client.is_yield_venue_approved(&venue2));
-}
-
-#[test]
-fn yield_remove_venue_proposal_revokes_approval() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let remove_id = client.create_remove_yield_venue_proposal(
-        &owner_a,
-        &venue,
-        &str(&env, "remove venue"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &remove_id);
-    client.approve(&owner_b, &remove_id);
-    client.execute(&owner_c, &remove_id);
-
-    assert!(!client.is_yield_venue_approved(&venue));
-}
-
-#[test]
-fn yield_add_venue_duplicate_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    assert_eq!(
-        client.try_create_add_yield_venue_proposal(
-            &owner_a,
-            &venue,
-            &str(&env, "dup"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::AssetRegistryState))
-    );
-}
-
-#[test]
-fn yield_remove_unapproved_venue_rejected() {
-    let (env, client, owner_a, _, _, _, _) = setup(2);
-    let venue = env.register(mock_venue::MockVenue, ());
-
-    assert_eq!(
-        client.try_create_remove_yield_venue_proposal(
-            &owner_a,
-            &venue,
-            &str(&env, "not in registry"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::AssetRegistryState))
-    );
-}
-
-#[test]
-fn yield_deposit_proposal_requires_approved_venue() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let unapproved = env.register(mock_venue::MockVenue, ());
-
-    assert_eq!(
-        client.try_create_yield_deposit_proposal(
-            &owner_a,
-            &yield_params(&env, &unapproved, &token_client.address, 1_000, 1),
-            &str(&env, "unapproved"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::YieldVenueNotApproved))
-    );
-}
-
-#[test]
-fn yield_deposit_proposal_rejects_zero_amount() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    assert_eq!(
-        client.try_create_yield_deposit_proposal(
-            &owner_a,
-            &yield_params(&env, &venue, &token_client.address, 0, 1),
-            &str(&env, "zero"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-#[test]
-fn yield_deposit_proposal_rejects_duplicate_position_id() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Execute a first deposit so position 1 is open.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 1),
-        &str(&env, "first deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    assert!(client.get_yield_position(&1).is_some());
-
-    // A second proposal with the same position_id must be rejected at creation.
-    assert_eq!(
-        client.try_create_yield_deposit_proposal(
-            &owner_a,
-            &yield_params(&env, &venue, &token_client.address, 500, 1),
-            &str(&env, "dup position"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::YieldPositionAlreadyOpen))
-    );
-}
-
-#[test]
-fn yield_deposit_full_lifecycle_stores_position() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 5_000, 42),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    let pos = client.get_yield_position(&42).expect("position should be open");
-    assert_eq!(pos.id, 42);
-    assert_eq!(pos.deposited, 5_000);
-    assert_eq!(pos.venue, venue);
-    assert_eq!(pos.token, token_client.address);
-    assert_eq!(
-        client.get_proposal(&dep_id).status,
-        ProposalStatus::Executed
-    );
-}
-
-#[test]
-fn yield_deposit_emits_y_dep_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 10),
-        &str(&env, "event check"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "y_dep")
-    ));
-}
-
-#[test]
-fn yield_deposit_emits_y_dprop_event_at_creation() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 11),
-        &str(&env, "creation event"),
-        &DEADLINE,
-    );
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "y_dprop")
-    ));
-}
-
-#[test]
-fn yield_withdraw_requires_open_position() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // No deposit made — position 99 does not exist.
-    assert_eq!(
-        client.try_create_yield_withdraw_proposal(
-            &owner_a,
-            &YieldAllocationParams {
-                venue: venue.clone(),
-                token: token_client.address.clone(),
-                amount: 1_000,
-                min_return: 1,
-                kind: YieldVenueKind::Generic,
-                position_id: 99,
-            },
-            &str(&env, "ghost position"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::YieldPositionNotFound))
-    );
-}
-
-#[test]
-fn yield_withdraw_venue_mismatch_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-    let venue2 = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Deposit into venue.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 5),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    // Withdraw proposal points to venue2 — mismatch.
-    assert_eq!(
-        client.try_create_yield_withdraw_proposal(
-            &owner_a,
-            &YieldAllocationParams {
-                venue: venue2,
-                token: token_client.address.clone(),
-                amount: 1_000,
-                min_return: 1,
-                kind: YieldVenueKind::Generic,
-                position_id: 5,
-            },
-            &str(&env, "wrong venue"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn yield_withdraw_full_lifecycle_clears_position() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Deposit.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 2_000, 7),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-    assert!(client.get_yield_position(&7).is_some());
-
-    // Withdraw.
-    let wdraw_id = client.create_yield_withdraw_proposal(
-        &owner_a,
-        &YieldAllocationParams {
-            venue: venue.clone(),
-            token: token_client.address.clone(),
-            amount: 2_000,
-            min_return: 1,
-            kind: YieldVenueKind::Generic,
-            position_id: 7,
-        },
-        &str(&env, "withdraw"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &wdraw_id);
-    client.approve(&owner_b, &wdraw_id);
-    client.execute(&owner_c, &wdraw_id);
-
-    // Position cleared.
-    assert!(client.get_yield_position(&7).is_none());
-    assert_eq!(
-        client.get_proposal(&wdraw_id).status,
-        ProposalStatus::Executed
-    );
-}
-
-#[test]
-fn yield_withdraw_emits_y_wdraw_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 8),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    let wdraw_id = client.create_yield_withdraw_proposal(
-        &owner_a,
-        &YieldAllocationParams {
-            venue: venue.clone(),
-            token: token_client.address.clone(),
-            amount: 1_000,
-            min_return: 1,
-            kind: YieldVenueKind::Generic,
-            position_id: 8,
-        },
-        &str(&env, "withdraw"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &wdraw_id);
-    client.approve(&owner_b, &wdraw_id);
-    client.execute(&owner_c, &wdraw_id);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "y_wdraw")
-    ));
-}
-
-#[test]
-fn yield_add_venue_emits_y_venue_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "y_venue")
-    ));
-}
-
-#[test]
-fn yield_migrate_to_yield_allocation_already_migrated_on_fresh_deploy() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    // Fresh deploy writes STORAGE_SCHEMA_VERSION = 3.
-    assert_eq!(
-        client.try_migrate_to_yield_allocation(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
-        ),
-        Err(Ok(ContractError::AlreadyMigrated))
-    );
-    assert_eq!(client.get_storage_version(), 3);
-}
-
-#[test]
-fn yield_non_proposer_cannot_create_deposit() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    assert_eq!(
-        client.try_create_yield_deposit_proposal(
-            &non_owner,
-            &yield_params(&env, &venue, &token_client.address, 1_000, 20),
-            &str(&env, "unauthorized"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn yield_frozen_contract_blocks_deposit_creation() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
-
-    assert_eq!(
-        client.try_create_yield_deposit_proposal(
-            &owner_a,
-            &yield_params(&env, &venue, &token_client.address, 1_000, 30),
-            &str(&env, "frozen"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-}
-
-#[test]
-fn yield_deposit_execute_rejects_revoked_venue() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Create the deposit proposal while venue is still approved.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 50),
-        &str(&env, "pending deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-
-    // Governance removes the venue before execution.
-    let remove_id = client.create_remove_yield_venue_proposal(
-        &owner_a,
-        &venue,
-        &str(&env, "revoke venue"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &remove_id);
-    client.approve(&owner_b, &remove_id);
-    client.execute(&owner_c, &remove_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &dep_id),
-        Err(Ok(ContractError::YieldVenueNotApproved))
-    );
-}
-
-#[test]
-fn yield_deposit_execute_rejects_insufficient_balance() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Request more than the treasury holds.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(
-            &env,
-            &venue,
-            &token_client.address,
-            2_000_000_000_000_i128,
-            60,
-        ),
-        &str(&env, "overspend"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &dep_id),
-        Err(Ok(ContractError::TransferFailed))
-    );
-}
-
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn yield_deposit_cannot_self_approve_then_execute_alone() {
-    // A threshold-2 multisig: a single owner cannot unilaterally move funds.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 10_000, 70),
-        &str(&env, "solo drain"),
-        &DEADLINE,
-    );
-    // Only one approval — threshold is 2.
-    client.approve(&owner_a, &dep_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &dep_id),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-}
-
-#[test]
-fn yield_withdraw_expired_proposal_cannot_execute() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 80),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    let wdraw_id = client.create_yield_withdraw_proposal(
-        &owner_a,
-        &YieldAllocationParams {
-            venue: venue.clone(),
-            token: token_client.address.clone(),
-            amount: 1_000,
-            min_return: 1,
-            kind: YieldVenueKind::Generic,
-            position_id: 80,
-        },
-        &str(&env, "withdraw later"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &wdraw_id);
-    client.approve(&owner_b, &wdraw_id);
-
-    // Advance past the proposal deadline.
-    set_timestamp(&env, DEADLINE + 1);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &wdraw_id),
-        Err(Ok(ContractError::ProposalExpired))
-    );
-}
-
-#[test]
-fn yield_withdraw_zero_min_return_rejected_at_creation() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let venue = setup_approved_venue(&env, &client, &owner_a, &owner_b, &owner_c);
-
-    // Deposit first.
-    let dep_id = client.create_yield_deposit_proposal(
-        &owner_a,
-        &yield_params(&env, &venue, &token_client.address, 1_000, 90),
-        &str(&env, "deposit"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &dep_id);
-    client.approve(&owner_b, &dep_id);
-    client.execute(&owner_c, &dep_id);
-
-    assert_eq!(
-        client.try_create_yield_withdraw_proposal(
-            &owner_a,
-            &YieldAllocationParams {
-                venue: venue.clone(),
-                token: token_client.address.clone(),
-                amount: 1_000,
-                min_return: 0, // invalid
-                kind: YieldVenueKind::Generic,
-                position_id: 90,
-            },
-            &str(&env, "zero min_return"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-// ── Property tests ────────────────────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// For any valid deposit amount the position is stored and readable after
-    /// execution; the recorded `deposited` field matches the input amount.
-    #[test]
-    fn yield_deposit_position_deposited_matches_amount(
-        amount in 1_i128..=1_000_000_i128,
-        position_id in 1_u64..=1_000_u64,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let venue_id = env.register(mock_venue::MockVenue, ());
-        let add_id = client.create_add_yield_venue_proposal(
-            &owner_a, &venue_id, &str(&env, "add"), &DEADLINE,
-        );
-        client.approve(&owner_a, &add_id);
-        client.approve(&owner_b, &add_id);
-        client.execute(&owner_c, &add_id);
-
-        let dep_id = client.create_yield_deposit_proposal(
-            &owner_a,
-            &YieldAllocationParams {
-                venue: venue_id.clone(),
-                token: token_client.address.clone(),
-                amount,
-                min_return: 1,
-                kind: YieldVenueKind::Generic,
-                position_id,
-            },
-            &str(&env, "proptest deposit"),
-            &DEADLINE,
-        );
-        client.approve(&owner_a, &dep_id);
-        client.approve(&owner_b, &dep_id);
-        client.execute(&owner_c, &dep_id);
-
-        let pos = client.get_yield_position(&position_id)
-            .expect("position must exist after deposit");
-        prop_assert_eq!(pos.deposited, amount);
-        prop_assert_eq!(pos.id, position_id);
-    }
-
-    /// A withdraw proposal that references a non-existent position must always
-    /// be rejected at creation, regardless of the position_id value.
-    #[test]
-    fn yield_withdraw_missing_position_always_rejected(
-        position_id in 1_u64..=10_000_u64,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let venue_id = env.register(mock_venue::MockVenue, ());
-        let add_id = client.create_add_yield_venue_proposal(
-            &owner_a, &venue_id, &str(&env, "add"), &DEADLINE,
-        );
-        client.approve(&owner_a, &add_id);
-        client.approve(&owner_b, &add_id);
-        client.execute(&owner_c, &add_id);
-
-        // No deposit — position does not exist.
-        prop_assert_eq!(
-            client.try_create_yield_withdraw_proposal(
-                &owner_a,
-                &YieldAllocationParams {
-                    venue: venue_id.clone(),
-                    token: token_client.address.clone(),
-                    amount: 1_000,
-                    min_return: 1,
-                    kind: YieldVenueKind::Generic,
-                    position_id,
-                },
-                &str(&env, "ghost"),
-                &DEADLINE,
-            ),
-            Err(Ok(ContractError::YieldPositionNotFound))
-        );
-    }
-}
-
-// ── Issue #950: Pull-Payment Requests with Claimant Approval ────────────────
-//
-// A pull-payment request lets a named claimant pull a pre-approved amount
-// from the treasury without a second governance vote. The request is opened
-// via a `CreatePullPayment` proposal, claimed via `claim_pull_payment` by
-// the claimant, and optionally cancelled via `CancelPullPayment`.
-
-/// Helper: build a PullPaymentParams for tests.
-fn pull_params(
-    env: &Env,
-    claimant: &Address,
-    token: &Address,
-    amount: i128,
-    expires_at: u64,
-) -> PullPaymentParams {
-    PullPaymentParams {
-        claimant: claimant.clone(),
-        token: token.clone(),
-        amount,
-        expires_at,
-        memo: str(env, "invoice #123"),
-    }
-}
-
-/// Helper: create + approve + execute a CreatePullPayment proposal, returning
-/// the assigned request_id.
-fn execute_pull_payment_proposal(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-    params: &PullPaymentParams,
+    amount_per_second: i128,
+    start_time: u64,
+    end_time: u64,
+    cliff_time: u64,
+    total_cap: i128,
 ) -> u64 {
-    let prop_id = client.create_pull_payment_proposal(
-        owner_a,
-        params,
-        &str(env, "pull payment"),
+    let interval_secs = 60_u64;
+    let proposal_id = client.create_recurring_proposal(
+        proposer,
+        recipient,
+        token,
+        &amount_per_second,
+        &interval_secs,
+        &start_time,
+        &end_time,
+        &cliff_time,
+        &total_cap,
+        &RecurringKind::ContinuousStream,
+        &str(env, "Continuous payment stream"),
         &DEADLINE,
+        &ProposalCategory::Grant,
     );
-    client.approve(owner_a, &prop_id);
-    client.approve(owner_b, &prop_id);
-    client.execute(owner_c, &prop_id);
-
-    // The request_id is assigned sequentially starting at 1.
-    client.get_next_pull_payment_id() - 1
+    client.approve(proposer, &proposal_id);
+    client.approve(approver, &proposal_id);
+    client.execute(executor, &proposal_id);
+    1
 }
 
-// ── Unit tests ───────────────────────────────────────────────────────────────
-
 #[test]
-fn pull_payment_open_lifecycle_stores_request() {
+fn continuous_stream_accrues_per_second_and_supports_partial_claims() {
     let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 10_000, DEADLINE),
-    );
-
-    let req = client.get_pull_payment(&req_id).expect("request should exist");
-    assert_eq!(req.id, req_id);
-    assert_eq!(req.claimant, claimant);
-    assert_eq!(req.token, token_client.address);
-    assert_eq!(req.amount, 10_000);
-    assert_eq!(req.status, PullPaymentStatus::Open);
-}
-
-#[test]
-fn pull_payment_claimant_can_claim() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    let balance_before = token_client.balance(&claimant);
-    client.claim_pull_payment(&claimant, &req_id);
-    assert_eq!(token_client.balance(&claimant), balance_before + 5_000);
-
-    let req = client.get_pull_payment(&req_id).unwrap();
-    assert_eq!(req.status, PullPaymentStatus::Claimed);
-}
-
-#[test]
-fn pull_payment_claim_emits_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
-    );
-
-    client.claim_pull_payment(&claimant, &req_id);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "pr_claim")
-    ));
-}
-
-#[test]
-fn pull_payment_open_emits_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
-    );
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "pr_open")
-    ));
-}
-
-#[test]
-fn pull_payment_wrong_claimant_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-    let impostor = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    assert_eq!(
-        client.try_claim_pull_payment(&impostor, &req_id),
-        Err(Ok(ContractError::PullPaymentWrongClaimant))
-    );
-}
-
-#[test]
-fn pull_payment_double_claim_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    client.claim_pull_payment(&claimant, &req_id);
-
-    // Second claim — request is now Claimed.
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &req_id),
-        Err(Ok(ContractError::PullPaymentNotOpen))
-    );
-}
-
-#[test]
-fn pull_payment_cancel_lifecycle() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    // Cancel the request via governance.
-    let cancel_id = client.create_cancel_pull_payment_proposal(
-        &owner_a,
-        &req_id,
-        &str(&env, "cancel"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-    client.execute(&owner_c, &cancel_id);
-
-    let req = client.get_pull_payment(&req_id).unwrap();
-    assert_eq!(req.status, PullPaymentStatus::Cancelled);
-
-    // Claim after cancel must fail.
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &req_id),
-        Err(Ok(ContractError::PullPaymentNotOpen))
-    );
-}
-
-#[test]
-fn pull_payment_cancel_emits_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    let cancel_id = client.create_cancel_pull_payment_proposal(
-        &owner_a,
-        &req_id,
-        &str(&env, "cancel"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-    client.execute(&owner_c, &cancel_id);
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "pr_cncl")
-    ));
-}
-
-#[test]
-fn pull_payment_expired_request_rejects_claim() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let short_expiry = NOW + 100;
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, short_expiry),
-    );
-
-    // Advance past the expiry.
-    set_timestamp(&env, short_expiry + 1);
-
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &req_id),
-        Err(Ok(ContractError::PullPaymentNotOpen))
-    );
-
-    // The view returns Expired.
-    let req = client.get_pull_payment(&req_id).unwrap();
-    assert_eq!(req.status, PullPaymentStatus::Expired);
-}
-
-#[test]
-fn pull_payment_cancel_expired_rejected() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let short_expiry = NOW + 100;
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, short_expiry),
-    );
-
-    // Advance past the expiry.
-    set_timestamp(&env, short_expiry + 1);
-
-    let cancel_id = client.create_cancel_pull_payment_proposal(
-        &owner_a,
-        &req_id,
-        &str(&env, "cancel expired"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &cancel_id),
-        Err(Ok(ContractError::PullPaymentNotOpen))
-    );
-}
-
-#[test]
-fn pull_payment_creation_rejects_zero_amount() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &owner_a,
-            &pull_params(&env, &claimant, &token_client.address, 0, DEADLINE),
-            &str(&env, "zero"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-#[test]
-fn pull_payment_creation_rejects_claimant_equal_to_contract() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &owner_a,
-            &pull_params(
-                &env,
-                &client.address,
-                &token_client.address,
-                1_000,
-                DEADLINE
-            ),
-            &str(&env, "self-claimant"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidRecipient))
-    );
-}
-
-#[test]
-fn pull_payment_creation_rejects_past_expiry() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &owner_a,
-            &pull_params(
-                &env,
-                &claimant,
-                &token_client.address,
-                1_000,
-                NOW - 1
-            ),
-            &str(&env, "past expiry"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidDeadline))
-    );
-}
-
-#[test]
-fn pull_payment_creation_rejects_excessively_far_expiry() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let far_expiry = NOW + 7_776_000 + 1;
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &owner_a,
-            &pull_params(
-                &env,
-                &claimant,
-                &token_client.address,
-                1_000,
-                far_expiry
-            ),
-            &str(&env, "far expiry"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-}
-
-#[test]
-fn pull_payment_non_proposer_cannot_create() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &non_owner,
-            &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
-            &str(&env, "unauthorized"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn pull_payment_frozen_contract_blocks_creation() {
-    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
-
-    assert_eq!(
-        client.try_create_pull_payment_proposal(
-            &owner_a,
-            &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
-            &str(&env, "frozen"),
-            &DEADLINE,
-        ),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-}
-
-#[test]
-fn pull_payment_frozen_contract_blocks_claim() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
-
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &req_id),
-        Err(Ok(ContractError::ContractFrozen))
-    );
-}
-
-#[test]
-fn pull_payment_next_id_starts_at_one() {
-    let (env, client, _, _, _, _, _) = setup(2);
-    assert_eq!(client.get_next_pull_payment_id(), 1);
-}
-
-#[test]
-fn pull_payment_ids_are_sequential() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req1 = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 1_000, DEADLINE),
-    );
-    let req2 = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 2_000, DEADLINE),
-    );
-
-    assert_eq!(req1, 1);
-    assert_eq!(req2, 2);
-    assert_eq!(client.get_next_pull_payment_id(), 3);
-}
-
-#[test]
-fn pull_payment_migrate_already_migrated_on_fresh_deploy() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    assert_eq!(
-        client.try_migrate_to_pull_payments(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
-        ),
-        Err(Ok(ContractError::AlreadyMigrated))
-    );
-    assert_eq!(client.get_storage_version(), 4);
-}
-
-#[test]
-fn pull_payment_cancel_nonexistent_rejected_at_execute() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-
-    let cancel_id = client.create_cancel_pull_payment_proposal(
-        &owner_a,
-        &999, // nonexistent
-        &str(&env, "cancel ghost"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &cancel_id),
-        Err(Ok(ContractError::PullPaymentNotFound))
-    );
-}
-
-#[test]
-fn pull_payment_claim_nonexistent_rejected() {
-    let (env, client, _, _, _, _, _) = setup(2);
-    let claimant = Address::generate(&env);
-
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &999),
-        Err(Ok(ContractError::PullPaymentNotFound))
-    );
-}
-
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn pull_payment_claimant_need_not_be_owner() {
-    // The claimant is a non-owner external party. The multisig approves the
-    // pull-payment proposal and the claimant pulls independently.
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-
-    // non_owner is the claimant.
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &non_owner, &token_client.address, 7_000, DEADLINE),
-    );
-
-    let balance_before = token_client.balance(&non_owner);
-    client.claim_pull_payment(&non_owner, &req_id);
-    assert_eq!(token_client.balance(&non_owner), balance_before + 7_000);
-}
-
-#[test]
-fn pull_payment_cannot_claim_after_cancel() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let claimant = Address::generate(&env);
-
-    let req_id = execute_pull_payment_proposal(
-        &env,
-        &client,
-        &owner_a,
-        &owner_b,
-        &owner_c,
-        &pull_params(&env, &claimant, &token_client.address, 5_000, DEADLINE),
-    );
-
-    let cancel_id = client.create_cancel_pull_payment_proposal(
-        &owner_a,
-        &req_id,
-        &str(&env, "cancel"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &cancel_id);
-    client.approve(&owner_b, &cancel_id);
-    client.execute(&owner_c, &cancel_id);
-
-    assert_eq!(
-        client.try_claim_pull_payment(&claimant, &req_id),
-        Err(Ok(ContractError::PullPaymentNotOpen))
-    );
-}
-
-#[test]
-fn pull_payment_solo_owner_cannot_create_and_self_execute() {
-    // Threshold-2 multisig: a single owner cannot unilaterally open a
-    // pull-payment to themselves.
-    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
-
-    let prop_id = client.create_pull_payment_proposal(
-        &owner_a,
-        &pull_params(&env, &owner_a, &token_client.address, 100_000, DEADLINE),
-        &str(&env, "solo drain"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-}
-
-// ── Property tests ────────────────────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// For any valid claim amount the claimant receives exactly that amount and
-    /// the request transitions to Claimed.
-    #[test]
-    fn pull_payment_claim_amount_matches(
-        amount in 1_i128..=100_000_i128,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let claimant = Address::generate(&env);
-
-        let req_id = execute_pull_payment_proposal(
-            &env, &client, &owner_a, &owner_b, &owner_c,
-            &pull_params(&env, &claimant, &token_client.address, amount, DEADLINE),
-        );
-
-        let balance_before = token_client.balance(&claimant);
-        client.claim_pull_payment(&claimant, &req_id);
-        prop_assert_eq!(token_client.balance(&claimant), balance_before + amount);
-
-        let req = client.get_pull_payment(&req_id).unwrap();
-        prop_assert_eq!(req.status, PullPaymentStatus::Claimed);
-    }
-
-    /// Claiming a non-existent request always fails regardless of the ID.
-    #[test]
-    fn pull_payment_claim_nonexistent_always_fails(
-        request_id in 1_u64..=10_000_u64,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-
-        let claimant = Address::generate(&env);
-
-        prop_assert_eq!(
-            client.try_claim_pull_payment(&claimant, &request_id),
-            Err(Ok(ContractError::PullPaymentNotFound))
-        );
-    }
-}
-
-// ── Issue #949: Invoice and Payment-Reference Metadata ────────────────────────
-//
-// Reconciliation metadata (invoice_id, external_ref, memo) can be attached
-// to any payment proposal before it is executed. The original proposer sets
-// it; it is cleaned up after execution.
-
-/// Helper: build a PaymentMetadata with all fields set.
-fn meta_full(env: &Env, invoice: &str, ext_ref: &str, memo: &str) -> PaymentMetadata {
-    PaymentMetadata {
-        invoice_id: Some(str(env, invoice)),
-        external_ref: Some(str(env, ext_ref)),
-        memo: Some(str(env, memo)),
-    }
-}
-
-/// Helper: build a PaymentMetadata with only invoice_id set.
-fn meta_invoice(env: &Env, invoice: &str) -> PaymentMetadata {
-    PaymentMetadata {
-        invoice_id: Some(str(env, invoice)),
-        external_ref: None,
-        memo: None,
-    }
-}
-
-/// Helper: create + return a transfer proposal ID (not yet executed).
-fn make_transfer_proposal(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    token: &Address,
-) -> u64 {
-    client.create_proposal(
-        owner_a,
-        &t(env, &Address::generate(env), 10_000, token),
-        &str(env, "transfer"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    )
-}
-
-// ── Unit tests ───────────────────────────────────────────────────────────────
-
-#[test]
-fn metadata_can_be_set_on_pending_proposal() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_full(&env, "INV-001", "PO-123", "Q4 payroll"),
-    );
-
-    let meta = client.get_payment_metadata(&prop_id).expect("metadata should exist");
-    assert_eq!(meta.invoice_id, Some(str(&env, "INV-001")));
-    assert_eq!(meta.external_ref, Some(str(&env, "PO-123")));
-    assert_eq!(meta.memo, Some(str(&env, "Q4 payroll")));
-}
-
-#[test]
-fn metadata_can_be_overwritten_before_execution() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-
-    // Overwrite with a different invoice ID.
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-002"),
-    );
-
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id, Some(str(&env, "INV-002")));
-    assert_eq!(meta.external_ref, None);
-}
-
-#[test]
-fn metadata_can_be_cleared_before_execution() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-    assert!(client.get_payment_metadata(&prop_id).is_some());
-
-    client.clear_payment_metadata(&owner_a, &prop_id);
-    assert!(client.get_payment_metadata(&prop_id).is_none());
-}
-
-#[test]
-fn metadata_emits_pymeta_event() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-
-    assert!(has_contract_event(
-        &env,
-        &client.address,
-        Symbol::new(&env, "pymeta")
-    ));
-}
-
-#[test]
-fn metadata_non_proposer_cannot_set() {
-    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    // owner_b is an owner but not the proposer.
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_b,
-            &prop_id,
-            &meta_invoice(&env, "INV-001"),
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn metadata_non_owner_cannot_set() {
-    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &non_owner,
-            &prop_id,
-            &meta_invoice(&env, "INV-001"),
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn metadata_cannot_set_on_executed_proposal() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    // Execute the proposal.
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &meta_invoice(&env, "INV-001"),
-        ),
-        Err(Ok(ContractError::ProposalAlreadyExecuted))
-    );
-}
-
-#[test]
-fn metadata_cannot_set_on_nonexistent_proposal() {
-    let (env, client, owner_a, _, _, _, _) = setup(2);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &999,
-            &meta_invoice(&env, "INV-001"),
-        ),
-        Err(Ok(ContractError::ProposalNotFound))
-    );
-}
-
-#[test]
-fn metadata_rejects_empty_invoice_id() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &PaymentMetadata {
-                invoice_id: Some(str(&env, "")),
-                external_ref: None,
-                memo: None,
-            },
-        ),
-        Err(Ok(ContractError::MetadataTooLong))
-    );
-}
-
-#[test]
-fn metadata_rejects_empty_external_ref() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &PaymentMetadata {
-                invoice_id: None,
-                external_ref: Some(str(&env, "")),
-                memo: None,
-            },
-        ),
-        Err(Ok(ContractError::MetadataTooLong))
-    );
-}
-
-#[test]
-fn metadata_rejects_empty_memo() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &PaymentMetadata {
-                invoice_id: None,
-                external_ref: None,
-                memo: Some(str(&env, "")),
-            },
-        ),
-        Err(Ok(ContractError::MetadataTooLong))
-    );
-}
-
-#[test]
-fn metadata_rejects_invoice_id_too_long() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    // 301 chars — exceeds MAX_DESCRIPTION_LEN (300).
-    let long = "x".repeat(301);
-
-    assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &PaymentMetadata {
-                invoice_id: Some(str(&env, &long)),
-                external_ref: None,
-                memo: None,
-            },
-        ),
-        Err(Ok(ContractError::MetadataTooLong))
-    );
-}
-
-#[test]
-fn metadata_accepts_max_length_invoice_id() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    // Exactly 300 chars — the boundary.
-    let max = "y".repeat(300);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &PaymentMetadata {
-            invoice_id: Some(str(&env, &max)),
-            external_ref: None,
-            memo: None,
-        },
-    );
-
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id.as_ref().unwrap().len(), 300);
-}
-
-#[test]
-fn metadata_all_none_is_valid() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &PaymentMetadata {
-            invoice_id: None,
-            external_ref: None,
-            memo: None,
-        },
-    );
-
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id, None);
-    assert_eq!(meta.external_ref, None);
-    assert_eq!(meta.memo, None);
-}
-
-#[test]
-fn metadata_cleared_after_execution() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-    assert!(client.get_payment_metadata(&prop_id).is_some());
-
-    // Execute the proposal.
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    // Metadata should be cleaned up after execution.
-    assert!(client.get_payment_metadata(&prop_id).is_none());
-}
-
-#[test]
-fn metadata_clear_cannot_clear_executed_proposal() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    // Cannot clear after execution (metadata already removed, but the guard
-    // should still prevent the call).
-    assert_eq!(
-        client.try_clear_payment_metadata(&owner_a, &prop_id),
-        Err(Ok(ContractError::ProposalAlreadyExecuted))
-    );
-}
-
-#[test]
-fn metadata_clear_non_proposer_rejected() {
-    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-001"),
-    );
-
-    assert_eq!(
-        client.try_clear_payment_metadata(&owner_b, &prop_id),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn metadata_can_be_set_on_recurring_proposal() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
-
-    let prop_id = client.create_recurring_proposal(
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
         &owner_a,
+        &owner_b,
+        &owner_c,
         &recipient,
         &token_client.address,
-        &1_000,
-        &3_600,
-        &NOW,
-        &0,
-        &0,
-        &0,
-        &RecurringKind::FixedAmountPerPeriod,
-        &str(&env, "payroll"),
-        &DEADLINE,
-        &ProposalCategory::Payroll,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        0,
     );
 
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_full(&env, "INV-PAY-001", "PO-456", "Monthly payroll"),
+    assert_eq!(
+        client.try_claim_stream(&owner_b, &schedule_id),
+        Err(Ok(ContractError::Unauthorized))
     );
 
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id, Some(str(&env, "INV-PAY-001")));
+    set_timestamp(&env, NOW + 2);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 6);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 6);
+
+    set_timestamp(&env, NOW + 5);
+    client.claim_stream(&recipient, &schedule_id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(token_client.balance(&recipient), 15);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 15);
+
+    let claim_event = contract_events.events().iter().find(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("str_clm")
+            })
+            .unwrap_or(false)
+    }).expect("expected stream claim event");
+    let event_data = match &claim_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: RecurringStreamClaimedEvent = event_data.into_val(&env);
+    assert_eq!(event.amount, 9);
+    assert_eq!(event.total_disbursed, 15);
 }
 
 #[test]
-fn metadata_can_be_set_on_escrow_proposal() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+fn continuous_stream_claims_are_blocked_until_the_cliff() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
-
-    let prop_id = client.create_escrow_proposal(
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
         &owner_a,
-        &EscrowParams {
-            recipient: recipient.clone(),
-            token: token_client.address.clone(),
-            amount: 5_000,
-            release_mode: EscrowReleaseMode::Deadline(DEADLINE),
-        },
-        &str(&env, "escrow"),
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        NOW + 3,
+        0,
+    );
+
+    set_timestamp(&env, NOW + 2);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::RecurringIntervalNotElapsed))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    set_timestamp(&env, NOW + 3);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 9);
+}
+
+#[test]
+fn continuous_stream_claims_respect_the_total_cap() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        5,
+    );
+
+    set_timestamp(&env, NOW + 1);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 3);
+
+    set_timestamp(&env, NOW + 3);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 5);
+    assert_eq!(client.get_recurring_payment(&schedule_id).total_disbursed, 5);
+    assert_eq!(client.get_active_recurring_count(), 0);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::RecurringPaymentInactive))
+    );
+}
+
+#[test]
+fn proposer_can_cancel_only_a_pending_proposal_and_active_count_decrements_once() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let pending_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Cancel pending"),
         &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
+    client.cancel_proposal(&owner_a, &pending_id);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(client.get_proposal(&pending_id).status, ProposalStatus::Cancelled);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        0
+    );
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &pending_id),
+        Err(Ok(ContractError::ProposalNotActive))
+    );
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        0
     );
 
-    client.set_payment_metadata(
+    assert!(contract_events.events().iter().any(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("p_canc")
+            })
+            .unwrap_or(false)
+    }));
+
+    let ready_id = client.create_proposal(
         &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "ESC-001"),
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Already ready"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &ready_id);
+    client.approve(&owner_b, &ready_id);
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &ready_id),
+        Err(Ok(ContractError::ProposalNotActive))
     );
 
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id, Some(str(&env, "ESC-001")));
-}
-
-#[test]
-fn metadata_migrate_already_migrated_on_fresh_deploy() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    assert_eq!(
-        client.try_migrate_to_payment_metadata(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
-        ),
-        Err(Ok(ContractError::AlreadyMigrated))
+    let non_proposer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Wrong caller"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
-    assert_eq!(client.get_storage_version(), 5);
-}
-
-#[test]
-fn metadata_get_returns_none_when_not_set() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    assert!(client.get_payment_metadata(&prop_id).is_none());
-}
-
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn metadata_cannot_be_set_on_expired_proposal() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    // Advance past the proposal deadline.
-    set_timestamp(&env, DEADLINE + 1);
-
     assert_eq!(
-        client.try_set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &meta_invoice(&env, "INV-001"),
-        ),
+        client.try_cancel_proposal(&owner_b, &non_proposer_id),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    let terminal_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Already executed"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &terminal_id);
+    client.approve(&owner_b, &terminal_id);
+    client.execute(&owner_c, &terminal_id);
+    assert_eq!(
+        client.try_cancel_proposal(&owner_a, &terminal_id),
         Err(Ok(ContractError::ProposalNotActive))
     );
 }
 
 #[test]
-fn metadata_clear_cannot_clear_nonexistent_proposal() {
-    let (env, client, owner_a, _, _, _, _) = setup(2);
-
-    assert_eq!(
-        client.try_clear_payment_metadata(&owner_a, &999),
-        Err(Ok(ContractError::ProposalNotFound))
-    );
-}
-
-#[test]
-fn metadata_does_not_persist_after_overwrite_then_clear() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let prop_id = make_transfer_proposal(&env, &client, &owner_a, &token_client.address);
-
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_full(&env, "INV-001", "PO-123", "memo1"),
-    );
-    client.clear_payment_metadata(&owner_a, &prop_id);
-    client.set_payment_metadata(
-        &owner_a,
-        &prop_id,
-        &meta_invoice(&env, "INV-002"),
-    );
-
-    let meta = client.get_payment_metadata(&prop_id).unwrap();
-    assert_eq!(meta.invoice_id, Some(str(&env, "INV-002")));
-    // external_ref and memo should be None after the second set.
-    assert_eq!(meta.external_ref, None);
-    assert_eq!(meta.memo, None);
-}
-
-// ── Property tests ────────────────────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// For any non-empty invoice_id string within the length limit, setting
-    /// and reading back metadata must round-trip exactly.
-    #[test]
-    fn metadata_round_trips_invoice_id(
-        len in 1_u32..=300_u32,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let prop_id = client.create_proposal(
-            &owner_a,
-            &t(&env, &Address::generate(&env), 100, &token_client.address),
-            &str(&env, "test"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        );
-
-        let invoice = "z".repeat(len as usize);
-        client.set_payment_metadata(
-            &owner_a,
-            &prop_id,
-            &PaymentMetadata {
-                invoice_id: Some(str(&env, &invoice)),
-                external_ref: None,
-                memo: None,
-            },
-        );
-
-        let meta = client.get_payment_metadata(&prop_id).unwrap();
-        prop_assert_eq!(meta.invoice_id.as_ref().unwrap().len(), len);
-    }
-
-    /// Setting metadata on an executed proposal must always fail regardless
-    /// of the proposal_id.
-    #[test]
-    fn metadata_set_after_execute_always_rejected(
-        proposal_id_seed in 1_u64..=1_000_u64,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let prop_id = client.create_proposal(
-            &owner_a,
-            &t(&env, &Address::generate(&env), 100, &token_client.address),
-            &str(&env, "test"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        );
-        client.approve(&owner_a, &prop_id);
-        client.approve(&owner_b, &prop_id);
-        client.execute(&owner_c, &prop_id);
-
-        // Try to set metadata on an executed proposal — must always fail.
-        prop_assert_eq!(
-            client.try_set_payment_metadata(
-                &owner_a,
-                &prop_id,
-                &meta_invoice(&env, "INV-001"),
-            ),
-            Err(Ok(ContractError::ProposalAlreadyExecuted))
-        );
-    }
-}
-
-// ── Issue #956: Configurable Spend Policy Engine ──────────────────────────────
-//
-// A composed multi-window spend policy (daily/weekly/monthly) can be set per
-// (owner, token) pair via governance. At execution time the engine evaluates
-// all windows and rejects the proposal if any window's cumulative spend would
-// exceed its limit.
-
-/// Helper: build a SpendPolicy with one limit.
-fn policy_one(env: &Env, owner: &Address, token: &Address, window: SpendWindowKind, limit: i128) -> SpendPolicy {
-    let mut limits = Vec::new(env);
-    limits.push_back(SpendLimit { window, limit });
-    SpendPolicy {
-        owner: owner.clone(),
-        token: token.clone(),
-        limits,
-    }
-}
-
-/// Helper: build a SpendPolicy with daily + monthly limits.
-fn policy_daily_monthly(env: &Env, owner: &Address, token: &Address, daily: i128, monthly: i128) -> SpendPolicy {
-    let mut limits = Vec::new(env);
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: daily });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: monthly });
-    SpendPolicy {
-        owner: owner.clone(),
-        token: token.clone(),
-        limits,
-    }
-}
-
-/// Helper: set a spend policy via governance.
-fn execute_set_spend_policy(
-    env: &Env,
-    client: &AccordContractClient,
-    owner_a: &Address,
-    owner_b: &Address,
-    owner_c: &Address,
-    policy: &SpendPolicy,
-) {
-    let prop_id = client.create_set_spend_policy_proposal(
-        owner_a, policy, &str(env, "set policy"), &DEADLINE,
-    );
-    client.approve(owner_a, &prop_id);
-    client.approve(owner_b, &prop_id);
-    client.execute(owner_c, &prop_id);
-}
-
-// ── Unit tests ───────────────────────────────────────────────────────────────
-
-#[test]
-fn spend_policy_set_and_read() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
-    );
-
-    let policy = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
-    assert_eq!(policy.limits.len(), 1);
-    let l = policy.limits.get(0).unwrap();
-    assert_eq!(l.window, SpendWindowKind::Daily);
-    assert_eq!(l.limit, 10_000);
-}
-
-#[test]
-fn spend_policy_set_emits_sp_set_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Weekly, 50_000),
-    );
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_set")));
-}
-
-#[test]
-fn spend_policy_clear_removes_policy() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
-    );
-    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_some());
-
-    let clear_id = client.create_clear_spend_policy_proposal(
-        &owner_a, &owner_a, &token_client.address,
-        &str(&env, "clear policy"), &DEADLINE,
-    );
-    client.approve(&owner_a, &clear_id);
-    client.approve(&owner_b, &clear_id);
-    client.execute(&owner_c, &clear_id);
-
-    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_none());
-}
-
-#[test]
-fn spend_policy_clear_emits_sp_clr_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
-    );
-
-    let clear_id = client.create_clear_spend_policy_proposal(
-        &owner_a, &owner_a, &token_client.address,
-        &str(&env, "clear"), &DEADLINE,
-    );
-    client.approve(&owner_a, &clear_id);
-    client.approve(&owner_b, &clear_id);
-    client.execute(&owner_c, &clear_id);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_clr")));
-}
-
-#[test]
-fn spend_policy_rejects_empty_limits() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let policy = SpendPolicy {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        limits: Vec::new(&env),
-    };
-
-    assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &owner_a, &policy, &str(&env, "empty"), &DEADLINE,
-        ),
-        Err(Ok(ContractError::EmptySpendPolicy))
-    );
-}
-
-#[test]
-fn spend_policy_rejects_too_many_windows() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let mut limits = Vec::new(&env);
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 100 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: 500 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: 2000 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 999 }); // 4th — too many
-    let policy = SpendPolicy {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        limits,
-    };
-
-    assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &owner_a, &policy, &str(&env, "too many"), &DEADLINE,
-        ),
-        Err(Ok(ContractError::TooManySpendWindows))
-    );
-}
-
-#[test]
-fn spend_policy_rejects_duplicate_windows() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let mut limits = Vec::new(&env);
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 100 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 200 }); // duplicate
-    let policy = SpendPolicy {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        limits,
-    };
-
-    assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &owner_a, &policy, &str(&env, "dup"), &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidSpendWindow))
-    );
-}
-
-#[test]
-fn spend_policy_rejects_zero_limit() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 0);
-
-    assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &owner_a, &policy, &str(&env, "zero"), &DEADLINE,
-        ),
-        Err(Ok(ContractError::InvalidAmount))
-    );
-}
-
-#[test]
-fn spend_policy_blocks_transfer_exceeding_daily_limit() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 5_000),
-    );
-
-    // First transfer of 3_000 — under the limit.
-    let p1 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 3_000, &token_client.address),
-        &str(&env, "first"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p1);
-    client.approve(&owner_b, &p1);
-    client.execute(&owner_c, &p1);
-
-    // Second transfer of 3_000 — cumulative 6_000 > 5_000 daily limit.
-    let p2 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 3_000, &token_client.address),
-        &str(&env, "second"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p2);
-    client.approve(&owner_b, &p2);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &p2),
-        Err(Ok(ContractError::SpendPolicyExceeded))
-    );
-}
-
-#[test]
-fn spend_policy_allows_transfer_under_limit() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
-    );
-
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 5_000, &token_client.address),
-        &str(&env, "under limit"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-
-    assert_eq!(
-        client.get_spend_policy_spent(&owner_a, &token_client.address, &SpendWindowKind::Daily),
-        5_000
-    );
-}
-
-#[test]
-fn spend_policy_multi_window_daily_passes_monthly_fails() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    // Daily 10_000, Monthly 20_000
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_daily_monthly(&env, &owner_a, &token_client.address, 10_000, 20_000),
-    );
-
-    // Spend 12_000 — under daily? No, 12_000 > 10_000 daily.
-    let p1 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 12_000, &token_client.address),
-        &str(&env, "exceeds daily"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p1);
-    client.approve(&owner_b, &p1);
-
-    // Daily limit 10_000 < 12_000 → rejected.
-    assert_eq!(
-        client.try_execute(&owner_c, &p1),
-        Err(Ok(ContractError::SpendPolicyExceeded))
-    );
-
-    // Now try 8_000 — under daily (10_000) and under monthly (20_000).
-    let p2 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 8_000, &token_client.address),
-        &str(&env, "under both"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p2);
-    client.approve(&owner_b, &p2);
-    client.execute(&owner_c, &p2);
-
-    // Try another 8_000 — cumulative daily = 16_000 > 10_000 → rejected.
-    let p3 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 8_000, &token_client.address),
-        &str(&env, "daily exceeded"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p3);
-    client.approve(&owner_b, &p3);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &p3),
-        Err(Ok(ContractError::SpendPolicyExceeded))
-    );
-}
-
-#[test]
-fn spend_policy_daily_window_resets() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 5_000),
-    );
-
-    // Spend 5_000 (exactly at limit).
-    let p1 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 5_000, &token_client.address),
-        &str(&env, "at limit"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p1);
-    client.approve(&owner_b, &p1);
-    client.execute(&owner_c, &p1);
-
-    // Another 1_000 immediately → cumulative 6_000 > 5_000 → rejected.
-    let p2 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 1_000, &token_client.address),
-        &str(&env, "over"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p2);
-    client.approve(&owner_b, &p2);
-    assert_eq!(
-        client.try_execute(&owner_c, &p2),
-        Err(Ok(ContractError::SpendPolicyExceeded))
-    );
-
-    // Advance past daily window (86_400 seconds).
-    set_timestamp(&env, NOW + 86_401);
-
-    // Same 1_000 should now pass — window reset.
-    let p3 = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 1_000, &token_client.address),
-        &str(&env, "after reset"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p3);
-    client.approve(&owner_b, &p3);
-    client.execute(&owner_c, &p3);
-}
-
-#[test]
-fn spend_policy_remaining_returns_headroom() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000),
-    );
-
-    // No spend yet → remaining = 10_000.
-    assert_eq!(
-        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
-        Some(10_000)
-    );
-
-    // Spend 4_000.
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 4_000, &token_client.address),
-        &str(&env, "spend"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-
-    // Remaining = 10_000 - 4_000 = 6_000.
-    assert_eq!(
-        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
-        Some(6_000)
-    );
-}
-
-#[test]
-fn spend_policy_remaining_none_without_policy() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    assert_eq!(
-        client.get_spend_policy_remaining(&owner_a, &token_client.address, &SpendWindowKind::Daily),
-        None
-    );
-}
-
-#[test]
-fn spend_policy_rejected_emits_sp_rej_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
-    );
-
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 2_000, &token_client.address),
-        &str(&env, "over"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    let _ = client.try_execute(&owner_c, &p);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "sp_rej")));
-}
-
-#[test]
-fn spend_policy_non_proposer_cannot_create() {
-    let (env, client, owner_a, owner_b, owner_c, non_owner, token_client) = setup(2);
-    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000);
-
-    assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &non_owner, &policy, &str(&env, "unauthorized"), &DEADLINE,
-        ),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-#[test]
-fn spend_policy_frozen_blocks_creation() {
-    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
     let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
-    client.freeze(&guardian);
+    let mut guardian_approvers = Vec::new(&env);
+    guardian_approvers.push_back(owner_a.clone());
+    guardian_approvers.push_back(owner_b.clone());
+    client.set_guardian(&guardian_approvers, &guardian);
 
-    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 10_000);
+    let expired_one = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Expired one"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let expired_two = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Expired two"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let live = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "Still live"),
+        &(DEADLINE + 86_400),
+        &ProposalCategory::Transfer,
+    );
+
+    set_timestamp(&env, DEADLINE + 1);
+    client.freeze(&guardian);
+    let mut ids = Vec::new(&env);
+    ids.push_back(expired_one);
+    ids.push_back(expired_two);
+    ids.push_back(live);
+    ids.push_back(expired_one);
+
+    assert_eq!(client.sweep_expired(&non_owner, &ids), 2);
+
+    // `env.events().all()` only exposes the events of the most recent
+    // top-level invocation, so capture them before the next contract call.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
+    assert_eq!(client.get_proposal(&live).status, ProposalStatus::Pending);
+
+    let first_sweep_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            topics
+                .first()
+                .map(|topic| {
+                    let symbol: Symbol = topic.clone().into_val(&env);
+                    symbol == symbol_short!("exp_sw")
+                })
+                .unwrap_or(false)
+        })
+        .expect("expected expiry sweep event");
+    let event_data = match &first_sweep_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: ExpiredProposalsSweptEvent = event_data.into_val(&env);
+    assert_eq!(event.swept, 2);
+
+    assert_eq!(client.sweep_expired(&non_owner, &ids), 0);
+
+    // Capture before any storage helper runs: `as_contract` pops back to the
+    // top-level frame, which clears the recorded events.
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let sweep_event = contract_events.events().iter().rev().find(|event| {
+        let topics = match &event.body {
+            xdr::ContractEventBody::V0(body) => body.topics.clone(),
+        };
+        topics
+            .first()
+            .map(|topic| {
+                let symbol: Symbol = topic.clone().into_val(&env);
+                symbol == symbol_short!("exp_sw")
+            })
+            .unwrap_or(false)
+    }).expect("expected expiry sweep event");
+    let event_data = match &sweep_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: ExpiredProposalsSweptEvent = event_data.into_val(&env);
+    assert_eq!(event.swept, 0);
 
     assert_eq!(
-        client.try_create_set_spend_policy_proposal(
-            &owner_a, &policy, &str(&env, "frozen"), &DEADLINE,
+        env.as_contract(&client.address, || read_active_count(&env)),
+        1
+    );
+}
+
+// ─── Storage migration registry (#960) ───────────────────────────────────────
+
+#[test]
+fn storage_migration_registry_lists_supported_versions() {
+    let (_, client, _, _, _, _, _) = setup(2);
+    let supported = client.get_supported_storage_versions();
+    assert_eq!(supported.len(), 3);
+    assert!(supported.contains(0));
+    assert!(supported.contains(STORAGE_SCHEMA_VERSION));
+    assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
+    assert!(!client.is_storage_version_supported(&99));
+}
+
+#[test]
+fn migrate_storage_enforces_registry_and_no_skips() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+
+    // Simulate a contract already on the version-1 layout.
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &1_u32);
+    });
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &0, &2),
+        Err(Ok(ContractError::SchemaVersionMismatch))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &99),
+        Err(Ok(ContractError::UnsupportedSchemaVersion))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &1),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &1, &0),
+        Err(Ok(ContractError::SkippedSchemaVersion))
+    );
+
+    client.migrate_storage(&approvers, &1, &2);
+    assert_eq!(client.get_storage_version(), 2);
+
+    // A legacy deployment must run its legacy migrations instead of jumping
+    // straight to the current layout.
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &0_u32);
+    });
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &0, &2),
+        Err(Ok(ContractError::LegacyMigrationRequired))
+    );
+}
+
+// ─── Staged owner key rotation (#959) ────────────────────────────────────────
+
+#[test]
+fn owner_rotation_is_staged_and_preserves_weight_and_roles() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_key = Address::generate(&env);
+
+    let id = client.create_rotate_owner_proposal(
+        &owner_a,
+        &owner_c,
+        &new_key,
+        &str(&env, "rotate compromised key"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    assert_eq!(
+        client.try_execute(&owner_a, &id),
+        Err(Ok(ContractError::OwnerRotationDelayActive))
+    );
+
+    set_timestamp(&env, NOW + OWNER_ROTATION_DELAY);
+    client.execute(&owner_a, &id);
+
+    let owners = client.get_owners();
+    assert!(!owners.contains(&owner_c));
+    assert!(owners.contains(&new_key));
+    assert_eq!(client.get_owner_weight(&new_key), 1);
+    assert_eq!(client.get_total_weight(), 3);
+    assert_eq!(client.get_threshold(), 2);
+    assert_eq!(client.get_roles(&new_key).len(), 3);
+    assert_eq!(client.get_roles(&owner_c).len(), 0);
+}
+
+#[test]
+fn rotate_owner_proposal_rejects_unknown_owner_and_existing_target() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let new_key = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_rotate_owner_proposal(
+            &owner_a,
+            &Address::generate(&env),
+            &new_key,
+            &str(&env, "unknown owner"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::OwnerNotFound))
+    );
+    assert_eq!(
+        client.try_create_rotate_owner_proposal(
+            &owner_a,
+            &owner_c,
+            &owner_b,
+            &str(&env, "already an owner"),
+            &DEADLINE,
+        ),
+        Err(Ok(ContractError::DuplicateOwner))
+    );
+}
+
+// ─── Guardian-quorum social recovery (#958) ──────────────────────────────────
+
+#[test]
+fn social_recovery_replaces_lost_owner_after_quorum_and_delay() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let guardian_a = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+    let new_key = Address::generate(&env);
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    let guardians = Vec::from_array(&env, [guardian_a.clone(), guardian_b.clone()]);
+    client.configure_guardian_quorum(&approvers, &guardians, &2);
+
+    let id = client.propose_social_recovery(&guardian_a, &new_key, &Some(owner_c.clone()));
+    assert_eq!(
+        client.try_execute_social_recovery(&owner_a, &id),
+        Err(Ok(ContractError::RecoveryRequestNotReady))
+    );
+
+    client.approve_social_recovery(&guardian_b, &id);
+    assert_eq!(
+        client.try_execute_social_recovery(&owner_a, &id),
+        Err(Ok(ContractError::RecoveryDelayActive))
+    );
+
+    set_timestamp(&env, NOW + SOCIAL_RECOVERY_DELAY);
+    client.execute_social_recovery(&owner_a, &id);
+
+    let owners = client.get_owners();
+    assert!(!owners.contains(&owner_c));
+    assert!(owners.contains(&new_key));
+    assert_eq!(client.get_owner_weight(&new_key), 1);
+    assert_eq!(client.get_total_weight(), 3);
+    assert_eq!(client.get_roles(&new_key).len(), 3);
+
+    let request = client.get_social_recovery(&id);
+    assert!(request.executed);
+    assert_eq!(request.approvals.len(), 2);
+}
+
+#[test]
+fn social_recovery_requires_configured_guardians_and_distinct_approvals() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let guardian_a = Address::generate(&env);
+    let guardian_b = Address::generate(&env);
+    let new_key = Address::generate(&env);
+
+    assert_eq!(
+        client.try_propose_social_recovery(&owner_a, &new_key, &None),
+        Err(Ok(ContractError::GuardianQuorumNotConfigured))
+    );
+
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    let guardians = Vec::from_array(&env, [guardian_a.clone(), guardian_b.clone()]);
+    client.configure_guardian_quorum(&approvers, &guardians, &2);
+
+    assert_eq!(
+        client.try_propose_social_recovery(&owner_a, &new_key, &None),
+        Err(Ok(ContractError::NotGuardian))
+    );
+    assert_eq!(
+        client.try_configure_guardian_quorum(
+            &approvers,
+            &Vec::from_array(&env, [guardian_a.clone(), guardian_a.clone()]),
+            &2,
+        ),
+        Err(Ok(ContractError::InvalidGuardianQuorum))
+    );
+
+    let id = client.propose_social_recovery(&guardian_a, &new_key, &None);
+    assert_eq!(
+        client.try_approve_social_recovery(&guardian_a, &id),
+        Err(Ok(ContractError::AlreadyApproved))
+    );
+}
+
+// ─── Scoped emergency freezes (#957) ─────────────────────────────────────────
+
+#[test]
+fn scoped_asset_freeze_blocks_only_that_asset() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+
+    client.freeze_asset(&guardian, &token_client.address, &true);
+    assert!(client.is_asset_frozen(&token_client.address));
+
+    assert_eq!(
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 10, &token_client.address),
+            &str(&env, "frozen asset"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
         ),
         Err(Ok(ContractError::ContractFrozen))
     );
-}
 
-#[test]
-fn spend_policy_migrate_already_migrated_on_fresh_deploy() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
-    assert_eq!(
-        client.try_migrate_to_spend_policy(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
-        ),
-        Err(Ok(ContractError::AlreadyMigrated))
-    );
-    assert_eq!(client.get_storage_version(), 6);
-}
-
-#[test]
-fn spend_policy_get_returns_none_without_policy() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    assert!(client.get_spend_policy(&owner_a, &token_client.address).is_none());
-}
-
-#[test]
-fn spend_policy_all_three_windows() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let mut limits = Vec::new(&env);
-    limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: 1_000 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: 5_000 });
-    limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: 20_000 });
-    let policy = SpendPolicy {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        limits,
-    };
-    execute_set_spend_policy(&env, &client, &owner_a, &owner_b, &owner_c, &policy);
-
-    let read = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
-    assert_eq!(read.limits.len(), 3);
-}
-
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn spend_policy_solo_owner_cannot_bypass() {
-    // Threshold-2: a single owner cannot set a policy and then drain.
-    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
-    let policy = policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000);
-
-    let prop_id = client.create_set_spend_policy_proposal(
-        &owner_a, &policy, &str(&env, "solo"), &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::ThresholdNotMet))
-    );
-}
-
-#[test]
-fn spend_policy_does_not_affect_other_owners() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    // Set policy for owner_a only.
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
-    );
-
-    // owner_b can spend freely — no policy set for them.
-    let p = client.create_proposal(
-        &owner_b,
-        &t(&env, &Address::generate(&env), 50_000, &token_client.address),
-        &str(&env, "owner_b free"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-
-    assert_eq!(
-        client.get_spend_policy_spent(&owner_b, &token_client.address, &SpendWindowKind::Daily),
-        0
-    );
-}
-
-#[test]
-fn spend_policy_clear_then_spend_unrestricted() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    execute_set_spend_policy(
-        &env, &client, &owner_a, &owner_b, &owner_c,
-        &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, 1_000),
-    );
-
-    // Clear the policy.
-    let clear_id = client.create_clear_spend_policy_proposal(
-        &owner_a, &owner_a, &token_client.address,
-        &str(&env, "clear"), &DEADLINE,
-    );
-    client.approve(&owner_a, &clear_id);
-    client.approve(&owner_b, &clear_id);
-    client.execute(&owner_c, &clear_id);
-
-    // Now a large transfer should pass — no policy active.
-    let p = client.create_proposal(
+    // Governance remains available while the asset is frozen.
+    let id = client.create_change_threshold_proposal(
         &owner_a,
-        &t(&env, &Address::generate(&env), 100_000, &token_client.address),
-        &str(&env, "unrestricted"),
+        &2,
+        &str(&env, "governance while frozen"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_eq!(client.get_threshold(), 2);
+
+    client.freeze_asset(&guardian, &token_client.address, &false);
+    assert!(!client.is_asset_frozen(&token_client.address));
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "unfrozen asset"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-}
-
-// ── Property tests ────────────────────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-
-    /// For any valid daily limit, a single transfer at exactly the limit always
-    /// succeeds, and a second transfer of any positive amount is always rejected.
-    #[test]
-    fn spend_policy_at_limit_then_next_rejected(
-        limit in 1_i128..=100_000_i128,
-        second_amount in 1_i128..=100_000_i128,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        // Set policy with the given limit.
-        execute_set_spend_policy(
-            &env, &client, &owner_a, &owner_b, &owner_c,
-            &policy_one(&env, &owner_a, &token_client.address, SpendWindowKind::Daily, limit),
-        );
-
-        // Transfer exactly `limit` — should pass.
-        let p1 = client.create_proposal(
-            &owner_a,
-            &t(&env, &Address::generate(&env), limit, &token_client.address),
-            &str(&env, "at limit"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        );
-        client.approve(&owner_a, &p1);
-        client.approve(&owner_b, &p1);
-        client.execute(&owner_c, &p1);
-
-        // Second transfer of `second_amount` — cumulative > limit → rejected.
-        let p2 = client.create_proposal(
-            &owner_a,
-            &t(&env, &Address::generate(&env), second_amount, &token_client.address),
-            &str(&env, "second"),
-            &DEADLINE,
-            &ProposalCategory::Transfer,
-        );
-        client.approve(&owner_a, &p2);
-        client.approve(&owner_b, &p2);
-
-        prop_assert_eq!(
-            client.try_execute(&owner_c, &p2),
-            Err(Ok(ContractError::SpendPolicyExceeded))
-        );
-    }
-
-    /// Setting a policy with three distinct windows always succeeds and the
-    /// stored limits match exactly.
-    #[test]
-    fn spend_policy_three_windows_always_valid(
-        daily in 1_i128..=1_000_i128,
-        weekly in 1_i128..=10_000_i128,
-        monthly in 1_i128..=100_000_i128,
-    ) {
-        let env = non_snapshot_env();
-        env.mock_all_auths();
-        set_timestamp(&env, NOW);
-
-        let contract_id = env.register(AccordContract, ());
-        let client = AccordContractClient::new(&env, &contract_id);
-
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin);
-        let token_client = token::Client::new(&env, &token_id.address());
-        let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
-
-        let owner_a = Address::generate(&env);
-        let owner_b = Address::generate(&env);
-        let owner_c = Address::generate(&env);
-        let mut owners = Vec::new(&env);
-        owners.push_back(owner_a.clone());
-        owners.push_back(owner_b.clone());
-        owners.push_back(owner_c.clone());
-        let mut weights = Vec::new(&env);
-        for _ in 0..3u32 { weights.push_back(1u32); }
-        client.initialize(&owners, &weights, &2, &0);
-        token_sac.mint(&contract_id, &1_000_000_000_000_i128);
-
-        let mut limits = Vec::new(&env);
-        limits.push_back(SpendLimit { window: SpendWindowKind::Daily, limit: daily });
-        limits.push_back(SpendLimit { window: SpendWindowKind::Weekly, limit: weekly });
-        limits.push_back(SpendLimit { window: SpendWindowKind::Monthly, limit: monthly });
-        let policy = SpendPolicy {
-            owner: owner_a.clone(),
-            token: token_client.address.clone(),
-            limits,
-        };
-
-        execute_set_spend_policy(&env, &client, &owner_a, &owner_b, &owner_c, &policy);
-
-        let read = client.get_spend_policy(&owner_a, &token_client.address).unwrap();
-        prop_assert_eq!(read.limits.len(), 3);
-        prop_assert_eq!(read.limits.get(0).unwrap().limit, daily);
-        prop_assert_eq!(read.limits.get(1).unwrap().limit, weekly);
-        prop_assert_eq!(read.limits.get(2).unwrap().limit, monthly);
-    }
-}
-
-// ── Issue #954: Oracle Price Guard for Fiat-Denominated Limits ───────────────
-// ── Issue #955: Sanctions and Denylist Policy Hook ───────────────────────────
-// ── Issue #953: Cross-Asset Rebalancing Proposals ───────────────────────────
-
-// ── #954: Oracle price guard tests ───────────────────────────────────────────
-
-#[test]
-fn oracle_price_set_and_read() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000, // $10.00 scaled by 1e7
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
-    let prop_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "set oracle"), &DEADLINE);
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    let read = client.get_oracle_price(&token_client.address, &Symbol::new(&env, "USD")).unwrap();
-    assert_eq!(read.price, 100_000_000);
-    assert_eq!(read.fiat, Symbol::new(&env, "USD"));
-}
-
-#[test]
-fn oracle_price_set_emits_ora_set_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 50_000_000,
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
-    let prop_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "ora_set")));
-}
-
-#[test]
-fn oracle_price_rejects_zero_price() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 0,
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
     assert_eq!(
-        client.try_create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "bad"), &DEADLINE),
-        Err(Ok(ContractError::OraclePriceInvalid))
+        client.get_proposal(&transfer_id).status,
+        ProposalStatus::Pending
     );
 }
 
 #[test]
-fn oracle_price_rejects_zero_staleness() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000,
-        updated_at: NOW,
-        max_staleness: 0,
-    };
-    assert_eq!(
-        client.try_create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "bad"), &DEADLINE),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-}
+fn scoped_kind_freeze_isolates_operation_families() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
 
-#[test]
-fn oracle_price_non_proposer_rejected() {
-    let (env, client, _, _, _, non_owner, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000,
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
+    client.freeze_proposal_kind(&guardian, &ProposalKindTag::Transfer, &true);
+    assert!(client.is_proposal_kind_frozen(&ProposalKindTag::Transfer));
     assert_eq!(
-        client.try_create_set_oracle_price_proposal(&non_owner, &oracle, &str(&env, "unauth"), &DEADLINE),
+        client.try_create_proposal(
+            &owner_a,
+            &t(&env, &Address::generate(&env), 10, &token_client.address),
+            &str(&env, "frozen kind"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+    assert_eq!(
+        client.try_freeze_asset(&owner_a, &token_client.address, &true),
         Err(Ok(ContractError::Unauthorized))
     );
-}
 
-#[test]
-fn fiat_spend_limit_set_and_read() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    // Set oracle first.
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000, // $10 per token
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
-    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
-    client.approve(&owner_a, &ora_id);
-    client.approve(&owner_b, &ora_id);
-    client.execute(&owner_c, &ora_id);
+    // Ownership and governance kinds still work.
+    let id = client.create_change_threshold_proposal(
+        &owner_a,
+        &2,
+        &str(&env, "governance while kind frozen"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
 
-    // Set fiat spend limit.
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 50_000_000, // $5.00 in fiat
-        window_secs: 86_400,
-    };
-    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "fiat limit"), &DEADLINE);
-    client.approve(&owner_a, &lim_id);
-    client.approve(&owner_b, &lim_id);
-    client.execute(&owner_c, &lim_id);
-
-    let read = client.get_fiat_spend_limit(&owner_a, &token_client.address, &Symbol::new(&env, "USD")).unwrap();
-    assert_eq!(read.fiat_limit, 50_000_000);
-}
-
-#[test]
-fn fiat_spend_limit_rejects_zero_limit() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 0,
-        window_secs: 86_400,
-    };
+    client.freeze_proposal_kind(&guardian, &ProposalKindTag::Transfer, &false);
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 10, &token_client.address),
+        &str(&env, "unfrozen kind"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
     assert_eq!(
-        client.try_create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "zero"), &DEADLINE),
-        Err(Ok(ContractError::InvalidAmount))
+        client.get_proposal(&transfer_id).status,
+        ProposalStatus::Pending
     );
 }
 
-#[test]
-fn fiat_spend_limit_rejects_bad_window() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 100_000_000,
-        window_secs: 10, // below MIN_SPENDING_WINDOW
-    };
-    assert_eq!(
-        client.try_create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "bad window"), &DEADLINE),
-        Err(Ok(ContractError::InvalidDuration))
-    );
-}
+// ─── Tests for Proposal Dependency Graph (#940) ─────────────────────────────
 
 #[test]
-fn fiat_spend_limit_blocks_transfer_exceeding_fiat_value() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    // Set oracle: 1 token = $10.00 (price = 10 * 1e7 = 100_000_000).
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000,
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
-    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
-    client.approve(&owner_a, &ora_id);
-    client.approve(&owner_b, &ora_id);
-    client.execute(&owner_c, &ora_id);
-
-    // Set fiat limit: $5.00 = 50_000_000 (scaled). At $10/token, that's 0.5 token.
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 50_000_000,
-        window_secs: 86_400,
-    };
-    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "fiat limit"), &DEADLINE);
-    client.approve(&owner_a, &lim_id);
-    client.approve(&owner_b, &lim_id);
-    client.execute(&owner_c, &lim_id);
-
-    // Transfer of 1 token → fiat value = 1 * 100_000_000 / 1e7 = $10 > $5 limit.
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 1, &token_client.address),
-        &str(&env, "over fiat limit"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &p),
-        Err(Ok(ContractError::FiatLimitExceeded))
-    );
-}
-
-#[test]
-fn fiat_limit_rejected_emits_fiat_rej_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000,
-        updated_at: NOW,
-        max_staleness: 86_400,
-    };
-    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
-    client.approve(&owner_a, &ora_id);
-    client.approve(&owner_b, &ora_id);
-    client.execute(&owner_c, &ora_id);
-
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 1_000_000, // $0.10
-        window_secs: 86_400,
-    };
-    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
-    client.approve(&owner_a, &lim_id);
-    client.approve(&owner_b, &lim_id);
-    client.execute(&owner_c, &lim_id);
-
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 100, &token_client.address),
-        &str(&env, "over"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    let _ = client.try_execute(&owner_c, &p);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "fiat_rej")));
-}
-
-#[test]
-fn fiat_limit_no_oracle_allows_transfer() {
-    // Without an oracle configured, the fiat limit is not enforced.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 1_000_000,
-        window_secs: 86_400,
-    };
-    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
-    client.approve(&owner_a, &lim_id);
-    client.approve(&owner_b, &lim_id);
-    client.execute(&owner_c, &lim_id);
-
-    // No oracle set — transfer should pass.
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 100_000, &token_client.address),
-        &str(&env, "no oracle"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-}
-
-// ── #955: Denylist tests ──────────────────────────────────────────────────────
-
-#[test]
-fn denylist_add_and_check() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let blocked = Address::generate(&env);
-
-    let prop_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert!(client.is_denylist_enabled());
-    assert!(client.is_denied(&blocked));
-}
-
-#[test]
-fn denylist_add_emits_deny_ch_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let blocked = Address::generate(&env);
-
-    let prop_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "deny_ch")));
-}
-
-#[test]
-fn denylist_remove_unblocks() {
-    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
-    let blocked = Address::generate(&env);
-
-    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &add_id);
-    client.approve(&owner_b, &add_id);
-    client.execute(&owner_c, &add_id);
-    assert!(client.is_denied(&blocked));
-
-    let rem_id = client.create_remove_from_denylist_proposal(&owner_a, &blocked, &str(&env, "unblock"), &DEADLINE);
-    client.approve(&owner_a, &rem_id);
-    client.approve(&owner_b, &rem_id);
-    client.execute(&owner_c, &rem_id);
-    assert!(!client.is_denied(&blocked));
-}
-
-#[test]
-fn denylist_blocks_transfer_to_denied_recipient() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let blocked = Address::generate(&env);
-
-    // Add to denylist.
-    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &add_id);
-    client.approve(&owner_b, &add_id);
-    client.execute(&owner_c, &add_id);
-
-    // Try to transfer to blocked address.
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &blocked, 1_000, &token_client.address),
-        &str(&env, "to blocked"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-
-    assert_eq!(
-        client.try_execute(&owner_c, &p),
-        Err(Ok(ContractError::RecipientDenied))
-    );
-}
-
-#[test]
-fn denylist_blocked_emits_deny_blk_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let blocked = Address::generate(&env);
-
-    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &add_id);
-    client.approve(&owner_b, &add_id);
-    client.execute(&owner_c, &add_id);
-
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &blocked, 1_000, &token_client.address),
-        &str(&env, "blocked"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    let _ = client.try_execute(&owner_c, &p);
-
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "deny_blk")));
-}
-
-#[test]
-fn denylist_not_enabled_allows_all_transfers() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+fn test_proposal_dependencies_lifecycle_and_ordered_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
     let recipient = Address::generate(&env);
 
-    // No denylist active — transfer should pass.
-    assert!(!client.is_denylist_enabled());
-
-    let p = client.create_proposal(
+    // Proposal 1: Transfer 10 stroops
+    let p1 = client.create_proposal(
         &owner_a,
-        &t(&env, &recipient, 1_000, &token_client.address),
-        &str(&env, "ok"),
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "First in batch"),
         &DEADLINE,
         &ProposalCategory::Transfer,
     );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-}
 
-#[test]
-fn denylist_non_proposer_rejected() {
-    let (env, client, _, _, _, non_owner, _) = setup(2);
-    let blocked = Address::generate(&env);
-
-    assert_eq!(
-        client.try_create_add_to_denylist_proposal(&non_owner, &blocked, &str(&env, "unauth"), &DEADLINE),
-        Err(Ok(ContractError::Unauthorized))
-    );
-}
-
-// ── #953: Cross-asset rebalancing tests ───────────────────────────────────────
-
-#[test]
-fn rebalance_proposal_creation_validates_targets() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 5000, // 50%
-    });
-    targets.push_back(RebalanceTarget {
-        token: recv_token_id.address(),
-        target_bps: 5000, // 50%
-    });
-
-    let prop_id = client.create_rebalance_proposal(
+    // Proposal 2: Depends on Proposal 1
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
         &owner_a,
-        &RebalanceParams {
-            router,
-            targets,
-            tolerance_bps: 100, // 1%
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "rebalance"),
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Second in batch - depends on p1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Verify dependencies view
+    let retrieved_deps = client.get_proposal_dependencies(&p2);
+    assert_eq!(retrieved_deps.len(), 1);
+    assert_eq!(retrieved_deps.get(0).unwrap(), p1);
+
+    // check_proposal_dependencies returns false while p1 is pending
+    assert_eq!(client.check_proposal_dependencies(&p2), false);
+
+    // Approve Proposal 2 to reach Ready status
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Ready);
+
+    // Attempting to execute p2 before p1 executes must fail with DependencyNotExecuted
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // Now approve and execute p1
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Ready);
+    client.execute(&owner_a, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Executed);
+
+    // check_proposal_dependencies now returns true
+    assert_eq!(client.check_proposal_dependencies(&p2), true);
+
+    // Now execute p2 - must succeed!
+    client.execute(&owner_a, &p2);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn test_proposal_dependencies_cancelled_parent_blocks_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Parent proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Child proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Cancel parent proposal
+    client.cancel_proposal(&owner_a, &p1);
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Cancelled);
+
+    // check_proposal_dependencies returns Err(DependencyCancelled)
+    let check_res = client.try_check_proposal_dependencies(&p2);
+    assert_eq!(check_res.unwrap_err().unwrap(), ContractError::DependencyCancelled);
+
+    // Approve child proposal to Ready
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+
+    // Execute child proposal fails with DependencyCancelled
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyCancelled);
+}
+
+#[test]
+fn test_proposal_dependencies_expired_parent_blocks_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Parent proposal"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client.address),
+        &str(&env, "Child proposal"),
+        &(DEADLINE + 86_400),
+        &ProposalCategory::Transfer,
+        &deps,
+    );
+
+    // Approve child proposal so it is Ready
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+
+    // Advance ledger time past p1 deadline (but before p2 deadline)
+    set_timestamp(&env, DEADLINE + 10);
+
+    // check_proposal_dependencies detects expired parent
+    let check_res = client.try_check_proposal_dependencies(&p2);
+    assert_eq!(check_res.unwrap_err().unwrap(), ContractError::DependencyExpired);
+
+    // Execute fails with DependencyExpired
+    let res = client.try_execute(&owner_a, &p2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DependencyExpired);
+}
+
+#[test]
+fn test_proposal_dependencies_validation_and_set_entrypoint() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P2"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    // Set dependencies on p2 to depend on p1
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    client.set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(client.get_proposal_dependencies(&p2), deps);
+
+    // Non-owner / unauthorized caller rejected
+    let res = client.try_set_proposal_dependencies(&non_owner, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::MissingRole);
+
+    // Other owner (not original proposer) rejected
+    let res = client.try_set_proposal_dependencies(&owner_b, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::Unauthorized);
+
+    // Cannot modify dependencies once proposal is approved
+    client.approve(&owner_a, &p2);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyApproved);
+
+    // Edge cases: self dependency (p3 depending on p3)
+    let p3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "P3"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    let mut self_deps = Vec::new(&env);
+    self_deps.push_back(p3);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &self_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidDependency);
+
+    // Forward dependency (p3 depending on future id 999)
+    let mut fwd_deps = Vec::new(&env);
+    fwd_deps.push_back(999);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &fwd_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::InvalidDependency);
+
+    // Duplicate dependencies in list
+    let mut dup_deps = Vec::new(&env);
+    dup_deps.push_back(p1);
+    dup_deps.push_back(p1);
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &dup_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::DuplicateDependency);
+
+    // More than 10 dependencies
+    let mut many_deps = Vec::new(&env);
+    for _ in 0..11 {
+        many_deps.push_back(p1);
+    }
+    let res = client.try_set_proposal_dependencies(&owner_a, &p3, &many_deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TooManyDependencies);
+}
+
+#[test]
+fn test_proposal_dependencies_chain_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Chain: p1 -> p2 -> p3
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 1"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    let mut deps2 = Vec::new(&env);
+    deps2.push_back(p1);
+    let p2 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 2"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps2,
+    );
+
+    let mut deps3 = Vec::new(&env);
+    deps3.push_back(p2);
+    let p3 = client.create_proposal_with_deps(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "Step 3"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+        &deps3,
+    );
+
+    // Approve all
+    for id in [p1, p2, p3] {
+        client.approve(&owner_a, &id);
+        client.approve(&owner_b, &id);
+    }
+
+    // Try executing p3 first -> fails
+    assert_eq!(client.try_execute(&owner_a, &p3).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+    // Try executing p2 first -> fails
+    assert_eq!(client.try_execute(&owner_a, &p2).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // Execute in proper sequential order: p1 -> p2 -> p3
+    client.execute(&owner_a, &p1);
+    client.execute(&owner_a, &p2);
+    client.execute(&owner_a, &p3);
+
+    assert_eq!(client.get_proposal(&p1).status, ProposalStatus::Executed);
+    assert_eq!(client.get_proposal(&p2).status, ProposalStatus::Executed);
+    assert_eq!(client.get_proposal(&p3).status, ProposalStatus::Executed);
+}
+
+// ─── Tests for Per-Asset Treasury Accounting and Spend Limits (#939) ─────────
+
+#[test]
+fn test_treasury_spending_limit_governance_and_execution() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // No limit initially
+    assert_eq!(client.get_treasury_spending_limit(&token_client.address), None);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), None);
+
+    // Propose setting treasury limit of 100 with window of 86_400 (1 day)
+    let prop_id = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client.address,
+        &100_i128,
+        &86_400_u64,
+        &str(&env, "Set treasury spend limit"),
         &DEADLINE,
     );
+
+    // Approve and execute governance proposal
     client.approve(&owner_a, &prop_id);
     client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
+    client.execute(&owner_a, &prop_id);
 
-    assert!(client.get_last_rebalance() > 0);
+    // Verify limit and window are set
+    assert_eq!(client.get_treasury_spending_limit(&token_client.address), Some(100));
+    assert_eq!(client.get_treasury_spending_window(&token_client.address), 86_400);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(100));
+
+    // First spend: transfer 60 stroops (within limit 100)
+    let spend_1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 60, &token_client.address),
+        &str(&env, "Spend 60"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_1);
+    client.approve(&owner_b, &spend_1);
+    client.execute(&owner_a, &spend_1);
+
+    // Verify accounting updated
+    assert_eq!(client.get_treasury_spent(&token_client.address), 60);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(40));
+
+    let acct = client.get_asset_treasury_accounting(&token_client.address);
+    assert_eq!(acct.window_spent, 60);
+    assert_eq!(acct.total_spent, 60);
+    assert_eq!(acct.spend_limit, Some(100));
+    assert_eq!(acct.available_limit, Some(40));
+
+    // Second spend: attempt transfer 50 stroops (60 + 50 = 110 > 100) -> must fail!
+    let spend_2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 50, &token_client.address),
+        &str(&env, "Spend 50 exceeding limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_2);
+    client.approve(&owner_b, &spend_2);
+    let res = client.try_execute(&owner_a, &spend_2);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+
+    // Spend 40 stroops (60 + 40 = 100 exact limit) -> succeeds!
+    let spend_3 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 40, &token_client.address),
+        &str(&env, "Spend 40 exact limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_3);
+    client.approve(&owner_b, &spend_3);
+    client.execute(&owner_a, &spend_3);
+
+    assert_eq!(client.get_treasury_spent(&token_client.address), 100);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(0));
+
+    // Window rollover: after window elapsed, spend resets to 0
+    set_timestamp(&env, NOW + 86_401);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(100));
+
+    // After rollover, spend 70 stroops succeeds!
+    let spend_4 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 70, &token_client.address),
+        &str(&env, "Spend 70 after rollover"),
+        &(DEADLINE + 86_401),
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &spend_4);
+    client.approve(&owner_b, &spend_4);
+    client.execute(&owner_a, &spend_4);
+
+    assert_eq!(client.get_treasury_spent(&token_client.address), 70);
+    let acct_after = client.get_asset_treasury_accounting(&token_client.address);
+    assert_eq!(acct_after.window_spent, 70);
+    assert_eq!(acct_after.total_spent, 170); // 60 + 40 + 70 lifetime total
 }
 
 #[test]
-fn rebalance_emits_reb_prop_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+fn test_treasury_per_asset_spending_limits_are_independent() {
+    let (env, client, owner_a, owner_b, _, _, token_client_a) = setup(2);
+    let recipient = Address::generate(&env);
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 6000,
-    });
-    targets.push_back(RebalanceTarget {
-        token: recv_token_id.address(),
-        target_bps: 4000,
-    });
+    // Setup second token (Token B)
+    let token_admin = Address::generate(&env);
+    let token_id_b = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client_b = token::Client::new(&env, &token_id_b.address());
+    let token_sac_b = token::StellarAssetClient::new(&env, &token_id_b.address());
+    token_sac_b.mint(&client.address, &100_000_i128);
 
-    client.create_rebalance_proposal(
+    // Set Token A limit = 100
+    let p_a = client.create_treasury_limit_proposal(
         &owner_a,
-        &RebalanceParams {
-            router,
-            targets,
-            tolerance_bps: 200,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "rebalance"),
+        &token_client_a.address,
+        &100_i128,
+        &86_400_u64,
+        &str(&env, "Limit A"),
         &DEADLINE,
     );
+    client.approve(&owner_a, &p_a);
+    client.approve(&owner_b, &p_a);
+    client.execute(&owner_a, &p_a);
 
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "reb_prop")));
-}
-
-#[test]
-fn rebalance_emits_reb_exec_event() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 7000,
-    });
-    targets.push_back(RebalanceTarget {
-        token: recv_token_id.address(),
-        target_bps: 3000,
-    });
-
-    let prop_id = client.create_rebalance_proposal(
+    // Set Token B limit = 500
+    let p_b = client.create_treasury_limit_proposal(
         &owner_a,
-        &RebalanceParams {
-            router,
-            targets,
-            tolerance_bps: 100,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "rebalance"),
+        &token_client_b.address,
+        &500_i128,
+        &86_400_u64,
+        &str(&env, "Limit B"),
         &DEADLINE,
     );
-    client.approve(&owner_a, &prop_id);
-    client.approve(&owner_b, &prop_id);
-    client.execute(&owner_c, &prop_id);
+    client.approve(&owner_a, &p_b);
+    client.approve(&owner_b, &p_b);
+    client.execute(&owner_a, &p_b);
 
-    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "reb_exec")));
-}
-
-#[test]
-fn rebalance_rejects_empty_targets() {
-    let (env, client, owner_a, _, _, _, _) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
-
-    let params = RebalanceParams {
-        router,
-        targets: Vec::new(&env),
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "empty"), &DEADLINE),
-        Err(Ok(ContractError::EmptyRebalance))
+    // Spend 90 of Token A
+    let spend_a = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 90, &token_client_a.address),
+        &str(&env, "Spend Token A"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
-}
+    client.approve(&owner_a, &spend_a);
+    client.approve(&owner_b, &spend_a);
+    client.execute(&owner_a, &spend_a);
 
-#[test]
-fn rebalance_rejects_target_bps_over_10000() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
+    // Token A has 10 remaining; Token B STILL HAS FULL 500 REMAINING!
+    assert_eq!(client.get_treasury_available_limit(&token_client_a.address), Some(10));
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(500));
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 10001, // > 10000
-    });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "bad bps"), &DEADLINE),
-        Err(Ok(ContractError::InvalidTargetWeight))
+    // Spend 400 of Token B -> succeeds, and Token A is completely unaffected!
+    let spend_b = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 400, &token_client_b.address),
+        &str(&env, "Spend Token B"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
-}
+    client.approve(&owner_a, &spend_b);
+    client.approve(&owner_b, &spend_b);
+    client.execute(&owner_a, &spend_b);
 
-#[test]
-fn rebalance_rejects_duplicate_tokens() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
+    assert_eq!(client.get_treasury_available_limit(&token_client_a.address), Some(10));
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(100));
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 5000,
-    });
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(), // duplicate
-        target_bps: 5000,
-    });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "dup"), &DEADLINE),
-        Err(Ok(ContractError::InvalidTargetWeight))
+    // Token A cannot spend 20 (limit exceeded)
+    let spend_a2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 20, &token_client_a.address),
+        &str(&env, "Spend Token A over limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
-}
+    client.approve(&owner_a, &spend_a2);
+    client.approve(&owner_b, &spend_a2);
+    assert_eq!(client.try_execute(&owner_a, &spend_a2).unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
 
-#[test]
-fn rebalance_rejects_sum_bps_over_10000() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 6000,
-    });
-    targets.push_back(RebalanceTarget {
-        token: recv_token_id.address(),
-        target_bps: 5000, // sum = 11000 > 10000
-    });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "over sum"), &DEADLINE),
-        Err(Ok(ContractError::InvalidTargetWeight))
+    // Token B CAN spend 50 (within limit)
+    let spend_b2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 50, &token_client_b.address),
+        &str(&env, "Spend Token B within limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
+    client.approve(&owner_a, &spend_b2);
+    client.approve(&owner_b, &spend_b2);
+    client.execute(&owner_a, &spend_b2);
+    assert_eq!(client.get_treasury_available_limit(&token_client_b.address), Some(50));
 }
 
 #[test]
-fn rebalance_rejects_unapproved_router() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let unapproved_router = env.register(mock_router::MockRouter, ());
+fn test_treasury_zero_limit_blocks_outflows() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 10000,
-    });
-    let params = RebalanceParams {
-        router: unapproved_router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "bad router"), &DEADLINE),
-        Err(Ok(ContractError::RebalanceRouterNotApproved))
+    // Set limit = 0 (blocks all token outflows from treasury)
+    let p_zero = client.create_treasury_limit_proposal(
+        &owner_a,
+        &token_client.address,
+        &0_i128,
+        &86_400_u64,
+        &str(&env, "Zero limit blocks token"),
+        &DEADLINE,
     );
-}
+    client.approve(&owner_a, &p_zero);
+    client.approve(&owner_b, &p_zero);
+    client.execute(&owner_a, &p_zero);
 
-#[test]
-fn rebalance_rejects_past_swap_deadline() {
-    let (env, client, owner_a, _, _, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_a, &owner_a);
+    assert_eq!(client.get_treasury_available_limit(&token_client.address), Some(0));
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 10000,
-    });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: NOW - 1,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "past deadline"), &DEADLINE),
-        Err(Ok(ContractError::InvalidSwapDeadline))
+    let p_transfer = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1, &token_client.address),
+        &str(&env, "Transfer 1 stroop"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
     );
+    client.approve(&owner_a, &p_transfer);
+    client.approve(&owner_b, &p_transfer);
+    assert_eq!(client.try_execute(&owner_a, &p_transfer).unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
 }
 
 #[test]
-fn rebalance_non_proposer_rejected() {
-    let (env, client, _, _, _, non_owner, token_client) = setup(2);
-    let router = env.register(mock_router::MockRouter, ());
+fn test_storage_version_2_and_migrate_to_v2() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 10000,
+    // Fresh deployment initializes at version 2
+    assert_eq!(client.get_storage_version(), 2);
+
+    // migrate_to_v2 fails if already at version 2
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    let res = client.try_migrate_to_v2(&approvers);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyMigrated);
+
+    // Simulate pre-v2 contract at storage version 1
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&storage_version_key(), &1_u32);
     });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
-    };
-    assert_eq!(
-        client.try_create_rebalance_proposal(&non_owner, &params, &str(&env, "unauth"), &DEADLINE),
-        Err(Ok(ContractError::Unauthorized))
-    );
+    assert_eq!(client.get_storage_version(), 1);
+
+    // migrate_to_v2 without quorum fails
+    let mut solo_approver = Vec::new(&env);
+    solo_approver.push_back(owner_a.clone());
+    let res = client.try_migrate_to_v2(&solo_approver);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ThresholdNotMet);
+
+    // migrate_to_v2 with quorum succeeds and stamps version 2
+    client.migrate_to_v2(&approvers);
+    assert_eq!(client.get_storage_version(), 2);
+}
+
+// ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
+
+#[test]
+fn test_adversarial_multi_parent_dependency_resilience() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // Create 3 parent proposals
+    let p1 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    let p2 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P2"), &DEADLINE, &ProposalCategory::Transfer);
+    let p3 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P3"), &DEADLINE, &ProposalCategory::Transfer);
+
+    // Child depends on all three
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    deps.push_back(p2);
+    deps.push_back(p3);
+    let child = client.create_proposal_with_deps(&owner_a, &t(&env, &recipient, 50, &token_client.address), &str(&env, "Child"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+
+    // Approve child so it is Ready
+    client.approve(&owner_a, &child);
+    client.approve(&owner_b, &child);
+
+    // Execute p1 and p3 only (p2 remains unexecuted)
+    client.approve(&owner_a, &p1); client.approve(&owner_b, &p1); client.execute(&owner_a, &p1);
+    client.approve(&owner_a, &p3); client.approve(&owner_b, &p3); client.execute(&owner_a, &p3);
+
+    // Executing child fails because p2 has not executed
+    assert_eq!(client.try_execute(&owner_a, &child).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+
+    // If p2 is cancelled, child can never execute
+    client.cancel_proposal(&owner_a, &p2);
+    assert_eq!(client.try_execute(&owner_a, &child).unwrap_err().unwrap(), ContractError::DependencyCancelled);
 }
 
 #[test]
-fn rebalance_frozen_blocks_creation() {
+fn test_adversarial_batch_transfer_atomic_rejection_on_treasury_limit() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+    let recipient3 = Address::generate(&env);
+
+    // Set treasury limit of 100
+    let p_lim = client.create_treasury_limit_proposal(&owner_a, &token_client.address, &100_i128, &86_400_u64, &str(&env, "Limit 100"), &DEADLINE);
+    client.approve(&owner_a, &p_lim); client.approve(&owner_b, &p_lim); client.execute(&owner_a, &p_lim);
+
+    // Attempt multi-transfer in a single proposal: 40 + 40 + 30 = 110 > 100
+    let mut transfers = Vec::new(&env);
+    transfers.push_back(Transfer { to: recipient1.clone(), token: token_client.address.clone(), amount: 40 });
+    transfers.push_back(Transfer { to: recipient2.clone(), token: token_client.address.clone(), amount: 40 });
+    transfers.push_back(Transfer { to: recipient3.clone(), token: token_client.address.clone(), amount: 30 });
+
+    let p_batch = client.create_proposal(&owner_a, &transfers, &str(&env, "Batch transfer 110"), &DEADLINE, &ProposalCategory::Transfer);
+    client.approve(&owner_a, &p_batch);
+    client.approve(&owner_b, &p_batch);
+
+    // Execute must fail with TreasurySpendingLimitExceeded
+    let res = client.try_execute(&owner_a, &p_batch);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::TreasurySpendingLimitExceeded);
+
+    // Atomicity check: NO transfer occurred, recipients received 0, treasury spent is 0
+    assert_eq!(token_client.balance(&recipient1), 0);
+    assert_eq!(token_client.balance(&recipient2), 0);
+    assert_eq!(token_client.balance(&recipient3), 0);
+    assert_eq!(client.get_treasury_spent(&token_client.address), 0);
+}
+
+#[test]
+fn test_adversarial_frozen_contract_blocks_dependency_and_treasury_operations() {
     let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
     let guardian = Address::generate(&env);
-    client.set_guardian(
-        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
-        &guardian,
-    );
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+    client.set_guardian(&approvers, &guardian);
+
+    let p1 = client.create_proposal(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    let p2 = client.create_proposal(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "P2"), &DEADLINE, &ProposalCategory::Transfer);
+
+    // Freeze contract
     client.freeze(&guardian);
 
-    let router = env.register(mock_router::MockRouter, ());
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 10000,
-    });
-    let params = RebalanceParams {
-        router,
-        targets,
-        tolerance_bps: 100,
-        swap_deadline: DEADLINE,
+    // create_proposal_with_deps blocked
+    let mut deps = Vec::new(&env);
+    deps.push_back(p1);
+    let res = client.try_create_proposal_with_deps(&owner_a, &t(&env, &Address::generate(&env), 10, &token_client.address), &str(&env, "Blocked"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+
+    // set_proposal_dependencies blocked
+    let res = client.try_set_proposal_dependencies(&owner_a, &p2, &deps);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+
+    // create_treasury_limit_proposal blocked
+    let res = client.try_create_treasury_limit_proposal(&owner_a, &token_client.address, &100_i128, &86_400_u64, &str(&env, "Blocked limit"), &DEADLINE);
+    assert_eq!(res.unwrap_err().unwrap(), ContractError::ContractFrozen);
+}
+
+#[test]
+fn test_property_dag_ordered_execution_simulation() {
+    let env = non_snapshot_env();
+    env.mock_all_auths();
+    set_timestamp(&env, NOW);
+
+    let contract_id = env.register(AccordContract, ());
+    let client = AccordContractClient::new(&env, &contract_id);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_client = token::Client::new(&env, &token_id.address());
+    let token_sac = token::StellarAssetClient::new(&env, &token_id.address());
+    token_sac.mint(&contract_id, &1_000_000_i128);
+
+    let mut owners = Vec::new(&env);
+    owners.push_back(owner_a.clone());
+    owners.push_back(owner_b.clone());
+    let mut weights = Vec::new(&env);
+    weights.push_back(1);
+    weights.push_back(1);
+    client.initialize(&owners, &weights, &2, &0);
+
+    let recipient = Address::generate(&env);
+    // Build a 5-node linear DAG: 1 -> 2 -> 3 -> 4 -> 5
+    let mut proposals = std::vec::Vec::new();
+    let p1 = client.create_proposal(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P1"), &DEADLINE, &ProposalCategory::Transfer);
+    proposals.push(p1);
+
+    for i in 1..5 {
+        let mut deps = Vec::new(&env);
+        deps.push_back(proposals[i - 1]);
+        let pid = client.create_proposal_with_deps(&owner_a, &t(&env, &recipient, 10, &token_client.address), &str(&env, "P"), &DEADLINE, &ProposalCategory::Transfer, &deps);
+        proposals.push(pid);
+    }
+
+    // Approve all
+    for pid in &proposals {
+        client.approve(&owner_a, pid);
+        client.approve(&owner_b, pid);
+    }
+
+    // Assert that each proposal cannot execute until its predecessor executes
+    for i in 0..5 {
+        // Any j > i cannot execute yet
+        for j in (i + 1)..5 {
+            assert_eq!(client.check_proposal_dependencies(&proposals[j]), false);
+            assert_eq!(client.try_execute(&owner_a, &proposals[j]).unwrap_err().unwrap(), ContractError::DependencyNotExecuted);
+        }
+        // proposals[i] can execute
+        assert_eq!(client.check_proposal_dependencies(&proposals[i]), true);
+        client.execute(&owner_a, &proposals[i]);
+        assert_eq!(client.get_proposal(&proposals[i]).status, ProposalStatus::Executed);
+    }
+}
+
+#[test]
+fn simulate_proposal_reports_requirements_and_does_not_create_state_or_events() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let contract_events = || {
+        env.events()
+            .all()
+            .filter_by_contract(&client.address)
+            .events()
+            .len()
     };
+    let event_count_before = contract_events();
+    let transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+
+    let simulation = client.simulate_proposal(
+        &owner_a,
+        &transfers,
+        &str(&env, "simulation"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+
+    assert_eq!(simulation.category, ProposalCategory::Transfer);
+    assert_eq!(simulation.quorum_weight, 2);
+    assert_eq!(simulation.proposer, owner_a);
+    assert_eq!(simulation.required_role, Role::Proposer);
+    assert!(simulation.proposer_auth_required);
+    assert_eq!(simulation.transfer_count, 1);
+    assert_eq!(simulation.distinct_token_count, 1);
+    assert_eq!(simulation.owner_spending_limit_checks, 1);
+    assert_eq!(simulation.minimum_persistent_writes, 2);
+    assert_eq!(simulation.minimum_instance_writes, 2);
+    assert_eq!(simulation.emitted_events, 1);
+    assert_eq!(client.get_total_proposals(), 0);
+    assert_eq!(contract_events(), event_count_before);
+}
+
+#[test]
+fn simulate_proposal_preserves_role_and_frozen_state_precedence() {
+    let (env, client, owner_a, owner_b, _, non_owner, token_client) = setup(2);
+    let empty = Vec::new(&env);
+    let description = str(&env, "simulation");
+
     assert_eq!(
-        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "frozen"), &DEADLINE),
+        client.try_simulate_proposal(
+            &non_owner,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    set_roles(&env, &client.address, &non_owner, &[Role::Proposer]);
+    let owners = Vec::from_array(&env, [owner_a, owner_b]);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&owners, &guardian);
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_simulate_proposal(
+            &non_owner,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+
+    let transfers = t(&env, &Address::generate(&env), 10, &token_client.address);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &non_owner,
+            &transfers,
+            &str(&env, ""),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
         Err(Ok(ContractError::ContractFrozen))
     );
 }
 
 #[test]
-fn rebalance_get_last_rebalance_returns_zero_initially() {
-    let (env, client, _, _, _, _, _) = setup(2);
-    assert_eq!(client.get_last_rebalance(), 0);
-}
-
-#[test]
-fn odr_migrate_already_migrated_on_fresh_deploy() {
-    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+fn simulate_proposal_rejects_transfer_limits() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let description = str(&env, "limits");
+    let empty = Vec::new(&env);
     assert_eq!(
-        client.try_migrate_to_oracle_denylist_rebalance(
-            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        client.try_simulate_proposal(
+            &owner_a,
+            &empty,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
         ),
-        Err(Ok(ContractError::AlreadyMigrated))
+        Err(Ok(ContractError::InvalidAmount))
     );
-    assert_eq!(client.get_storage_version(), 7);
-}
 
-// ── Adversarial tests ────────────────────────────────────────────────────────
-
-#[test]
-fn denylist_then_unblock_allows_transfer() {
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let blocked = Address::generate(&env);
-
-    // Block.
-    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
-    client.approve(&owner_a, &add_id);
-    client.approve(&owner_b, &add_id);
-    client.execute(&owner_c, &add_id);
-
-    // Transfer to blocked → denied.
-    let p1 = client.create_proposal(
-        &owner_a,
-        &t(&env, &blocked, 1_000, &token_client.address),
-        &str(&env, "blocked"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p1);
-    client.approve(&owner_b, &p1);
+    let zero_amount = t(&env, &recipient, 0, &token_client.address);
     assert_eq!(
-        client.try_execute(&owner_c, &p1),
-        Err(Ok(ContractError::RecipientDenied))
+        client.try_simulate_proposal(
+            &owner_a,
+            &zero_amount,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
     );
 
-    // Unblock.
-    let rem_id = client.create_remove_from_denylist_proposal(&owner_a, &blocked, &str(&env, "unblock"), &DEADLINE);
-    client.approve(&owner_a, &rem_id);
-    client.approve(&owner_b, &rem_id);
-    client.execute(&owner_c, &rem_id);
-
-    // Transfer to unblocked → should pass.
-    let p2 = client.create_proposal(
-        &owner_a,
-        &t(&env, &blocked, 1_000, &token_client.address),
-        &str(&env, "unblocked"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p2);
-    client.approve(&owner_b, &p2);
-    client.execute(&owner_c, &p2);
-}
-
-#[test]
-fn oracle_stale_price_allows_transfer() {
-    // If oracle price is stale, the fiat check is skipped (returns Ok) so
-    // transfers are not blocked by a stale oracle — fail-open design.
-    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
-    let oracle = OraclePrice {
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        price: 100_000_000,
-        updated_at: NOW,
-        max_staleness: 100, // 100 seconds
-    };
-    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
-    client.approve(&owner_a, &ora_id);
-    client.approve(&owner_b, &ora_id);
-    client.execute(&owner_c, &ora_id);
-
-    let limit = FiatSpendLimit {
-        owner: owner_a.clone(),
-        token: token_client.address.clone(),
-        fiat: Symbol::new(&env, "USD"),
-        fiat_limit: 1_000_000,
-        window_secs: 86_400,
-    };
-    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
-    client.approve(&owner_a, &lim_id);
-    client.approve(&owner_b, &lim_id);
-    client.execute(&owner_c, &lim_id);
-
-    // Advance past staleness.
-    set_timestamp(&env, NOW + 200);
-
-    // Transfer should pass — oracle is stale, fiat check is skipped.
-    let p = client.create_proposal(
-        &owner_a,
-        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
-        &str(&env, "stale oracle"),
-        &DEADLINE,
-        &ProposalCategory::Transfer,
-    );
-    client.approve(&owner_a, &p);
-    client.approve(&owner_b, &p);
-    client.execute(&owner_c, &p);
-}
-
-#[test]
-fn rebalance_solo_owner_cannot_execute() {
-    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
-    let router = setup_approved_router(&env, &client, &owner_a, &owner_a, &owner_c);
-    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
-
-    let mut targets = Vec::new(&env);
-    targets.push_back(RebalanceTarget {
-        token: token_client.address.clone(),
-        target_bps: 5000,
-    });
-    targets.push_back(RebalanceTarget {
-        token: recv_token_id.address(),
-        target_bps: 5000,
-    });
-    let prop_id = client.create_rebalance_proposal(
-        &owner_a,
-        &RebalanceParams {
-            router,
-            targets,
-            tolerance_bps: 100,
-            swap_deadline: DEADLINE,
-        },
-        &str(&env, "solo"),
-        &DEADLINE,
-    );
-    client.approve(&owner_a, &prop_id);
-
+    let mut excessive = Vec::new(&env);
+    for _ in 0..=MAX_BATCH_TRANSFERS {
+        excessive.push_back(Transfer {
+            to: recipient.clone(),
+            token: token_client.address.clone(),
+            amount: 1,
+        });
+    }
     assert_eq!(
-        client.try_execute(&owner_c, &prop_id),
-        Err(Ok(ContractError::ThresholdNotMet))
+        client.try_simulate_proposal(
+            &owner_a,
+            &excessive,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::InvalidAmount))
     );
+
+    env.as_contract(&client.address, || {
+        write_spending_limit(&env, &owner_a, &token_client.address, 5);
+    });
+    let over_limit = t(&env, &recipient, 6, &token_client.address);
+    assert_eq!(
+        client.try_simulate_proposal(
+            &owner_a,
+            &over_limit,
+            &description,
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        ),
+        Err(Ok(ContractError::SpendingLimitExceeded))
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn proposal_simulation_estimates_transfer_counts(count in 1u32..=16) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_client = token::Client::new(&env, &token_id.address());
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b);
+        owners.push_back(owner_c);
+        let mut weights = Vec::new(&env);
+        weights.push_back(1);
+        weights.push_back(1);
+        weights.push_back(1);
+        client.initialize(&owners, &weights, &2, &0);
+        let recipient = Address::generate(&env);
+        let mut transfers = Vec::new(&env);
+        for _ in 0..count {
+            transfers.push_back(Transfer {
+                to: recipient.clone(),
+                token: token_client.address.clone(),
+                amount: 1,
+            });
+        }
+
+        let simulation = client.simulate_proposal(
+            &owner_a,
+            &transfers,
+            &str(&env, "property"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+
+        prop_assert_eq!(simulation.transfer_count, count);
+        prop_assert_eq!(simulation.distinct_token_count, 1);
+        prop_assert_eq!(simulation.owner_spending_limit_checks, 1);
+    }
 }

@@ -8,6 +8,7 @@ import { displayToStroops } from "../lib/soroban";
 import { useOwnerWeights } from "../hooks/useOwnerWeights";
 import { useDelegations } from "../hooks/useDelegations";
 import { DelegateModal } from "../components/DelegateModal";
+import { CreateWeightChangeProposalModal } from "../components/CreateWeightChangeProposalModal";
 import { PageState } from "../components/PageState";
 import { EmptyState } from "../components/EmptyState";
 import { GovernanceHealthWidget } from "../components/GovernanceHealthWidget";
@@ -29,6 +30,29 @@ function OwnerLink({
   }
   return <a href={to} className={className}>{children}</a>;
 }
+
+const CHART_COLORS = [
+  "bg-emerald-500",
+  "bg-blue-500",
+  "bg-amber-500",
+  "bg-rose-500",
+  "bg-indigo-500",
+  "bg-violet-500",
+  "bg-orange-500",
+  "bg-cyan-500",
+  "bg-fuchsia-500",
+  "bg-teal-500",
+  "bg-purple-500",
+  "bg-pink-500",
+  "bg-lime-500",
+  "bg-red-400",
+  "bg-purple-400",
+  "bg-sky-500",
+  "bg-emerald-400",
+  "bg-amber-400",
+  "bg-rose-400",
+  "bg-indigo-400",
+];
 
 const TOKEN_ADDRESSES: Record<string, string> = {
   XLM: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
@@ -104,6 +128,7 @@ export function OwnersPage({
   } = useOwnerWeights(ownerAddresses);
   const { refetch: refetchDelegations } = useDelegations(ownerAddresses);
   const [delegateModalOpen, setDelegateModalOpen] = useState(false);
+  const [weightModalOwner, setWeightModalOwner] = useState<string | null>(null);
   const [, setSpendingLimits] = useState<SpendingLimitMap>({});
   const [, setLimitsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -240,7 +265,7 @@ export function OwnersPage({
       <div className="mb-8">
         <h1 className="mb-2 text-2xl font-semibold">Multisig Owners</h1>
         <p className="text-sm text-zinc-400">
-          Requires {threshold} of {totalOwners} signers
+          Requires {threshold} of {totalWeight} voting weight
         </p>
       </div>
 
@@ -252,6 +277,96 @@ export function OwnersPage({
           totalOwners={totalOwners}
           loading={weightsLoading && Object.keys(weights).length === 0}
         />
+      )}
+
+      {owners.length > 0 && (
+        <div
+          data-testid="weight-distribution-chart"
+          className="mb-8 bg-zinc-900 border border-zinc-800 rounded-xl p-5"
+        >
+          <h2 className="text-sm font-medium text-zinc-400 mb-3">
+            Voting Weight Distribution
+          </h2>
+          {weightsLoading ? (
+            <div className="h-6 bg-zinc-800 animate-pulse rounded-lg w-full" />
+          ) : ownerAddresses.length === 0 ? (
+            <div className="h-6 bg-zinc-850 rounded-lg flex items-center justify-center text-xs text-zinc-500">
+              No voting power registered.
+            </div>
+          ) : (
+            <div>
+              <div
+                role="region"
+                aria-label={`Voting weight distribution across ${ownerAddresses.length} owners, total weight ${totalWeight}`}
+                className="flex h-6 rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 w-full mb-3"
+              >
+                {ownerAddresses.map((addr, idx) => {
+                  const weight = weights[addr] ?? 1;
+                  const pct = totalWeight > 0 ? (weight / totalWeight) * 100 : 0;
+                  const ownerInfo = owners.find((o) => o.fullAddress === addr) || {
+                    label: `Signer ${idx + 1}`,
+                    address: addr,
+                    fullAddress: addr,
+                  };
+                  const labelText = `${ownerInfo.label} (${addr.slice(0, 6)}...${addr.slice(-4)})`;
+                  const titleStr = `${labelText}: weight ${weight} (${pct.toFixed(1)}%)`;
+
+                  if (pct <= 0) return null;
+
+                  return (
+                    <div
+                      key={addr}
+                      title={titleStr}
+                      style={{ width: `${pct}%` }}
+                      className={`${CHART_COLORS[idx % CHART_COLORS.length]} h-full transition-all duration-300 relative group cursor-pointer hover:brightness-110`}
+                      tabIndex={0}
+                      role="img"
+                      aria-label={titleStr}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                        }
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 mt-2">
+                {ownerAddresses.map((addr, idx) => {
+                  const weight = weights[addr] ?? 1;
+                  const pct = totalWeight > 0 ? (weight / totalWeight) * 100 : 0;
+                  const ownerInfo = owners.find((o) => o.fullAddress === addr) || {
+                    label: `Signer ${idx + 1}`,
+                    address: addr,
+                    fullAddress: addr,
+                  };
+                  const legendLabel = `${ownerInfo.label} ${addr.slice(0, 6)}…${addr.slice(-4)}: ${weight} weight (${pct.toFixed(0)}%)`;
+                  return (
+                    <div
+                      key={addr}
+                      className="flex items-center gap-1.5 text-xs text-zinc-400"
+                      aria-label={legendLabel}
+                    >
+                      <span
+                        aria-hidden
+                        className={`w-2.5 h-2.5 rounded-full ${CHART_COLORS[idx % CHART_COLORS.length]}`}
+                      />
+                      <span className="font-medium text-zinc-300">
+                        {ownerInfo.label}
+                      </span>
+                      <span className="font-mono text-zinc-500">
+                        ({addr.slice(0, 6)}…{addr.slice(-4)})
+                      </span>
+                      <span className="font-medium text-zinc-300">
+                        ({weight} w, {pct.toFixed(0)}%)
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {owners.length === 0 ? (
@@ -286,7 +401,7 @@ export function OwnersPage({
                   </div>
                   <OwnerLink
                     to={`/app/owners/${encodeURIComponent(owner.fullAddress)}`}
-                    className="font-mono text-xs text-zinc-500 hover:text-zinc-300 transition-colors block"
+                    className="font-mono text-xs text-zinc-400 hover:text-zinc-300 transition-colors block"
                   >
                     {owner.address}
                   </OwnerLink>
@@ -299,7 +414,7 @@ export function OwnersPage({
                         <RoleBadge key={role} role={role} />
                       ))
                     ) : (
-                      <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
+                      <span className="rounded-md border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
                         No roles
                       </span>
                     )}
@@ -308,6 +423,13 @@ export function OwnersPage({
               </div>
 
               <div className="flex items-center gap-2 sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => setWeightModalOwner(owner.fullAddress)}
+                  className="inline-flex items-center justify-center rounded-lg border border-zinc-700 px-3 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                >
+                  Change Weight
+                </button>
                 {walletAddress === owner.fullAddress && (
                   <button
                     type="button"
@@ -342,9 +464,7 @@ export function OwnersPage({
             aria-expanded={showForm}
             aria-controls="spending-limit-form"
             aria-label={
-              showForm
-                ? "Close spending limit form"
-                : "Open spending limit form"
+              showForm ? "Cancel spending limit form" : "Set Spending Limit"
             }
             className="text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
@@ -477,7 +597,7 @@ export function OwnersPage({
               onClick={handleCreateSpendingLimit}
               aria-label="Create spending limit proposal"
               disabled={slSubmitting || !walletAddress}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+              className="w-full bg-emerald-700 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
             >
               {slSubmitting ? "Submitting…" : "Create Spending Limit Proposal"}
             </button>
@@ -485,12 +605,24 @@ export function OwnersPage({
         )}
 
         {!showForm && (
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-zinc-400">
             Configure per-owner spending limits for specific tokens. All changes
             require multisig approval.
           </p>
         )}
       </div>
+
+      {weightModalOwner && (
+        <CreateWeightChangeProposalModal
+          walletAddress={walletAddress}
+          initialOwnerAddress={weightModalOwner}
+          onClose={() => setWeightModalOwner(null)}
+          onSubmitted={() => {
+            setWeightModalOwner(null);
+            onProposalSubmitted();
+          }}
+        />
+      )}
 
       {delegateModalOpen && walletAddress && (
         <DelegateModal

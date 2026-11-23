@@ -252,7 +252,7 @@ export function NotificationDestinationsPanel() {
             type="button"
             onClick={handleSave}
             disabled={saving}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            className="w-full bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             {saving ? "Saving…" : "Save Destination"}
           </button>
@@ -260,11 +260,11 @@ export function NotificationDestinationsPanel() {
       )}
 
       {loading ? (
-        <p className="text-sm text-zinc-500">Loading destinations…</p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading destinations…</p>
       ) : loadError ? (
         <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">{loadError}</p>
       ) : destinations.length === 0 ? (
-        <p className="text-sm text-zinc-500">No notification destinations configured yet.</p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">No notification destinations configured yet.</p>
       ) : (
         <div className="divide-y divide-zinc-800">
           {destinations.map((destination) => {
@@ -281,7 +281,7 @@ export function NotificationDestinationsPanel() {
                       {KIND_LABELS[destination.kind]}
                     </span>
                     {!destination.enabled && (
-                      <span className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-500">
+                      <span className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-400">
                         Disabled
                       </span>
                     )}

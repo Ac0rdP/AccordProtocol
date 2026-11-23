@@ -1,5 +1,8 @@
 name: SDK Publish
 
+# Manual fallback: publishes a maintainer-pushed `sdk-v*` tag. Routine releases
+# are cut automatically from Conventional Commits by sdk-release.yml.
+
 on:
   push:
     tags:
@@ -50,6 +53,10 @@ jobs:
       - name: Build package (ESM, CJS & TypeScript declarations)
         working-directory: packages/sdk
         run: npm run build
+
+      - name: Enforce bundle-size budgets
+        working-directory: packages/sdk
+        run: npm run size
 
       - name: Verify package bundle contents
         working-directory: packages/sdk
