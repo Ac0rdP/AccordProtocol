@@ -32,7 +32,9 @@ mod billing;
 mod branding;
 mod freshness;
 mod funnel;
+mod http_cache;
 mod integrations;
+mod kpi;
 mod limits;
 mod mail;
 mod reports;
@@ -210,6 +212,7 @@ fn app(state: AppState) -> Router {
         .route("/proposals/funnel", get(funnel::list))
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
+        .route("/treasury/kpis", get(kpi::list))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
         .route(

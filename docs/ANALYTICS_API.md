@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /treasury/kpis` serves daily treasury KPI snapshots with period-over-period deltas for balance, spend and runway. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
@@ -68,7 +68,7 @@ Every endpoint except `/`, `/health`, `/livez`, `/readyz`, `/status` and `/metri
 }
 ```
 
-Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel` and `GET /spend/by-category` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
+Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel`, `GET /spend/by-category`, `GET /treasury/kpis` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -284,6 +284,47 @@ Report owner response times, approval rates, and inactive-owner trends across pr
   "offset": 0
 }
 ```
+
+### `GET /treasury/kpis`
+
+Daily treasury KPI snapshots and period-over-period trend deltas for balance, spend and runway.
+
+**Query parameters:** `token`, `periodDays` (1–365, default `30`), `endDate` (last day of the current period; defaults to today in UTC and later dates are clamped to today), `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the *daily snapshots* of the current period. Validation failures are reported together in one `400 VALIDATION_ERROR`; `periodDays` failures use the code `INVALID_PERIOD_DAYS`.
+
+Two consecutive periods of `periodDays` days are compared: the **current** period ends on `endDate`, the **previous** one ends where the current one starts.
+
+**Response (`TreasuryKpiPage`):**
+
+```json
+{
+  "periodDays": 30,
+  "currentPeriod": { "start": "2026-09-02", "end": "2026-10-01" },
+  "previousPeriod": { "start": "2026-08-03", "end": "2026-09-01" },
+  "trends": [
+    {
+      "token": "USDC",
+      "balance": { "current": "600", "previous": "900", "delta": "-300", "deltaPercent": -33.33 },
+      "spend": { "current": "300", "previous": "100", "delta": "200", "deltaPercent": 200.0 },
+      "runway": { "currentDays": 60.0, "previousDays": null, "deltaDays": null }
+    }
+  ],
+  "items": [
+    {
+      "network": "testnet", "contractId": "C...", "token": "USDC", "date": "2026-10-01",
+      "balance": "600", "inflow": "0", "spend": "0", "spendCount": 0,
+      "netBurnRate": "10", "runwayDays": 60.0
+    }
+  ],
+  "total": 30,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- Snapshots are persisted in `treasury_kpi_snapshots`, one row per network, contract, token and day. Each request recomputes the snapshots for the window it needs with an upsert, so repeating a request, replaying the indexer or indexing a late event never duplicates or drifts a row.
+- `balance` is the cumulative deposits (`deposit` events) minus transfers up to and including the day, so it is only an absolute balance once deposits are indexed. `spend` is what was transferred out on the day; `netBurnRate` is the trailing 30-day average of `spend - inflow` per day; `runwayDays` is `balance / netBurnRate`, or `null` when the treasury is not burning or has no positive balance.
+- `trends` has one entry per token across the requested scope. `balance` and `runway` are read at the last day of each period; `spend` is summed over each period. `delta` is `current - previous`; `deltaPercent` is `null` when the previous value is zero.
+- Items are ordered by date (newest first), then token, network and contract. Successful responses carry `Cache-Control: private, max-age=60`, `X-Cache` and the `X-RateLimit-*` headers.
 
 ### `GET /treasury/balance`
 

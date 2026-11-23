@@ -36,7 +36,7 @@ use crate::{
     billing,
     branding,
     limits::{Limits, LimitsConfig},
-    freshness, funnel, integrations, proposals, report_api, spend, templates, workflows,
+    freshness, funnel, integrations, kpi, proposals, report_api, spend, templates, workflows,
 };
 
 const SPEC: &str = include_str!("../../docs/analytics-api.openapi.json");
@@ -244,6 +244,7 @@ fn openapi_query_parameters_match_the_validators() {
         ("/proposals/{id}", "get", proposals::DETAIL_PARAMS),
         ("/proposals/funnel", "get", funnel::QUERY_PARAMS),
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
+        ("/treasury/kpis", "get", kpi::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
         ("/integrations", "get", integrations::LIST_PARAMS),
@@ -340,6 +341,7 @@ fn openapi_pagination_bounds_match_the_validators() {
     for (path, method) in [
         ("/proposals", "get"),
         ("/proposals/funnel", "get"),
+        ("/treasury/kpis", "get"),
         ("/reports", "get"),
         ("/integrations", "get"),
         ("/report-templates", "get"),
@@ -421,6 +423,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/proposals/1"),
         ("GET", "/proposals/funnel"),
         ("GET", "/spend/by-category"),
+        ("GET", "/treasury/kpis"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
         ("GET", "/integrations"),
@@ -564,6 +567,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
         "/proposals?limit=0&offset=-1&sort=x&order=x&status=x&category=x&bogus=1&startDate=a&contractId=x&network=x",
         "/proposals?startDate=2026-09-27&endDate=2026-09-26",
         "/proposals/funnel?groupBy=x&category=x&limit=0",
+        "/treasury/kpis?periodDays=0&endDate=x&limit=0&offset=-1&network=x&bogus=1",
         "/reports?format=x&status=x",
         "/report-templates?limit=0&offset=-1&contractId=x&network=x&bogus=1",
         "/alerts?severity=x",
@@ -2224,4 +2228,73 @@ async fn workflow_webhook_writes_require_admin_token_when_configured() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- treasury KPI snapshots --------------------------------------------------
+
+#[tokio::test]
+async fn kpis_reject_bad_input_before_touching_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/treasury/kpis?periodDays=0", "INVALID_PERIOD_DAYS"),
+        ("/treasury/kpis?periodDays=366", "INVALID_PERIOD_DAYS"),
+        ("/treasury/kpis?endDate=soon", "INVALID_DATE"),
+        ("/treasury/kpis?limit=101", "INVALID_LIMIT"),
+        ("/treasury/kpis?offset=-1", "INVALID_OFFSET"),
+        ("/treasury/kpis?network=nope", "INVALID_NETWORK"),
+    ] {
+        let (status, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}");
+        assert_eq!(body["error"]["details"][0]["code"], code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn kpis_report_period_over_period_deltas_and_are_idempotent() {
+    let Some(db) = TestDb::connect("kpis", false).await else {
+        return;
+    };
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO events (contract_id, network, ledger, tx_hash, event_index, topic, data, occurred_at) VALUES
+         ('test-contract', 'testnet', 1, 'dep', 0, 'deposit', '{"token":"USDC","amount":"1000"}', NOW() - interval '60 days');
+        INSERT INTO transfers (contract_id, network, recipient, token, amount, ledger, tx_hash, event_index, occurred_at) VALUES
+         ('test-contract', 'testnet', 'GR', 'USDC', '100', 2, 'old', 0, NOW() - interval '40 days'),
+         ('test-contract', 'testnet', 'GR', 'USDC', '300', 3, 'new', 0, NOW() - interval '5 days');
+        "#,
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let state = db.state();
+    let number = |value: &Value| value.as_str().unwrap().parse::<f64>().unwrap();
+
+    let (status, headers, body) = request(&state, "GET", "/treasury/kpis?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["cache-control"], "private, max-age=60");
+    assert_eq!(body["periodDays"], 30);
+    assert_eq!(body["total"], 30);
+    assert_eq!(body["items"].as_array().unwrap().len(), 5);
+
+    let trend = &body["trends"][0];
+    assert_eq!(trend["token"], "USDC");
+    assert_eq!(number(&trend["balance"]["current"]), 600.0);
+    assert_eq!(number(&trend["balance"]["previous"]), 900.0);
+    assert_eq!(number(&trend["balance"]["delta"]), -300.0);
+    assert_eq!(trend["balance"]["deltaPercent"], -33.33);
+    assert_eq!(number(&trend["spend"]["current"]), 300.0);
+    assert_eq!(number(&trend["spend"]["previous"]), 100.0);
+    assert_eq!(trend["spend"]["deltaPercent"], 200.0);
+    assert!(trend["runway"]["currentDays"].is_number());
+
+    // Recomputing the same window changes nothing.
+    let (_, _, again) = request(&state, "GET", "/treasury/kpis?limit=5").await;
+    assert_eq!(again["trends"], body["trends"]);
+    assert_eq!(again["total"], 30);
+
+    let (_, page) = get(&state, "/treasury/kpis?limit=5&offset=28").await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 2, "last page is short");
+
+    db.cleanup().await;
 }

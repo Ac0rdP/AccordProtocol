@@ -32,6 +32,9 @@
     },
     {
       "name": "GraphQL"
+    },
+    {
+      "name": "Treasury"
     }
   ],
   "paths": {
@@ -4245,6 +4248,198 @@
           }
         }
       }
+    },
+    "/treasury/kpis": {
+      "get": {
+        "operationId": "getTreasuryKpis",
+        "summary": "Daily treasury KPI snapshots with period-over-period trend deltas",
+        "tags": [
+          "Treasury"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "description": "Only this token symbol, for example XLM or USDC.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "periodDays",
+            "in": "query",
+            "required": false,
+            "description": "Length in days of each compared period (the current and the previous one).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 30
+            },
+            "x-error-code": "INVALID_PERIOD_DAYS",
+            "x-invalid-example": "366"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "Last day of the current period, an ISO 8601 date or date-time. Defaults to today (UTC); later dates are clamped to today.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_DATE",
+            "x-invalid-example": "yesterday"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Daily snapshots per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of daily snapshots to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_OFFSET",
+            "x-invalid-example": "-1"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-token trend deltas plus one page of daily snapshots for the current period.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreasuryKpiPage"
+                }
+              }
+            },
+            "headers": {
+              "X-Cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS"
+                  ]
+                },
+                "description": "Present on cacheable reads."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`private, max-age=60`; the response may be reused for a minute."
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5514,6 +5709,190 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/FreshnessItem"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TreasuryKpiMetric": {
+        "type": "object",
+        "required": [
+          "current",
+          "previous",
+          "delta",
+          "deltaPercent"
+        ],
+        "properties": {
+          "current": {
+            "type": "string",
+            "description": "Value for the current period."
+          },
+          "previous": {
+            "type": "string",
+            "description": "Value for the previous period."
+          },
+          "delta": {
+            "type": "string",
+            "description": "current - previous, as a decimal string."
+          },
+          "deltaPercent": {
+            "type": "number",
+            "nullable": true,
+            "description": "Percentage change against the previous period; null when the previous value is zero."
+          }
+        }
+      },
+      "TreasuryKpiRunway": {
+        "type": "object",
+        "required": [
+          "currentDays",
+          "previousDays",
+          "deltaDays"
+        ],
+        "properties": {
+          "currentDays": {
+            "type": "number",
+            "nullable": true,
+            "description": "Balance divided by the net burn rate at the end of the current period; null when not burning or without a balance."
+          },
+          "previousDays": {
+            "type": "number",
+            "nullable": true
+          },
+          "deltaDays": {
+            "type": "number",
+            "nullable": true
+          }
+        }
+      },
+      "TreasuryKpiTrend": {
+        "type": "object",
+        "required": [
+          "token",
+          "balance",
+          "spend",
+          "runway"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "balance": {
+            "$ref": "#/components/schemas/TreasuryKpiMetric"
+          },
+          "spend": {
+            "$ref": "#/components/schemas/TreasuryKpiMetric"
+          },
+          "runway": {
+            "$ref": "#/components/schemas/TreasuryKpiRunway"
+          }
+        }
+      },
+      "TreasuryKpiSnapshot": {
+        "type": "object",
+        "required": [
+          "network",
+          "contractId",
+          "token",
+          "date",
+          "balance",
+          "inflow",
+          "spend",
+          "spendCount",
+          "netBurnRate",
+          "runwayDays"
+        ],
+        "properties": {
+          "network": {
+            "type": "string"
+          },
+          "contractId": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "balance": {
+            "type": "string",
+            "description": "Cumulative deposits minus transfers up to and including the day."
+          },
+          "inflow": {
+            "type": "string",
+            "description": "Deposits observed on the day."
+          },
+          "spend": {
+            "type": "string",
+            "description": "Transferred out on the day."
+          },
+          "spendCount": {
+            "type": "integer"
+          },
+          "netBurnRate": {
+            "type": "string",
+            "description": "Trailing 30-day average of (spend - inflow) per day."
+          },
+          "runwayDays": {
+            "type": "number",
+            "nullable": true
+          }
+        }
+      },
+      "TreasuryKpiPeriod": {
+        "type": "object",
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date"
+          },
+          "end": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      },
+      "TreasuryKpiPage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Page"
+          },
+          {
+            "type": "object",
+            "required": [
+              "periodDays",
+              "currentPeriod",
+              "previousPeriod",
+              "trends",
+              "items"
+            ],
+            "properties": {
+              "periodDays": {
+                "type": "integer"
+              },
+              "currentPeriod": {
+                "$ref": "#/components/schemas/TreasuryKpiPeriod"
+              },
+              "previousPeriod": {
+                "$ref": "#/components/schemas/TreasuryKpiPeriod"
+              },
+              "trends": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TreasuryKpiTrend"
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TreasuryKpiSnapshot"
                 }
               }
             }
