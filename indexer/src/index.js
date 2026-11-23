@@ -22,10 +22,12 @@ import {
 import { createIndexerMetrics, recordBatchSuccess } from "./metrics.js";
 import { openStore, resolveStoreConfig } from "./store/index.js";
 import { createWebhookDispatcher, loadSubscriptions } from "./webhooks.js";
+import { createHttpBillingHook, createMeteringService } from "./metering.js";
 import { createNotificationDispatcher } from "./notifications.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 import {
   resolveApiKeysConfig,
+  resolveUsageMeteringConfig,
   resolveEventValidationConfig,
   resolveGraphQLConfig,
   resolveLeaderElectionConfig,
@@ -353,10 +355,21 @@ async function serve({ store, stellar }) {
     },
   });
   const subscriptions = loadSubscriptions();
+  const meteringConfig = resolveUsageMeteringConfig();
+  if (meteringConfig.hookRejected) {
+    console.warn("[metering] USAGE_BILLING_HOOK_URL was ignored: it must be https (or localhost http) and USAGE_BILLING_HOOK_SECRET needs 16+ characters");
+  }
+  const metering = createMeteringService({
+    store,
+    config: meteringConfig,
+    metrics,
+    hooks: meteringConfig.hookUrl ? [createHttpBillingHook({ url: meteringConfig.hookUrl, secret: meteringConfig.hookSecret })] : [],
+  });
   const webhooks = createWebhookDispatcher({
     store,
     subscriptions,
     metrics,
+    metering,
     maxAttempts: Number(process.env.WEBHOOK_MAX_ATTEMPTS ?? 8),
     backoffBaseMs: Number(process.env.WEBHOOK_BACKOFF_BASE_MS ?? 5000),
     backoffMaxMs: Number(process.env.WEBHOOK_BACKOFF_MAX_MS ?? 3_600_000),
@@ -412,6 +425,7 @@ async function serve({ store, stellar }) {
     void streamDispatcher.start();
     void warehouseManager.start();
     webhooks.start(workerPollMs.webhooks);
+    metering.start();
     notifications.start(workerPollMs.notifications);
   }
 
@@ -419,6 +433,7 @@ async function serve({ store, stellar }) {
     if (!workersRunning) return;
     workersRunning = false;
     webhooks.stop();
+    metering.stop();
     notifications.stop();
     await streamDispatcher.close();
     await warehouseManager.close();
@@ -572,6 +587,7 @@ async function serve({ store, stellar }) {
     apiKeys,
     apiKeysEnabled: apiKeyConfig.enabled,
     lagMonitor,
+    metering,
     runwayConfig: resolveRunwayConfig(),
     anomalyConfig: resolveAnomalyConfig(),
   });
