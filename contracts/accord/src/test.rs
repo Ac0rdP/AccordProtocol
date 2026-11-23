@@ -14396,3 +14396,837 @@ proptest! {
         prop_assert_eq!(read.limits.get(2).unwrap().limit, monthly);
     }
 }
+
+// ── Issue #954: Oracle Price Guard for Fiat-Denominated Limits ───────────────
+// ── Issue #955: Sanctions and Denylist Policy Hook ───────────────────────────
+// ── Issue #953: Cross-Asset Rebalancing Proposals ───────────────────────────
+
+// ── #954: Oracle price guard tests ───────────────────────────────────────────
+
+#[test]
+fn oracle_price_set_and_read() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000, // $10.00 scaled by 1e7
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    let prop_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "set oracle"), &DEADLINE);
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    let read = client.get_oracle_price(&token_client.address, &Symbol::new(&env, "USD")).unwrap();
+    assert_eq!(read.price, 100_000_000);
+    assert_eq!(read.fiat, Symbol::new(&env, "USD"));
+}
+
+#[test]
+fn oracle_price_set_emits_ora_set_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 50_000_000,
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    let prop_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "ora_set")));
+}
+
+#[test]
+fn oracle_price_rejects_zero_price() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 0,
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    assert_eq!(
+        client.try_create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "bad"), &DEADLINE),
+        Err(Ok(ContractError::OraclePriceInvalid))
+    );
+}
+
+#[test]
+fn oracle_price_rejects_zero_staleness() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000,
+        updated_at: NOW,
+        max_staleness: 0,
+    };
+    assert_eq!(
+        client.try_create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "bad"), &DEADLINE),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+}
+
+#[test]
+fn oracle_price_non_proposer_rejected() {
+    let (env, client, _, _, _, non_owner, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000,
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    assert_eq!(
+        client.try_create_set_oracle_price_proposal(&non_owner, &oracle, &str(&env, "unauth"), &DEADLINE),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn fiat_spend_limit_set_and_read() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // Set oracle first.
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000, // $10 per token
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
+    client.approve(&owner_a, &ora_id);
+    client.approve(&owner_b, &ora_id);
+    client.execute(&owner_c, &ora_id);
+
+    // Set fiat spend limit.
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 50_000_000, // $5.00 in fiat
+        window_secs: 86_400,
+    };
+    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "fiat limit"), &DEADLINE);
+    client.approve(&owner_a, &lim_id);
+    client.approve(&owner_b, &lim_id);
+    client.execute(&owner_c, &lim_id);
+
+    let read = client.get_fiat_spend_limit(&owner_a, &token_client.address, &Symbol::new(&env, "USD")).unwrap();
+    assert_eq!(read.fiat_limit, 50_000_000);
+}
+
+#[test]
+fn fiat_spend_limit_rejects_zero_limit() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 0,
+        window_secs: 86_400,
+    };
+    assert_eq!(
+        client.try_create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "zero"), &DEADLINE),
+        Err(Ok(ContractError::InvalidAmount))
+    );
+}
+
+#[test]
+fn fiat_spend_limit_rejects_bad_window() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 100_000_000,
+        window_secs: 10, // below MIN_SPENDING_WINDOW
+    };
+    assert_eq!(
+        client.try_create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "bad window"), &DEADLINE),
+        Err(Ok(ContractError::InvalidDuration))
+    );
+}
+
+#[test]
+fn fiat_spend_limit_blocks_transfer_exceeding_fiat_value() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    // Set oracle: 1 token = $10.00 (price = 10 * 1e7 = 100_000_000).
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000,
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
+    client.approve(&owner_a, &ora_id);
+    client.approve(&owner_b, &ora_id);
+    client.execute(&owner_c, &ora_id);
+
+    // Set fiat limit: $5.00 = 50_000_000 (scaled). At $10/token, that's 0.5 token.
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 50_000_000,
+        window_secs: 86_400,
+    };
+    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "fiat limit"), &DEADLINE);
+    client.approve(&owner_a, &lim_id);
+    client.approve(&owner_b, &lim_id);
+    client.execute(&owner_c, &lim_id);
+
+    // Transfer of 1 token → fiat value = 1 * 100_000_000 / 1e7 = $10 > $5 limit.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1, &token_client.address),
+        &str(&env, "over fiat limit"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &p),
+        Err(Ok(ContractError::FiatLimitExceeded))
+    );
+}
+
+#[test]
+fn fiat_limit_rejected_emits_fiat_rej_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000,
+        updated_at: NOW,
+        max_staleness: 86_400,
+    };
+    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
+    client.approve(&owner_a, &ora_id);
+    client.approve(&owner_b, &ora_id);
+    client.execute(&owner_c, &ora_id);
+
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 1_000_000, // $0.10
+        window_secs: 86_400,
+    };
+    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
+    client.approve(&owner_a, &lim_id);
+    client.approve(&owner_b, &lim_id);
+    client.execute(&owner_c, &lim_id);
+
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 100, &token_client.address),
+        &str(&env, "over"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    let _ = client.try_execute(&owner_c, &p);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "fiat_rej")));
+}
+
+#[test]
+fn fiat_limit_no_oracle_allows_transfer() {
+    // Without an oracle configured, the fiat limit is not enforced.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 1_000_000,
+        window_secs: 86_400,
+    };
+    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
+    client.approve(&owner_a, &lim_id);
+    client.approve(&owner_b, &lim_id);
+    client.execute(&owner_c, &lim_id);
+
+    // No oracle set — transfer should pass.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 100_000, &token_client.address),
+        &str(&env, "no oracle"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+}
+
+// ── #955: Denylist tests ──────────────────────────────────────────────────────
+
+#[test]
+fn denylist_add_and_check() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let blocked = Address::generate(&env);
+
+    let prop_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(client.is_denylist_enabled());
+    assert!(client.is_denied(&blocked));
+}
+
+#[test]
+fn denylist_add_emits_deny_ch_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let blocked = Address::generate(&env);
+
+    let prop_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "deny_ch")));
+}
+
+#[test]
+fn denylist_remove_unblocks() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let blocked = Address::generate(&env);
+
+    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+    assert!(client.is_denied(&blocked));
+
+    let rem_id = client.create_remove_from_denylist_proposal(&owner_a, &blocked, &str(&env, "unblock"), &DEADLINE);
+    client.approve(&owner_a, &rem_id);
+    client.approve(&owner_b, &rem_id);
+    client.execute(&owner_c, &rem_id);
+    assert!(!client.is_denied(&blocked));
+}
+
+#[test]
+fn denylist_blocks_transfer_to_denied_recipient() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let blocked = Address::generate(&env);
+
+    // Add to denylist.
+    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+
+    // Try to transfer to blocked address.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &blocked, 1_000, &token_client.address),
+        &str(&env, "to blocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &p),
+        Err(Ok(ContractError::RecipientDenied))
+    );
+}
+
+#[test]
+fn denylist_blocked_emits_deny_blk_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let blocked = Address::generate(&env);
+
+    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &blocked, 1_000, &token_client.address),
+        &str(&env, "blocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    let _ = client.try_execute(&owner_c, &p);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "deny_blk")));
+}
+
+#[test]
+fn denylist_not_enabled_allows_all_transfers() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+
+    // No denylist active — transfer should pass.
+    assert!(!client.is_denylist_enabled());
+
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 1_000, &token_client.address),
+        &str(&env, "ok"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+}
+
+#[test]
+fn denylist_non_proposer_rejected() {
+    let (env, client, _, _, _, non_owner, _) = setup(2);
+    let blocked = Address::generate(&env);
+
+    assert_eq!(
+        client.try_create_add_to_denylist_proposal(&non_owner, &blocked, &str(&env, "unauth"), &DEADLINE),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+// ── #953: Cross-asset rebalancing tests ───────────────────────────────────────
+
+#[test]
+fn rebalance_proposal_creation_validates_targets() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 5000, // 50%
+    });
+    targets.push_back(RebalanceTarget {
+        token: recv_token_id.address(),
+        target_bps: 5000, // 50%
+    });
+
+    let prop_id = client.create_rebalance_proposal(
+        &owner_a,
+        &RebalanceParams {
+            router,
+            targets,
+            tolerance_bps: 100, // 1%
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "rebalance"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(client.get_last_rebalance() > 0);
+}
+
+#[test]
+fn rebalance_emits_reb_prop_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 6000,
+    });
+    targets.push_back(RebalanceTarget {
+        token: recv_token_id.address(),
+        target_bps: 4000,
+    });
+
+    client.create_rebalance_proposal(
+        &owner_a,
+        &RebalanceParams {
+            router,
+            targets,
+            tolerance_bps: 200,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "rebalance"),
+        &DEADLINE,
+    );
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "reb_prop")));
+}
+
+#[test]
+fn rebalance_emits_reb_exec_event() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_b, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 7000,
+    });
+    targets.push_back(RebalanceTarget {
+        token: recv_token_id.address(),
+        target_bps: 3000,
+    });
+
+    let prop_id = client.create_rebalance_proposal(
+        &owner_a,
+        &RebalanceParams {
+            router,
+            targets,
+            tolerance_bps: 100,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "rebalance"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+    client.approve(&owner_b, &prop_id);
+    client.execute(&owner_c, &prop_id);
+
+    assert!(has_contract_event(&env, &client.address, Symbol::new(&env, "reb_exec")));
+}
+
+#[test]
+fn rebalance_rejects_empty_targets() {
+    let (env, client, owner_a, _, _, _, _) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    let params = RebalanceParams {
+        router,
+        targets: Vec::new(&env),
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "empty"), &DEADLINE),
+        Err(Ok(ContractError::EmptyRebalance))
+    );
+}
+
+#[test]
+fn rebalance_rejects_target_bps_over_10000() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 10001, // > 10000
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "bad bps"), &DEADLINE),
+        Err(Ok(ContractError::InvalidTargetWeight))
+    );
+}
+
+#[test]
+fn rebalance_rejects_duplicate_tokens() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 5000,
+    });
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(), // duplicate
+        target_bps: 5000,
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "dup"), &DEADLINE),
+        Err(Ok(ContractError::InvalidTargetWeight))
+    );
+}
+
+#[test]
+fn rebalance_rejects_sum_bps_over_10000() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 6000,
+    });
+    targets.push_back(RebalanceTarget {
+        token: recv_token_id.address(),
+        target_bps: 5000, // sum = 11000 > 10000
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "over sum"), &DEADLINE),
+        Err(Ok(ContractError::InvalidTargetWeight))
+    );
+}
+
+#[test]
+fn rebalance_rejects_unapproved_router() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let unapproved_router = env.register(mock_router::MockRouter, ());
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 10000,
+    });
+    let params = RebalanceParams {
+        router: unapproved_router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "bad router"), &DEADLINE),
+        Err(Ok(ContractError::RebalanceRouterNotApproved))
+    );
+}
+
+#[test]
+fn rebalance_rejects_past_swap_deadline() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_a, &owner_a);
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 10000,
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: NOW - 1,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "past deadline"), &DEADLINE),
+        Err(Ok(ContractError::InvalidSwapDeadline))
+    );
+}
+
+#[test]
+fn rebalance_non_proposer_rejected() {
+    let (env, client, _, _, _, non_owner, token_client) = setup(2);
+    let router = env.register(mock_router::MockRouter, ());
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 10000,
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&non_owner, &params, &str(&env, "unauth"), &DEADLINE),
+        Err(Ok(ContractError::Unauthorized))
+    );
+}
+
+#[test]
+fn rebalance_frozen_blocks_creation() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    client.freeze(&guardian);
+
+    let router = env.register(mock_router::MockRouter, ());
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 10000,
+    });
+    let params = RebalanceParams {
+        router,
+        targets,
+        tolerance_bps: 100,
+        swap_deadline: DEADLINE,
+    };
+    assert_eq!(
+        client.try_create_rebalance_proposal(&owner_a, &params, &str(&env, "frozen"), &DEADLINE),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn rebalance_get_last_rebalance_returns_zero_initially() {
+    let (env, client, _, _, _, _, _) = setup(2);
+    assert_eq!(client.get_last_rebalance(), 0);
+}
+
+#[test]
+fn odr_migrate_already_migrated_on_fresh_deploy() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    assert_eq!(
+        client.try_migrate_to_oracle_denylist_rebalance(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()])
+        ),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
+    assert_eq!(client.get_storage_version(), 7);
+}
+
+// ── Adversarial tests ────────────────────────────────────────────────────────
+
+#[test]
+fn denylist_then_unblock_allows_transfer() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let blocked = Address::generate(&env);
+
+    // Block.
+    let add_id = client.create_add_to_denylist_proposal(&owner_a, &blocked, &str(&env, "block"), &DEADLINE);
+    client.approve(&owner_a, &add_id);
+    client.approve(&owner_b, &add_id);
+    client.execute(&owner_c, &add_id);
+
+    // Transfer to blocked → denied.
+    let p1 = client.create_proposal(
+        &owner_a,
+        &t(&env, &blocked, 1_000, &token_client.address),
+        &str(&env, "blocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p1);
+    client.approve(&owner_b, &p1);
+    assert_eq!(
+        client.try_execute(&owner_c, &p1),
+        Err(Ok(ContractError::RecipientDenied))
+    );
+
+    // Unblock.
+    let rem_id = client.create_remove_from_denylist_proposal(&owner_a, &blocked, &str(&env, "unblock"), &DEADLINE);
+    client.approve(&owner_a, &rem_id);
+    client.approve(&owner_b, &rem_id);
+    client.execute(&owner_c, &rem_id);
+
+    // Transfer to unblocked → should pass.
+    let p2 = client.create_proposal(
+        &owner_a,
+        &t(&env, &blocked, 1_000, &token_client.address),
+        &str(&env, "unblocked"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p2);
+    client.approve(&owner_b, &p2);
+    client.execute(&owner_c, &p2);
+}
+
+#[test]
+fn oracle_stale_price_allows_transfer() {
+    // If oracle price is stale, the fiat check is skipped (returns Ok) so
+    // transfers are not blocked by a stale oracle — fail-open design.
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let oracle = OraclePrice {
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        price: 100_000_000,
+        updated_at: NOW,
+        max_staleness: 100, // 100 seconds
+    };
+    let ora_id = client.create_set_oracle_price_proposal(&owner_a, &oracle, &str(&env, "oracle"), &DEADLINE);
+    client.approve(&owner_a, &ora_id);
+    client.approve(&owner_b, &ora_id);
+    client.execute(&owner_c, &ora_id);
+
+    let limit = FiatSpendLimit {
+        owner: owner_a.clone(),
+        token: token_client.address.clone(),
+        fiat: Symbol::new(&env, "USD"),
+        fiat_limit: 1_000_000,
+        window_secs: 86_400,
+    };
+    let lim_id = client.create_set_fiat_spend_limit_proposal(&owner_a, &limit, &str(&env, "limit"), &DEADLINE);
+    client.approve(&owner_a, &lim_id);
+    client.approve(&owner_b, &lim_id);
+    client.execute(&owner_c, &lim_id);
+
+    // Advance past staleness.
+    set_timestamp(&env, NOW + 200);
+
+    // Transfer should pass — oracle is stale, fiat check is skipped.
+    let p = client.create_proposal(
+        &owner_a,
+        &t(&env, &Address::generate(&env), 1_000_000, &token_client.address),
+        &str(&env, "stale oracle"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &p);
+    client.approve(&owner_b, &p);
+    client.execute(&owner_c, &p);
+}
+
+#[test]
+fn rebalance_solo_owner_cannot_execute() {
+    let (env, client, owner_a, _, owner_c, _, token_client) = setup(2);
+    let router = setup_approved_router(&env, &client, &owner_a, &owner_a, &owner_c);
+    let recv_token_id = env.register_stellar_asset_contract_v2(Address::generate(&env));
+
+    let mut targets = Vec::new(&env);
+    targets.push_back(RebalanceTarget {
+        token: token_client.address.clone(),
+        target_bps: 5000,
+    });
+    targets.push_back(RebalanceTarget {
+        token: recv_token_id.address(),
+        target_bps: 5000,
+    });
+    let prop_id = client.create_rebalance_proposal(
+        &owner_a,
+        &RebalanceParams {
+            router,
+            targets,
+            tolerance_bps: 100,
+            swap_deadline: DEADLINE,
+        },
+        &str(&env, "solo"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &prop_id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &prop_id),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+}
