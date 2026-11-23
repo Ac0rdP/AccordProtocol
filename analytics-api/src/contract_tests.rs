@@ -27,7 +27,7 @@ use sqlx::{
 use tower::ServiceExt;
 
 use crate::{
-    AppState, ReportConfig, ScopeConfig, alert_api, alert_rules, benchmarks,
+    AppState, ReportConfig, ScopeConfig, alert_api, alert_rules, benchmarks, costs,
     alerts::{
         Alert, AlertChannel, AlertEngine, AlertRuntime, ChannelFuture, StormSettings, Watcher,
         parse_rules,
@@ -246,6 +246,7 @@ fn openapi_query_parameters_match_the_validators() {
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/treasury/kpis", "get", kpi::QUERY_PARAMS),
         ("/benchmarks/peers", "get", benchmarks::QUERY_PARAMS),
+        ("/costs/attribution", "get", costs::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
         ("/integrations", "get", integrations::LIST_PARAMS),
@@ -321,6 +322,10 @@ fn openapi_enumerations_match_the_validators() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
+        enum_of(&spec, "/costs/attribution", "get", "groupBy"),
+        costs::GROUP_BY
+    );
+    assert_eq!(
         enum_of(&spec, "/reports", "get", "status"),
         report_api::STATUSES
     );
@@ -351,6 +356,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals/funnel", "get"),
         ("/treasury/kpis", "get"),
         ("/benchmarks/peers", "get"),
+        ("/costs/attribution", "get"),
         ("/reports", "get"),
         ("/integrations", "get"),
         ("/report-templates", "get"),
@@ -434,6 +440,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/spend/by-category"),
         ("GET", "/treasury/kpis"),
         ("GET", "/benchmarks/peers"),
+        ("GET", "/costs/attribution"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
         ("GET", "/integrations"),
@@ -579,6 +586,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
         "/proposals/funnel?groupBy=x&category=x&limit=0",
         "/treasury/kpis?periodDays=0&endDate=x&limit=0&offset=-1&network=x&bogus=1",
         "/benchmarks/peers?metric=x&category=x&periodDays=0&endDate=x&limit=0&network=x&bogus=1",
+        "/costs/attribution?groupBy=x&category=x&limit=0&startDate=2026-09-27&endDate=2026-09-26&bogus=1",
         "/reports?format=x&status=x",
         "/report-templates?limit=0&offset=-1&contractId=x&network=x&bogus=1",
         "/alerts?severity=x",
@@ -2381,6 +2389,116 @@ async fn benchmarks_suppress_small_cohorts_and_never_name_a_peer() {
     // Pagination slices the metrics.
     let (_, page) = get(&open, "/benchmarks/peers?contractId=test-contract&limit=2&offset=3").await;
     assert_eq!(page["total"], 4);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+
+    db.cleanup().await;
+}
+
+// --- cost attribution --------------------------------------------------------
+
+#[tokio::test]
+async fn costs_reject_bad_input_before_touching_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/costs/attribution?groupBy=token", "INVALID_GROUP_BY"),
+        ("/costs/attribution?category=Bogus", "INVALID_CATEGORY"),
+        ("/costs/attribution?limit=101", "INVALID_LIMIT"),
+        ("/costs/attribution?offset=-1", "INVALID_OFFSET"),
+        ("/costs/attribution?startDate=soon", "INVALID_DATE"),
+        (
+            "/costs/attribution?startDate=2026-09-27&endDate=2026-09-26",
+            "INVALID_DATE_RANGE",
+        ),
+        ("/costs/attribution?network=nope", "INVALID_NETWORK"),
+    ] {
+        let (status, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}");
+        assert_eq!(body["error"]["details"][0]["code"], code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn costs_attribute_spend_and_drill_down() {
+    let Some(db) = TestDb::connect("costs", true).await else {
+        return;
+    };
+    // The seed already executed #1 (USDC 10, Transfer, GALICE) and #4 (XLM 2,
+    // Payroll, GCAROL), all paid to GR.
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO proposals (contract_id, network, proposal_id, kind, recipient, amount, token, status,
+                               deadline, created_at, proposer, category, executed_at) VALUES
+         ('test-contract', 'testnet', 7, 'transfer', 'GR2', '30', 'USDC', 'executed', '2026-09-30T00:00:00Z', '2026-09-20T00:00:00Z', 'GALICE', 'Payroll', '2026-09-21T00:00:00Z'),
+         ('test-contract', 'testnet', 8, 'transfer', 'GR2', '60', 'USDC', 'executed', '2026-09-30T00:00:00Z', '2026-09-20T00:00:00Z', 'GBOB',   'Payroll', '2026-09-22T00:00:00Z');
+        "#,
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let state = db.state();
+    let number = |value: &Value| value.as_str().unwrap().parse::<f64>().unwrap();
+    let keys = |body: &Value| -> Vec<(String, String)> {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["key"].as_str().unwrap().to_owned(),
+                    row["token"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    let (status, headers, body) =
+        request(&state, "GET", "/costs/attribution?contractId=test-contract").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["cache-control"], "private, max-age=60");
+    assert_eq!(body["groupBy"], "category");
+    assert_eq!(body["total"], 3);
+    assert_eq!(
+        keys(&body),
+        [
+            ("Payroll".to_owned(), "USDC".to_owned()),
+            ("Transfer".to_owned(), "USDC".to_owned()),
+            ("Payroll".to_owned(), "XLM".to_owned()),
+        ],
+        "largest amount first"
+    );
+    assert_eq!(number(&body["items"][0]["total"]), 90.0);
+    assert_eq!(body["items"][0]["share"], 90.0);
+    assert_eq!(body["items"][2]["share"], 100.0, "XLM is judged against XLM only");
+    assert_eq!(number(&body["totals"][0]["total"]), 100.0);
+
+    // Drill down: Payroll USDC spend, by proposer, then by recipient.
+    let (_, by_owner) = get(
+        &state,
+        "/costs/attribution?contractId=test-contract&category=Payroll&token=USDC&groupBy=owner",
+    )
+    .await;
+    assert_eq!(
+        keys(&by_owner),
+        [
+            ("GBOB".to_owned(), "USDC".to_owned()),
+            ("GALICE".to_owned(), "USDC".to_owned())
+        ]
+    );
+    assert_eq!(by_owner["items"][0]["share"], 66.67);
+
+    let (_, by_recipient) = get(
+        &state,
+        "/costs/attribution?contractId=test-contract&category=Payroll&token=USDC&owner=GBOB&groupBy=recipient",
+    )
+    .await;
+    assert_eq!(by_recipient["total"], 1);
+    assert_eq!(by_recipient["items"][0]["key"], "GR2");
+    assert_eq!(by_recipient["items"][0]["share"], 100.0);
+
+    // Pages tile: the second page holds the remaining row.
+    let (_, page) = get(&state, "/costs/attribution?contractId=test-contract&limit=2&offset=2").await;
+    assert_eq!(page["total"], 3);
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
 
     db.cleanup().await;

@@ -4671,6 +4671,249 @@
         },
         "description": "Peers are every indexed contract outside the requested scope. They are only exposed as 25th percentile, median and 75th percentile over per-contract values; no peer is identifiable. A cohort smaller than BENCHMARK_MIN_PEERS (default 5, minimum 3) is suppressed: `peers` is null and `cohort.suppressed` is true."
       }
+    },
+    "/costs/attribution": {
+      "get": {
+        "operationId": "getCostAttribution",
+        "summary": "Spend attributed to a category, owner or recipient, with drill-down",
+        "tags": [
+          "Spend"
+        ],
+        "parameters": [
+          {
+            "name": "groupBy",
+            "in": "query",
+            "required": false,
+            "description": "Dimension spend is attributed to.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "category",
+                "owner",
+                "recipient"
+              ],
+              "default": "category"
+            },
+            "x-error-code": "INVALID_GROUP_BY",
+            "x-invalid-example": "token"
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "description": "Drill down to spend in this category.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "Transfer",
+                "Payroll",
+                "Grant",
+                "Ops",
+                "Other"
+              ]
+            },
+            "x-error-code": "INVALID_CATEGORY",
+            "x-invalid-example": "Bogus"
+          },
+          {
+            "name": "owner",
+            "in": "query",
+            "required": false,
+            "description": "Drill down to spend proposed by exactly this address.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "recipient",
+            "in": "query",
+            "required": false,
+            "description": "Drill down to spend paid to exactly this address.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "description": "Only this token symbol, for example XLM or USDC.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive lower bound on execution time, an ISO 8601 date or date-time.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_DATE",
+            "x-invalid-example": "yesterday"
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on execution time, an ISO 8601 date or date-time, not before startDate.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_DATE",
+            "x-invalid-example": "tomorrow"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Rows per page.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "x-error-code": "INVALID_LIMIT",
+            "x-invalid-example": "101"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of rows to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "x-error-code": "INVALID_OFFSET",
+            "x-invalid-example": "-1"
+          },
+          {
+            "name": "contractId",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one indexed contract; must be one of CONTRACT_IDS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_CONTRACT_ID",
+            "x-invalid-example": "not-a-served-contract"
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "description": "Narrow the response to one network; must be one of NETWORKS.",
+            "schema": {
+              "type": "string"
+            },
+            "x-error-code": "INVALID_NETWORK",
+            "x-invalid-example": "not-a-served-network"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Spend rows for the chosen dimension plus per-token totals.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostAttributionPage"
+                }
+              }
+            },
+            "headers": {
+              "X-Cache": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "HIT",
+                    "MISS"
+                  ]
+                },
+                "description": "Present on cacheable reads."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`private, max-age=60`; the response may be reused for a minute."
+              }
+            }
+          },
+          "400": {
+            "description": "A query parameter is invalid or unsupported.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The client exceeded its rate limit. See the `Retry-After` header.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds until the client may retry."
+              },
+              "X-RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-RateLimit-Reset": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The datastore could not be queried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "Executed transfer spend, windowed on execution time. Tokens are never summed together: each row is one (key, token) pair and `share` is taken against that token's total. Combine a filter with another `groupBy` to drill down, for example `category=Payroll&groupBy=recipient`."
+      }
     }
   },
   "components": {
@@ -6245,6 +6488,93 @@
                 "items": {
                   "$ref": "#/components/schemas/PeerBenchmarkRow"
                 }
+              }
+            }
+          }
+        ]
+      },
+      "CostAttributionRow": {
+        "type": "object",
+        "required": [
+          "key",
+          "token",
+          "total",
+          "count",
+          "share"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The category, owner address or recipient address."
+          },
+          "token": {
+            "type": "string"
+          },
+          "total": {
+            "type": "string",
+            "description": "Decimal amount spent."
+          },
+          "count": {
+            "type": "integer"
+          },
+          "share": {
+            "type": "number",
+            "description": "Percentage, 0\u2013100, of this token's spend in the filtered range."
+          }
+        }
+      },
+      "CostAttributionTotal": {
+        "type": "object",
+        "required": [
+          "token",
+          "total",
+          "count"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "total": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "CostAttributionPage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Page"
+          },
+          {
+            "type": "object",
+            "required": [
+              "groupBy",
+              "items",
+              "totals"
+            ],
+            "properties": {
+              "groupBy": {
+                "type": "string",
+                "enum": [
+                  "category",
+                  "owner",
+                  "recipient"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CostAttributionRow"
+                }
+              },
+              "totals": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CostAttributionTotal"
+                },
+                "description": "Spend per token across every matching proposal, independent of paging."
               }
             }
           }

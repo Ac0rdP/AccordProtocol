@@ -5,7 +5,7 @@ This page is the reference for the analytics HTTP API — the endpoints, query p
 - [ARCHITECTURE.md §13 — Indexer & Analytics Architecture](ARCHITECTURE.md#13-indexer--analytics-architecture) explains how events become the records this API serves (data flow, datastore schema, checkpointing).
 - [CONTRACT_API.md](CONTRACT_API.md) is the reference for the contract functions and topics that produce these events in the first place; this page cross-references it wherever an event is also documented there.
 
-**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /treasury/kpis` serves daily treasury KPI snapshots with period-over-period deltas for balance, spend and runway. `GET /benchmarks/peers` compares the treasury's governance metrics against anonymous peer aggregates. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
+**Status:** The Rust service in [`analytics-api/`](../analytics-api/README.md) implements `GET /proposals`, `GET /proposals/:id`, and `GET /spend/by-category` against its PostgreSQL datastore. The current reference indexer (`scripts/indexer.js`) writes a JSON file rather than these PostgreSQL tables, so a database ingestion adapter is still needed to connect those components. The remaining analytics endpoints below are specified by the frontend's client and types (`frontend/src/lib/analyticsClient.ts`, `frontend/src/types/accord.ts`) but do not yet have a backend implementation — see [frontend/docs/analytics-data-layer.md](../frontend/docs/analytics-data-layer.md) for the integration status. `POST /graphql` ([GraphQL](#graphql)) exposes proposals, owners, spends, and treasury flows with pagination, filtering, and query-cost limits. `GET /proposals/funnel` reports proposal conversion rates by category or owner. `GET /treasury/kpis` serves daily treasury KPI snapshots with period-over-period deltas for balance, spend and runway. `GET /benchmarks/peers` compares the treasury's governance metrics against anonymous peer aggregates. `GET /costs/attribution` breaks spend down by category, owner or recipient with drill-down. `GET /freshness` reports ingestion lag, report freshness and API latency against their SLOs. `GET /reports`, `POST /reports/run` and `/report-templates` serve the scheduled treasury reports and their [branded templates](#branded-report-templates); `GET /alerts` and `GET /alerts/rules` serve the alerting engine. `/health` is a database-backed readiness check; the service root returns its name and status. `GET /livez`, `GET /readyz`, and `GET /metrics` provide liveness, readiness, and Prometheus metrics for operators. `GET /status` reports every dependency separately (`database`, `ingestion`) with an overall `operational`, `degraded` or `outage` verdict for the [public status page](STATUS.md).
 
 ---
 
@@ -68,7 +68,7 @@ Every endpoint except `/`, `/health`, `/livez`, `/readyz`, `/status` and `/metri
 }
 ```
 
-Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel`, `GET /spend/by-category`, `GET /treasury/kpis` and `GET /benchmarks/peers` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
+Successful `GET /proposals`, `GET /proposals/:id`, `GET /proposals/funnel`, `GET /spend/by-category`, `GET /treasury/kpis`, `GET /benchmarks/peers` and `GET /costs/attribution` responses are cached in memory for a short window. Equal queries share an entry regardless of parameter order, only `200` responses are stored, and the response carries `X-Cache: HIT` or `MISS`. The cache is bounded and evicts the oldest entry when full. **It is cleared as soon as the indexer writes new events**: a watcher compares the newest indexed ledger every `ALERT_POLL_SECS` (default 15) seconds and drops the cache when it moves, so a cached answer is never older than the data or the TTL, whichever is shorter. The quota applies to cache hits too.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -241,6 +241,34 @@ Spend aggregated by proposal category, over executed transfers only.
 
 `share` is the category's percentage of total spend for the same token within the filtered range (0–100).
 The response includes all five categories (`Transfer`, `Payroll`, `Grant`, `Ops`, `Other`) for every matching token, using a zero total/count/share when there is no spend. If no token has been indexed yet, it returns zero rows for `XLM`; a requested token with no activity also receives zero rows. `startDate` and `endDate` filter by execution time, with date-only bounds inclusive of the whole day.
+
+### `GET /costs/attribution`
+
+Cost attribution: executed transfer spend broken down by category, proposing owner or recipient, with drill-down.
+
+**Query parameters:** `groupBy` (`category` by default, `owner` or `recipient`), `category`, `owner`, `recipient`, `token`, `startDate`, `endDate`, `limit`, `offset`, `contractId`, `network` (see [Standardized Query Parameters](#standardized-query-parameters)). `limit` and `offset` page through the rows. `startDate`/`endDate` bound the execution time, with date-only bounds inclusive of the whole day. Unlike `GET /proposals/funnel`, the `owner` and `recipient` filters are exact address matches, so a drill-down never widens. Validation failures are reported together in one `400 VALIDATION_ERROR`; `groupBy` failures use `INVALID_GROUP_BY`.
+
+**Response (`CostAttributionPage`):**
+
+```json
+{
+  "groupBy": "recipient",
+  "items": [
+    { "key": "GRECIPIENT...", "token": "USDC", "total": "7500.0000000", "count": 3, "share": 60.0 },
+    { "key": "GOTHER...", "token": "USDC", "total": "5000.0000000", "count": 2, "share": 40.0 }
+  ],
+  "totals": [ { "token": "USDC", "total": "12500.0000000", "count": 5 } ],
+  "total": 2,
+  "limit": 20,
+  "offset": 0
+}
+```
+
+- Every row is one `(key, token)` pair: amounts of different tokens are never added together, and `share` (0–100, two places) is the row's part of *that token's* spend in the filtered range.
+- **Drill-down** is a filter on one dimension combined with a grouping by another: `?category=Payroll&groupBy=owner` shows who proposed the Payroll spend, `?category=Payroll&owner=G...&groupBy=recipient` shows who that owner paid.
+- `totals` is the spend per token across every matching proposal regardless of paging; `total` is the number of rows. Rows are ordered by amount descending, then key and token, so pages tile exactly.
+- Only executed transfer proposals count, the same spend as [`GET /spend/by-category`](#get-spendby-category).
+- Successful responses carry `Cache-Control: private, max-age=60`, `X-Cache` and the `X-RateLimit-*` headers.
 
 ### `GET /spend/by-owner`
 

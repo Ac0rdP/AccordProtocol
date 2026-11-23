@@ -31,6 +31,7 @@ mod alerts;
 mod benchmarks;
 mod billing;
 mod branding;
+mod costs;
 mod freshness;
 mod funnel;
 mod http_cache;
@@ -223,6 +224,7 @@ fn app(state: AppState) -> Router {
         .route("/spend/by-category", get(spend::by_category))
         .route("/treasury/kpis", get(kpi::list))
         .route("/benchmarks/peers", get(benchmarks::peers))
+        .route("/costs/attribution", get(costs::attribution))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
         .route(
