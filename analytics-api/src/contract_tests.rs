@@ -27,7 +27,7 @@ use sqlx::{
 use tower::ServiceExt;
 
 use crate::{
-    AppState, ReportConfig, ScopeConfig, alert_api, alert_rules,
+    AppState, ReportConfig, ScopeConfig, alert_api, alert_rules, benchmarks,
     alerts::{
         Alert, AlertChannel, AlertEngine, AlertRuntime, ChannelFuture, StormSettings, Watcher,
         parse_rules,
@@ -245,6 +245,7 @@ fn openapi_query_parameters_match_the_validators() {
         ("/proposals/funnel", "get", funnel::QUERY_PARAMS),
         ("/spend/by-category", "get", spend::QUERY_PARAMS),
         ("/treasury/kpis", "get", kpi::QUERY_PARAMS),
+        ("/benchmarks/peers", "get", benchmarks::QUERY_PARAMS),
         ("/reports", "get", report_api::LIST_PARAMS),
         ("/reports/run", "post", report_api::RUN_PARAMS),
         ("/integrations", "get", integrations::LIST_PARAMS),
@@ -313,6 +314,13 @@ fn openapi_enumerations_match_the_validators() {
         proposals::CATEGORIES
     );
     assert_eq!(
+        enum_of(&spec, "/benchmarks/peers", "get", "metric"),
+        benchmarks::METRICS
+            .iter()
+            .map(|(name, _, _)| (*name).to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
         enum_of(&spec, "/reports", "get", "status"),
         report_api::STATUSES
     );
@@ -342,6 +350,7 @@ fn openapi_pagination_bounds_match_the_validators() {
         ("/proposals", "get"),
         ("/proposals/funnel", "get"),
         ("/treasury/kpis", "get"),
+        ("/benchmarks/peers", "get"),
         ("/reports", "get"),
         ("/integrations", "get"),
         ("/report-templates", "get"),
@@ -424,6 +433,7 @@ async fn unknown_parameters_are_rejected_on_every_endpoint_with_parameters() {
         ("GET", "/proposals/funnel"),
         ("GET", "/spend/by-category"),
         ("GET", "/treasury/kpis"),
+        ("GET", "/benchmarks/peers"),
         ("GET", "/reports"),
         ("POST", "/reports/run"),
         ("GET", "/integrations"),
@@ -568,6 +578,7 @@ async fn documented_error_codes_cover_what_the_validators_emit() {
         "/proposals?startDate=2026-09-27&endDate=2026-09-26",
         "/proposals/funnel?groupBy=x&category=x&limit=0",
         "/treasury/kpis?periodDays=0&endDate=x&limit=0&offset=-1&network=x&bogus=1",
+        "/benchmarks/peers?metric=x&category=x&periodDays=0&endDate=x&limit=0&network=x&bogus=1",
         "/reports?format=x&status=x",
         "/report-templates?limit=0&offset=-1&contractId=x&network=x&bogus=1",
         "/alerts?severity=x",
@@ -2295,6 +2306,82 @@ async fn kpis_report_period_over_period_deltas_and_are_idempotent() {
 
     let (_, page) = get(&state, "/treasury/kpis?limit=5&offset=28").await;
     assert_eq!(page["items"].as_array().unwrap().len(), 2, "last page is short");
+
+    db.cleanup().await;
+}
+
+// --- peer benchmarking -------------------------------------------------------
+
+#[tokio::test]
+async fn benchmarks_reject_bad_input_before_touching_the_database() {
+    let state = lazy_state();
+    for (uri, code) in [
+        ("/benchmarks/peers?metric=profit", "INVALID_METRIC"),
+        ("/benchmarks/peers?category=Bogus", "INVALID_CATEGORY"),
+        ("/benchmarks/peers?periodDays=366", "INVALID_PERIOD_DAYS"),
+        ("/benchmarks/peers?endDate=soon", "INVALID_DATE"),
+        ("/benchmarks/peers?limit=101", "INVALID_LIMIT"),
+        ("/benchmarks/peers?offset=-1", "INVALID_OFFSET"),
+        ("/benchmarks/peers?network=nope", "INVALID_NETWORK"),
+    ] {
+        let (status, body) = get(&state, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{uri}");
+        assert_eq!(body["error"]["details"][0]["code"], code, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn benchmarks_suppress_small_cohorts_and_never_name_a_peer() {
+    let Some(db) = TestDb::connect("benchmarks", false).await else {
+        return;
+    };
+    // `test-contract` is the scope; three peers each created one proposal, of
+    // which the first two were executed.
+    sqlx::raw_sql(
+        r#"
+        INSERT INTO proposals (contract_id, network, proposal_id, kind, recipient, amount, token, status,
+                               deadline, created_at, proposer, category, executed_at) VALUES
+         ('test-contract', 'testnet', 1, 'transfer', 'GR', '1', 'XLM', 'executed', NOW() + interval '1 day', NOW() - interval '3 days', 'GOWN', 'Payroll', NOW() - interval '2 days'),
+         ('test-contract', 'testnet', 2, 'transfer', 'GR', '1', 'XLM', 'pending',  NOW() + interval '1 day', NOW() - interval '3 days', 'GOWN', 'Payroll', NULL),
+         ('peer-a', 'testnet', 1, 'transfer', 'GR', '1', 'XLM', 'executed', NOW() + interval '1 day', NOW() - interval '3 days', 'GA', 'Payroll', NOW() - interval '2 days'),
+         ('peer-b', 'testnet', 1, 'transfer', 'GR', '1', 'XLM', 'executed', NOW() + interval '1 day', NOW() - interval '3 days', 'GB', 'Payroll', NOW() - interval '2 days'),
+         ('peer-c', 'testnet', 1, 'transfer', 'GR', '1', 'XLM', 'pending',  NOW() + interval '1 day', NOW() - interval '3 days', 'GC', 'Payroll', NULL);
+        "#,
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    // The default floor of five hides a cohort of three.
+    let state = db.state();
+    let uri = "/benchmarks/peers?contractId=test-contract&metric=executionRate";
+    let (status, headers, body) = request(&state, "GET", uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["cache-control"], "private, max-age=60");
+    assert_eq!(body["cohort"]["size"], 3);
+    assert_eq!(body["cohort"]["suppressed"], true);
+    assert!(body["items"][0]["peers"].is_null());
+    assert!(body["items"][0]["deltaFromMedian"].is_null());
+    assert_eq!(body["items"][0]["own"], 50.0, "the scope still sees itself");
+
+    // With a floor of three the same cohort is published, as percentiles only.
+    let mut open = db.state();
+    open.benchmark_min_peers = 3;
+    let (_, body) = get(&open, uri).await;
+    assert_eq!(body["cohort"]["suppressed"], false);
+    assert_eq!(body["items"][0]["peers"]["median"], 100.0);
+    assert!(body["items"][0]["peers"]["p25"].as_f64().unwrap() <= 100.0);
+    assert_eq!(body["items"][0]["deltaFromMedian"], -50.0);
+    let text = body.to_string();
+    for secret in ["peer-a", "peer-b", "peer-c", "GA", "GB", "GC"] {
+        assert!(!text.contains(&format!("\"{secret}\"")), "{secret} leaked");
+    }
+
+    // Pagination slices the metrics.
+    let (_, page) = get(&open, "/benchmarks/peers?contractId=test-contract&limit=2&offset=3").await;
+    assert_eq!(page["total"], 4);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
 
     db.cleanup().await;
 }

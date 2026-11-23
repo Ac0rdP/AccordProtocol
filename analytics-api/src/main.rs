@@ -28,6 +28,7 @@ use tracing_subscriber::EnvFilter;
 mod admin;
 mod alert_rules;
 mod alerts;
+mod benchmarks;
 mod billing;
 mod branding;
 mod freshness;
@@ -77,6 +78,8 @@ struct AppState {
     alert_engine: Option<Arc<AlertEngine>>,
     /// Bearer token the write endpoints require; `None` leaves them open.
     admin_token: Option<Arc<str>>,
+    /// Smallest peer cohort `/benchmarks/peers` will publish statistics for.
+    benchmark_min_peers: usize,
     schema: graphql::AccordSchema,
     graphql_timeout: Duration,
 }
@@ -103,6 +106,7 @@ impl AppState {
             limits: Arc::new(Limits::disabled()),
             alert_engine: None,
             admin_token: None,
+            benchmark_min_peers: benchmarks::DEFAULT_MIN_PEERS,
             schema: graphql::build_schema(&graphql::GraphqlConfig::default()),
             graphql_timeout: graphql::GraphqlConfig::default().timeout,
         }
@@ -120,6 +124,11 @@ impl AppState {
 
     fn with_admin_token(mut self, token: Option<Arc<str>>) -> Self {
         self.admin_token = token;
+        self
+    }
+
+    fn with_benchmark_min_peers(mut self, peers: usize) -> Self {
+        self.benchmark_min_peers = peers;
         self
     }
 
@@ -213,6 +222,7 @@ fn app(state: AppState) -> Router {
         .route("/proposals/{id}", get(proposals::get_detail))
         .route("/spend/by-category", get(spend::by_category))
         .route("/treasury/kpis", get(kpi::list))
+        .route("/benchmarks/peers", get(benchmarks::peers))
         .route("/reports", get(report_api::list))
         .route("/reports/run", post(report_api::run_now))
         .route(
@@ -2025,6 +2035,7 @@ async fn main() -> Result<()> {
                 .filter(|token| !token.is_empty())
                 .map(Arc::from),
         )
+        .with_benchmark_min_peers(benchmarks::min_peers_from_env()?)
         .with_graphql(graphql_config);
     axum::serve(
         listener,
