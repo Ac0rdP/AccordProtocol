@@ -32,6 +32,7 @@ mod benchmarks;
 mod billing;
 mod branding;
 mod costs;
+mod digest;
 mod freshness;
 mod funnel;
 mod http_cache;
@@ -237,7 +238,7 @@ fn app(state: AppState) -> Router {
         .route("/integrations", get(integrations::list))
         .route(
             "/integrations/{id}",
-            axum::routing::put(integrations::put)
+            put(integrations::put)
                 .delete(integrations::delete)
                 .layer(DefaultBodyLimit::max(integrations::MAX_BODY_BYTES)),
         )
@@ -1978,6 +1979,13 @@ async fn main() -> Result<()> {
         tracing::info!("no REPORT_SCHEDULE configured; scheduled treasury reports are off");
     }
 
+    // Owner digest emails share the report transport and run on their own cron.
+    let digests = Arc::new(digest::DigestConfig::from_env()?);
+    let digest_scheduler = digest::spawn(pool.clone(), Arc::clone(&digests), transport.clone());
+    if digest_scheduler.is_none() {
+        tracing::info!("no OWNER_DIGEST_SCHEDULE configured; owner digest emails are off");
+    }
+
     let limits = Arc::new(Limits::new(&config.limits));
 
     // The engine always runs: it evaluates the rules from `ALERT_RULES` plus
@@ -2048,6 +2056,9 @@ async fn main() -> Result<()> {
     watcher.abort();
     if let Some(scheduler) = scheduler {
         scheduler.abort();
+    }
+    if let Some(digest_scheduler) = digest_scheduler {
+        digest_scheduler.abort();
     }
     Ok(())
 }
