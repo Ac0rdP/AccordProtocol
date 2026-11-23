@@ -41,11 +41,11 @@ function FeatureCard({ title, desc, delay }: { title: string; desc: string; dela
       }`}
       style={{ transitionDelay: delay }}
     >
-      <div className="w-10 h-10 rounded-xl bg-zinc-900 mb-6 flex items-center justify-center group-hover:bg-emerald-500/10 group-hover:text-emerald-500 transition-colors">
+      <div className="w-10 h-10 rounded-xl bg-zinc-900 mb-6 flex items-center justify-center group-hover:bg-emerald-600/10 group-hover:text-emerald-500 transition-colors">
         <div className="w-2 h-2 rounded-full bg-current" />
       </div>
       <h3 className="text-xl font-bold mb-3 text-white">{title}</h3>
-      <p className="text-zinc-500 text-sm leading-relaxed">{desc}</p>
+      <p className="text-zinc-400 text-sm leading-relaxed">{desc}</p>
     </div>
   );
 }
@@ -68,7 +68,7 @@ function StepCard({ number, title, desc }: { number: string; title: string; desc
         <div className="h-[1px] flex-1 bg-zinc-900 hidden md:block" />
       </div>
       <h3 className="text-2xl font-bold mb-4">{title}</h3>
-      <p className="text-zinc-500 leading-relaxed text-sm lg:text-base">{desc}</p>
+      <p className="text-zinc-400 leading-relaxed text-sm lg:text-base">{desc}</p>
     </div>
   );
 }
@@ -146,7 +146,7 @@ export function LandingPage() {
         <div className="max-w-6xl mx-auto">
           <div className="mb-20 text-center md:text-left">
             <h2 className="text-4xl md:text-5xl font-bold mb-4 tracking-tight">How Accord Works</h2>
-            <p className="text-zinc-500 text-lg md:text-xl font-medium">Secure, transparent, and completely on-chain.</p>
+            <p className="text-zinc-400 text-lg md:text-xl font-medium">Secure, transparent, and completely on-chain.</p>
           </div>
           <div className="grid md:grid-cols-3 gap-16">
             <StepCard
@@ -209,7 +209,7 @@ export function LandingPage() {
                   proposalCount
                 )}
               </div>
-              <p className="text-zinc-600 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
+              <p className="text-zinc-400 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
                 proposals created on-chain
               </p>
             </div>
@@ -224,7 +224,7 @@ export function LandingPage() {
                   "—"
                 )}
               </div>
-              <p className="text-zinc-600 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
+              <p className="text-zinc-400 font-bold tracking-[0.2em] uppercase text-xs md:text-sm">
                 {quorum && quorum.totalWeight > 0
                   ? `quorum weight · ${formatWeightPercent(
                       quorum.weight,
@@ -265,17 +265,17 @@ export function LandingPage() {
               <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center font-bold text-black">A</div>
               <span className="text-xl font-bold tracking-tight">Accord</span>
             </div>
-            <p className="text-zinc-500 text-sm leading-relaxed font-medium">
+            <p className="text-zinc-400 text-sm leading-relaxed font-medium">
               The decentralized multisig standard for trustless agreement and execution on Stellar.
             </p>
-            <div className="text-xs text-zinc-600 font-mono tracking-widest pt-4">
+            <div className="text-xs text-zinc-400 font-mono tracking-widest pt-4">
               SOROBAN TESTNET READY
             </div>
           </div>
           <div className="grid grid-cols-2 gap-x-12 gap-y-10 md:gap-x-24">
             <div className="space-y-4">
               <h4 className="text-white font-bold text-sm tracking-wide">Resources</h4>
-              <ul className="space-y-3 text-sm text-zinc-500 font-medium">
+              <ul className="space-y-3 text-sm text-zinc-400 font-medium">
                 <li><a href="https://github.com/shuaibganiyat/AccordProtocol" target="_blank" rel="noopener noreferrer" className="hover:text-emerald-500 transition-colors">GitHub</a></li>
                 <li><Link to="/docs" className="hover:text-emerald-500 transition-colors">Documentation</Link></li>
                 <li><a href="#" className="hover:text-emerald-500 transition-colors">Stellar Dev Docs</a></li>
@@ -283,7 +283,7 @@ export function LandingPage() {
             </div>
             <div className="space-y-4">
               <h4 className="text-white font-bold text-sm tracking-wide">Legal</h4>
-              <div className="space-y-3 text-sm text-zinc-600 font-medium">
+              <div className="space-y-3 text-sm text-zinc-400 font-medium">
                 <p>&copy; {new Date().getFullYear()} Accord.</p>
                 <p>All rights reserved.</p>
                 <div className="pt-2">

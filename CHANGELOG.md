@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file. The format 
 ## [Unreleased]
 
 ### Added
+- Safe Markdown proposal descriptions and previews, a reorderable batch-transfer builder, a multi-contract treasury and proposal-health dashboard, and owner abstention/soft-approval votes that count toward participation without adding approval weight (#968, #967, #964, #963).
+- Automated SDK semantic releases: `sdk-release.yml` derives the next version and changelog from Conventional Commits touching `packages/sdk`, publishes to npm with provenance attestations, tags `sdk-v<version>` and creates a GitHub Release; the planner is exported as `planRelease` (#1020).
+- Multi-language client generation from the contract ABI: `parseSorobanSpec` and `generateClient` emit typed Python and Go clients, with an `npm run codegen` CLI (#1017).
+- SDK per-entry-point bundle-size budgets and forbidden-import rules (`bundle-budgets.json`, `npm run size`), enforced in CI and before publishing; exported as `evaluateBudgets` (#1021).
+- Enterprise SSO for team accounts (`scripts/sso-controls.mjs`): SAML/OIDC verification against pinned IdP keys, replay protection, just-in-time provisioning from IdP groups with protected control-plane roles, session lifetime/idle/step-up policy, deprovisioning, and audit records; documented in `docs/SECURITY.md` and `docs/OPERATIONS.md` (#1022).
+- Public status page for the indexer and the analytics API: a structured `/status` endpoint on both services, a health-mapping and rendering script (`scripts/status-page.mjs`), a scheduled workflow that probes the health endpoints and publishes the page, daily availability history and incident notes (`docs/status/`), and the documentation in `docs/STATUS.md`.
+- In-app "What's new" panel that reads this changelog at build time, lists recent entries by release, badges entries the user has not seen yet, and links issue references and documentation paths to GitHub.
 - Release workflow (`release.yml`) that gates on all test suites, builds and attaches the contract artifact with its manifest, publishes the SDK package to GitHub Packages, and generates release notes from a `v*` tag (#822).
 - Nightly full-suite workflow (`nightly.yml`) covering the contract, frontend, indexer, analytics API, and Playwright E2E suites, with per-component attribution and a single tracked failure issue (#820).
 - Frontend pull-request preview deployments (`preview.yml`) built from a deterministic seed dataset and torn down when the PR closes (#819).
@@ -24,6 +31,8 @@ All notable changes to this project will be documented in this file. The format 
 - Per-client rate limiting (`429 RATE_LIMITED`), short-lived response caching invalidated by newly indexed events, and Prometheus metrics for both on the analytics API (#810).
 
 ### Changed
+- The SDK now builds under TypeScript 6 (explicit `rootDir`, unused imports removed), commits a `package-lock.json` per the supply-chain policy, and pins its own Vitest config.
+- Security and SSO control test suites now run in the `Security checks` workflow.
 - CI workflows now use concurrency groups that cancel superseded pull-request runs, and cache Rust builds, npm installs, and Playwright browsers (#821).
 - Event and treasury analytics polling share serial requests, capped exponential backoff, and cleanup.
 

@@ -73,7 +73,7 @@ export function HistoricalWeightChart({
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
         <h3 className="font-semibold text-sm mb-4">Voting Weight History</h3>
         <div className="h-64 flex items-center justify-center">
-          <div className="text-zinc-500 text-sm">Loading chart...</div>
+          <div className="text-zinc-600 dark:text-zinc-400 text-sm">Loading chart...</div>
         </div>
       </div>
     );
@@ -95,7 +95,7 @@ export function HistoricalWeightChart({
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
         <h3 className="font-semibold text-sm mb-4">Voting Weight History</h3>
         <div className="h-64 flex items-center justify-center">
-          <div className="text-zinc-500 text-sm">
+          <div className="text-zinc-600 dark:text-zinc-400 text-sm">
             No weight history available yet
           </div>
         </div>
@@ -141,7 +141,7 @@ export function HistoricalWeightChart({
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-6">
       <div className="mb-4">
         <h3 className="font-semibold text-sm">Voting Weight History</h3>
-        <p className="text-xs text-zinc-500 mt-1">
+        <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1">
           Total voting weight over time based on owner weight changes
         </p>
       </div>
@@ -181,7 +181,7 @@ export function HistoricalWeightChart({
         </ResponsiveContainer>
       </div>
 
-      <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
+      <div className="mt-4 flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-400">
         <span>
           {history.length > 0
             ? `${history.length} weight change${history.length !== 1 ? "s" : ""} recorded`

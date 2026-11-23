@@ -16,6 +16,14 @@ vi.mock("../lib/submit", () => ({
   estimateCreateProposalFee: vi.fn(),
 }));
 
+vi.mock("../lib/transactionPreview", () => ({
+  previewTransferProposal: vi.fn().mockResolvedValue({
+    feeEstimate: 0.0001,
+    feeError: null,
+    balances: [],
+  }),
+}));
+
 // Mock contract reads
 vi.mock("../lib/contract", () => ({
   getOwners: vi.fn().mockResolvedValue([
@@ -145,7 +153,9 @@ describe("CreateProposalModal", () => {
     expect(screen.getByText("Preview Proposal")).toBeDefined();
     expect(createProposal).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByText("Confirm & Submit"));
+    const confirmBtn = screen.getByText("Confirm & Submit").closest("button")!;
+    await waitFor(() => expect(confirmBtn).not.toBeDisabled());
+    fireEvent.click(confirmBtn);
 
     await waitFor(() => {
       expect(createProposal).toHaveBeenCalled();

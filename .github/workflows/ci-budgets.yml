@@ -1,0 +1,113 @@
+name: CI Time and Cost Budgets
+
+# Tracks workflow job durations and estimated runner costs against
+# committed budgets in .github/ci-budgets.json.
+# Warns on soft threshold breaches and fails on hard threshold breaches.
+
+on:
+  workflow_run:
+    workflows:
+      - "Smart Contract - Build & CI"
+      - "Security Checks"
+      - "Frontend CI & Coverage"
+      - "ABI Compatibility Check"
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Workflow Run ID to evaluate (defaults to latest run of Contract CI if empty)'
+        required: false
+        default: ''
+  pull_request:
+    paths:
+      - '.github/ci-budgets.json'
+      - '.github/workflows/ci-budgets.yml'
+      - 'scripts/check-ci-budgets.py'
+      - 'scripts/check-ci-budgets.test.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate-budget-tooling:
+    name: Validate Budget Tooling & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run budget evaluation unit tests
+        run: python3 scripts/check-ci-budgets.test.py
+
+  evaluate-budget:
+    name: Evaluate CI Time & Cost Budget
+    runs-on: ubuntu-latest
+    # Skip for PR validation if it's not a workflow_run or workflow_dispatch
+    if: github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Fetch workflow run jobs
+        id: fetch-jobs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_RUN_ID: ${{ github.event.inputs.run_id || (github.event.workflow_run && github.event.workflow_run.id) || '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/ci-budgets
+
+          RUN_ID="$TARGET_RUN_ID"
+          if [ -z "$RUN_ID" ]; then
+            echo "No explicit run ID provided; fetching latest completed run..."
+            RUN_ID=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+
+          echo "Evaluating Workflow Run ID: $RUN_ID"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+          # Fetch jobs with pagination support
+          gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+            > target/ci-budgets/jobs.json
+
+      - name: Evaluate jobs against budgets
+        id: evaluate
+        run: |
+          set -euo pipefail
+          python3 scripts/check-ci-budgets.py \
+            --config .github/ci-budgets.json \
+            --jobs-json target/ci-budgets/jobs.json \
+            --output target/ci-budgets/report.md 2>&1 | tee target/ci-budgets/output.txt
+        continue-on-error: true
+
+      - name: Write report to step summary
+        if: always()
+        run: |
+          if [ -f target/ci-budgets/report.md ]; then
+            cat target/ci-budgets/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload budget evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-budget-report
+          path: target/ci-budgets/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Enforce budget outcome
+        if: steps.evaluate.outcome == 'failure'
+        env:
+          RUN_ID: ${{ steps.fetch-jobs.outputs.run_id }}
+        run: |
+          echo "::error::One or more CI jobs exceeded the configured failure budget threshold."
+          echo "Target run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${RUN_ID}"
+          echo "Review target/ci-budgets/report.md in the uploaded artifact for full breakdown."
+          exit 1

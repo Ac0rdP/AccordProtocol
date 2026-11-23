@@ -1,11 +1,19 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
+import { getTokenBalanceOf, getTreasuryTokenBalance } from "../lib/contract";
+import { previewProposalExecution, type ProposalExecutionDryRun } from "../lib/transactionPreview";
+import { rawCidFromDigestHex } from "../lib/ipfs";
+import { stroopsToDisplay } from "../lib/soroban";
 import { ApprovalBar } from "../components/ApprovalBar";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
+import { MarkdownDescription } from "../components/MarkdownDescription";
 import { LoadingState } from "../components/LoadingState";
 import { StatusBadge } from "../components/StatusBadge";
 import { PageState } from "../components/PageState";
+import { FiatValue } from "../components/FiatValue";
+import { ProposalRiskPanel } from "../components/ProposalRiskPanel";
+import { ShareQrCode } from "../components/ShareQrCode";
 import type { Proposal, ProposalEvent } from "../types/accord";
 import {
   getHistoricalWeightChangeEvents,
@@ -30,10 +38,63 @@ type ProposalDetailPageProps = {
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-      <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">{label}</p>
+      <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">{label}</p>
       <div className="mt-2 text-sm text-zinc-200">{children}</div>
     </div>
   );
+}
+
+type DiffEntry = { label: string; timestamp: string; changes: string[] };
+
+/** Turns the append-only event feed into a compact, readable proposal diff. */
+function buildTimelineDiff(proposal: Proposal, events: ProposalEvent[]): DiffEntry[] {
+  let approvals = 0;
+  let status: Proposal["status"] = "pending";
+  const entries: DiffEntry[] = [{
+    label: "Created",
+    timestamp: proposal.createdAt,
+    changes: [
+      `Metadata: ${proposal.description || "No description"}`,
+      `Recipient: ${proposal.to}`,
+      `Amount: ${proposal.amount} ${proposal.token}`,
+      "Status: pending",
+    ],
+  }];
+
+  for (const event of events) {
+    const type = event.type.toLowerCase();
+    const changes: string[] = [];
+    let label: string;
+    if (type === "approved" || type === "approve") {
+      approvals += 1;
+      label = "Approval added";
+      changes.push(`Approvals: ${approvals} / ${proposal.threshold}`);
+      if (approvals >= proposal.threshold && status !== "ready") {
+        status = "ready";
+        changes.push("Status: pending → ready");
+      }
+    } else if (type === "revoked" || type === "revoke") {
+      approvals = Math.max(0, approvals - 1);
+      label = "Approval revoked";
+      changes.push(`Approvals: ${approvals} / ${proposal.threshold}`);
+      if (status === "ready") {
+        status = "pending";
+        changes.push("Status: ready → pending");
+      }
+    } else if (type === "executed" || type === "execute") {
+      label = "Executed";
+      changes.push(`Status: ${status} → executed`);
+      status = "executed";
+    } else if (type.includes("weight")) {
+      label = "Governance metadata changed";
+      changes.push(`Change: ${event.details || "Owner voting weight changed"}`);
+    } else {
+      label = event.type.replace(/_/g, " ");
+      changes.push(`Change: ${event.details || `Actor: ${event.actor}`}`);
+    }
+    entries.push({ label, timestamp: event.timestamp, changes });
+  }
+  return entries;
 }
 
 export function ProposalDetailPage({
@@ -58,6 +119,11 @@ export function ProposalDetailPage({
   const [events, setEvents] = useState<ProposalEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState<boolean>(true);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  const [dryRun, setDryRun] = useState<ProposalExecutionDryRun | null>(null);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [liveBalances, setLiveBalances] = useState<Array<{ label: string; amount: string }> | null>(null);
+  const [liveBalanceError, setLiveBalanceError] = useState<string | null>(null);
 
   // Owners / weights for weight-based approval bar
   const [ownerAddresses, setOwnerAddresses] = useState<string[]>([]);
@@ -149,6 +215,40 @@ export function ProposalDetailPage({
     };
   }, [proposal?.id, proposal?.status]);
 
+  useEffect(() => {
+    if (
+      proposal?.status !== "executed" ||
+      proposal.kind !== "transfer" ||
+      !proposal.tokenAddress ||
+      !proposal.recipientAddress
+    ) {
+      setLiveBalances(null);
+      setLiveBalanceError(null);
+      return;
+    }
+
+    let active = true;
+    Promise.all([
+      getTreasuryTokenBalance(proposal.tokenAddress),
+      getTokenBalanceOf(proposal.tokenAddress, proposal.recipientAddress),
+    ])
+      .then(([treasury, recipient]) => {
+        if (active) {
+          setLiveBalances([
+            { label: "Treasury", amount: stroopsToDisplay(treasury) },
+            { label: "Recipient", amount: stroopsToDisplay(recipient) },
+          ]);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setLiveBalanceError(reason instanceof Error ? reason.message : "Could not read current balances.");
+        }
+      });
+
+    return () => { active = false; };
+  }, [proposal?.id, proposal?.status, proposal?.kind, proposal?.tokenAddress, proposal?.recipientAddress]);
+
   if (loading) {
     return <PageState status="loading" title="Loading proposal…" />;
   }
@@ -187,11 +287,11 @@ export function ProposalDetailPage({
         <div>
           <Link
             to="/app"
-            className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+            className="text-sm text-zinc-600 dark:text-zinc-400 transition-colors hover:text-zinc-300"
           >
             Back to dashboard
           </Link>
-          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-600">
+          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.25em] text-zinc-600 dark:text-zinc-400">
             Proposal Detail
           </p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">
@@ -204,10 +304,11 @@ export function ProposalDetailPage({
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-sm text-zinc-500">Amount</p>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">Amount</p>
             <p className="mt-1 text-2xl font-semibold text-white">
               {proposal.amount} {proposal.token}
             </p>
+            <FiatValue amount={proposal.amount} token={proposal.token} className="mt-1" />
           </div>
           <div className="sm:min-w-64">
             <ApprovalBar
@@ -240,18 +341,155 @@ export function ProposalDetailPage({
         </DetailRow>
       </section>
 
+      {proposal.attachmentHash && (
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5" aria-labelledby="proposal-attachment-heading">
+          <h2 id="proposal-attachment-heading" className="text-sm font-semibold text-zinc-200">Supporting document</h2>
+          <p className="mt-1 break-all font-mono text-xs text-zinc-500">SHA-256 · {proposal.attachmentHash}</p>
+          {rawCidFromDigestHex(proposal.attachmentHash) && (
+            <a
+              href={`https://ipfs.io/ipfs/${rawCidFromDigestHex(proposal.attachmentHash)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex min-h-11 items-center rounded-lg border border-zinc-700 px-3 text-sm text-emerald-300 hover:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            >
+              Open attachment on IPFS
+            </a>
+          )}
+        </section>
+      )}
+
+      {(proposal.status === "ready" || proposal.status === "executed") && (
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5" aria-labelledby="execution-comparison-heading">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 id="execution-comparison-heading" className="text-sm font-semibold text-zinc-200">Dry-run vs. execution</h2>
+              <p className="mt-1 text-sm text-zinc-400">Simulate the proposal execution to review projected balances and required authorization before signing.</p>
+            </div>
+            {proposal.status === "ready" && (
+              <button
+                type="button"
+                disabled={!walletAddress || dryRunLoading}
+                onClick={() => {
+                  if (!walletAddress) return;
+                  setDryRunLoading(true);
+                  setDryRunError(null);
+                  previewProposalExecution(walletAddress, proposal)
+                    .then(setDryRun)
+                    .catch((reason: unknown) => setDryRunError(reason instanceof Error ? reason.message : "Execution simulation failed."))
+                    .finally(() => setDryRunLoading(false));
+                }}
+                className="min-h-11 shrink-0 rounded-lg border border-zinc-700 px-3 text-sm text-zinc-200 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                {dryRunLoading ? "Simulating…" : dryRun ? "Run again" : "Run dry-run"}
+              </button>
+            )}
+          </div>
+          {dryRunError && <p role="alert" className="mt-3 text-sm text-red-300">{dryRunError}</p>}
+          {proposal.status === "executed" && !dryRun && (
+            <p className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 text-sm text-zinc-400">
+              No dry-run snapshot is available for this execution. Run the simulation while a proposal is ready to compare its projected balances and authorization requirements with the confirmed event.
+            </p>
+          )}
+          {dryRun && (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-sky-300">Simulated</h3>
+                <p className="mt-2 text-sm text-zinc-300">Estimated fee: {dryRun.feeEstimate.toFixed(7)} XLM</p>
+                <p className="mt-1 text-sm text-zinc-300">Authorization entries: {dryRun.authorizationEntryCount}</p>
+                {dryRun.balances.length > 0 && (
+                  <ul className="mt-3 space-y-2 text-xs">
+                    {dryRun.balances.map((balance) => (
+                      <li key={`${balance.label}-${balance.address}`} className="rounded bg-zinc-950/60 p-2">
+                        <span className="text-zinc-400">{balance.label}: </span>
+                        <span className="font-mono text-zinc-200">{balance.before} → {balance.after} {balance.token}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {dryRun.balanceErrors.length > 0 && (
+                  <ul role="alert" className="mt-3 space-y-1 text-xs text-amber-300">
+                    {dryRun.balanceErrors.map((message) => <li key={message}>{message}</li>)}
+                  </ul>
+                )}
+              </div>
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-300">On-chain execution</h3>
+                {proposal.status === "executed" ? (
+                  <>
+                    <p className="mt-2 text-sm text-zinc-200">Execution confirmed by the contract.</p>
+                    {events.filter((event) => event.type.toLowerCase() === "executed").slice(-1).map((event) => (
+                      <p key={`${event.actor}-${event.ledger ?? event.timestamp}`} className="mt-1 break-words text-xs text-zinc-400">
+                        Executor {event.actor}{event.ledger ? ` · ledger ${event.ledger}` : ""} · {event.timestamp}
+                      </p>
+                    ))}
+                    <p className="mt-3 text-xs text-zinc-500">Current balances can include activity after this execution.</p>
+                    {liveBalanceError && <p role="alert" className="mt-2 text-xs text-red-300">{liveBalanceError}</p>}
+                    {liveBalances && (
+                      <ul className="mt-2 space-y-1 text-xs text-zinc-300">
+                        {liveBalances.map((balance) => <li key={balance.label}>{balance.label}: {balance.amount}</li>)}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm text-zinc-400">No execution result is recorded yet. Approve the dry-run, then execute the proposal to populate this comparison.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {proposal.status === "pending" && (
+        <ProposalRiskPanel proposal={proposal} history={proposals} />
+      )}
+
+      <ShareQrCode
+        url={typeof window === "undefined" ? "" : window.location.href}
+        name={`proposal-${proposal.id}`}
+      />
+
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5" aria-labelledby="timeline-diff-heading">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="timeline-diff-heading" className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">Change timeline</h2>
+            <p className="mt-1 text-sm text-zinc-400">Status, approvals, and proposal metadata over time.</p>
+          </div>
+          {loadingEvents && <LoadingState message="Building timeline…" variant="inline" />}
+        </div>
+        {!loadingEvents && eventsError && <div className="mt-4"><ErrorState message={eventsError} variant="section" /></div>}
+        {!loadingEvents && !eventsError && (
+          <ol className="mt-4 space-y-3 border-s border-zinc-700 ps-4">
+            {buildTimelineDiff(proposal, events).map((entry, index) => (
+              <li key={`${entry.label}-${index}`} className="relative">
+                <span aria-hidden="true" className="absolute -start-[21px] top-1.5 h-2 w-2 rounded-full bg-emerald-500" />
+                <div className="rounded-lg bg-zinc-950/50 p-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <h3 className="text-sm font-medium capitalize text-zinc-200">{entry.label}</h3>
+                    <time className="text-xs text-zinc-500">{entry.timestamp}</time>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+                    {entry.changes.map((change) => <li key={change} className="break-words">{change}</li>)}
+                  </ul>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+        <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
           Description
         </p>
-        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-zinc-300">
-          {proposal.description || "No description provided."}
-        </p>
+        <MarkdownDescription
+          text={proposal.description}
+          className="mt-3 text-sm text-zinc-300"
+        />
       </section>
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600">
+          <p className="text-xs uppercase tracking-[0.2em] text-zinc-600 dark:text-zinc-400">
             Activity Timeline
           </p>
           {loadingEvents && (
@@ -369,7 +607,7 @@ export function ProposalDetailPage({
                       </span>
                     )}
                   </div>
-                  <span className="text-xs text-zinc-500">{event.timestamp}</span>
+                  <span className="text-xs text-zinc-600 dark:text-zinc-400">{event.timestamp}</span>
                 </div>
               );
             })}
@@ -388,7 +626,7 @@ export function ProposalDetailPage({
                   ? `Approve proposal #${proposal.id}`
                   : `Connect and approve proposal #${proposal.id}`
               }
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+              className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-600 focus:outline-none focus:ring-2 focus:ring-zinc-400"
             >
               {connected ? "Approve" : "Connect & Approve"}
             </button>
@@ -432,4 +670,3 @@ export function ProposalDetailPage({
     </div>
   );
 }
-

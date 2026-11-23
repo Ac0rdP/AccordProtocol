@@ -1,34 +1,28 @@
 import { xdr, nativeToScVal, Keypair } from "@stellar/stellar-sdk";
-import { test, expect } from "./setup";
+import { test, expect, TEST_WALLET } from "./setup";
+import { getCallDetails } from "./gov-harness";
 
 const RPC = "https://mock-rpc.test";
 const XLM_TOKEN = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 const CONTRACT_ID = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 
-const KP = Keypair.fromRawEd25519Seed(
-  Buffer.from("accord-protocol-e2e-test-seed-12", "ascii")
-);
-const G = KP.publicKey();
-const accountId = KP.xdrAccountId();
+const G = TEST_WALLET;
+const accountId = Keypair.fromPublicKey(G).xdrAccountId();
 
-const ENTRY_B64 = new xdr.LedgerEntry({
-  lastModifiedLedgerSeq: 100,
-  data: xdr.LedgerEntryData.account(
-    new xdr.AccountEntry({
-      accountId,
-      balance: xdr.Int64.fromString("100000000000"),
-      seqNum: xdr.Int64.fromString("1000000000000"),
-      numSubEntries: 0,
-      inflationDest: null,
-      flags: 0,
-      homeDomain: Buffer.alloc(32),
-      thresholds: Buffer.alloc(4),
-      signers: [],
-      ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-    })
-  ),
-  ext: xdr.LedgerEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-}).toXDR("base64");
+const ENTRY_B64 = xdr.LedgerEntryData.account(
+  new xdr.AccountEntry({
+    accountId,
+    balance: xdr.Int64.fromString("100000000000"),
+    seqNum: xdr.Int64.fromString("1000000000000"),
+    numSubEntries: 0,
+    inflationDest: null,
+    flags: 0,
+    homeDomain: Buffer.alloc(32),
+    thresholds: Buffer.alloc(4),
+    signers: [],
+    ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
+  })
+).toXDR("base64");
 
 const KEY_B64 = xdr.LedgerKey.account(
   new xdr.LedgerKeyAccount({ accountId })
@@ -81,27 +75,13 @@ function proposalsXdr(status: string, approvals: number): string {
 function hasApprovedXdr(val: boolean): string {
   return xdr.ScVal.scvBool(val).toXDR("base64");
 }
+function rolesXdr(): string {
+  return xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Owner")]).toXDR("base64");
+}
 function recurringSchedulesXdr(schedules: any[]): string {
   return xdr.ScVal.scvVec(
     schedules.map((s) => nativeToScVal(s))
   ).toXDR("base64");
-}
-function getFnName(txBase64: string): string {
-  try {
-    const env = xdr.TransactionEnvelope.fromXDR(txBase64, "base64");
-    const fn = env
-      .v1()
-      .tx()
-      .operations()[0]
-      .body()
-      .invokeHostFunctionOp()
-      .hostFunction()
-      .invokeContract()
-      .functionName();
-    return Buffer.from(fn).toString();
-  } catch {
-    return "";
-  }
 }
 function simResult(id: unknown, retvalB64: string) {
   return {
@@ -120,24 +100,20 @@ function simResult(id: unknown, retvalB64: string) {
 function contractBalanceEntry(treasuryStroops: string): string {
   // Reuse account entry shape for simplicity; UI reads via getContractXlmBalance which
   // in tests is mocked via getLedgerEntries returning this balance.
-  return new xdr.LedgerEntry({
-    lastModifiedLedgerSeq: 100,
-    data: xdr.LedgerEntryData.account(
-      new xdr.AccountEntry({
-        accountId,
-        balance: xdr.Int64.fromString(treasuryStroops),
-        seqNum: xdr.Int64.fromString("1000000000000"),
-        numSubEntries: 0,
-        inflationDest: null,
-        flags: 0,
-        homeDomain: Buffer.alloc(32),
-        thresholds: Buffer.alloc(4),
-        signers: [],
-        ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-      })
-    ),
-    ext: xdr.LedgerEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
-  }).toXDR("base64");
+  return xdr.LedgerEntryData.account(
+    new xdr.AccountEntry({
+      accountId,
+      balance: xdr.Int64.fromString(treasuryStroops),
+      seqNum: xdr.Int64.fromString("1000000000000"),
+      numSubEntries: 0,
+      inflationDest: null,
+      flags: 0,
+      homeDomain: Buffer.alloc(32),
+      thresholds: Buffer.alloc(4),
+      signers: [],
+      ext: xdr.AccountEntryExt.fromXDR(Buffer.from([0, 0, 0, 0])),
+    })
+  ).toXDR("base64");
 }
 
 test("recurring payment full lifecycle: propose, approve, execute, disburse and confirm treasury and UI", async ({ page }) => {
@@ -175,8 +151,6 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
     console.log(`[mock] ${method}`);
 
     if (method === "getLedgerEntries") {
-      // Return Treasury balance entry; frontend's getContractXlmBalance reads via this
-      const treasuryEntry = contractBalanceEntry(state.treasuryStroops);
       return route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
@@ -185,7 +159,6 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
           result: {
             entries: [
               { key: KEY_B64, xdr: ENTRY_B64, lastModifiedLedgerSeq: 100 },
-              { key: KEY_B64, xdr: treasuryEntry, lastModifiedLedgerSeq: 100 },
             ],
             latestLedger: 1000,
           },
@@ -194,13 +167,14 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
     }
 
     if (method === "simulateTransaction") {
-      const fn = getFnName(body.params?.transaction ?? "");
+      const fn = getCallDetails(body.params?.transaction ?? "").fn;
       let retval = VOID_B64;
       if (fn === "get_threshold") retval = THRESH_B64;
       else if (fn === "get_owners") retval = ownersXdr();
       else if (fn === "get_total_proposals") retval = totalXdr(state.total);
       else if (fn === "get_proposals_paged") retval = proposalsXdr(state.status, state.approvals);
       else if (fn === "has_approved") retval = hasApprovedXdr(state.hasApproved);
+      else if (fn === "get_roles") retval = rolesXdr();
       else if (fn === "get_total_recurring_payments") retval = totalXdr(state.schedules.length);
       else if (fn === "get_recurring_payments_paged" || fn === "get_recurring_payments") {
         retval = recurringSchedulesXdr(state.schedules);
@@ -242,8 +216,12 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
     if (method === "sendTransaction") {
       const txBase64 = body.params?.transaction ?? "";
       lastEnvXdr = txBase64;
-      const fn = getFnName(txBase64);
-      if (fn === "create_recurring_proposal" || fn === "create_recurring_payment_proposal") {
+      const fn = getCallDetails(txBase64).fn;
+      if (
+        fn === "create_recurring_proposal" ||
+        fn === "create_recurring_payment_proposal" ||
+        fn === "create_recurring_payment"
+      ) {
         Object.assign(state, { total: 1, status: "Pending", approvals: 0, hasApproved: false });
       } else if (fn === "create_proposal") {
         Object.assign(state, { total: 1, status: "Pending", approvals: 0, hasApproved: false });
@@ -345,10 +323,10 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
     });
   });
 
-  await page.goto("/");
+  await page.goto("/app");
 
   // Dashboard loads
-  await expect(page.getByRole("heading", { name: "Active Proposals" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "Active Proposals", exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("No active proposals", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   // ─── Step 1: Create recurring payment proposal ─────────────────────────────
@@ -371,9 +349,10 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
   }
   // Category is Ops by default, keep
   // Submit
-  const submitBtn = page.getByRole("button", { name: "Create Recurring Payment" });
+  const submitBtn = page.getByRole("button", { name: "Review Recurring Payment" });
   await expect(submitBtn).not.toBeDisabled({ timeout: 10_000 });
   await submitBtn.click();
+  await page.getByRole("button", { name: "Confirm & Submit" }).click();
 
   // After submit, proposal appears in dashboard as pending
   await expect(page.getByText("Recurring Test")).toBeVisible({ timeout: 20_000 });
@@ -381,11 +360,12 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
 
   // ─── Step 2: Approve to quorum ─────────────────────────────────────────────
   await page.getByRole("button", { name: "Approve" }).click();
-  await expect(page.getByText("1/1")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("1 / 1 weight")).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Execute" })).toBeVisible({ timeout: 5_000 });
 
   // ─── Step 3: Execute ───────────────────────────────────────────────────────
   await page.getByRole("button", { name: "Execute" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
   await expect(page.getByText("No active proposals", { exact: true })).toBeVisible({ timeout: 20_000 });
 
   // ─── Step 4: Assert schedule appears in UI after execution ─────────────────
@@ -396,7 +376,7 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
   await expect(page.getByText("Active").first()).toBeVisible({ timeout: 5_000 });
   // Amount is displayed as stroopsToDisplay: 1_000_000 stroops = 0.1 XLM (or 10 if using display units)
   // Just check recipient or amount presence
-  await expect(page.getByText(G.slice(0, 6))).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText(G.slice(0, 6)).first()).toBeVisible({ timeout: 5_000 });
 
   // Go back to dashboard to see Due widget
   await page.goto("/app");
@@ -413,9 +393,8 @@ test("recurring payment full lifecycle: propose, approve, execute, disburse and 
   await page.goto("/app/recurring");
   // Advance time past interval is already mocked as due (nextDisbursement in past)
   // Click Disburse now (card button)
-  const disburseBtn = page.getByRole("button", { name: /Disburse schedule 1 now/i }).first();
-  // Fallback to generic Disburse now
-  const btn = (await disburseBtn.count()) > 0 ? disburseBtn : page.getByRole("button", { name: "Disburse now" }).first();
+  await expect(page.getByText("Schedule #1").first()).toBeVisible({ timeout: 15_000 });
+  const btn = page.getByRole("button", { name: /Disburse schedule \d+ now/i }).first();
   await expect(btn).toBeEnabled({ timeout: 10_000 });
   await btn.click();
 

@@ -126,7 +126,7 @@ function SchedulePreview({ kind, amount, intervalSecs, startDate, endDate, cap }
       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
         {perPeriod !== null && (
           <>
-            <span className="text-zinc-500">Per period</span>
+            <span className="text-zinc-600 dark:text-zinc-400">Per period</span>
             <span className="text-zinc-200 font-mono text-right">
               {perPeriod.toFixed(2)}
             </span>
@@ -134,13 +134,13 @@ function SchedulePreview({ kind, amount, intervalSecs, startDate, endDate, cap }
         )}
         {periodsCount !== null && (
           <>
-            <span className="text-zinc-500">Total periods</span>
+            <span className="text-zinc-600 dark:text-zinc-400">Total periods</span>
             <span className="text-zinc-200 font-mono text-right">{periodsCount}</span>
           </>
         )}
         {lifetimeTotal !== null && (
           <>
-            <span className="text-zinc-500">Lifetime total</span>
+            <span className="text-zinc-600 dark:text-zinc-400">Lifetime total</span>
             <span className="text-emerald-400 font-mono text-right font-medium">
               {lifetimeTotal.toFixed(2)}
             </span>
@@ -148,13 +148,13 @@ function SchedulePreview({ kind, amount, intervalSecs, startDate, endDate, cap }
         )}
         {projectedEndDate && (
           <>
-            <span className="text-zinc-500">Projected end</span>
+            <span className="text-zinc-600 dark:text-zinc-400">Projected end</span>
             <span className="text-zinc-200 text-right">{projectedEndDate}</span>
           </>
         )}
         {intervalSecs > 0 && (
           <>
-            <span className="text-zinc-500">Cadence</span>
+            <span className="text-zinc-600 dark:text-zinc-400">Cadence</span>
             <span className="text-zinc-200 text-right">{formatInterval(intervalSecs)}</span>
           </>
         )}
@@ -409,7 +409,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
               type="button"
               onClick={onClose}
               aria-label="Close modal"
-              className="text-zinc-500 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-md"
+              className="text-zinc-600 dark:text-zinc-400 hover:text-zinc-300 text-xl focus:ring-2 focus:ring-zinc-400 focus:outline-none rounded-md"
             >
               ✕
             </button>
@@ -441,7 +441,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                   );
                 })}
               </div>
-              <p className="text-xs text-zinc-500 mt-1.5">
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1.5">
                 {kind === "FixedAmountPerPeriod"
                   ? "Same amount disbursed each period."
                   : "Total cap distributed linearly across the schedule duration."}
@@ -484,7 +484,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                 className={`w-full border rounded-lg px-3 py-2.5 text-sm truncate ${
                   walletAddress
                     ? "bg-zinc-800/60 border-zinc-700/60 text-zinc-300 font-mono"
-                    : "bg-zinc-800/30 border-zinc-700/30 text-zinc-500"
+                    : "bg-zinc-800/30 border-zinc-700/30 text-zinc-600 dark:text-zinc-400"
                 }`}
               >
                 {truncateAddress(walletAddress)}
@@ -579,7 +579,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none focus:border-zinc-500"
                 />
                 {intervalSecsValid && (
-                  <p className="text-xs text-zinc-500 mt-1">{formatInterval(intervalSecs)}</p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1">{formatInterval(intervalSecs)}</p>
                 )}
               </div>
               <div>
@@ -676,7 +676,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                 disabled={submitting || !walletAddress}
                 title={walletAddress ? undefined : "Connect your Freighter wallet to submit"}
                 aria-label="Review Recurring Payment"
-                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                className="w-full bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
               >
                 Review Payment
               </button>
@@ -690,26 +690,26 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                 <h3 className="text-sm font-medium text-zinc-200">Preview Recurring Payment</h3>
                 <dl className="space-y-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3">
                   <div>
-                    <dt className="text-xs text-zinc-500">Action</dt>
+                    <dt className="text-xs text-zinc-600 dark:text-zinc-400">Action</dt>
                     <dd className="mt-1 break-all text-sm text-zinc-200">
                       Pay {amount} {pendingSubmission.tokenSymbol} to {pendingSubmission.recipient}, {formatInterval(pendingSubmission.intervalSecs)}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-xs text-zinc-500">Estimated Fee</dt>
+                    <dt className="text-xs text-zinc-600 dark:text-zinc-400">Estimated Fee</dt>
                     <dd className="mt-1 text-sm text-zinc-200">
                       {previewLoading ? (
                         <span className="text-zinc-400">Simulating transaction…</span>
                       ) : previewFeeEstimate !== null ? (
                         <span className="font-mono">~{previewFeeEstimate.toFixed(7)} XLM</span>
                       ) : (
-                        <span className="text-zinc-500">—</span>
+                        <span className="text-zinc-600 dark:text-zinc-400">—</span>
                       )}
                     </dd>
                   </div>
                   {!previewLoading && previewBalances.length > 0 && (
                     <div>
-                      <dt className="text-xs text-zinc-500">Balance Impact (first disbursement)</dt>
+                      <dt className="text-xs text-zinc-600 dark:text-zinc-400">Balance Impact (first disbursement)</dt>
                       <dd className="mt-1.5 space-y-2">
                         {previewBalances.map((row) => (
                           <div
@@ -718,7 +718,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                           >
                             <div className="text-zinc-400">{row.label}</div>
                             <div className="mt-0.5 font-mono text-zinc-200">
-                              {row.before} <span className="text-zinc-500">→</span> {row.after} {row.token}
+                              {row.before} <span className="text-zinc-600 dark:text-zinc-400">→</span> {row.after} {row.token}
                             </div>
                           </div>
                         ))}
@@ -759,7 +759,7 @@ export function CreateRecurringPaymentModal({ walletAddress, onClose, onSubmitte
                       : undefined
                   }
                   aria-label={submitting ? "Submitting recurring payment" : "Confirm & Submit"}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+                  className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2.5 rounded-lg font-medium transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
                 >
                   {submitting ? "Submitting…" : "Confirm & Submit"}
                 </button>

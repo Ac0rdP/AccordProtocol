@@ -17,6 +17,7 @@ on:
       - 'docs/OPERATIONS.md'
       - 'docs/ANALYTICS_API.md'
       - 'docs/analytics-api.openapi.json'
+      - 'docs/analytics-api-load-testing.md'
       - 'docs/RUNBOOK.md'
       - 'frontend/src/lib/analytics*'
       - 'frontend/src/lib/__tests__/analytics*'
@@ -53,7 +54,7 @@ jobs:
 
       - name: Type-check frontend and analytics modules
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npx tsc -b
 
       - name: Run indexer & analytics test suites
         run: npm --prefix frontend run test:analytics
@@ -61,6 +62,31 @@ jobs:
       - name: Verify analytics query CLI script
         run: |
           node scripts/query-analytics.js --help
+
+      - name: Run the status page tests
+        run: node --test scripts/status-page.test.mjs
+
+      - name: Run analytics API 10k RPS load test suite
+        run: node --test scripts/analytics-load-test.test.mjs
+
+      - name: Enforce analytics API 10k RPS throughput, latency & error budgets
+        run: node scripts/analytics-load-test.mjs --ci-gate --report-dir target/analytics-load-test
+
+      - name: Append analytics API load test report to job summary
+        if: always()
+        run: |
+          if [ -f target/analytics-load-test/report.md ]; then
+            cat target/analytics-load-test/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload analytics API load test artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: analytics-api-load-report
+          path: target/analytics-load-test
+          retention-days: 30
+          if-no-files-found: ignore
 
   indexer:
     name: Indexer Tests (SQLite + Postgres)
@@ -136,12 +162,12 @@ jobs:
         run: cargo fmt -p accord-analytics-api -- --check
 
       - name: Run Clippy
-        run: cargo clippy -p accord-analytics-api --all-targets -- -D warnings
+        run: cargo clippy --locked -p accord-analytics-api --all-targets -- -D warnings
 
       - name: Run API tests
         env:
           TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
-        run: cargo test -p accord-analytics-api
+        run: cargo test --locked -p accord-analytics-api
 
       - name: Verify the OpenAPI spec is valid JSON
         run: node -e "const s = JSON.parse(require('fs').readFileSync('docs/analytics-api.openapi.json', 'utf8')); if (s.openapi !== '3.0.3' || !Object.keys(s.paths).length) process.exit(1)"
@@ -151,4 +177,4 @@ jobs:
         # spec is reported by name rather than buried in the test output.
         env:
           TEST_DATABASE_URL: postgres://accord:accord@localhost:5432/accord_analytics_test
-        run: cargo test -p accord-analytics-api openapi
+        run: cargo test --locked -p accord-analytics-api openapi

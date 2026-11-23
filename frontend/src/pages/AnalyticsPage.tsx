@@ -6,6 +6,7 @@ import { SpendByOwnerChart } from "../components/SpendByOwnerChart";
 import { TreasuryBalanceChart } from "../components/TreasuryBalanceChart";
 import { ProposalActivityChart } from "../components/ProposalActivityChart";
 import { TreasuryFlowChart } from "../components/TreasuryFlowChart";
+import { SavedViews } from "../components/SavedViews";
 import { useTreasuryAnalytics } from "../hooks/useTreasuryAnalytics";
 import { formatCurrency, formatTimeSeriesLabel } from "../lib/soroban";
 import {
@@ -20,6 +21,7 @@ import {
   type SpendByOwner,
   type TreasuryFlowPoint,
 } from "../lib/analytics";
+import { getSavedViews, removeSavedView, saveView, type SavedView } from "../lib/savedViews";
 import type {
   AnalyticsAmount,
   AnalyticsGranularity,
@@ -121,6 +123,7 @@ export function AnalyticsPage() {
   const [filters, setFilters] = useState<AnalyticsFilters>(
     DEFAULT_ANALYTICS_FILTERS,
   );
+  const [savedViews, setSavedViews] = useState<SavedView<AnalyticsFilters>[]>(() => getSavedViews<AnalyticsFilters>("analytics"));
   const query = useMemo(() => toQuery(filters), [filters]);
   const { data, loading, error, refresh } = useTreasuryAnalytics(query);
 
@@ -180,6 +183,14 @@ export function AnalyticsPage() {
     doc.text(`Active proposals: ${data?.summary.activeProposals ?? 0}`, 14, 46);
     doc.save(`${buildExportFilename("statement", filters)}.pdf`);
   };
+  const saveCurrentView = (name: string) => {
+    const saved = saveView("analytics", name, filters);
+    setSavedViews((current) => [...current.filter((view) => view.name !== saved.name), saved]);
+  };
+  const deleteSavedView = (id: string) => {
+    removeSavedView("analytics", id);
+    setSavedViews((current) => current.filter((view) => view.id !== id));
+  };
 
   return (
     <>
@@ -209,8 +220,8 @@ export function AnalyticsPage() {
             type="button"
             onClick={handleDownloadStatement}
             disabled={!data}
-            aria-label="Download PDF treasury statement for the current analytics filters"
-            className="text-xs px-3 py-1 bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
+            aria-label="Download Statement (PDF) for the current analytics filters"
+            className="text-xs px-3 py-1 bg-emerald-700 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           >
             Download Statement (PDF)
           </button>
@@ -219,7 +230,7 @@ export function AnalyticsPage() {
 
       {/* ── Filters ───────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           From
           <input
             type="date"
@@ -234,7 +245,7 @@ export function AnalyticsPage() {
             className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           />
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           To
           <input
             type="date"
@@ -249,7 +260,7 @@ export function AnalyticsPage() {
             className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-sm focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           />
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           Category
           <select
             aria-label="Filter by category"
@@ -269,7 +280,7 @@ export function AnalyticsPage() {
             ))}
           </select>
         </label>
-        <label className="block text-xs text-zinc-500">
+        <label className="block text-xs text-zinc-400">
           Owner
           <input
             type="text"
@@ -285,6 +296,16 @@ export function AnalyticsPage() {
             className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-sm placeholder-zinc-600 focus:ring-2 focus:ring-zinc-400 focus:outline-none"
           />
         </label>
+      </div>
+
+      <div className="mb-6">
+        <SavedViews
+          label="Analytics"
+          views={savedViews}
+          onApply={setFilters}
+          onSave={saveCurrentView}
+          onRemove={deleteSavedView}
+        />
       </div>
 
       {/* ── Summary stat cards ────────────────────────────────────── */}

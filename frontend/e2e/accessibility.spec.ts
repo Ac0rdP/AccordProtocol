@@ -6,6 +6,14 @@ import axe from "axe-core";
  * accessibility violations exist.
  */
 async function assertNoA11yViolations(page: any, pageName: string) {
+  // Disable animations/transitions so axe does not sample partially faded
+  // elements (which produces false colour-contrast violations).
+  await page.addStyleTag({
+    content:
+      "*, *::before, *::after { animation-duration: 0s !important; animation-delay: 0s !important; transition-duration: 0s !important; transition-delay: 0s !important; }",
+  });
+  await page.waitForTimeout(100);
+
   // Inject the bundled axe-core source script into the browser context
   await page.evaluate(axe.source);
 
@@ -36,6 +44,10 @@ async function assertNoA11yViolations(page: any, pageName: string) {
 }
 
 test.describe("End-to-End Accessibility (Issue #851)", () => {
+  // The app is designed dark-first (light mode is not a supported theme for all
+  // pages yet), so scan the canonical dark presentation.
+  test.use({ colorScheme: "dark" });
+
   test("landing page has no accessibility violations", async ({ page }) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");

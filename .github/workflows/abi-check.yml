@@ -1,0 +1,90 @@
+name: ABI Compatibility Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  abi-check:
+    name: ABI Compatibility
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run ABI compatibility check
+        id: check
+        run: |
+          set -euo pipefail
+          python3 scripts/extract-abi.py --check 2>&1 | tee abi-check-output.txt
+        continue-on-error: true
+
+      - name: Generate ABI diff artifact
+        if: always()
+        run: |
+          mkdir -p target/abi-check
+          cp abi-check-output.txt target/abi-check/ 2>/dev/null || true
+
+          # Generate current ABI for comparison
+          python3 scripts/extract-abi.py --output target/abi-check/abi-current.json
+
+          # Create a diff if baseline exists
+          if [ -f contracts/accord/abi-baseline.json ]; then
+            diff -u contracts/accord/abi-baseline.json target/abi-check/abi-current.json \
+              > target/abi-check/abi-diff.patch 2>&1 || true
+          fi
+
+          # Write summary
+          {
+            echo "### ABI Compatibility Check"
+            echo
+            echo '```'
+            cat abi-check-output.txt
+            echo '```'
+            if [ -f target/abi-check/abi-diff.patch ] && [ -s target/abi-check/abi-diff.patch ]; then
+              echo
+              echo '#### ABI Diff'
+              echo '```diff'
+              cat target/abi-check/abi-diff.patch
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ABI check artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: abi-compatibility-check
+          path: target/abi-check
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Fail on ABI incompatibility
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "::error::ABI compatibility check failed. See the artifact for details."
+          echo "If this is an intentional breaking change, bump CONTRACT_VERSION in"
+          echo "contracts/accord/src/lib.rs and update the baseline with:"
+          echo "  python3 scripts/extract-abi.py"
+          exit 1
+
+  abi-tests:
+    name: ABI Checker Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run ABI checker tests
+        run: python3 scripts/extract-abi.test.py

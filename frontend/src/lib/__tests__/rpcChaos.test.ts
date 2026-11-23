@@ -19,9 +19,11 @@ describe("RPC chaos and failure tolerance", () => {
   describe("submission RPC failures and double-submit prevention", () => {
     it("surfaces RPC errors cleanly and maps them without state corruption", async () => {
       const failingOp = vi.fn().mockRejectedValue(new Error("503 Service Unavailable: RPC node down"));
-      await expect(
-        withSubmissionRetry(failingOp, { maxAttempts: 2, delayMs: 10 })
-      ).rejects.toThrow("Unable to connect to the network");
+      const submission = withSubmissionRetry(failingOp, { maxAttempts: 2, delayMs: 10 });
+      // Attach the rejection handler before draining the (faked) retry timers.
+      const assertion = expect(submission).rejects.toThrow("Unable to connect to the network");
+      await vi.runAllTimersAsync();
+      await assertion;
 
       expect(failingOp).toHaveBeenCalledTimes(2);
     });

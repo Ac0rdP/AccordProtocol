@@ -1,0 +1,22 @@
+name: Launch checklist
+
+on:
+  pull_request:
+    paths:
+      - launch/**
+      - scripts/check-mainnet-checklist.mjs
+      - .github/workflows/launch-checklist.yml
+
+permissions:
+  contents: read
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - run: node scripts/check-mainnet-checklist.mjs --structure

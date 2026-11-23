@@ -12,9 +12,13 @@ Beginner-friendly guides for using Accord Protocol.
 | [Grant Management](grant-management.md) | Disburse USDC grants through a multisig with a grants committee |
 | [Choosing Voting Weights](weighted-governance.md) | Decide when equal vs skewed owner weights make sense, with examples and centralization risks |
 | [Roles & Permissions](roles-and-permissions.md) | Grant and revoke Proposer / Approver / Executor / Viewer roles and keep a healthy duty split |
+| [Treasury Policy Operator Playbook](treasury-policy-playbook.md) | Choose thresholds, weights, spend limits, and recurring schedules with worked examples |
+| [Advanced Governance Walkthroughs](advanced-governance-walkthroughs.md) | Visual walkthroughs and CLI commands for RBAC, weighted approvals, delegation, and recurring payments |
+| [Plugin & Integration Marketplace](integration-marketplace.md) | Install reviewed integrations for notifications, accounting, and treasury automation |
 | [Treasury Analytics](treasury-analytics.md) | Read the analytics page's stat cards and charts, use filters, and export CSV/PDF |
 | [Monitoring Your Multisig](monitoring-your-multisig.md) | Query Horizon events, spot missed executions, and verify state after an upgrade |
 | [Troubleshooting](troubleshooting.md) | Diagnose wallet, transaction, and network errors |
+| [Error-Code & Troubleshooting Index](../ERROR_CODES.md) | Map every contract and API error code to its cause, user message, and operator remedy |
 
 ---
 

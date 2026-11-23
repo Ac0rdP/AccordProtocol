@@ -114,6 +114,8 @@ The tests in `contracts/accord/src/test.rs` use two mock tokens: `AdversarialTok
 
 ## Threat Model
 
+> RBAC, delegation and recurring payments are analysed in full, with code links and residual risks, in [THREAT_MODEL_RBAC_DELEGATION_RECURRING.md](./THREAT_MODEL_RBAC_DELEGATION_RECURRING.md).
+
 ### Attack Surfaces
 
 The protocol's attack surface includes the following external entry points:
@@ -133,6 +135,206 @@ Accord relies on several explicit assumptions for its security properties to hol
 2. **Honest RPC Node**: The RPC node used by the frontend and integrators returns accurate ledger state.
 3. **Asset Integrity**: Token contracts passed to the multisig are non-malicious and do not contain backdoors or non-standard callback logic.
 4. **Soroban Platform**: The underlying Soroban runtime correctly enforces `require_auth` and handles cryptographic verification.
+
+## Operational Security Controls
+
+The repository includes `scripts/security-controls.mjs`, an additive off-chain
+control for operator workflows. It does not replace contract authorization: the
+Accord contract remains the enforcement point for owner quorum, RBAC, guardian
+pause, and treasury execution. The control is owned by the Security and
+Compliance operator, applies to privileged workspace actions and every planned
+treasury transfer, and fails closed when policy, authorization, allowlist, or
+screening evidence is missing.
+
+### Workspace roles and tamper-evident audit
+
+The policy file maps actors to roles and actions to required roles. At minimum,
+deployments should separate `treasury_operator`, `privacy_admin`,
+`policy_admin`, and `security_auditor`; an actor with no matching role cannot
+append a privileged record, change an allow/deny list, or pass treasury
+preflight. Audit records are JSON Lines records chained
+with SHA-256 hashes. Each record contains `previousHash`, and its `hash` covers
+all unsigned fields. Operators must run:
+
+```bash
+node scripts/security-controls.mjs audit verify --log=./data/security-audit.jsonl
+```
+
+Any gap, modified record, malformed line, or missing log is an incident and
+blocks approval until the log is restored from protected evidence. Store the
+audit file with restricted permissions and copy it to write-once or otherwise
+access-controlled evidence storage at the end of each operating period. The
+hash chain is tamper-evident, not a substitute for access controls or an
+independent backup.
+
+This control addresses the existing RBAC risks of role concentration,
+unreviewed privileged operations, and incomplete incident evidence described in
+the [RBAC threat model](THREAT_MODEL_RBAC_DELEGATION_RECURRING.md). It does not
+grant roles or voting power and does not handle private keys.
+
+### Treasury recipient controls
+
+Before a transfer is submitted, the `treasury_operator` must run the
+`treasury preflight` command with the destination contract, recipient, and
+policy. A non-empty recipient or contract allowlist is restrictive; any deny
+list match wins. Screening is required by default and only a provider result of
+`clear` permits the transfer. Provider name, query time, request ID, and result
+must be included in the corresponding audit record. A provider outage,
+ambiguous response, stale result, or missing result is a denial, never an
+automatic approval. The contract's owner quorum and `Executor` role checks
+still apply after preflight.
+
+### Personal-data export, deletion, and retention
+
+The `privacy_admin` owns subject access exports and deletion requests. Export
+copies matching subject records to a new mode-`0600` file without changing the
+source. Deletion replaces personal-data fields with `[REDACTED]` while retaining
+stable record metadata and an audit record containing the actor, subject, and
+redaction count. A valid, unexpired retention exception (for example, a legal
+hold or reconciliation requirement) blocks deletion and must state its reason,
+subject, and `retainUntil` timestamp. Once the exception expires, the request
+must be retried; exceptions are not permission to retain data indefinitely.
+
+### API key lifecycle, least privilege, and rotation
+
+Machine-to-machine integrations, indexing services, and compliance tooling must
+authenticate using least-privilege API keys managed via `scripts/security-controls.mjs`.
+
+- **Owner**: Security Administrator (`apikey_admin`).
+- **Scope**: All automated service credentials, background indexers, telemetry ingestors, and analytics query integrations.
+- **Threat Model**:
+  - Unscoped, immortal credentials compromised via logs, source control, or dev machines leading to unauthorized administrative actions.
+  - Abrupt credential expiration causing production outages during key replacement.
+  - Stale credentials remaining valid indefinitely after an operator or service deprecation.
+  - Storing plaintext tokens in data files or logs allowing secondary theft.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Any request presenting an unrecognized, revoked, expired, or scope-deficient token is rejected immediately.
+  - **Secret protection**: Plaintext tokens are returned exactly once upon issuance or rotation; only their cryptographic SHA-256 hash is persisted in `api-keys.json`. Plaintext tokens are never logged or stored.
+  - **Least-privilege scoping**: Keys specify explicit permitted actions (e.g., `audit:read`, `audit:append`, `treasury:preflight`, `indexer:ingest`, `metrics:read`).
+  - **Overlap grace windows**: During key rotation, the prior key transitions to `rotating` status and remains valid during a defined overlap window (default 7 days) to enable zero-downtime client cutover before hard expiration.
+  - **Rotation reminders**: Automated checks flag active keys approaching expiration within the reminder window (default 14 days).
+  - **Revocation**: Keys can be immediately revoked by administrators with a recorded justification, instantaneously barring authentication.
+- **Link to Existing Risks**:
+  - Directly mitigates the **Role Concentration Risk** and **Workstation Single Point of Failure (SPOF)** documented in the [RBAC threat model addendum](#role-concentration-risk) and the credential exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md).
+
+### SIEM streaming and security event forwarding
+
+Operational audit logs, authorization decisions, and contract governance events
+can be streamed to enterprise SIEM endpoints (Splunk, Datadog, or generic SIEM/HTTP endpoints).
+
+- **Owner**: SOC Lead / Security Operations (`security_operator`).
+- **Scope**: All authentication events, authorization checks, treasury preflight decisions, policy modifications, privacy actions, and contract emergency pause events.
+- **Threat Model**:
+  - Security incidents or compromised credentials escaping detection due to audit logs remaining isolated on local filesystems.
+  - An attacker tampering with local JSONL logs to conceal malicious activity.
+  - Transmission of plaintext tokens, passwords, or private keys to third-party log aggregation services.
+  - Downstream SIEM outages causing service degradation or blocking operational processes.
+- **Enforcement and Failure Behavior**:
+  - **Automated sanitization**: Payloads are scrubbed before serialization. Fields containing tokens, secrets, private keys, or passwords are automatically redacted to `[REDACTED_SECRET]`.
+  - **Categorization and severity**: Events are classified into functional categories (`authentication`, `authorization`, `governance`, `privacy`, `compliance`) and assigned security severities (`INFO`, `WARN`, `CRITICAL` for freezes or unauthorized attempts).
+  - **Fail-safe forwarding**: SIEM streaming failures log errors without interrupting on-chain execution or local operational preflight. Dry-run export enables offline verification.
+- **Link to Existing Risks**:
+  - Addresses the **Role-Revocation Lockout Risk** and **Incomplete Incident Evidence** highlighted in the [threat model](#attack-surfaces) by guaranteeing external real-time event correlation and tamper protection.
+
+### SOC 2 Trust Services Criteria mapping and auditor evidence
+
+Accord's operational and protocol security controls are formally mapped to SOC 2 Trust Services Criteria (Security, Availability, Confidentiality, and Privacy).
+
+- **Owner**: Compliance Officer / Security Auditor (`compliance_export`, `security_auditor`).
+- **Scope**: All repository security controls, CI scanning mechanisms, smart contract invariants, and data management workflows.
+- **Threat Model**:
+  - Failure to demonstrate compliance during SOC 2 audits due to manual, ad-hoc, or incomplete evidence collection.
+  - Retroactive modification of compliance evidence or audit chains.
+  - Inadvertent disclosure of operational secrets or confidential user data during auditor handoff.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Evidence package generation verifies audit log hash chains, active policy definitions, and residency configurations. If the audit log is broken or missing, the package flags the control non-compliant or fails.
+  - **Tamper-evident manifest**: Generates an auditor evidence package containing SHA-256 digests for all evaluated evidence files (`security-audit.jsonl`, `security-policy.json`, etc.).
+  - **Mapped criteria**: Maps operational controls to CC6.1 (Access Security), CC6.2 (User Credentials), CC6.3 (Least Privilege), CC6.6 (Boundary Protection), CC6.7 (Data Integrity), CC6.8 (Software Invariants), CC7.1 (Vulnerability Scanning), CC7.2 (Security Monitoring), CC7.3 (Incident Containment), CC8.1 (Change Management), A1.2 (Availability & Backups), C1.1 (Confidentiality & Secret Protection), P1.1 (Privacy Rights), and P4.1 (Data Sovereignty).
+- **Link to Existing Risks**:
+  - Resolves governance and auditability gaps identified in the [Audit Preparation Pack](./AUDIT_PREP.md).
+
+### Data residency pinning, regional backups, exports, and deletion
+
+Workspace data, indexing databases, backups, and exports are pinned to specific geographic and cloud regions.
+
+- **Owner**: Infrastructure Operator (`infra_operator`) and Privacy Administrator (`privacy_admin`).
+- **Scope**: Workspace data repositories, persistent database snapshots, export packages, and tenant deletion routines.
+- **Threat Model**:
+  - Unintended cross-border data transfer or regulatory breach under sovereignty frameworks (GDPR, regional data protection mandates).
+  - Silent backup data corruption or unverified recovery snapshots.
+  - Inadvertent deletion of data subject to mandatory retention holds or regulatory preservation notices.
+- **Enforcement and Failure Behavior**:
+  - **Fails closed**: Operations attempting to access, back up, or export workspace data in an unapproved region or a region mismatched with the workspace's pinned region are rejected with an explicit error.
+  - **Verified backups**: Backup archives include SHA-256 checksums and regional metadata headers to guarantee integrity and geographic provenance.
+  - **Retention hold gates**: Workspace deletion validates active retention exceptions before purging data. Any unexpired legal hold or compliance exception hard-blocks deletion.
+- **Link to Existing Risks**:
+  - Mitigates multi-tenant data exfiltration risks and regulatory penalties associated with cross-border transfer violations and improper record destruction.
+
+### Enterprise SSO (SAML / OIDC), just-in-time provisioning, and session policy
+
+Team accounts can sign in through an enterprise identity provider (IdP) using
+SAML 2.0 or OpenID Connect. `scripts/sso-controls.mjs` is the enforcement point
+between the IdP and the workspace roles that `scripts/security-controls.mjs`
+authorizes against. It is an off-chain operator control: it never holds wallet
+keys, and SSO roles cannot satisfy or bypass on-chain owner quorum, RBAC, or
+guardian checks.
+
+- **Owner**: Security Administrator (`sso_admin` for deprovisioning, `policy_admin` for projecting SSO roles into the policy).
+- **Scope**: Every interactive sign-in to a team workspace through a configured IdP, the resulting workspace roles, and the session used for privileged off-chain actions (treasury preflight, privacy, policy, key management).
+- **Threat Model**:
+  - Forged or tampered assertions/ID tokens, including `alg: none`, HMAC key-confusion against a published JWKS, or an assertion signed by a certificate the IdP did not intend.
+  - Assertions or tokens issued for another service (wrong audience/issuer), or captured and replayed.
+  - Sign-in by accounts outside the organization (unverified or off-domain email), or without MFA.
+  - IdP compromise or misconfiguration granting roles through group membership, in particular control-plane roles.
+  - Stale access after an employee leaves or changes teams: lingering roles or long-lived sessions.
+  - Session token theft from the session store.
+- **Enforcement and Failure Behavior** (all checks **fail closed** and are audited as `sso_login_denied` where applicable):
+  - **Pinned trust**: OIDC tokens are verified with Node's crypto against a pinned JWKS (asymmetric `RS*`/`ES*`/`PS256` only; `none` and `HS*` are rejected; JWKs containing private or symmetric material are rejected at config load). SAML XML-DSig is verified by the SAML gateway library, and the control additionally requires `signatureVerified: true` from it plus a SHA-256 signing-certificate fingerprint that matches the pinned list.
+  - **Claims**: exact issuer and audience (and `azp` for multi-audience tokens), validity window with bounded clock skew (default 120 s), nonce when the caller supplies one, verified email in an `allowedDomains` entry, and MFA (`amr` for OIDC, `AuthnContextClassRef` for SAML) when `session.requireMfa` is set.
+  - **Replay**: every assertion ID / `jti` is recorded until it expires; a second use is denied.
+  - **Just-in-time provisioning**: unknown users are created only when `jit.enabled` is true. Roles are recomputed from IdP groups on every login via `jit.groupRoles`, limited to `jit.allowedRoles`, so removing a group in the IdP removes the role at next login. A user with no mapped role is denied. Users are keyed by the stable IdP subject (`sso:<provider>:<subject>`), never by email, so a reassigned mailbox does not inherit access.
+  - **Protected roles**: `policy_admin`, `apikey_admin`, and `sso_admin` can never be granted through SSO; config validation rejects them in `jit.allowedRoles`, and role mapping filters them again at runtime.
+  - **Session policy**: absolute lifetime (`maxAgeMinutes`, further capped by the SAML `SessionNotOnOrAfter`), idle timeout, and step-up re-authentication windows per action (`reauthMinutesForActions`, for example 15 minutes for `treasury_transfer`). Session tokens are returned once; only their SHA-256 hash is stored.
+  - **Deprovisioning**: suspends the user, clears SSO roles, and revokes every active session immediately; a suspended user cannot sign in again until an administrator restores them.
+  - **No weakening of existing authorization**: `sync-policy` only adds or removes `sso:*` actors in the policy `roles` map. Manually managed actors and the `permissions` map are untouched, and `authorize()` remains the single authorization check.
+- **Link to Existing Risks**:
+  - Addresses the **Role Concentration Risk** and **Role-Revocation** concerns in the [RBAC threat model addendum](#role-based-access-control-rbac-threat-model-addendum) by tying off-chain roles to centrally managed IdP groups with prompt revocation, and the credential-exposure threats in [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md) by hashing session tokens and refusing secret key material in config.
+- **Residual risk**: a fully compromised IdP can still sign in as any user in an allowed domain and obtain that user's non-protected roles. Treasury movement still requires on-chain owner quorum. Keep `jit.allowedRoles` minimal, require MFA, and alert on `sso_role_sync` events in the SIEM.
+
+### Frontend Content Security Policy (CSP) and Security Headers
+
+- **Control**: Strict HTTP `Content-Security-Policy` and companion browser security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy`, and `Strict-Transport-Security: max-age=31536000` on production HTTPS without `includeSubDomains` or `preload`) defined centrally in [`frontend/security-headers.mjs`](../frontend/security-headers.mjs) and applied to Vercel deployments ([`frontend/vercel.json`](../frontend/vercel.json)) and Vite servers ([`frontend/vite.config.ts`](../frontend/vite.config.ts)).
+- **Owner**: Frontend Maintainer.
+- **Scope**: All document and asset responses served by the Accord web frontend (`frontend/`).
+- **Threat Model**:
+  - **Cross-Site Scripting (XSS) & Injected Third-Party Scripts**: Production `script-src` is strictly `'self'` with no `'unsafe-inline'` and no `'unsafe-eval'`. The dark-mode theme bootstrap was moved from an inline `<script>` in `frontend/index.html` to a static external file (`frontend/public/theme-init.js`), preserving static CDN caching with zero nonces or hashes required.
+  - **Clickjacking / UI Redressing**: `frame-ancestors 'none'` and `X-Frame-Options: DENY` prevent embedding the multisig approval UI in malicious frames; `frame-src 'none'` and `object-src 'none'` block active plugin or iframe injection.
+  - **Data Exfiltration**: `connect-src` restricts outbound browser fetches and WebSockets to `'self'`, configured Stellar Soroban RPC / Horizon origins, the CoinGecko price feed origin, and any explicitly configured Analytics/Indexer/Push origins (stripped to `scheme://host[:port]` so paths, queries, and credentials can never appear in headers). `base-uri 'self'` and `form-action 'self'` prevent base-tag and form hijacking.
+  - **Wallet Compatibility**: `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` are intentionally omitted so Freighter and wallet popups/bridges are not broken, and `Permissions-Policy` leaves `usb`, `hid`, and `publickey-credentials-get` unrestricted for Ledger and Passkey wallets.
+- **Failure Behavior**:
+  - **Browser runtime**: Fails closed — any unauthorized script, frame, or network origin is blocked by the browser.
+  - **CI & config validation**: `scripts/check-frontend-headers.mjs` and `scripts/check-frontend-headers.test.mjs` fail closed if `frontend/vercel.json` drifts from `frontend/security-headers.mjs`, if `'unsafe-inline'` or `'unsafe-eval'` appears in production `script-src`, if an unexpected origin or wildcard is introduced, or if inline `<script>` tags reappear in `frontend/index.html`.
+- **Rollback**: Set `VITE_CSP_REPORT_ONLY=true` (or `CSP_REPORT_ONLY=true`) or switch `"key": "Content-Security-Policy"` to `"key": "Content-Security-Policy-Report-Only"` in `frontend/vercel.json` and redeploy. See [`docs/OPERATIONS.md`](./OPERATIONS.md#frontend-csp-and-security-headers) for operator steps and the manual browser wallet checklist.
+- **Link to Existing Risks**: Mitigates the frontend/contract integration attack surfaces in [Attack Surfaces](#attack-surfaces) (malicious script injection attempting to forge or alter transaction signing payloads before Freighter/hardware wallet confirmation). *(Note: the repository does not maintain a formal numbered risk register.)*
+
+### Production Owner Key Custody (HSM / MPC Signers)
+
+- **Control**: Production Accord multisig owner keys and guardian keys MUST reside in non-exportable Hardware Security Modules (HSMs) or threshold Multi-Party Computation (MPC) custody vaults — never in GitHub Actions secrets, CI environment variables, developer laptops, or repository files. Signing drill evidence is verified offline with zero private key access via [`scripts/verify-signer-evidence.mjs`](../scripts/verify-signer-evidence.mjs).
+- **Owner**: Treasury Security Lead & Multisig Owners.
+- **Scope**: All production (`Public Global Stellar Network ; September 2015`) owner keys registered in `contracts/accord/src/lib.rs` (used for `create_*_proposal`, `approve`, `execute`, `upgrade`, `set_guardian`, `unfreeze`, and `migrate_to_rbac`) and the emergency `guardian` key.
+- **Cryptographic Requirements (Provider-Neutral)**:
+  - Stellar `G...` accounts use **Ed25519 (RFC 8032)** over 32-byte raw public keys and 64-byte signatures.
+  - Before adopting any HSM or MPC provider, operators MUST verify that it natively supports **Ed25519 (RFC 8032)** (or threshold EdDSA / FROST MPC producing standard 64-byte Ed25519 signatures) over raw 32-byte Stellar transaction hashes. Legacy PKCS#11 HSMs that only support RSA or ECDSA (`secp256k1` / `P-256`) cannot sign Stellar `G...` transactions directly without an MPC or verified Ed25519 custody layer.
+  - No specific HSM or MPC vendor is endorsed or bundled in this repository; no vendor SDKs are added.
+- **Threat Model**:
+  - **Key Extraction / CI Compromise**: Compromise of CI runners, GitHub secrets, or a developer workstation must not yield production owner signing keys.
+  - **Cross-Network Replay**: Signing payloads MUST include the Stellar `networkId = SHA-256(networkPassphrase)` and `ENVELOPE_TYPE_TX (0x00000002)` domain prefix so a Testnet signing drill can never be replayed on Mainnet.
+  - **Single-Operator Collusion / Unauthorized Upgrade**: Separation of duties ensures the person who builds a WASM artifact or proposes an upgrade cannot unilaterally sign quorum threshold.
+  - **Owner Lockout**: Because `contracts/accord/src/lib.rs` has no atomic `rotate_owner` entrypoint and no SOS recovery if quorum is lost, every production owner change requires a two-step `AddOwner` -> `RemoveOwner` sequence rehearsed on Testnet with a verified rollback path first.
+- **Failure Behavior**:
+  - `scripts/verify-signer-evidence.mjs` fails closed on invalid `G...` StrKey checksums, secret seeds (`S...`, rejected without echoing key material), wrong network passphrase, tampered payload, wrong public key, or forbidden private-key fields in evidence JSON.
+  - CI deployment workflows MUST NOT possess production owner keys; promotion to production halts for out-of-band HSM/MPC co-signing.
+- **Link to Existing Risks**: Directly addresses [Key Management](#key-management), [No SOS Recovery](#residual-risks), [`docs/SECRETS_MANAGEMENT.md`](./SECRETS_MANAGEMENT.md), and [`docs/runbooks/KEY_ROTATION.md`](./runbooks/KEY_ROTATION.md). *(Note: the repository does not maintain a formal numbered risk register.)*
 
 ### Mitigations
 
@@ -292,6 +494,50 @@ The following risks are currently unmitigated by the protocol design:
 - **The Validation Gap**: A token contract could be upgraded to malicious code between a proposal's creation (where it is validated) and its execution.
 - **Opt-in initialization weight review**: `initialize` enforces per-owner weight bounds and rejects a mismatched owners/weights length, but applies no cap on how concentrated the _initial_ weight distribution may be, and no cap prevents a colluding group of owners from accumulating a combined majority share through a sequence of individually-compliant `ChangeOwnerWeight` proposals after deployment (see "Weighted Governance Threat Model Addendum" above). Both are currently the deployer's and owners' operational responsibility rather than an on-chain guarantee.
 - **Role-Revocation Quorum Stranding**: While owner removals strictly enforce `WouldBreakThreshold` and `WouldBreakQuorum` at both creation and execution, revoking the `Approver` role from owners relies on operational verification that remaining Approver weight meets `threshold`. If Approver roles are revoked below `threshold`, regular proposal progression stalls until restored by owners via an emergency upgrade or role re-grant.
+- **CI/CD Release & Provenance Risk**: Release provenance attestations prove which GitHub Actions workflow and commit produced an artifact, not that the underlying source code or reviewed dependencies are free of bugs or malice. A compromised maintainer account or malicious merged code would still receive a valid attestation; mitigate via required PR reviews, branch protection, `supply-chain.yml`, and reproducible WASM verification (`scripts/verify-reproducible-build.sh`).
+
+## Release Signing & Build Provenance
+
+### Control, Owner, and Scope
+- **Control**: Keyless OIDC build provenance attestations via GitHub's `actions/attest-build-provenance` (Sigstore-backed DSSE bundles) paired with `SHA256SUMS.txt`.
+- **Owner**: Release Engineering / Repository Maintainers.
+- **Trigger & Isolation**: Runs only on `v*` tag pushes or manual `workflow_dispatch` (defaulting to `dry_run: true`) in `.github/workflows/release.yml`, never on pull requests or forks.
+- **Scoped Artifacts**:
+  - `accord.wasm` (compiled Soroban contract WASM)
+  - `wasm-manifest.json` (contract metadata and SHA-256 digest)
+  - `accord-frontend-dist.tar.gz` (built frontend static bundle)
+  - `SHA256SUMS.txt` (SHA-256 checksums for all release assets)
+
+### Threat Model & Coverage
+| Threat | Mitigation | Residual / Out-of-Scope |
+| --- | --- | --- |
+| **Swapped or tampered release asset** | Consumers verify `SHA256SUMS.txt` and `gh attestation verify` against `Ac0rdP/AccordProtocol/.github/workflows/release.yml` | None if verification is enforced before deployment |
+| **Compromised long-lived signing key** | Eliminated: keyless OIDC mints ephemeral short-lived certificates; no long-lived private signing key is stored in repository secrets | Compromised GitHub Actions runner or `GITHUB_TOKEN` during the build job |
+| **Compromised CI token / workflow** | `id-token: write` and `attestations: write` are scoped solely to `build-and-attest`; `release` has `contents: write` only; `main` and release tags require protection | Provenance proves **which workflow and commit** built the binary, **not** that the source code itself is honest |
+| **Malicious dependency or third-party action** | Enforced by `supply-chain.yml` (`--locked`, `npm ci`, SHA-pinned third-party actions) and `malware-scan.yml` | Zero-day upstream vulnerabilities require audit and `cargo audit`/`npm audit` |
+
+### Failure Behavior (Fail-Closed)
+- `build-and-attest` must produce a non-empty `attestation-id` before the `release` job can run.
+- If `actions/attest-build-provenance` fails or no attestation ID is recorded, the workflow fails immediately and **never publishes an unsigned/unattested GitHub Release**.
+
+### Operator & Consumer Process
+1. **Consumer Verification**:
+   ```bash
+   bash scripts/verify-release.sh --tag vX.Y.Z --repo Ac0rdP/AccordProtocol --artifact accord.wasm
+   ```
+   Or directly with the GitHub CLI:
+   ```bash
+   gh attestation verify accord.wasm --repo Ac0rdP/AccordProtocol --signer-workflow Ac0rdP/AccordProtocol/.github/workflows/release.yml
+   ```
+   Never omit `--repo` or `--signer-workflow` (accepting any identity defeats provenance checks).
+2. **Key / Identity Rotation**: Because signing is keyless OIDC, there is no static key to rotate. If the workflow path or repository changes, update `--signer-workflow` in `scripts/verify-release.sh` and release notes.
+3. **Compromised CI Token or Workflow Response**:
+   - Disable `.github/workflows/release.yml` immediately (`gh workflow disable "Release"`).
+   - Revoke/rotate any affected repository secrets or PATs, audit recent workflow runs and tag pushes, and delete any compromised GitHub Release (`gh release delete <tag> --yes`) and tag.
+   - Remediate the workflow or dependency issue on `main`, then cut a new patched tag.
+
+### Platform Limits
+- GitHub Artifact Attestations (`actions/attest-build-provenance`) are free for **public repositories** and require GitHub Enterprise Cloud / Team plans for private repositories.
 
 ## Responsible Disclosure
 

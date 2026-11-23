@@ -19,32 +19,68 @@ import { useEventPolling } from "./hooks/useEventPolling";
 import { useNotifications } from "./hooks/useNotifications";
 import { useRoles } from "./hooks/useRoles";
 import { useWallet } from "./hooks/useWallet";
-import { approveProposal, executeProposal, revokeProposal } from "./lib/submit";
+import {
+  approveProposal,
+  executeProposal,
+  mapSubmissionError,
+  revokeProposal,
+} from "./lib/submit";
 import { isFrozen } from "./lib/contract";
 import { PWAInstallBanner } from "./components/PWAInstallBanner";
 import { ThemeControl } from "./components/ThemeControl";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { CommandPalette } from "./components/CommandPalette";
+import { ChangelogPanel } from "./components/ChangelogPanel";
+import { FeedbackWidget } from "./components/FeedbackWidget";
+import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
+import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
+import {
+  getActiveContractId,
+  setActiveContractId,
+} from "./lib/activeContract";
+import { resolvePublicDeepLink } from "./lib/shareLinks";
 import { applyTheme, getStoredTheme, subscribeToSystemTheme, type ThemeChoice } from "./lib/theme";
+import { AlertRulesPage } from "./pages/AlertRulesPage";
 import { AnalyticsPage } from "./pages/AnalyticsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
+import { BulkActionsPage } from "./pages/BulkActionsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { FreshnessPage } from "./pages/FreshnessPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { NotificationSchedulePage } from "./pages/NotificationSchedulePage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { OwnerAvailabilityPage } from "./pages/OwnerAvailabilityPage";
+import { OwnerProfilePage } from "./pages/OwnerProfilePage";
 import { OwnersPage } from "./pages/OwnersPage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
+import { PortfolioDashboardPage } from "./pages/PortfolioDashboardPage";
 import { RecurringPage } from "./pages/RecurringPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TemplateMarketplacePage } from "./pages/TemplateMarketplacePage";
+import { IntegrationMarketplacePage } from "./pages/IntegrationMarketplacePage";
+import { ProposalInboxPage } from "./pages/ProposalInboxPage";
+import type { ProposalInboxEntry } from "./lib/proposalInbox";
 import type { Proposal } from "./types/accord";
 
 const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
+  { key: "inbox", to: "/app/inbox" },
+  { key: "portfolio", to: "/app/portfolio" },
+  { key: "bulk", to: "/app/bulk" },
   { key: "recurring", to: "/app/recurring" },
   { key: "history", to: "/app/history" },
+  { key: "audit", to: "/app/audit" },
   { key: "analytics", to: "/app/analytics" },
   { key: "owners", to: "/app/owners" },
+  { key: "availability", to: "/app/availability" },
+  { key: "templates", to: "/app/templates" },
+  { key: "integrations", to: "/app/integrations" },
+  { key: "notifications", to: "/app/notifications" },
+  { key: "alerts", to: "/app/alerts" },
+  { key: "freshness", to: "/app/freshness" },
   { key: "settings", to: "/app/settings" },
   { key: "docs", to: "/docs" },
 ];
@@ -57,6 +93,9 @@ type OptimisticPatch = {
 export default function App() {
   const { t } = useTranslation();
   const [showCreate, setShowCreate] = useState(false);
+  const [activeContractId, setActiveContractSelection] = useState(
+    () => getActiveContractId(),
+  );
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
@@ -83,7 +122,20 @@ export default function App() {
     refresh,
     optimisticUpdate,
     lastSuccessAt,
-  } = useContract(wallet.address);
+  } = useContract(wallet.address, activeContractId);
+
+  const handleSelectPortfolioContract = useCallback((contractId: string) => {
+    try {
+      setActiveContractId(contractId);
+      setActiveContractSelection(contractId);
+    } catch (error) {
+      setTxError(
+        error instanceof Error
+          ? error.message
+          : "Could not switch the active contract.",
+      );
+    }
+  }, []);
 
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
@@ -101,22 +153,14 @@ export default function App() {
 
   // Deep-link handling: ensure direct proposal URLs or query params open the correct page
   useEffect(() => {
-    const directMatch = location.pathname.match(/^\/proposals\/(\d+)/);
-    if (directMatch) {
-      const id = directMatch[1];
-      navigate(`/app/proposals/${id}`, { replace: true });
-      return;
-    }
-
     if (location.pathname === "/onboarding" || location.pathname === "/onboarding/") {
       navigate("/app/onboarding", { replace: true });
       return;
     }
 
-    const params = new URLSearchParams(location.search);
-    const proposalParam = params.get("proposal");
-    if (proposalParam) {
-      navigate(`/app/proposals/${proposalParam}`, { replace: true });
+    const deepLinkTarget = resolvePublicDeepLink(location.pathname, location.search);
+    if (deepLinkTarget && deepLinkTarget !== location.pathname) {
+      navigate(deepLinkTarget, { replace: true });
     }
   }, [location.pathname, location.search, navigate]);
 
@@ -138,12 +182,11 @@ export default function App() {
     wasShowRecurringRef.current = showCreateRecurring;
   }, [showCreateRecurring]);
 
-  useEffect(() => {
-    if (!wallet.address && txPending) {
-      setTxPending(false);
-      setTxError("Wallet disconnected. Please reconnect and try again.");
-    }
-  }, [wallet.address, txPending]);
+  // Adjust state during render (not in an effect) when the wallet drops mid-transaction.
+  if (!wallet.address && txPending) {
+    setTxPending(false);
+    setTxError("Wallet disconnected. Please reconnect and try again.");
+  }
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -285,6 +328,46 @@ export default function App() {
     });
   }, [ownerWeightForWallet, proposals, wallet.address, withTx]);
 
+  // Bulk actions submit each proposal as its own transaction and must surface
+  // per-item failures, so they bypass withTx (which swallows errors).
+  const bulkApprove = useCallback(async (id: number) => {
+    if (!wallet.address) throw new Error("Connect a wallet to sign transactions.");
+    try {
+      await approveProposal(wallet.address, id);
+    } catch (err) {
+      throw new Error(mapSubmissionError(err), { cause: err });
+    }
+  }, [wallet.address]);
+
+  const bulkExecute = useCallback(async (id: number) => {
+    if (!wallet.address) throw new Error("Connect a wallet to sign transactions.");
+    try {
+      await executeProposal(wallet.address, id);
+    } catch (err) {
+      throw new Error(mapSubmissionError(err), { cause: err });
+    }
+  }, [wallet.address]);
+
+  const inboxApprove = useCallback(async (entry: ProposalInboxEntry) => {
+    if (!wallet.address) {
+      await wallet.connect();
+      return;
+    }
+    await withTx(() =>
+      approveProposal(wallet.address!, entry.proposal.id, entry.workspace.contractId),
+    );
+  }, [wallet.address, wallet.connect, withTx]);
+
+  const inboxExecute = useCallback(async (entry: ProposalInboxEntry) => {
+    if (!wallet.address) {
+      await wallet.connect();
+      return;
+    }
+    await withTx(() =>
+      executeProposal(wallet.address!, entry.proposal.id, entry.workspace.contractId),
+    );
+  }, [wallet.address, wallet.connect, withTx]);
+
   const thresholdStat = stats.find((stat) => stat.label === "Threshold");
   const threshold = Number.parseInt(
     thresholdStat?.value.split(" ")[0] ?? "0",
@@ -394,10 +477,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white">
+      <LiveUpdatesAnnouncer proposals={proposals} />
       <PWAInstallBanner />
       <CommandPalette commands={commands} suspended={anyModalOpen} />
-      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 px-4 sm:px-6 py-4">
-        <div className="mx-auto flex max-w-4xl items-center justify-between gap-2">
+      <header className="border-b border-zinc-800 dark:border-zinc-800 border-zinc-200 bg-white dark:bg-zinc-950 px-4 sm:px-6 py-4">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2">
           <Link
             to="/"
             className="flex shrink-0 items-center gap-3 transition-opacity hover:opacity-80"
@@ -406,14 +490,14 @@ export default function App() {
               A
             </div>
             <span className="font-semibold tracking-tight">Accord</span>
-            <span className="hidden font-mono text-xs text-zinc-600 sm:block">
+            <span className="hidden font-mono text-xs text-zinc-400 sm:block">
               {t("header.network")}
             </span>
           </Link>
 
           <GlobalSearch proposals={proposals} owners={owners} />
 
-          <nav className="flex items-center gap-1">
+          <nav className="order-last flex w-full flex-wrap items-center justify-end gap-1 pt-1">
             {NAV_ITEMS.map(({ key, to }) => (
               <Link
                 key={key}
@@ -422,10 +506,10 @@ export default function App() {
                   location.pathname === to ||
                   (to === "/app" && location.pathname === "/app/")
                     ? "bg-zinc-800 text-white"
-                    : "text-zinc-500 hover:text-zinc-300"
+                    : "text-zinc-400 hover:text-zinc-300"
                 }`}
               >
-                {t(`nav.${key}`)}
+                {t(`nav.${key}`, key === "inbox" ? { defaultValue: "Proposal inbox" } : undefined)}
               </Link>
             ))}
 
@@ -439,35 +523,11 @@ export default function App() {
             <LanguageSwitcher className="ms-1" />
           </nav>
 
+          <ChangelogPanel />
+          <FeedbackWidget walletAddress={wallet.address} />
           <NotificationCenter />
 
-          {!wallet.installed ? (
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-500 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            >
-              {t("header.installFreighter")}
-            </a>
-          ) : wallet.address ? (
-            <button
-              type="button"
-              onClick={wallet.disconnect}
-              className="rounded-lg bg-zinc-800 px-4 py-1.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-400"
-            >
-              {shortenAddr(wallet.address)}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={wallet.connect}
-              disabled={wallet.connecting}
-              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-zinc-400 disabled:opacity-50"
-            >
-              {wallet.connecting ? t("header.connecting") : t("header.connectWallet")}
-            </button>
-          )}
+          <WalletSessionSwitcher wallet={wallet} />
         </div>
       </header>
 
@@ -513,42 +573,7 @@ export default function App() {
           </div>
         )}
 
-        {!wallet.installed ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
-            <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-300">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-                className="h-6 w-6"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M15.75 19.5a3 3 0 0 0 3-3V6.75A3 3 0 0 0 15.75 3.75H8.25a3 3 0 0 0-3 3V16.5a3 3 0 0 0 3 3m7.5 0h-7.5m7.5 0v.75a.75.75 0 0 1-.75.75H8.25a.75.75 0 0 1-.75-.75v-.75m7.5 0v-3.375c0-.621-.504-1.125-1.125-1.125H9.375c-.621 0-1.125.504-1.125 1.125V19.5"
-                />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-semibold">
-              Freighter wallet required
-            </h1>
-            <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
-              Freighter is the supported browser extension for signing Stellar
-              transactions in Accord. Install it to connect a wallet and use the
-              app.
-            </p>
-            <a
-              href="https://www.freighter.app"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-6 inline-flex items-center rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-amber-500"
-            >
-              Install Freighter
-            </a>
-          </div>
-        ) : loading ? (
+        {loading ? (
           <LoadingState message="Loading contract data…" />
         ) : (
           <>
@@ -558,23 +583,48 @@ export default function App() {
                 className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-xs text-emerald-200"
               >
                 <div>
-                  <p className="font-semibold text-emerald-300 text-sm">No multisig configured yet</p>
+                  <p className="font-semibold text-emerald-300 text-sm">
+                    {t("onboarding.bannerTitle", "No multisig configured yet")}
+                  </p>
                   <p className="text-zinc-400 mt-0.5">
-                    Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.
+                    {t(
+                      "onboarding.bannerDesc",
+                      "Take the guided onboarding wizard to configure owners, quorum threshold, and your first proposal.",
+                    )}
                   </p>
                 </div>
                 <Link
                   to="/app/onboarding"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-black hover:bg-emerald-400 transition-colors shrink-0"
                 >
-                  Start Setup Wizard →
+                  {t("onboarding.bannerCta", "Start Setup Wizard →")}
                 </Link>
               </div>
             )}
             <Routes>
               <Route
+                path="inbox"
+                element={
+                  <ProposalInboxPage
+                    walletAddress={wallet.address}
+                    onConnect={wallet.connect}
+                    onApprove={inboxApprove}
+                    onExecute={inboxExecute}
+                  />
+                }
+              />
+              <Route
                 path="onboarding"
                 element={<OnboardingPage wallet={wallet} onComplete={refresh} />}
+              />
+              <Route
+                path="portfolio"
+                element={
+                  <PortfolioDashboardPage
+                    activeContractId={activeContractId}
+                    onSelectContract={handleSelectPortfolioContract}
+                  />
+                }
               />
               <Route
                 index
@@ -612,6 +662,7 @@ export default function App() {
                 <HistoryPage proposals={proposals} onApprove={handleApprove} />
               }
             />
+            <Route path="audit" element={<AuditLogPage proposals={proposals} />} />
             <Route
               path="recurring"
               element={
@@ -619,6 +670,39 @@ export default function App() {
               }
             />
             <Route path="analytics" element={<AnalyticsPage />} />
+            <Route
+              path="bulk"
+              element={
+                <BulkActionsPage
+                  proposals={proposals}
+                  walletAddress={wallet.address}
+                  onApprove={bulkApprove}
+                  onExecute={bulkExecute}
+                  onBatchComplete={refresh}
+                  onConnectWallet={wallet.connect}
+                  loading={loading}
+                  error={error}
+                  onRetry={refresh}
+                />
+              }
+            />
+            <Route path="templates" element={<TemplateMarketplacePage />} />
+            <Route path="integrations" element={<IntegrationMarketplacePage />} />
+            <Route
+              path="availability"
+              element={
+                <OwnerAvailabilityPage
+                  owners={owners}
+                  proposals={proposals}
+                  loading={loading}
+                  error={error}
+                  onRetry={refresh}
+                />
+              }
+            />
+            <Route path="notifications" element={<NotificationSchedulePage />} />
+            <Route path="alerts" element={<AlertRulesPage />} />
+            <Route path="freshness" element={<FreshnessPage />} />
             <Route
               path="owners"
               element={
@@ -640,6 +724,7 @@ export default function App() {
                   stats={stats}
                   walletAddress={wallet.address}
                   ownerAddresses={ownerAddresses}
+                  contractId={activeContractId}
                   onProposalSubmitted={refresh}
                 />
               }
@@ -665,6 +750,7 @@ export default function App() {
                   stats={stats}
                   walletAddress={wallet.address}
                   ownerAddresses={ownerAddresses}
+                  contractId={activeContractId}
                   onProposalSubmitted={refresh}
                 />
               }

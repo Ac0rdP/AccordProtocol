@@ -99,7 +99,7 @@ export function AddressBookField({ address, isValidAddress, onSelectAddress, idP
           <button
             type="button"
             onClick={handleCancelSave}
-            className="text-xs text-zinc-500 hover:text-zinc-300"
+            className="text-xs text-zinc-600 dark:text-zinc-400 hover:text-zinc-300"
           >
             Cancel
           </button>

@@ -13,7 +13,7 @@ export function NotFoundPage({ onGoHome }: NotFoundPageProps) {
         <button
           type="button"
           onClick={onGoHome}
-          className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white"
+          className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white"
         >
           Back to Dashboard
         </button>

@@ -155,9 +155,68 @@ export function createIndexerMetrics() {
       name: "accord_indexer_ingestion_lag_ledgers",
       help: "Final ledgers not yet indexed (final ledger minus indexed ledger).",
     }),
+    chainTipLagLedgers: registry.gauge({
+      name: "accord_indexer_chain_tip_lag_ledgers",
+      help: "Ledgers between the chain tip and the newest indexed ledger (includes the finality lag).",
+    }),
+    chainTipLagSeconds: registry.gauge({
+      name: "accord_indexer_chain_tip_lag_seconds",
+      help: "Estimated chain-tip lag in seconds (ledgers times LEDGER_CLOSE_SECONDS).",
+    }),
+    finalityDepthLedgers: registry.gauge({
+      name: "accord_indexer_finality_depth_ledgers",
+      help: "Confirmations on the newest indexed ledger (chain tip minus indexed ledger). Below the minimum means non-final data was indexed.",
+    }),
+    checkpointAgeSeconds: registry.gauge({
+      name: "accord_indexer_checkpoint_age_seconds",
+      help: "Seconds since the indexing checkpoint last advanced.",
+    }),
+    lagAlertLevel: registry.gauge({
+      name: "accord_indexer_lag_alert_level",
+      help: "Lag monitor alert level per check: 0 ok, 1 warn, 2 critical.",
+      labelNames: ["check"],
+    }),
+    lagThreshold: registry.gauge({
+      name: "accord_indexer_lag_threshold",
+      help: "Configured lag monitor thresholds per check and level.",
+      labelNames: ["check", "level"],
+    }),
+    lagAlerts: registry.counter({
+      name: "accord_indexer_lag_alerts_total",
+      help: "Lag monitor level transitions into warn or critical, by check.",
+      labelNames: ["check", "level"],
+    }),
     lastSuccess: registry.gauge({
       name: "accord_indexer_last_successful_batch_timestamp_seconds",
       help: "Unix time of the last indexing batch that completed without error.",
+    }),
+    apiKeyRequests: registry.counter({
+      name: "accord_indexer_api_key_requests_total",
+      help: "Analytics requests checked against API keys, by key id (unknown when unauthenticated) and result (ok, unauthorized, forbidden, quota_exceeded).",
+      labelNames: ["key", "result"],
+    }),
+    eventsQuarantined: registry.counter({
+      name: "accord_indexer_events_quarantined_total",
+      help: "Contract events that failed schema validation and were quarantined, by reason.",
+      labelNames: ["reason"],
+    }),
+    eventValidationWarnings: registry.counter({
+      name: "accord_indexer_event_validation_warnings_total",
+      help: "Events indexed despite schema violations (EVENT_VALIDATION_MODE=warn).",
+    }),
+    quarantineBacklog: registry.gauge({
+      name: "accord_indexer_quarantined_events",
+      help: "Events currently held in quarantine, by reason.",
+      labelNames: ["reason"],
+    }),
+    isLeader: registry.gauge({
+      name: "accord_indexer_is_leader",
+      help: "1 while this instance holds the leader lease (always 1 when failover is disabled), else 0.",
+    }),
+    leaderTransitions: registry.counter({
+      name: "accord_indexer_leader_transitions_total",
+      help: "Leadership changes seen by this instance, by the role it moved to.",
+      labelNames: ["to"],
     }),
     httpRequests: registry.counter({
       name: "accord_indexer_http_requests_total",
@@ -184,6 +243,11 @@ export function createIndexerMetrics() {
       help: "Webhook deliveries in the outbox by status (pending, delivered, dead).",
       labelNames: ["status"],
     }),
+    webhookReplays: registry.counter({
+      name: "accord_indexer_webhook_replays_total",
+      help: "Webhook deliveries an operator sent back through the dispatcher, by scope (single, bulk).",
+      labelNames: ["scope"],
+    }),
     notificationDeliveries: registry.counter({
       name: "accord_indexer_notification_deliveries_total",
       help: "Notification delivery attempts by destination, channel kind, and result (delivered, retry, dead).",
@@ -207,6 +271,10 @@ export function recordBatchSuccess(metrics, result, indexedLedger, nowSeconds = 
   metrics.eventsProcessed.inc({}, result.indexed);
   metrics.eventsHeldBack.inc({}, result.heldBack);
   if (result.reorg) metrics.reorgs.inc();
+  for (const [reason, count] of Object.entries(result.quarantineReasons ?? {})) {
+    metrics.eventsQuarantined.inc({ reason }, count);
+  }
+  if (result.validationWarnings) metrics.eventValidationWarnings.inc({}, result.validationWarnings);
   metrics.latestLedger.set(result.latestLedger);
   metrics.finalLedger.set(result.finalLedger);
   metrics.indexedLedger.set(indexedLedger);

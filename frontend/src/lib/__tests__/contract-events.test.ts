@@ -129,12 +129,23 @@ describe("Contract Events API", () => {
           ledger: 104,
           ledgerClosedAt: "2026-06-27T12:40:00Z",
         },
+        {
+          topic: ["str_clm"],
+          value: {
+            proposal_id: 1,
+            schedule_id: 10,
+            amount: 250000000n,
+            token: "XLM",
+          },
+          ledger: 105,
+          ledgerClosedAt: "2026-06-27T12:50:00Z",
+        },
       ],
-      latestLedger: 105,
+      latestLedger: 106,
     });
 
     const events = await getProposalEvents(1);
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(5);
 
     expect(events[0]).toMatchObject({
       type: "recurring_payment_created",
@@ -166,6 +177,15 @@ describe("Contract Events API", () => {
       scheduleId: 10,
       details: "Schedule #10 · Terminated",
       ledger: 104,
+    });
+
+    expect(events[4]).toMatchObject({
+      type: "recurring_stream_claimed",
+      scheduleId: 10,
+      amount: "25",
+      token: "XLM",
+      details: "Schedule #10 · 25 XLM",
+      ledger: 105,
     });
   });
 
@@ -241,3 +261,4 @@ describe("Contract Events API", () => {
   });
 });
 
+// TODO: Add a test proving that replaying a ledger range never double-counts events (idempotency)

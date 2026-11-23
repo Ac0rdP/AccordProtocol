@@ -39,8 +39,14 @@ echo "--- 2. Building TypeDoc for frontend client API ---"
   npx typedoc --options typedoc.json --out "$REPO_ROOT/$OUTPUT_DIR/typescript"
 )
 
-# 3. Create landing index.html linking both references
-echo "--- 3. Generating documentation index ---"
+# 3. Publish the public status page
+# The page is rendered from the committed status data; the health probes that
+# refresh that data run in .github/workflows/status-page.yml.
+echo "--- 3. Rendering the public status page ---"
+node "$REPO_ROOT/scripts/status-page.mjs" render --out="$REPO_ROOT/$OUTPUT_DIR/status.html"
+
+# 4. Create landing index.html linking both references
+echo "--- 4. Generating documentation index ---"
 cat > "$REPO_ROOT/$OUTPUT_DIR/index.html" << 'EOF'
 <!DOCTYPE html>
 <html lang="en">
@@ -128,6 +134,10 @@ cat > "$REPO_ROOT/$OUTPUT_DIR/index.html" << 'EOF'
       background: rgba(59, 130, 246, 0.15);
       color: #60a5fa;
     }
+    .badge-status {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+    }
     .card h2 {
       margin: 0 0 0.5rem 0;
       font-size: 1.35rem;
@@ -159,6 +169,11 @@ cat > "$REPO_ROOT/$OUTPUT_DIR/index.html" << 'EOF'
         <span class="badge badge-ts">TypeDoc</span>
         <h2>Frontend Client API</h2>
         <p>Documentation for frontend public TypeScript modules, including domain types, wallet connection, RPC helpers, and contract wrappers.</p>
+      </a>
+      <a href="./status.html" class="card">
+        <span class="badge badge-status">Status</span>
+        <h2>Service Status</h2>
+        <p>Live status, recent availability and incident notes for the Accord indexer and analytics API.</p>
       </a>
     </div>
     <footer>

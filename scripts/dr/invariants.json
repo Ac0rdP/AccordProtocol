@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "invariants": [
+    {
+      "id": "INV-DR-01",
+      "name": "API & Indexer Health Endpoints",
+      "description": "Indexer (/healthz, /readyz, /status) and Analytics API (/livez, /readyz, /status) return HTTP 200."
+    },
+    {
+      "id": "INV-DR-02",
+      "name": "Sampled Ledger Chain Parity",
+      "description": "Indexed state matches the Soroban RPC chain state at a sampled set of ledgers."
+    },
+    {
+      "id": "INV-DR-03",
+      "name": "Contract-to-API State Parity",
+      "description": "Proposal counts, approvals, and role members read via the API match direct contract reads for known fixtures."
+    },
+    {
+      "id": "INV-DR-04",
+      "name": "Contiguous Indexed Ledger Range",
+      "description": "No unexpected gaps exist in the indexed ledger sequence."
+    },
+    {
+      "id": "INV-DR-05",
+      "name": "Schema Version Match",
+      "description": "Restored database schema migration version matches the deployed indexer and analytics-api code."
+    },
+    {
+      "id": "INV-DR-06",
+      "name": "Known Test Proposal Retrievable",
+      "description": "A known fixture proposal ID is queryable and returns expected fields from the Analytics API."
+    }
+  ]
+}

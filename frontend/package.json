@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -20,6 +23,7 @@
     "e2e:chromium": "playwright test --project=chromium",
     "e2e:firefox": "playwright test --project=firefox",
     "e2e:webkit": "playwright test --project=webkit",
+    "e2e:share-embeds": "playwright test e2e/share-links-embeds.spec.ts --project=chromium",
     "e2e:matrix": "playwright test --project=chromium --project=firefox --project=webkit",
     "test:e2e": "vite preview --port 5173 & playwright test",
     "check:bundle": "node scripts/check-bundle-budget.mjs",
@@ -33,6 +37,7 @@
     "i18next": "^26.5.3",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.21.0",
+    "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-i18next": "^17.1.0",
@@ -49,6 +54,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^24.12.2",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/react-router-dom": "^5.3.3",
@@ -62,7 +68,7 @@
     "globals": "^17.5.0",
     "jsdom": "^26.1.0",
     "storybook": "^10.6.2",
-    "typedoc": "^0.27.0",
+    "typedoc": "^0.28.20",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",

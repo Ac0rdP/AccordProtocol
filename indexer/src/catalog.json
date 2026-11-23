@@ -68,7 +68,6 @@
     "fields": {
       "id": "u64",
       "executor": "Address",
-      "transfers": "Vec<Transfer>",
       "version": "u32"
     }
   },

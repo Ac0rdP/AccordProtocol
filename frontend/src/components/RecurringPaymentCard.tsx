@@ -68,7 +68,7 @@ function ProgressBar({ disbursed, cap }: { disbursed: string; cap: string }) {
 
   return (
     <div className="mt-2">
-      <div className="flex justify-between text-xs text-zinc-500 mb-1">
+      <div className="flex justify-between text-xs text-zinc-600 dark:text-zinc-400 mb-1">
         <span>Progress toward cap</span>
         <span className="text-zinc-300">{pct.toFixed(1)}%</span>
       </div>
@@ -83,7 +83,7 @@ function ProgressBar({ disbursed, cap }: { disbursed: string; cap: string }) {
           aria-label={`${pct.toFixed(1)}% of cap disbursed`}
         />
       </div>
-      <div className="flex justify-between text-xs text-zinc-500 mt-1">
+      <div className="flex justify-between text-xs text-zinc-600 dark:text-zinc-400 mt-1">
         <span>{disbursed} disbursed</span>
         <span>cap {cap}</span>
       </div>
@@ -130,7 +130,7 @@ function VestingProgressBar({
 
   return (
     <div className="mt-2">
-      <div className="flex justify-between text-xs text-zinc-500 mb-1">
+      <div className="flex justify-between text-xs text-zinc-600 dark:text-zinc-400 mb-1">
         <span>Vesting progress</span>
         <span className="text-zinc-300">{(claimedPct + claimablePct).toFixed(1)}%</span>
       </div>
@@ -169,7 +169,7 @@ function VestingProgressBar({
           />
         )}
       </div>
-      <div className="flex justify-between text-xs text-zinc-500 mt-1 gap-2">
+      <div className="flex justify-between text-xs text-zinc-600 dark:text-zinc-400 mt-1 gap-2">
         <span className="flex items-center gap-1">
           <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
           {disbursed} claimed
@@ -280,7 +280,7 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
       <div className="flex items-start justify-between gap-2 mb-3">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="font-mono text-xs text-zinc-500">Schedule #{schedule.id}</span>
+            <span className="font-mono text-xs text-zinc-600 dark:text-zinc-400">Schedule #{schedule.id}</span>
             <span
               className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium uppercase tracking-wider ${badge.style}`}
               role="status"
@@ -297,7 +297,7 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
           </p>
         </div>
 
-        <div className="text-right text-xs text-zinc-500 space-y-1 shrink-0">
+        <div className="text-right text-xs text-zinc-600 dark:text-zinc-400 space-y-1 shrink-0">
           <div>
             Cadence: <span className="text-zinc-300">{cadenceText}</span>
           </div>
@@ -314,7 +314,7 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
 
       {/* Description */}
       {schedule.description && (
-        <p className="text-xs text-zinc-500 mb-3 leading-relaxed">{schedule.description}</p>
+        <p className="text-xs text-zinc-600 dark:text-zinc-400 mb-3 leading-relaxed">{schedule.description}</p>
       )}
 
       {/* Progress bar toward cap */}
@@ -331,7 +331,7 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
 
       {/* Footer: status label + action buttons */}
       <div className="flex items-center justify-between border-t border-zinc-800/60 pt-3 mt-3">
-        <div className="text-xs text-zinc-500" aria-live="polite">
+        <div className="text-xs text-zinc-600 dark:text-zinc-400" aria-live="polite">
           {schedule.status === "active" &&
             (due ? (
               <span className="text-emerald-400">Payment is due</span>
@@ -351,7 +351,7 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
                   aria-label={
                     due ? `Disburse schedule ${schedule.id} now` : "Next disbursement not yet due"
                   }
-                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+                  className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-zinc-400"
                 >
                   Disburse now
                 </button>
@@ -412,13 +412,13 @@ export const RecurringPaymentCard = React.memo(function RecurringPaymentCard({
           )}
 
           {schedule.status === "completed" && (
-            <span className="text-xs text-zinc-500 italic" role="status">
+            <span className="text-xs text-zinc-600 dark:text-zinc-400 italic" role="status">
               Schedule completed
             </span>
           )}
 
           {schedule.status === "cancelled" && (
-            <span className="text-xs text-zinc-500 italic" role="status">
+            <span className="text-xs text-zinc-600 dark:text-zinc-400 italic" role="status">
               Schedule cancelled
             </span>
           )}

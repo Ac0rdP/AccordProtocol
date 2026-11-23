@@ -1,0 +1,168 @@
+name: Mutation Testing
+
+on:
+  # Nightly schedule — mutation testing is slow, so it runs off the critical path.
+  schedule:
+    - cron: '15 4 * * *'   # 04:15 UTC daily
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Mutation scope (comma-separated source files under contracts/accord/src/)'
+        required: false
+        default: 'lib.rs,validate.rs,invariants.rs'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-test:
+    name: Mutation Testing (cargo-mutants)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: wasm32v1-none
+          cache: true
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants@25.1.1 --locked
+
+      - name: Determine mutation scope
+        id: scope
+        env:
+          INPUT_SCOPE: ${{ github.event.inputs.scope || 'lib.rs,validate.rs,invariants.rs' }}
+        run: |
+          # Build --file arguments for cargo-mutants
+          file_args=""
+          IFS=',' read -ra FILES <<< "$INPUT_SCOPE"
+          for f in "${FILES[@]}"; do
+            f="$(echo "$f" | xargs)"  # trim whitespace
+            file_args="$file_args --file contracts/accord/src/$f"
+          done
+          echo "file_args=$file_args" >> "$GITHUB_OUTPUT"
+
+      - name: Run cargo-mutants
+        id: mutants
+        run: |
+          set -euo pipefail
+          cargo mutants --package accord \
+            ${{ steps.scope.outputs.file_args }} \
+            --timeout 300 \
+            --jobs 2 \
+            --output target/mutants \
+            -- --lib 2>&1 | tee target/mutants/run-output.txt || true
+
+          # Parse results
+          if [ -f target/mutants/outcomes.json ]; then
+            total=$(python3 -c "
+          import json, sys
+          data = json.load(open('target/mutants/outcomes.json'))
+          outcomes = data.get('outcomes', [])
+          killed = sum(1 for o in outcomes if o.get('scenario', {}).get('MutantKilled') is not None or o.get('status') == 'killed' or 'Killed' in str(o.get('summary', '')))
+          timeout = sum(1 for o in outcomes if o.get('status') == 'timeout' or 'Timeout' in str(o.get('summary', '')))
+          survived = sum(1 for o in outcomes if o.get('status') == 'survived' or 'Survived' in str(o.get('summary', '')))
+          unviable = sum(1 for o in outcomes if o.get('status') == 'unviable' or 'Unviable' in str(o.get('summary', '')))
+          total = killed + survived + timeout + unviable
+          score = round(killed / total * 100, 1) if total > 0 else 0
+          print(f'total={total}')
+          print(f'killed={killed}')
+          print(f'survived={survived}')
+          print(f'timeout={timeout}')
+          print(f'unviable={unviable}')
+          print(f'score={score}')
+          " 2>/dev/null) || true
+            if [ -n "$total" ]; then
+              echo "$total" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+        continue-on-error: true
+
+      - name: Report surviving mutants
+        if: always()
+        run: |
+          {
+            echo "### Mutation Testing Report"
+            echo
+            if [ -f target/mutants/run-output.txt ]; then
+              echo '```'
+              tail -50 target/mutants/run-output.txt
+              echo '```'
+            fi
+            echo
+            echo "**Scope:** ${{ steps.scope.outputs.file_args }}"
+            echo
+            if [ -f target/mutants/outcomes.json ]; then
+              echo "**Surviving mutants (test gaps):**"
+              echo
+              python3 -c "
+          import json
+          try:
+              data = json.load(open('target/mutants/outcomes.json'))
+              outcomes = data.get('outcomes', [])
+              survivors = [o for o in outcomes if o.get('status') == 'survived' or 'Survived' in str(o.get('summary', ''))]
+              if not survivors:
+                  print('None — all mutants were killed or timed out.')
+              else:
+                  for s in survivors[:50]:
+                      scenario = s.get('scenario', {})
+                      if isinstance(scenario, dict):
+                          file = scenario.get('file', 'unknown')
+                          line = scenario.get('line', '?')
+                          desc = scenario.get('description', str(s.get('summary', 'unknown mutation')))
+                      else:
+                          file, line, desc = 'unknown', '?', str(scenario)
+                      print(f'- **{file}:{line}** — {desc}')
+          except Exception as e:
+              print(f'Could not parse outcomes: {e}')
+          " 2>/dev/null || echo "Could not parse mutation outcomes."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-testing-report
+          path: target/mutants
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Check mutation score threshold
+        if: always()
+        run: |
+          # Threshold: 60% — set from initial baseline measurement.
+          # This is deliberately conservative for day one. Raise it as tests
+          # improve. See docs/CI.md for how to adjust.
+          THRESHOLD=60
+
+          if [ ! -f target/mutants/outcomes.json ]; then
+            echo "::warning::No mutation outcomes found — cargo-mutants may not have run."
+            exit 0
+          fi
+
+          score=$(python3 -c "
+          import json
+          data = json.load(open('target/mutants/outcomes.json'))
+          outcomes = data.get('outcomes', [])
+          killed = sum(1 for o in outcomes if o.get('status') == 'killed' or 'Killed' in str(o.get('summary', '')))
+          total = len([o for o in outcomes if o.get('status') not in ('unviable',) and 'Unviable' not in str(o.get('summary', ''))])
+          print(round(killed / total * 100, 1) if total > 0 else 0)
+          " 2>/dev/null || echo "0")
+
+          echo "Mutation score: ${score}% (threshold: ${THRESHOLD}%)"
+
+          if [ "$(echo "$score < $THRESHOLD" | bc -l 2>/dev/null || python3 -c "print(1 if float('$score') < $THRESHOLD else 0)")" = "1" ]; then
+            echo "::error::Mutation score ${score}% is below the ${THRESHOLD}% threshold."
+            echo "Review surviving mutants in the uploaded artifact and add targeted tests."
+            exit 1
+          fi

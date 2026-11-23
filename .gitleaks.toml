@@ -19,4 +19,14 @@ regexes = [
 
   # Placeholder webhook signing secret in an indexer unit-test fixture.
   '''whsec_0123456789abcdef''',
+
+  # Synthetic API token in the SIEM redaction test fixture
+  # (scripts/security-controls.test.mjs). The test asserts that it is redacted.
+  '''accord_test_0123456789abcdef0123456789''',
+
+  # Synthetic bearer token built in the share/embed E2E redaction test
+  # (frontend/e2e/share-links-embeds.spec.ts). The test asserts redaction.
+  # gitleaks reports the array element as an unquoted token.
+  '''rpc_secret_token_9876543210abcdef''',
+  '''9876543210abcdef''',
 ]

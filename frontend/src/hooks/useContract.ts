@@ -29,7 +29,10 @@ type ContractState = {
   lastSuccessAt: number | null;
 };
 
-export function useContract(walletAddress: string | null): ContractState {
+export function useContract(
+  walletAddress: string | null,
+  activeContractId: string,
+): ContractState {
   const [tick, setTick] = useState(0);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [owners, setOwners] = useState<Owner[]>([]);
@@ -168,7 +171,7 @@ export function useContract(walletAddress: string | null): ContractState {
     return () => {
       cancelled = true;
     };
-  }, [tick, walletAddress]);
+  }, [activeContractId, tick, walletAddress]);
 
   return {
     proposals,
