@@ -42,7 +42,7 @@ pub(crate) const QUERY_PARAMS: &[&str] = &[
 /// A proposal counts as approved once it reached its threshold, whatever
 /// became of it afterwards (a proposal can be approved and still expire or be
 /// revoked before anyone executes it).
-const APPROVED: &str = "(p.status IN ('ready', 'executed') \
+pub(crate) const APPROVED: &str = "(p.status IN ('ready', 'executed') \
                          OR (p.threshold > 0 AND p.approvals >= p.threshold))";
 
 #[derive(Debug, Default)]

@@ -260,6 +260,31 @@ Keys live in `api_keys` and quota counters in `api_key_usage` (migration `0012_a
 | `API_KEYS_ROTATION_GRACE_SECONDS` | `86400` | How long a rotated-out secret keeps working |
 | `API_KEYS_USAGE_RETENTION_DAYS` | `30` | How long quota counters are kept |
 
+## Usage metering and billing hooks
+
+Set `USAGE_METERING_ENABLED=true` to record usage for future paid plans. It is **off by default**: nothing is recorded or emitted until you turn it on.
+
+| Kind | Recorded when |
+| --- | --- |
+| `api_call` | A successful `GET` of `/ledger`, `/events`, `/reconciliation` or the subscriptions stream. The subject is the API key id, or `anonymous` when keys are not enforced. |
+| `report` | A successful `GET /runway` or `/anomalies`. |
+| `webhook` | A webhook delivery succeeded. The subject is the subscription id. |
+
+Records live in `usage_events` (migration `0013_usage_events.sql`). Every record has an idempotency key (`event_id`): a webhook is keyed by subscription and event, so a retry, a rebuild or a replay from any checkpoint meters a delivery exactly once; each API call and report gets its own id. `GET /usage?from=&to=&kind=&subject=` (needs `OPS_ADMIN_TOKEN`) returns the usage per kind and subject for `[from, to)` plus the billing hand-off counts.
+
+With `USAGE_BILLING_HOOK_URL` set, every new record is also POSTed to that URL as signed JSON (`X-Accord-Signature`, the same scheme as webhooks; `X-Accord-Usage-Id` is the idempotency key a billing system should dedupe on). Delivery is at-least-once and survives restarts: a failing hook leaves the record pending and retries with exponential backoff, and after `USAGE_BILLING_MAX_ATTEMPTS` it is dead-lettered and can be requeued. A hook URL that is not https (http is allowed for localhost) or that has a secret shorter than 16 characters is ignored with a warning.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `USAGE_METERING_ENABLED` | `false` | Record usage |
+| `USAGE_BILLING_HOOK_URL` | unset | Push each new record to this URL |
+| `USAGE_BILLING_HOOK_SECRET` | unset | Signing secret for the hook (16+ characters) |
+| `USAGE_BILLING_MAX_ATTEMPTS` | `5` | Attempts before a record is dead-lettered |
+| `USAGE_BILLING_BACKOFF_BASE_MS` | `5000` | First retry delay; doubles per attempt |
+| `USAGE_BILLING_BATCH_SIZE` | `100` | Records handed to the hook per tick |
+
+Prometheus: `accord_indexer_usage_events_total{kind,result}`.
+
 ## Ledger finality and reorg policy
 
 Stellar reaches BFT finality on every close: once a ledger closes, any two

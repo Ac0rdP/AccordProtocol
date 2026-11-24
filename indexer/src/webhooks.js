@@ -140,6 +140,7 @@ export function createWebhookDispatcher({
   store,
   subscriptions,
   metrics,
+  metering = null,
   fetchImpl = fetch,
   now = () => Date.now(),
   random = Math.random,
@@ -246,6 +247,16 @@ export function createWebhookDispatcher({
       durationMs: Math.round(elapsedMs), now: completedAt,
     });
     metrics?.webhookDeliveries.inc({ subscription: subscription.id, result: outcome });
+    // Keyed by subscription and event, so a retry, a rebuild or a replay meters a delivery once.
+    if (outcome === "delivered") {
+      await metering?.recordSafely({
+        eventId: `webhook:${subscription.id}:${delivery.eventId}`,
+        kind: "webhook",
+        subject: subscription.id,
+        occurredAt: completedAt,
+        metadata: { eventId: delivery.eventId },
+      });
+    }
     if (outcome === "dead") {
       logger.error(`[webhooks] ${subscription.id}: delivery ${delivery.id} moved to the dead-letter queue: ${error}`);
     }

@@ -71,6 +71,7 @@ watcher sees newly indexed events. Probes and `/metrics` are never limited.
 | `RATE_LIMIT_TRUST_PROXY` | `false` | Identify clients by `X-Forwarded-For` (only behind a trusted proxy). |
 | `CACHE_TTL_SECS` | `30` | Cached read freshness; `0` disables the cache. |
 | `CACHE_MAX_ENTRIES` | `500` | Cache size bound. |
+| `BENCHMARK_MIN_PEERS` | `5` | Smallest peer cohort `GET /benchmarks/peers` publishes statistics for; values below `3` are rejected at startup. |
 
 Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Details:
 [Rate limiting and caching](../docs/ANALYTICS_API.md#rate-limiting-and-caching).

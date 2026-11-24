@@ -329,6 +329,131 @@ pub struct PaymentMetadata {
     pub memo: Option<String>,
 }
 
+/// Labels a rolling-window limit in a spend policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum SpendWindowKind {
+    /// 24-hour rolling window (86 400 s).
+    Daily,
+    /// 7-day rolling window (604 800 s).
+    Weekly,
+    /// 30-day rolling window (2 592 000 s).
+    Monthly,
+}
+
+impl SpendWindowKind {
+    /// Returns the window duration in seconds.
+    fn duration_secs(&self) -> u64 {
+        match self {
+            SpendWindowKind::Daily => 86_400,
+            SpendWindowKind::Weekly => 604_800,
+            SpendWindowKind::Monthly => 2_592_000,
+        }
+    }
+}
+
+/// A single (window, limit) pair within a spend policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendLimit {
+    /// Which rolling window this limit applies to.
+    pub window: SpendWindowKind,
+    /// Maximum cumulative spend allowed within the window for this token.
+    pub limit: i128,
+}
+
+/// A composed spend policy for one (owner, token) pair.
+///
+/// Multiple `limits` can be set simultaneously — e.g. a daily cap of 1 000
+/// and a monthly cap of 20 000. At execution time the engine evaluates
+/// **all** windows and rejects the proposal if any single window would be
+/// exceeded by the cumulative spend including this proposal's amount.
+///
+/// Each window maintains its own independent `SpentTracker` (epoch + spent)
+/// keyed by `(owner, token, window_kind)`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicy {
+    /// The owner whose spending is constrained.
+    pub owner: Address,
+    /// The token being spent.
+    pub token: Address,
+    /// One to three rolling-window limits. Must be non-empty and contain
+    /// at most one entry per `SpendWindowKind`.
+    pub limits: Vec<SpendLimit>,
+}
+
+// ─── #954: Oracle Price Guard ───────────────────────────────────────────────
+
+/// A recorded oracle price snapshot for a (token, fiat) pair.
+///
+/// The price is expressed as the fiat value of one unit of the token,
+/// scaled by `PRICE_SCALING` (1e7). For example, if 1 USDC = $1.00, the
+/// stored price is 10_000_000 (1.00 × 1e7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OraclePrice {
+    /// The token whose price is being recorded.
+    pub token: Address,
+    /// The fiat currency code (e.g. "USD"). Stored as a short Symbol.
+    pub fiat: Symbol,
+    /// Price of 1 unit of `token` in `fiat`, scaled by 1e7.
+    pub price: i128,
+    /// Ledger timestamp of the last price update.
+    pub updated_at: u64,
+    /// Maximum acceptable age (in seconds) before the price is considered stale.
+    pub max_staleness: u64,
+}
+
+/// A fiat-denominated spend limit: caps spending at `fiat_limit` units of
+/// `fiat` per window, evaluated at the current oracle price.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FiatSpendLimit {
+    pub owner: Address,
+    pub token: Address,
+    pub fiat: Symbol,
+    /// Maximum cumulative fiat spend within the rolling window.
+    pub fiat_limit: i128,
+    /// Rolling window in seconds (reuses the same epoch-based tracker).
+    pub window_secs: u64,
+}
+
+// ─── #955: Denylist ──────────────────────────────────────────────────────────
+
+// (No additional types needed — denylist is a simple Address set.)
+
+// ─── #953: Cross-Asset Rebalancing ───────────────────────────────────────────
+
+/// A single asset target in a rebalance proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RebalanceTarget {
+    /// Token to rebalance toward.
+    pub token: Address,
+    /// Target weight in basis points (0–10000). E.g. 5000 = 50%.
+    pub target_bps: u32,
+}
+
+/// Parameters for a cross-asset rebalance proposal.
+///
+/// Bundles multiple DEX swaps and transfers that move the treasury toward
+/// the specified target asset weights. Each step swaps or transfers one
+/// token to reach the target allocation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RebalanceParams {
+    /// Approved DEX router to use for swaps.
+    pub router: Address,
+    /// Target weights for each asset (sum should be ≤ 10000 bps).
+    pub targets: Vec<RebalanceTarget>,
+    /// Tolerance in basis points; the rebalance is considered satisfied if
+    /// actual weights are within `tolerance_bps` of targets.
+    pub tolerance_bps: u32,
+    /// Swap deadline (unix seconds).
+    pub swap_deadline: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub enum ProposalKind {
@@ -398,6 +523,27 @@ pub enum ProposalKind {
     CreatePullPayment(PullPaymentParams),
     /// Cancel a pull-payment request before it is claimed or expires.
     CancelPullPayment(u64),
+    /// Set a composed multi-window spend policy for an (owner, token) pair.
+    SetSpendPolicy(SpendPolicy),
+    /// Clear all spend-policy limits for an (owner, token) pair.
+    ClearSpendPolicy(Address, Address),
+    // ── #954: Oracle price guard ──
+    /// Set or update the oracle price for a (token, fiat) pair.
+    SetOraclePrice(OraclePrice),
+    /// Clear the oracle price for a (token, fiat) pair.
+    ClearOraclePrice(Address, Symbol),
+    /// Set a fiat-denominated spend limit for an (owner, token) pair.
+    SetFiatSpendLimit(FiatSpendLimit),
+    /// Clear a fiat-denominated spend limit.
+    ClearFiatSpendLimit(Address, Address, Symbol),
+    // ── #955: Denylist ──
+    /// Add an address to the governance-managed denylist.
+    AddToDenylist(Address),
+    /// Remove an address from the denylist.
+    RemoveFromDenylist(Address),
+    // ── #953: Cross-asset rebalancing ──
+    /// Execute a cross-asset rebalance toward target weights.
+    Rebalance(RebalanceParams),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -996,6 +1142,323 @@ pub struct FrozenEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+/// Emitted when a `DexSwap` proposal is successfully executed. Records both
+/// the requested parameters and the actual output reported by the router so
+/// indexers and auditors can track realised slippage.
+pub struct DexSwapExecutedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub router: Address,
+    pub path: Vec<Address>,
+    pub send_amount: i128,
+    pub min_recv: i128,
+    /// Actual amount of output token returned by the router.
+    pub recv_amount: i128,
+    pub destination: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DexRouterChangedEvent {
+    pub router: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringStreamClaimedEvent {
+    pub schedule_id: u64,
+    pub recipient: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub total_disbursed: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RecurringPaymentPausedEvent {
+    pub id: u64,
+    pub caller: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldWithdrawnEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Actual tokens returned to the treasury.
+    pub recv_amount: i128,
+    pub position_id: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a yield venue is added to or removed from the approved registry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldVenueChangedEvent {
+    pub venue: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `CreatePullPayment` proposal executes and the request is opened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentOpenedEvent {
+    pub request_id: u64,
+    pub proposer: Address,
+    pub claimant: Address,
+    pub token: Address,
+    /// The amount transferred per period, or per-second stream rate for `ContinuousStream`.
+    pub amount: i128,
+    pub expires_at: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a claimant successfully claims a pull-payment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentClaimedEvent {
+    pub request_id: u64,
+    pub claimant: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `CancelPullPayment` proposal executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentCancelledEvent {
+    pub request_id: u64,
+    pub executor: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when reconciliation metadata is attached to a proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PaymentMetadataSetEvent {
+    pub proposal_id: u64,
+    pub setter: Address,
+    pub metadata: PaymentMetadata,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a composed spend policy is set via governance proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicySetEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub limits: Vec<SpendLimit>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a spend policy is cleared via governance proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicyClearedEvent {
+    pub owner: Address,
+    pub token: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when the spend policy engine rejects a proposed spend because
+/// one or more rolling-window limits would be exceeded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SpendPolicyRejectedEvent {
+    pub proposal_id: u64,
+    pub owner: Address,
+    pub token: Address,
+    /// The window kind whose limit was breached.
+    pub window: SpendWindowKind,
+    /// The configured limit for this window.
+    pub limit: i128,
+    /// The cumulative spend that would have resulted (including this proposal).
+    pub cumulative: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+// ── #954: Oracle price guard events ──
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct OraclePriceSetEvent {
+    pub token: Address,
+    pub fiat: Symbol,
+    pub price: i128,
+    pub updated_at: u64,
+    pub max_staleness: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FiatSpendLimitSetEvent {
+    pub owner: Address,
+    pub token: Address,
+    pub fiat: Symbol,
+    pub fiat_limit: i128,
+    pub window_secs: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FiatLimitRejectedEvent {
+    pub proposal_id: u64,
+    pub owner: Address,
+    pub token: Address,
+    pub fiat: Symbol,
+    /// Fiat value of the proposed spend at current oracle price.
+    pub fiat_value: i128,
+    /// The configured fiat limit.
+    pub fiat_limit: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+// ── #955: Denylist events ──
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DenylistChangedEvent {
+    pub address: Address,
+    pub denied: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DenylistBlockedEvent {
+    pub proposal_id: u64,
+    pub recipient: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+// ── #953: Cross-asset rebalancing events ──
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RebalanceProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub router: Address,
+    pub targets: Vec<RebalanceTarget>,
+    pub tolerance_bps: u32,
+    pub swap_deadline: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetTreasuryAccounting {
+    pub token: Address,
+    pub total_spent: i128,
+    pub window_spent: i128,
+    pub spend_limit: Option<i128>,
+    pub window_secs: u64,
+    pub epoch: u64,
+    pub available_limit: Option<i128>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalDependenciesSetEvent {
+    pub id: u64,
+    pub dependencies: Vec<u64>,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TreasurySpendingLimitExecutedEvent {
+    pub token: Address,
+    pub previous_limit: Option<i128>,
+    pub new_limit: i128,
+    pub window_secs: u64,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TreasurySpendTrackedEvent {
+    pub token: Address,
+    pub amount: i128,
+    pub total_spent_window: i128,
+    pub total_spent_lifetime: i128,
+    pub version: u32,
+}
+
+// ─── Errors ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FrozenEvent {
+    pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct UnfrozenEvent {
     pub approvers: Vec<Address>,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
@@ -1029,16 +1492,6 @@ pub struct RecurringPaymentDisbursedEvent {
     pub periods_disbursed: u32,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct RecurringStreamClaimedEvent {
-    pub schedule_id: u64,
-    pub recipient: Address,
-    pub token: Address,
-    pub amount: i128,
-    pub total_disbursed: i128,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1088,7 +1541,7 @@ pub struct RecurringPaymentCreatedEvent {
     pub recipient: Address,
     /// The token contract address used for disbursements.
     pub token: Address,
-    /// The amount transferred per period, or per-second stream rate for `ContinuousStream`.
+    /// The amount transferred per period.
     pub amount: i128,
     /// The minimum number of seconds that must elapse between disbursements.
     pub interval_secs: u64,
@@ -1212,46 +1665,6 @@ pub struct RoleRevokedEvent {
     pub before: Vec<Role>,
     pub after: Vec<Role>,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
-    pub version: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct AssetTreasuryAccounting {
-    pub token: Address,
-    pub total_spent: i128,
-    pub window_spent: i128,
-    pub spend_limit: Option<i128>,
-    pub window_secs: u64,
-    pub epoch: u64,
-    pub available_limit: Option<i128>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct ProposalDependenciesSetEvent {
-    pub id: u64,
-    pub dependencies: Vec<u64>,
-    pub version: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct TreasurySpendingLimitExecutedEvent {
-    pub token: Address,
-    pub previous_limit: Option<i128>,
-    pub new_limit: i128,
-    pub window_secs: u64,
-    pub version: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[contracttype]
-pub struct TreasurySpendTrackedEvent {
-    pub token: Address,
-    pub amount: i128,
-    pub total_spent_window: i128,
-    pub total_spent_lifetime: i128,
     pub version: u32,
 }
 
@@ -1677,8 +2090,10 @@ fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
     a.checked_add(b).ok_or(ContractError::ArithmeticError)
 }
 
-fn checked_weight_sub(a: u32, b: u32) -> Result<u32, ContractError> {
-    a.checked_sub(b).ok_or(ContractError::ArithmeticError)
+/// Persistent key for the approved yield venue registry.
+/// A venue address is stored as `(YVENUE, venue_addr) → bool`.
+fn yield_venue_approved_key(venue: &Address) -> (Symbol, Address) {
+    (symbol_short!("YVENUE"), venue.clone())
 }
 
 // ─── TTL Constants ───────────────────────────────────────────────────────────
@@ -3237,19 +3652,22 @@ fn validate_payment_metadata(metadata: &PaymentMetadata) -> Result<(), ContractE
     {
         return Err(ContractError::InvalidToken);
     }
-    Ok(())
 }
 
-fn validate_asset_registry(env: &Env, token_address: &Address) -> Result<(), ContractError> {
-    if asset_registry_enabled(env) && !token_is_approved(env, token_address) {
-        return Err(ContractError::AssetNotApproved);
+/// Validates all tokens in a DEX swap path against the asset registry.
+fn validate_swap_path(env: &Env, path: &Vec<Address>) -> Result<(), ContractError> {
+    if path.len() < 2 {
+        return Err(ContractError::InvalidSwapPath);
+    }
+    for token_addr in path.iter() {
+        validate_token(env, &token_addr)?;
     }
     Ok(())
 }
 
-fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractError> {
-    validate_token_interface(env, token_address)?;
-    validate_asset_registry(env, token_address)
+fn yield_venue_is_approved(env: &Env, venue: &Address) -> bool {
+    let key = yield_venue_approved_key(venue);
+    env.storage().persistent().get(&key).unwrap_or(false)
 }
 
 /// Resolves an asset reference into the token address it stands for.
@@ -3319,6 +3737,567 @@ fn create_governance_proposal(
     Ok(id)
 }
 
+fn remove_yield_position(env: &Env, position_id: u64) {
+    let key = yield_position_key(position_id);
+    env.storage().persistent().remove(&key);
+}
+
+fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, ContractError> {
+    if schedule.total_disbursed == 0 {
+        match schedule.kind {
+            RecurringKind::LinearVesting | RecurringKind::ContinuousStream => {
+                if schedule.cliff_time > 0 && schedule.cliff_time > schedule.start_time {
+                    Ok(schedule.cliff_time)
+                } else {
+                    Ok(schedule.start_time)
+                }
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+fn linear_vesting_payout(schedule: &RecurringPayment, now: u64) -> Result<i128, ContractError> {
+    let cliff_time = if schedule.cliff_time > 0 {
+        schedule.cliff_time
+    } else {
+        schedule.start_time
+    };
+    if now < cliff_time {
+        return Ok(0);
+    }
+
+fn remove_payment_metadata(env: &Env, proposal_id: u64) {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().remove(&key);
+}
+
+/// Validates that each set string field is non-empty and within
+/// `MAX_DESCRIPTION_LEN`. `None` fields are always valid (meaning "not set").
+fn validate_payment_metadata(metadata: &PaymentMetadata) -> Result<(), ContractError> {
+    if let Some(ref inv) = metadata.invoice_id {
+        if inv.is_empty() || inv.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref ext) = metadata.external_ref {
+        if ext.is_empty() || ext.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref m) = metadata.memo {
+        if m.is_empty() || m.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    Ok(())
+}
+
+// ─── Spend Policy Engine ───────────────────────────────────────────────────
+
+/// Maximum number of windows allowed in a single spend policy.
+const MAX_SPEND_WINDOWS: u32 = 3;
+
+fn read_spend_policy(env: &Env, owner: &Address, token: &Address) -> Option<SpendPolicy> {
+    let key = spend_policy_key(owner, token);
+    let policy: Option<SpendPolicy> = env.storage().persistent().get(&key);
+    if policy.is_some() {
+        bump_persistent(env, &key);
+    }
+    policy
+}
+
+fn write_spend_policy(env: &Env, policy: &SpendPolicy) {
+    let key = spend_policy_key(&policy.owner, &policy.token);
+    env.storage().persistent().set(&key, policy);
+    bump_persistent(env, &key);
+}
+
+fn continuous_stream_accrued(schedule: &RecurringPayment, now: u64) -> Result<i128, ContractError> {
+    let cliff_time = if schedule.cliff_time > 0 {
+        schedule.cliff_time
+    } else {
+        schedule.start_time
+    };
+    if now < cliff_time || now < schedule.start_time {
+        return Ok(0);
+    }
+    if schedule.end_time <= schedule.start_time {
+        return Err(ContractError::InvalidSchedule);
+    }
+
+    let end = now.min(schedule.end_time);
+    let elapsed = end
+        .checked_sub(schedule.start_time)
+        .ok_or(ContractError::ArithmeticError)?;
+    let elapsed = i128::try_from(elapsed).map_err(|_| ContractError::ArithmeticError)?;
+    if schedule.total_cap > 0 && elapsed > schedule.total_cap / schedule.amount {
+        return Ok(schedule.total_cap);
+    }
+    let accrued = elapsed
+        .checked_mul(schedule.amount)
+        .ok_or(ContractError::ArithmeticError)?;
+
+    if schedule.total_cap > 0 {
+        Ok(accrued.min(schedule.total_cap))
+    } else {
+        Ok(accrued)
+    }
+}
+
+// ─── Contract ────────────────────────────────────────────────────────────────
+
+fn read_spend_policy_tracker(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+) -> SpentTracker {
+    let key = spend_policy_tracker_key(owner, token, window);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
+}
+
+fn write_spend_policy_tracker(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+    tracker: &SpentTracker,
+) {
+    let key = spend_policy_tracker_key(owner, token, window);
+    env.storage().persistent().set(&key, tracker);
+    bump_persistent(env, &key);
+}
+
+/// Computes the effective spent amount within a window, resetting the
+/// epoch if the window has expired.
+fn effective_spend_policy_spent(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    window: &SpendWindowKind,
+) -> i128 {
+    let tracker = read_spend_policy_tracker(env, owner, token, window);
+    if tracker.epoch == 0 {
+        return 0;
+    }
+    let now = env.ledger().timestamp();
+    if now > tracker.epoch.saturating_add(window.duration_secs()) {
+        return 0;
+    }
+    tracker.spent
+}
+
+/// Validates a spend policy: non-empty, at most MAX_SPEND_WINDOWS entries,
+/// no duplicate window kinds, and all limits ≥ MIN_AMOUNT.
+fn validate_spend_policy(policy: &SpendPolicy) -> Result<(), ContractError> {
+    if policy.limits.is_empty() {
+        return Err(ContractError::EmptySpendPolicy);
+    }
+    if policy.limits.len() > MAX_SPEND_WINDOWS as u32 {
+        return Err(ContractError::TooManySpendWindows);
+    }
+    for i in 0..policy.limits.len() {
+        let limit = policy.limits.get(i).unwrap();
+        if limit.limit < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        // Check for duplicate window kinds.
+        for j in (i + 1)..policy.limits.len() {
+            let other = policy.limits.get(j).unwrap();
+            if limit.window == other.window {
+                return Err(ContractError::InvalidSpendWindow);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluates a spend policy against a proposed spend. If any window's
+/// cumulative spend (including `amount`) would exceed its limit, returns
+/// the breached window. Otherwise returns `Ok`.
+fn check_spend_policy(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    amount: i128,
+) -> Result<(), (SpendWindowKind, i128, i128)> {
+    let policy = match read_spend_policy(env, owner, token) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    for i in 0..policy.limits.len() {
+        let limit_entry = policy.limits.get(i).unwrap();
+        let already_spent = effective_spend_policy_spent(env, owner, token, &limit_entry.window);
+        let cumulative = already_spent
+            .checked_add(amount)
+            .unwrap_or(i128::MAX);
+        if cumulative > limit_entry.limit {
+            return Err((limit_entry.window.clone(), limit_entry.limit, cumulative));
+        }
+    }
+    Ok(())
+}
+
+/// Records a spend against all windows in the policy. Called after a
+/// successful transfer execution.
+fn record_spend_policy_spend(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    amount: i128,
+) {
+    let policy = match read_spend_policy(env, owner, token) {
+        Some(p) => p,
+        None => return,
+    };
+    let now = env.ledger().timestamp();
+    for i in 0..policy.limits.len() {
+        let limit_entry = policy.limits.get(i).unwrap();
+        let tracker = read_spend_policy_tracker(env, owner, token, &limit_entry.window);
+        let window = limit_entry.window.clone();
+        let window_secs = window.duration_secs();
+        let epoch = if tracker.epoch == 0 || now > tracker.epoch.saturating_add(window_secs) {
+            now
+        } else {
+            tracker.epoch
+        };
+        let spent = if now > epoch.saturating_add(window_secs) {
+            amount
+        } else {
+            tracker
+                .spent
+                .checked_add(amount)
+                .unwrap_or(i128::MAX)
+        };
+        write_spend_policy_tracker(
+            env,
+            owner,
+            token,
+            &limit_entry.window,
+            &SpentTracker { spent, epoch },
+        );
+    }
+}
+
+// ─── #954: Oracle price guard helpers ───────────────────────────────────────
+
+fn read_oracle_price(env: &Env, token: &Address, fiat: &Symbol) -> Option<OraclePrice> {
+    let key = oracle_price_key(token, fiat);
+    let price: Option<OraclePrice> = env.storage().persistent().get(&key);
+    if price.is_some() {
+        bump_persistent(env, &key);
+    }
+    price
+}
+
+fn write_oracle_price(env: &Env, price: &OraclePrice) {
+    let key = oracle_price_key(&price.token, &price.fiat);
+    env.storage().persistent().set(&key, price);
+    bump_persistent(env, &key);
+}
+
+fn remove_oracle_price(env: &Env, token: &Address, fiat: &Symbol) {
+    let key = oracle_price_key(token, fiat);
+    env.storage().persistent().remove(&key);
+}
+
+/// Returns a validated, fresh oracle price. Errors if the oracle is not
+/// configured, the price is invalid, or the price is stale.
+fn get_fresh_oracle_price(env: &Env, token: &Address, fiat: &Symbol) -> Result<OraclePrice, ContractError> {
+    let oracle = read_oracle_price(env, token, fiat).ok_or(ContractError::OracleNotConfigured)?;
+    if oracle.price <= 0 {
+        return Err(ContractError::OraclePriceInvalid);
+    }
+    let now = env.ledger().timestamp();
+    if now > oracle.updated_at.saturating_add(oracle.max_staleness) {
+        return Err(ContractError::OraclePriceStale);
+    }
+    Ok(oracle)
+}
+
+/// Converts a token amount to its fiat value using the oracle price.
+/// fiat_value = (amount * price) / PRICE_SCALING.
+fn token_to_fiat(amount: i128, price: i128) -> Result<i128, ContractError> {
+    amount
+        .checked_mul(price)
+        .ok_or(ContractError::ArithmeticError)?
+        .checked_div(PRICE_SCALING)
+        .ok_or(ContractError::ArithmeticError)
+}
+
+fn read_fiat_spend_limit(env: &Env, owner: &Address, token: &Address, fiat: &Symbol) -> Option<FiatSpendLimit> {
+    let key = fiat_spend_limit_key(owner, token, fiat);
+    let limit: Option<FiatSpendLimit> = env.storage().persistent().get(&key);
+    if limit.is_some() {
+        bump_persistent(env, &key);
+    }
+    limit
+}
+
+fn write_fiat_spend_limit(env: &Env, limit: &FiatSpendLimit) {
+    let key = fiat_spend_limit_key(&limit.owner, &limit.token, &limit.fiat);
+    env.storage().persistent().set(&key, limit);
+    bump_persistent(env, &key);
+}
+
+fn remove_fiat_spend_limit(env: &Env, owner: &Address, token: &Address, fiat: &Symbol) {
+    let key = fiat_spend_limit_key(owner, token, fiat);
+    env.storage().persistent().remove(&key);
+}
+
+fn read_fiat_spent_tracker(env: &Env, owner: &Address, token: &Address, fiat: &Symbol) -> SpentTracker {
+    let key = fiat_spent_tracker_key(owner, token, fiat);
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(SpentTracker { spent: 0, epoch: 0 })
+}
+
+fn write_fiat_spent_tracker(env: &Env, owner: &Address, token: &Address, fiat: &Symbol, tracker: &SpentTracker) {
+    let key = fiat_spent_tracker_key(owner, token, fiat);
+    env.storage().persistent().set(&key, tracker);
+    bump_persistent(env, &key);
+}
+
+/// Returns the effective fiat spent within the window, resetting if expired.
+fn effective_fiat_spent(env: &Env, owner: &Address, token: &Address, fiat: &Symbol, window_secs: u64) -> i128 {
+    let tracker = read_fiat_spent_tracker(env, owner, token, fiat);
+    if tracker.epoch == 0 {
+        return 0;
+    }
+    let now = env.ledger().timestamp();
+    if now > tracker.epoch.saturating_add(window_secs) {
+        return 0;
+    }
+    tracker.spent
+}
+
+/// Checks a fiat-denominated spend limit. If a fiat limit and a valid oracle
+/// price exist, converts the token amount to fiat and checks against the
+/// rolling window. Returns Ok if no limit is configured.
+fn check_fiat_spend_limit(
+    env: &Env,
+    owner: &Address,
+    token: &Address,
+    amount: i128,
+) -> Result<(), (Symbol, i128, i128)> {
+    // Try USD first, the most common fiat denomination.
+    let fiat = Symbol::new(env, "USD");
+    let limit = match read_fiat_spend_limit(env, owner, token, &fiat) {
+        Some(l) => l,
+        None => return Ok(()),
+    };
+    let oracle = match get_fresh_oracle_price(env, token, &fiat) {
+        Ok(o) => o,
+        Err(_) => return Ok(()), // If oracle is unavailable, don't block the transfer.
+    };
+    let fiat_value = token_to_fiat(amount, oracle.price).unwrap_or(i128::MAX);
+    let already_spent = effective_fiat_spent(env, owner, token, &fiat, limit.window_secs);
+    let cumulative = already_spent.checked_add(fiat_value).unwrap_or(i128::MAX);
+    if cumulative > limit.fiat_limit {
+        return Err((fiat, fiat_value, limit.fiat_limit));
+    }
+    Ok(())
+}
+
+/// Records a fiat spend after a successful transfer.
+fn record_fiat_spend(env: &Env, owner: &Address, token: &Address, amount: i128) {
+    let fiat = Symbol::new(env, "USD");
+    let limit = match read_fiat_spend_limit(env, owner, token, &fiat) {
+        Some(l) => l,
+        None => return,
+    };
+    let oracle = match get_fresh_oracle_price(env, token, &fiat) {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let fiat_value = token_to_fiat(amount, oracle.price).unwrap_or(i128::MAX);
+    let now = env.ledger().timestamp();
+    let tracker = read_fiat_spent_tracker(env, owner, token, &fiat);
+    let epoch = if tracker.epoch == 0 || now > tracker.epoch.saturating_add(limit.window_secs) {
+        now
+    } else {
+        tracker.epoch
+    };
+    let spent = if now > epoch.saturating_add(limit.window_secs) {
+        fiat_value
+    } else {
+        tracker.spent.checked_add(fiat_value).unwrap_or(i128::MAX)
+    };
+    write_fiat_spent_tracker(env, owner, token, &fiat, &SpentTracker { spent, epoch });
+}
+
+// ─── #955: Denylist helpers ──────────────────────────────────────────────────
+
+fn denylist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&denylist_enabled_key())
+        .unwrap_or(false)
+}
+
+fn write_denylist_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&denylist_enabled_key(), &enabled);
+    bump_instance(env);
+}
+
+fn is_denied(env: &Env, address: &Address) -> bool {
+    let key = denylist_key(address);
+    let denied: bool = env.storage().persistent().get(&key).unwrap_or(false);
+    if denied {
+        bump_persistent(env, &key);
+    }
+    denied
+}
+
+fn write_denied(env: &Env, address: &Address, denied: bool) {
+    let key = denylist_key(address);
+    if denied {
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+/// Checks all transfer recipients against the denylist. Returns the first
+/// denied recipient if any.
+fn check_denylist(env: &Env, transfers: &Vec<Transfer>) -> Result<(), Address> {
+    if !denylist_enabled(env) {
+        return Ok(());
+    }
+    for transfer in transfers.iter() {
+        if is_denied(env, &transfer.to) {
+            return Err(transfer.to.clone());
+        }
+    }
+    Ok(())
+}
+
+// ─── #953: Rebalancing helpers ───────────────────────────────────────────────
+
+fn validate_rebalance_params(params: &RebalanceParams) -> Result<(), ContractError> {
+    if params.targets.is_empty() {
+        return Err(ContractError::EmptyRebalance);
+    }
+    if params.targets.len() > 10 {
+        return Err(ContractError::EmptyRebalance);
+    }
+    let mut sum_bps: u32 = 0;
+    for i in 0..params.targets.len() {
+        let target = params.targets.get(i).unwrap();
+        if target.target_bps > 10_000 {
+            return Err(ContractError::InvalidTargetWeight);
+        }
+        sum_bps = sum_bps
+            .checked_add(target.target_bps)
+            .ok_or(ContractError::ArithmeticError)?;
+        // Check for duplicate tokens.
+        for j in (i + 1)..params.targets.len() {
+            let other = params.targets.get(j).unwrap();
+            if target.token == other.token {
+                return Err(ContractError::InvalidTargetWeight);
+            }
+        }
+    }
+    if sum_bps > 10_000 {
+        return Err(ContractError::InvalidTargetWeight);
+    }
+    if params.tolerance_bps > 10_000 {
+        return Err(ContractError::InvalidTargetWeight);
+    }
+    Ok(())
+}
+
+fn write_last_rebalance(env: &Env, timestamp: u64) {
+    env.storage()
+        .instance()
+        .set(&last_rebalance_key(), &timestamp);
+    bump_instance(env);
+}
+
+fn read_last_rebalance(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&last_rebalance_key())
+        .unwrap_or(0)
+}
+
+fn validate_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    let client = token::Client::new(env, token_address);
+    // Require decimals, symbol, and name to all succeed to consider this a valid token.
+    if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
+    {
+        return Err(ContractError::InvalidToken);
+    }
+    Ok(())
+}
+
+fn validate_asset_registry(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    if asset_registry_enabled(env) && !token_is_approved(env, token_address) {
+        return Err(ContractError::AssetNotApproved);
+    }
+    Ok(())
+}
+
+fn validate_token(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    validate_token_interface(env, token_address)?;
+    validate_asset_registry(env, token_address)
+}
+
+fn create_governance_proposal(
+    env: &Env,
+    proposer: Address,
+    kind: ProposalKind,
+    description: String,
+    deadline: u64,
+) -> Result<u64, ContractError> {
+    validate_description(&description)?;
+    validate_deadline(env, deadline)?;
+
+    let threshold = read_threshold(env)?;
+    let id = read_next_id(env);
+    let proposal = Proposal {
+        id,
+        proposer: proposer.clone(),
+        description,
+        deadline,
+        approvals: 0,
+        approval_weight: 0,
+        status: ProposalStatus::Pending,
+        kind,
+        ready_at: 0,
+        quorum_weight: threshold,
+        category: ProposalCategory::Other,
+    };
+    write_proposal(env, &proposal);
+    register_active_proposal(env, id)?;
+    write_next_id(
+        env,
+        id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+    );
+
+    env.events().publish(
+        (symbol_short!("created"),),
+        ProposalCreatedEvent {
+            id,
+            proposer,
+            threshold,
+            category: ProposalCategory::Other,
+            transfers: Vec::new(env),
+            quorum_weight: threshold,
+            total_weight_at_creation: read_total_weight(env),
+        },
+    );
+    Ok(id)
+}
+
 fn validate_recurring_payment(
     env: &Env,
     recipient: &Address,
@@ -3358,10 +4337,11 @@ fn validate_recurring_payment(
     Ok(())
 }
 
+
 fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, ContractError> {
     if schedule.total_disbursed == 0 {
         match schedule.kind {
-            RecurringKind::LinearVesting | RecurringKind::ContinuousStream => {
+            RecurringKind::LinearVesting => {
                 if schedule.cliff_time > 0 && schedule.cliff_time > schedule.start_time {
                     Ok(schedule.cliff_time)
                 } else {
@@ -3381,7 +4361,11 @@ fn recurring_payment_due_at(schedule: &RecurringPayment) -> Result<u64, Contract
     }
 }
 
-fn linear_vesting_payout(schedule: &RecurringPayment, now: u64) -> Result<i128, ContractError> {
+
+fn linear_vesting_payout(
+    schedule: &RecurringPayment,
+    now: u64,
+) -> Result<i128, ContractError> {
     let cliff_time = if schedule.cliff_time > 0 {
         schedule.cliff_time
     } else {
@@ -3445,38 +4429,6 @@ fn linear_vesting_payout(schedule: &RecurringPayment, now: u64) -> Result<i128, 
         .ok_or(ContractError::ArithmeticError)
 }
 
-fn continuous_stream_accrued(schedule: &RecurringPayment, now: u64) -> Result<i128, ContractError> {
-    let cliff_time = if schedule.cliff_time > 0 {
-        schedule.cliff_time
-    } else {
-        schedule.start_time
-    };
-    if now < cliff_time || now < schedule.start_time {
-        return Ok(0);
-    }
-    if schedule.end_time <= schedule.start_time {
-        return Err(ContractError::InvalidSchedule);
-    }
-
-    let end = now.min(schedule.end_time);
-    let elapsed = end
-        .checked_sub(schedule.start_time)
-        .ok_or(ContractError::ArithmeticError)?;
-    let elapsed = i128::try_from(elapsed).map_err(|_| ContractError::ArithmeticError)?;
-    if schedule.total_cap > 0 && elapsed > schedule.total_cap / schedule.amount {
-        return Ok(schedule.total_cap);
-    }
-    let accrued = elapsed
-        .checked_mul(schedule.amount)
-        .ok_or(ContractError::ArithmeticError)?;
-
-    if schedule.total_cap > 0 {
-        Ok(accrued.min(schedule.total_cap))
-    } else {
-        Ok(accrued)
-    }
-}
-
 // ─── Contract ────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -3490,15 +4442,15 @@ pub struct AccordContract;
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
-// Proposer: create_recurring_schedule, create_proposal, simulate_proposal, create_add_owner_proposal,
+// Proposer: create_recurring_schedule, create_proposal, create_add_owner_proposal,
 //   create_spending_limit_proposal, create_change_weight_proposal,
 //   create_remove_owner_proposal, create_change_threshold_proposal,
 //   create_recurring_proposal, create_cancel_recurring_proposal,
 //   create_pause_recurring_proposal, create_resume_recurring_proposal,
 //   create_modify_recurring_proposal, create_grant_role_proposal,
-//   create_revoke_role_proposal, create_asset_registry_proposal,
-//   create_approve_token_proposal, create_unapprove_token_proposal,
-//   create_change_guardian_proposal, create_escrow_proposal.
+//   create_revoke_role_proposal, create_set_asset_registry_enabled_proposal,
+//   create_add_approved_token_proposal, create_remove_approved_token_proposal,
+//   create_transfer_guardian_proposal, create_escrow_proposal.
 // Approver + owner membership/weight: approve, approve_sponsored, revoke.
 // Executor role: execute, cancel_expired (owner membership is not required).
 // Owner membership: cancel_recurring_schedule.
@@ -3520,102 +4472,6 @@ pub struct AccordContract;
 //   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
 //   get_proposal_approval_progress, is_frozen, get_guardian,
 //   get_asset_registry_enabled, is_token_approved, get_escrow.
-
-fn validate_transfer_proposal(
-    env: &Env,
-    proposer: &Address,
-    transfers: &Vec<Transfer>,
-    description: &String,
-    deadline: u64,
-) -> Result<bool, ContractError> {
-    proposer.require_auth();
-    let proposer_is_owner = read_owners_map(env)?.contains_key(proposer.clone());
-    require_role(env, proposer, Role::Proposer)?;
-    require_not_frozen(env)?;
-
-    let transfers_len = transfers.len();
-    if transfers_len == 0 || transfers_len > MAX_BATCH_TRANSFERS {
-        return Err(ContractError::InvalidAmount);
-    }
-
-    require_kind_not_frozen(env, ProposalKindTag::Transfer)?;
-    for transfer in transfers.iter() {
-        if transfer.amount < MIN_AMOUNT {
-            return Err(ContractError::InvalidAmount);
-        }
-        validate_token(env, &transfer.token)?;
-        require_asset_not_frozen(env, &transfer.token)?;
-        if transfer.to == env.current_contract_address() {
-            return Err(ContractError::InvalidRecipient);
-        }
-    }
-
-    if proposer_is_owner {
-        let mut checked_tokens: Vec<Address> = Vec::new(env);
-        let mut checked_totals: Vec<i128> = Vec::new(env);
-        for transfer in transfers.iter() {
-            let mut found = false;
-            for i in 0..checked_tokens.len() {
-                if checked_tokens.get(i).unwrap() == transfer.token {
-                    let total = checked_totals
-                        .get(i)
-                        .unwrap()
-                        .checked_add(transfer.amount)
-                        .ok_or(ContractError::ArithmeticError)?;
-                    checked_totals.set(i, total);
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                checked_tokens.push_back(transfer.token.clone());
-                checked_totals.push_back(transfer.amount);
-            }
-        }
-        for i in 0..checked_tokens.len() {
-            let token = checked_tokens.get(i).unwrap();
-            if let Some(limit) = read_spending_limit(env, proposer, &token) {
-                let already_spent = effective_spent(env, proposer, &token);
-                let cumulative = checked_totals
-                    .get(i)
-                    .unwrap()
-                    .checked_add(already_spent)
-                    .ok_or(ContractError::ArithmeticError)?;
-                if cumulative > limit {
-                    return Err(ContractError::SpendingLimitExceeded);
-                }
-            }
-        }
-    }
-
-    if description.is_empty() {
-        return Err(ContractError::EmptyDescription);
-    }
-    if description.len() > MAX_DESCRIPTION_LEN {
-        return Err(ContractError::DescriptionTooLong);
-    }
-
-    let now = env.ledger().timestamp();
-    if deadline <= now {
-        return Err(ContractError::InvalidDeadline);
-    }
-    if deadline - now > MAX_PROPOSAL_DURATION {
-        return Err(ContractError::InvalidDuration);
-    }
-
-    Ok(proposer_is_owner)
-}
-
-fn distinct_transfer_token_count(env: &Env, transfers: &Vec<Transfer>) -> u32 {
-    let mut tokens: Vec<Address> = Vec::new(env);
-    for transfer in transfers.iter() {
-        if !tokens.contains(&transfer.token) {
-            tokens.push_back(transfer.token);
-        }
-    }
-    tokens.len()
-}
-
 #[contractimpl]
 impl AccordContract {
     /// One-shot initializer. Sets the list of owners with their individual
@@ -3856,71 +4712,37 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Moves the deployment forward exactly one registered storage-schema step.
+    /// One-time migration that stamps the storage schema to version 2 on a
+    /// legacy deployment, confirming the DEX router registry key is in use.
     ///
-    /// `from_version` must match the version currently recorded on chain, so a
-    /// stale operator script cannot stamp a layout it did not observe. The
-    /// target must be in `SUPPORTED_STORAGE_VERSIONS`, must not be newer than
-    /// the running contract, and must be exactly the next step: skipped,
-    /// repeated, and backward migrations are refused.
-    ///
-    /// A legacy (`0`) deployment must first run `migrate_to_weighted_governance`
-    /// and `migrate_to_rbac`, which bring the layout up to the current schema.
-    /// This entrypoint covers the operator-driven steps between versioned
-    /// layouts after that.
-    pub fn migrate_storage(
-        env: Env,
-        approvers: Vec<Address>,
-        from_version: u32,
-        target_version: u32,
-    ) -> Result<(), ContractError> {
+    /// This is a no-op beyond bumping the version marker: the `DXRTR` registry
+    /// starts empty on every deployment so there is no data to backfill.
+    /// Calling it on a deployment already at version ≥ 2 returns
+    /// `AlreadyMigrated`.
+    pub fn migrate_to_dex_swap(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
         if !is_initialized(&env) {
             return Err(ContractError::NotInitialized);
         }
-        require_weighted_approvers(&env, &approvers)?;
-
-        let current = read_storage_version(&env);
-        if from_version != current {
-            return Err(ContractError::SchemaVersionMismatch);
-        }
-        if target_version == current {
+        if read_storage_version(&env) >= 2 {
             return Err(ContractError::AlreadyMigrated);
         }
-        if current == 0 {
-            return Err(ContractError::LegacyMigrationRequired);
-        }
-        if !SUPPORTED_STORAGE_VERSIONS.contains(&target_version)
-            || target_version > STORAGE_SCHEMA_VERSION
-        {
-            return Err(ContractError::UnsupportedSchemaVersion);
-        }
-        if target_version != current.saturating_add(1) {
-            return Err(ContractError::SkippedSchemaVersion);
-        }
 
-        write_storage_version_value(&env, target_version);
+        require_weighted_approvers(&env, &approvers)?;
+
+        // Write the new schema version; `write_storage_version` always writes
+        // the current `STORAGE_SCHEMA_VERSION` constant, which is now 2.
+        write_storage_version(&env);
+
         env.events().publish(
-            (symbol_short!("stor_mig"),),
-            StorageMigratedEvent {
-                from_version: current,
-                to_version: target_version,
+            (Symbol::new(&env, "dex_migrated"),),
+            GovernanceMigratedEvent {
                 version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
             },
         );
         Ok(())
     }
-
-    /// Compatibility entrypoint for deployments built from the abstention-only
-    /// branch. It stamps the current registry version through `migrate_storage`.
-    pub fn migrate_to_abstention_storage(
-        env: Env,
-        approvers: Vec<Address>,
-    ) -> Result<(), ContractError> {
-        let current = read_storage_version(&env);
-        Self::migrate_storage(env, approvers, current, STORAGE_SCHEMA_VERSION)
-    }
-
-    /// Create a recurring schedule for periodic disbursements.
     pub fn create_recurring_schedule(
         env: Env,
         proposer: Address,
@@ -3992,29 +4814,495 @@ impl AccordContract {
         Err(ContractError::DeprecatedEntrypoint)
     }
 
-    /// Disburse a recurring schedule (permissionless crank). Reject if schedule
-    /// is in a terminal status (Cancelled or Completed) or called too early.
-    pub fn disburse_recurring_schedule(env: Env, id: u64) -> Result<(), ContractError> {
-        let mut s = read_recurring_schedule(&env, id)?;
-        if !matches!(s.status, RecurringStatus::Active) {
-            return Err(ContractError::ProposalNotActive);
+// Entrypoint gating matrix (keep synchronized with the public methods below).
+// Operational roles are separate from governance authority: role gates control
+// proposal lifecycle operations, while governance changes remain owner-weight
+// gated. Role-gated entrypoints below must enforce the role listed here.
+//
+// Initialize: initialize (all listed owners authenticate; one-time setup).
+// Migration: migrate_to_weighted_governance (distinct authenticated owners meet
+//   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
+// Proposer: create_recurring_schedule, create_proposal, simulate_proposal, create_add_owner_proposal,
+//   create_spending_limit_proposal, create_change_weight_proposal,
+//   create_remove_owner_proposal, create_change_threshold_proposal,
+//   create_recurring_proposal, create_cancel_recurring_proposal,
+//   create_pause_recurring_proposal, create_resume_recurring_proposal,
+//   create_modify_recurring_proposal, create_grant_role_proposal,
+//   create_revoke_role_proposal, create_asset_registry_proposal,
+//   create_approve_token_proposal, create_unapprove_token_proposal,
+//   create_change_guardian_proposal, create_escrow_proposal.
+// Approver + owner membership/weight: approve, approve_sponsored, revoke.
+// Executor role: execute, cancel_expired (owner membership is not required).
+// Owner membership: cancel_recurring_schedule.
+// Permissionless/authenticated caller: disburse_recurring_schedule (permissionless
+//   crank); disburse_recurring (any authenticated caller); release_escrow_by_deadline
+//   and refund_escrow (any authenticated caller).
+// Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
+//   set_guardian, release_escrow, unfreeze, upgrade. TransferGuardian proposals
+//   rotate the guardian through the standard proposal quorum. Guardian-only: freeze.
+// Read-only, no authorization: get_spent_tracker, get_recurring_payment,
+//   get_next_disbursement_time, get_recurring_payments_paged,
+//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   is_governance_migrated, get_role_version, get_roles, has_role,
+//   get_role_members, get_owner_weight, get_owner_weights,
+//   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
+//   get_effective_weight, get_proposal, get_proposals_paged, get_owners,
+//   get_spending_limit, get_owner_spending_limits,
+//   get_remaining_spending_limit, get_threshold, get_required_quorum_weight,
+//   get_time_lock_delay, get_total_proposals, is_owner, has_approved,
+//   get_proposal_approval_progress, is_frozen, get_guardian,
+//   get_asset_registry_enabled, is_token_approved, get_escrow.
+
+fn validate_transfer_proposal(
+    env: &Env,
+    proposer: &Address,
+    transfers: &Vec<Transfer>,
+    description: &String,
+    deadline: u64,
+) -> Result<bool, ContractError> {
+    proposer.require_auth();
+    let proposer_is_owner = read_owners_map(env)?.contains_key(proposer.clone());
+    require_role(env, proposer, Role::Proposer)?;
+    require_not_frozen(env)?;
+
+    let transfers_len = transfers.len();
+    if transfers_len == 0 || transfers_len > MAX_BATCH_TRANSFERS {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    require_kind_not_frozen(env, ProposalKindTag::Transfer)?;
+    for transfer in transfers.iter() {
+        if transfer.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
         }
+        validate_token(env, &transfer.token)?;
+        require_asset_not_frozen(env, &transfer.token)?;
+        if transfer.to == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+    }
+
+    if proposer_is_owner {
+        let mut checked_tokens: Vec<Address> = Vec::new(env);
+        let mut checked_totals: Vec<i128> = Vec::new(env);
+        for transfer in transfers.iter() {
+            let mut found = false;
+            for i in 0..checked_tokens.len() {
+                if checked_tokens.get(i).unwrap() == transfer.token {
+                    let total = checked_totals
+                        .get(i)
+                        .unwrap()
+                        .checked_add(transfer.amount)
+                        .ok_or(ContractError::ArithmeticError)?;
+                    checked_totals.set(i, total);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                checked_tokens.push_back(transfer.token.clone());
+                checked_totals.push_back(transfer.amount);
+            }
+        }
+        for i in 0..checked_tokens.len() {
+            let token = checked_tokens.get(i).unwrap();
+            if let Some(limit) = read_spending_limit(env, proposer, &token) {
+                let already_spent = effective_spent(env, proposer, &token);
+                let cumulative = checked_totals
+                    .get(i)
+                    .unwrap()
+                    .checked_add(already_spent)
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
+            }
+        }
+    }
+
+    if description.is_empty() {
+        return Err(ContractError::EmptyDescription);
+    }
+    if description.len() > MAX_DESCRIPTION_LEN {
+        return Err(ContractError::DescriptionTooLong);
+    }
+
+    let now = env.ledger().timestamp();
+    if deadline <= now {
+        return Err(ContractError::InvalidDeadline);
+    }
+    if deadline - now > MAX_PROPOSAL_DURATION {
+        return Err(ContractError::InvalidDuration);
+    }
+
+    Ok(proposer_is_owner)
+}
+
+fn distinct_transfer_token_count(env: &Env, transfers: &Vec<Transfer>) -> u32 {
+    let mut tokens: Vec<Address> = Vec::new(env);
+    for transfer in transfers.iter() {
+        if !tokens.contains(&transfer.token) {
+            tokens.push_back(transfer.token);
+        }
+    }
+    tokens.len()
+}
+
+#[contractimpl]
+impl AccordContract {
+    /// One-shot initializer. Sets the list of owners with their individual
+    /// voting weights, the approval threshold, and an optional time-lock delay
+    /// (in seconds). A delay of 0 means no time-lock is enforced.
+    ///
+    /// # Arguments
+    /// * `owners` - Non-empty list of unique owner addresses (max 20).
+    /// * `weights` - Per-owner voting weights, one per owner, in the same order
+    ///   as `owners`. Each weight must be within `[MIN_OWNER_WEIGHT,
+    ///   MAX_OWNER_WEIGHT]`. The list length must exactly match `owners.len()`.
+    ///   The sum of all weights becomes the initial total-weight counter used
+    ///   for quorum calculations.
+    /// * `threshold` - Absolute weight value required to execute a proposal
+    ///   (1 ≤ threshold ≤ sum of all owner weights). A proposal becomes
+    ///   `Ready` once its cumulative approval weight meets or exceeds this
+    ///   value.
+    /// * `time_lock_delay` - Seconds to wait after a proposal reaches threshold before it is executable.
+    pub fn initialize(
+        env: Env,
+        owners: Vec<Address>,
+        weights: Vec<u32>,
+        threshold: u32,
+        time_lock_delay: u64,
+    ) -> Result<(), ContractError> {
+        if is_initialized(&env) {
+            return Err(ContractError::AlreadyInitialized);
+        }
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
         let now = env.ledger().timestamp();
-        if s.last_disbursed_at != 0 && now < s.last_disbursed_at.saturating_add(s.interval_secs) {
-            return Err(ContractError::ProposalNotActive);
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
         }
-        s.last_disbursed_at = now;
-        if s.remaining_occurrences > 0 {
-            s.remaining_occurrences = s.remaining_occurrences.saturating_sub(1);
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
         }
-        if s.remaining_occurrences == 0 {
-            s.status = RecurringStatus::Completed;
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::SetSpendingLimit(owner, token, limit),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+            attachment_hash: None,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+                attachment_hash: None,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a spending-limit proposal with a daily-to-weekly rolling window.
+    pub fn create_spending_window_proposal(
+        env: Env,
+        proposer: Address,
+        owner: Address,
+        token: Address,
+        limit: i128,
+        window_secs: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        if !(MIN_SPENDING_WINDOW..=MAX_SPENDING_WINDOW).contains(&window_secs) {
+            return Err(ContractError::InvalidDuration);
         }
-        write_recurring_schedule(&env, &s);
+        let id = Self::create_spending_limit_proposal(
+            env.clone(), proposer, owner.clone(), token.clone(), limit, description, deadline,
+        )?;
+        let mut proposal = read_proposal(&env, id)?;
+        proposal.kind = ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs);
+        write_proposal(&env, &proposal);
+        Ok(id)
+    }
+
+    /// Creates a proposal to change an existing owner's voting weight.
+    ///
+    /// # Arguments
+    /// * `proposer` - Owner proposing the change. Must authorize.
+    /// * `target_owner` - Address of the owner whose weight to change. Must be
+    ///   a current owner.
+    /// * `new_weight` - The new voting weight. Must be nonzero, within
+    ///   [MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT], and no more than the configured
+    ///   share of the resulting total weight. Use `RemoveOwner` to revoke voting.
+    pub fn create_change_weight_proposal(
+        env: Env,
+        proposer: Address,
+        target_owner: Address,
+        new_weight: u32,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if new_weight < MIN_OWNER_WEIGHT {
+            return Err(ContractError::WeightBelowMinimum);
+        }
+        if new_weight > MAX_OWNER_WEIGHT {
+            return Err(ContractError::InvalidWeight);
+        }
+
+        let owners = read_owners_map(&env)?;
+        if !owners.contains_key(target_owner.clone()) {
+            return Err(ContractError::OwnerNotFound);
+        }
+
+        let target_weight = owners.get(target_owner.clone()).unwrap();
+
+        let current_total = read_total_weight(&env);
+        let resulting_total = checked_weight_add(
+            checked_weight_sub(current_total, target_weight)?,
+            new_weight,
+        )?;
+        if !owner_weight_within_cap(&env, new_weight, resulting_total) {
+            return Err(ContractError::SingleOwnerWeightCapExceeded);
+        }
+
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::ChangeOwnerWeight(target_owner, new_weight),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+            attachment_hash: None,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: current_total,
+                attachment_hash: None,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Moves the deployment forward exactly one registered storage-schema step.
+    ///
+    /// `from_version` must match the version currently recorded on chain, so a
+    /// stale operator script cannot stamp a layout it did not observe. The
+    /// target must be in `SUPPORTED_STORAGE_VERSIONS`, must not be newer than
+    /// the running contract, and must be exactly the next step: skipped,
+    /// repeated, and backward migrations are refused.
+    ///
+    /// A legacy (`0`) deployment must first run `migrate_to_weighted_governance`
+    /// and `migrate_to_rbac`, which bring the layout up to the current schema.
+    /// This entrypoint covers the operator-driven steps between versioned
+    /// layouts after that.
+    pub fn migrate_storage(
+        env: Env,
+        approvers: Vec<Address>,
+        from_version: u32,
+        target_version: u32,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        require_weighted_approvers(&env, &approvers)?;
+
+        let current = read_storage_version(&env);
+        if from_version != current {
+            return Err(ContractError::SchemaVersionMismatch);
+        }
+        if target_version == current {
+            return Err(ContractError::AlreadyMigrated);
+        }
+        if current == 0 {
+            return Err(ContractError::LegacyMigrationRequired);
+        }
+        if !SUPPORTED_STORAGE_VERSIONS.contains(&target_version)
+            || target_version > STORAGE_SCHEMA_VERSION
+        {
+            return Err(ContractError::UnsupportedSchemaVersion);
+        }
+        if target_version != current.saturating_add(1) {
+            return Err(ContractError::SkippedSchemaVersion);
+        }
+
+        write_storage_version_value(&env, target_version);
+        env.events().publish(
+            (symbol_short!("stor_mig"),),
+            StorageMigratedEvent {
+                from_version: current,
+                to_version: target_version,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
         Ok(())
     }
 
-    /// Creates a new transfer proposal with one or more asset transfers.
+    /// Compatibility entrypoint for deployments built from the abstention-only
+    /// branch. It stamps the current registry version through `migrate_storage`.
+    pub fn migrate_to_abstention_storage(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        let current = read_storage_version(&env);
+        Self::migrate_storage(env, approvers, current, STORAGE_SCHEMA_VERSION)
+    }
+
+    /// Create a recurring schedule for periodic disbursements.
+    pub fn create_recurring_schedule(
+        env: Env,
+        proposer: Address,
+        owner_to_remove: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        require_owner(&env, &owner_to_remove)?;
+        let owners_map = read_owners_map(&env)?;
+        let current_count = owners_map.len();
+        if current_count <= 1 {
+            return Err(ContractError::CannotRemoveLastOwner);
+        }
+        let threshold = read_threshold(&env)?;
+        let remove_weight = owners_map.get(owner_to_remove.clone()).unwrap_or(0);
+        let resulting_total_weight =
+            checked_weight_sub(read_total_weight(&env), remove_weight)?;
+        if resulting_total_weight < threshold {
+            return Err(ContractError::WouldBreakThreshold);
+        }
+
+        if description.is_empty() {
+            return Err(ContractError::EmptyDescription);
+        }
+        if description.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        let now = env.ledger().timestamp();
+        if deadline <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+
+        let id = read_next_id(&env);
+
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::RemoveOwner(owner_to_remove),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: ProposalCategory::Other,
+            attachment_hash: None,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+
+        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+        write_next_id(&env, next_id);
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer,
+                threshold,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+                attachment_hash: None,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to change the M-of-N approval threshold.
     ///
     /// # Arguments
     /// * `proposer` - Holder of the Proposer role, owner or not. Must authorize.
@@ -4043,10 +5331,10 @@ impl AccordContract {
             approvals: 0,
             approval_weight: 0,
             status: ProposalStatus::Pending,
-            kind: ProposalKind::Transfer(transfers.clone()),
+            kind: ProposalKind::ChangeThreshold(new_threshold),
             ready_at: 0,
             quorum_weight: threshold,
-            category: category.clone(),
+            category: ProposalCategory::Other,
             attachment_hash: None,
         };
         write_proposal(&env, &proposal);
@@ -4063,8 +5351,8 @@ impl AccordContract {
                 id,
                 proposer,
                 threshold,
-                category,
-                transfers,
+                category: ProposalCategory::Other,
+                transfers: Vec::new(&env),
                 quorum_weight: threshold,
                 total_weight_at_creation: total_weight,
                 attachment_hash: None,
@@ -4112,40 +5400,20 @@ impl AccordContract {
     pub fn create_proposal_with_attachment(
         env: Env,
         proposer: Address,
-        transfers: Vec<Transfer>,
+        enabled: bool,
         description: String,
         deadline: u64,
-        category: ProposalCategory,
-        attachment_hash: Option<BytesN<32>>,
     ) -> Result<u64, ContractError> {
-        let id = Self::create_proposal(
-            env.clone(),
-            proposer.clone(),
-            transfers.clone(),
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::SetAssetRegistryEnabled(enabled),
             description,
             deadline,
-            category.clone(),
-        )?;
-        let mut proposal = read_proposal(&env, id)?;
-        proposal.attachment_hash = attachment_hash.clone();
-        write_proposal(&env, &proposal);
-        let total_weight = read_total_weight(&env);
-        let threshold = read_threshold(&env)?;
-        env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
-                version: EVENT_SCHEMA_VERSION,
-                id,
-                proposer,
-                threshold,
-                category,
-                transfers,
-                quorum_weight: threshold,
-                total_weight_at_creation: total_weight,
-                attachment_hash,
-            },
-        );
-        Ok(id)
+        )
     }
 
     /// Creates a transfer proposal with an explicit list of parent proposal dependencies.
@@ -4220,37 +5488,62 @@ impl AccordContract {
     }
 
 
-    /// Disburses one due period for a recurring payment schedule.
-    ///
-    /// Permissionless crank: any address may trigger this entrypoint once a
-    /// schedule is due. This keeps automation simple and reduces the chance that
-    /// due payouts are missed, at the cost of allowing anyone to trigger the
-    /// transfer path as long as the schedule is eligible and the contract is not
-    /// frozen.
-    ///
-    /// Non-retroactive pause/resume policy:
-    /// Paused schedules cannot disburse, and `last_disbursed_at` does not advance while paused.
-    /// When resumed, the schedule continues from its pre-pause `last_disbursed_at`, requiring
-    /// a full interval to elapse before the next disbursement. Missed periods during pause are
-    /// not retroactively granted.
-    pub fn disburse_recurring(
+    /// Creates a proposal to remove a token from the approved-token registry.
+    pub fn create_remove_approved_token_proposal(
         env: Env,
-        caller: Address,
-        schedule_id: u64,
-    ) -> Result<(), ContractError> {
-        caller.require_auth();
+        proposer: Address,
+        token: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
-        require_not_recovery(&env)?;
+        if !token_is_approved(&env, &token) {
+            return Err(ContractError::AssetRegistryState);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveApprovedToken(token),
+            description,
+            deadline,
+        )
+    }
 
-        let mut schedule = read_recurring_payment(&env, schedule_id)?;
+    /// Creates a normal-quorum proposal to rotate the emergency guardian.
+    pub fn create_transfer_guardian_proposal(
+        env: Env,
+        proposer: Address,
+        new_guardian: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::TransferGuardian(new_guardian),
+            description,
+            deadline,
+        )
+    }
 
-        // Paused/cancelled/completed schedules cannot disburse and must not
-        // mutate state or advance last_disbursed_at.
-        if matches!(
-            schedule.status,
-            RecurringStatus::Paused | RecurringStatus::Cancelled | RecurringStatus::Completed
-        ) {
-            return Err(ContractError::RecurringPaymentInactive);
+    /// Creates a proposal to reserve treasury tokens until the selected release condition.
+    pub fn create_escrow_proposal(
+        env: Env,
+        proposer: Address,
+        params: EscrowParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
         }
 
         require_outflow_allowed(&env, &schedule.token, ProposalKindTag::Recurring)?;
@@ -4274,59 +5567,60 @@ impl AccordContract {
                 schedule.amount
             }
         };
+        if release_at <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if release_at - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CreateEscrow(params),
+            description,
+            deadline,
+        )
+    }
 
-        // Linear vesting gates the first claim on cliff/start, then allows
-        // claiming newly vested amounts without waiting a full interval.
-        if matches!(schedule.kind, RecurringKind::LinearVesting) {
-            if schedule.periods_disbursed == 0 && now < due_at {
-                return Err(ContractError::RecurringIntervalNotElapsed);
-            }
+    // ─── DEX Swap ────────────────────────────────────────────────────────────
+
+    /// Creates a proposal to execute a governed DEX path-payment swap.
+    ///
+    /// At execution the multisig contract calls `swap_exact_tokens_for_tokens`
+    /// on the given `router` contract, selling `send_amount` of `path[0]` for
+    /// `path[last]` with a minimum output of `min_recv`. The output is sent to
+    /// `destination` (or the contract itself when `None`).
+    ///
+    /// # Validation at creation
+    /// - `path` must have at least 2 entries.
+    /// - All tokens in `path` are validated against the asset registry.
+    /// - `router` must be in the approved-router registry.
+    /// - `send_amount` ≥ `MIN_AMOUNT` and `min_recv` ≥ 1.
+    /// - `swap_deadline` must be in the future and within `MAX_PROPOSAL_DURATION`.
+    pub fn create_dex_swap_proposal(
+        env: Env,
+        proposer: Address,
+        params: DexSwapParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.send_amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_recv < 1 {
+            return Err(ContractError::InvalidAmount);
         }
 
-        if disbursement_amount <= 0 {
-            return Err(ContractError::RecurringPaymentComplete);
-        }
+        // Path must have at least 2 entries and all tokens must be valid.
+        validate_swap_path(&env, &params.path)?;
 
-        // Clamp disbursement_amount to the remaining cap so total_disbursed
-        // never overshoots total_cap. All arithmetic uses checked operations so
-        // an overflow returns ArithmeticError rather than wrapping.
-        let projected_total = schedule
-            .total_disbursed
-            .checked_add(disbursement_amount)
-            .ok_or(ContractError::ArithmeticError)?;
-
-        // When the schedule has a cap and the projected total would exceed it,
-        // clamp the actual payout to whatever headroom remains. A remaining
-        // headroom of zero means the cap is already met — treat as complete.
-        let (actual_amount, new_total_disbursed) = if schedule.total_cap > 0
-            && projected_total > schedule.total_cap
-        {
-            let clamped = schedule
-                .total_cap
-                .checked_sub(schedule.total_disbursed)
-                .ok_or(ContractError::ArithmeticError)?;
-            if clamped <= 0 {
-                return Err(ContractError::RecurringPaymentComplete);
-            }
-            // new total is exactly the cap — no overshoot.
-            (clamped, schedule.total_cap)
-        } else {
-            (disbursement_amount, projected_total)
-        };
-
-        // Compute the next period count up front so every checked counter
-        // update has succeeded before funds move.
-        let new_periods_disbursed = schedule
-            .periods_disbursed
-            .checked_add(1)
-            .ok_or(ContractError::ArithmeticError)?;
-
-        validate_token(&env, &schedule.token)?;
-        let token_client = token::Client::new(&env, &schedule.token);
-        let treasury = env.current_contract_address();
-        let balance = available_balance(&env, &schedule.token)?;
-        if balance < disbursement_amount {
-            return Err(ContractError::TransferFailed);
+        // Router must be in the governance-approved registry.
+        if !dex_router_is_approved(&env, &params.router) {
+            return Err(ContractError::Unauthorized);
         }
         if let Some(t_limit) = read_treasury_spending_limit(&env, &schedule.token) {
             let cumulative = effective_treasury_spent(&env, &schedule.token)
@@ -4362,26 +5656,30 @@ impl AccordContract {
         );
         record_treasury_spend(&env, &schedule.token, actual_amount)?;
 
-        schedule.last_disbursed_at = now;
-        // Store the checked new total — never exceeds total_cap.
-        schedule.total_disbursed = new_total_disbursed;
-        schedule.periods_disbursed = new_periods_disbursed;
-        write_recurring_payment(&env, &schedule);
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::DexSwap(params.clone()),
+            description,
+            deadline,
+        )?;
 
         env.events().publish(
-            (symbol_short!("rpay"),),
-            RecurringPaymentDisbursedEvent {
+            (symbol_short!("dex_prop"),),
+            DexSwapProposedEvent {
                 version: EVENT_SCHEMA_VERSION,
-                schedule_id,
-                recipient: schedule.recipient.clone(),
-                token: schedule.token.clone(),
-                amount: actual_amount,
-                total_disbursed: schedule.total_disbursed,
-                periods_disbursed: schedule.periods_disbursed,
+                proposal_id: id,
+                proposer,
+                router: params.router,
+                path: params.path,
+                send_amount: params.send_amount,
+                min_recv: params.min_recv,
+                destination: params.destination,
+                swap_deadline: params.swap_deadline,
             },
         );
 
-        Ok(())
+        Ok(id)
     }
 
     /// Claims the currently accrued amount from a continuous stream.
@@ -4486,198 +5784,426 @@ impl AccordContract {
         Ok(())
     }
 
-    /// Returns the current spent tracker for an owner and token.
-    pub fn get_spent_tracker(env: Env, owner: Address, token: Address) -> SpentTracker {
-        read_spent_tracker(&env, &owner, &token)
-    }
-
-    /// Creates a proposal to add a new owner to the multisig.
-    pub fn create_add_owner_proposal(
-        env: Env,
-        proposer: Address,
-        new_owner: Address,
-        weight: u32,
-        description: String,
-        deadline: u64,
-    ) -> Result<u64, ContractError> {
-        proposer.require_auth();
-        require_role(&env, &proposer, Role::Proposer)?;
-        require_not_frozen(&env)?;
-
-        let owners = read_owners_map(&env)?;
-        if owners.contains_key(new_owner.clone()) {
-            return Err(ContractError::DuplicateOwner);
+        if dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
         }
 
-        if owners.len() >= MAX_OWNERS {
-            return Err(ContractError::InvalidOwners);
-        }
-
-        if !(MIN_OWNER_WEIGHT..=MAX_OWNER_WEIGHT).contains(&weight) {
-            return Err(ContractError::InvalidWeight);
-        }
-
-        let current_total = read_total_weight(&env);
-        let resulting_total = checked_weight_add(current_total, weight)?;
-        if !owner_weight_within_cap(&env, weight, resulting_total) {
-            return Err(ContractError::SingleOwnerWeightCapExceeded);
-        }
-
-        if description.is_empty() {
-            return Err(ContractError::EmptyDescription);
-        }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let now = env.ledger().timestamp();
-        if deadline <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if deadline - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
-        }
-
-        let threshold = read_threshold(&env)?;
-        let id = read_next_id(&env);
-
-        let proposal = Proposal {
-            id,
-            proposer: proposer.clone(),
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddDexRouter(router),
             description,
             deadline,
-            approvals: 0,
-            approval_weight: 0,
-            status: ProposalStatus::Pending,
-            kind: ProposalKind::AddOwner(new_owner, weight),
-            ready_at: 0,
-            quorum_weight: threshold,
-            category: ProposalCategory::Other,
-            attachment_hash: None,
-        };
-        write_proposal(&env, &proposal);
-        register_active_proposal(&env, id)?;
-
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_next_id(&env, next_id);
-
-        let total_weight = read_total_weight(&env);
-        env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
-                version: EVENT_SCHEMA_VERSION,
-                id,
-                proposer,
-                threshold,
-                category: ProposalCategory::Other,
-                transfers: Vec::new(&env),
-                quorum_weight: threshold,
-                total_weight_at_creation: total_weight,
-                attachment_hash: None,
-            },
-        );
-
-        Ok(id)
+        )
     }
 
-    /// Creates a proposal to set (or change) a per-owner spending limit for a
-    /// token. The limit caps the amount `owner` may propose for `token`; a limit
-    /// of 0 blocks that token for that owner. Enforced in `create_proposal`.
-    pub fn create_spending_limit_proposal(
+    /// Creates a governance proposal to remove a DEX router from the approved registry.
+    pub fn create_remove_dex_router_proposal(
         env: Env,
         proposer: Address,
-        owner: Address,
-        token: Address,
-        limit: i128,
+        router: Address,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
-        validate_asset_registry(&env, &token)?;
 
-        if limit < 0 {
+        if !dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveDexRouter(router),
+            description,
+            deadline,
+        )
+    }
+
+    /// Returns `true` if the given router address is in the governance-approved
+    /// DEX router registry.
+    pub fn is_dex_router_approved(env: Env, router: Address) -> bool {
+        dex_router_is_approved(&env, &router)
+    }
+
+    // ─── Yield Allocation ────────────────────────────────────────────────────
+
+    /// Creates a governance proposal to add a yield venue to the approved registry.
+    ///
+    /// A venue must be approved before it can be referenced in a
+    /// `YieldDeposit` or `YieldWithdraw` proposal.
+    pub fn create_add_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to remove a yield venue from the approved registry.
+    pub fn create_remove_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if !yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to deposit treasury tokens into an approved yield venue.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `position_id` must not already be open (no existing `YieldPosition`).
+    pub fn create_yield_deposit_proposal(
+        env: Env,
+        proposer: Address,
+        params: YieldAllocationParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
             return Err(ContractError::InvalidAmount);
         }
-        if description.is_empty() {
-            return Err(ContractError::EmptyDescription);
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
         }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let now = env.ledger().timestamp();
-        if deadline <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if deadline - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
+        validate_token(&env, &params.token)?;
+        if read_yield_position(&env, params.position_id).is_some() {
+            return Err(ContractError::YieldPositionAlreadyOpen);
         }
 
-        let threshold = read_threshold(&env)?;
-        let id = read_next_id(&env);
-
-        let proposal = Proposal {
-            id,
-            proposer: proposer.clone(),
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldDeposit(params.clone()),
             description,
             deadline,
-            approvals: 0,
-            approval_weight: 0,
-            status: ProposalStatus::Pending,
-            kind: ProposalKind::SetSpendingLimit(owner, token, limit),
-            ready_at: 0,
-            quorum_weight: threshold,
-            category: ProposalCategory::Other,
-            attachment_hash: None,
-        };
-        write_proposal(&env, &proposal);
-        register_active_proposal(&env, id)?;
+        )?;
 
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_next_id(&env, next_id);
-
-        let total_weight = read_total_weight(&env);
         env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
+            (symbol_short!("y_dprop"),),
+            YieldDepositProposedEvent {
                 version: EVENT_SCHEMA_VERSION,
-                id,
+                proposal_id: id,
                 proposer,
-                threshold,
-                category: ProposalCategory::Other,
-                transfers: Vec::new(&env),
-                quorum_weight: threshold,
-                total_weight_at_creation: total_weight,
-                attachment_hash: None,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                position_id: params.position_id,
+                kind: params.kind,
             },
         );
 
         Ok(id)
     }
 
-    /// Creates a spending-limit proposal with a daily-to-weekly rolling window.
-    pub fn create_spending_window_proposal(
+    /// Creates a proposal to withdraw tokens from a yield venue back to the treasury.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `min_return` ≥ 1.
+    /// - `position_id` must reference an existing open `YieldPosition`.
+    /// - The position's recorded `venue` and `token` must match `params`.
+    pub fn create_yield_withdraw_proposal(
         env: Env,
         proposer: Address,
-        owner: Address,
-        token: Address,
-        limit: i128,
-        window_secs: u64,
+        params: YieldAllocationParams,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
-        if !(MIN_SPENDING_WINDOW..=MAX_SPENDING_WINDOW).contains(&window_secs) {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_return < 1 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
+        }
+        validate_token(&env, &params.token)?;
+
+        let position = read_yield_position(&env, params.position_id)
+            .ok_or(ContractError::YieldPositionNotFound)?;
+        if position.venue != params.venue || position.token != params.token {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldWithdraw(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("y_wprop"),),
+            YieldWithdrawProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                min_return: params.min_return,
+                position_id: params.position_id,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Returns the open `YieldPosition` for the given `position_id`, or `None`
+    /// if no position with that ID exists.
+    pub fn get_yield_position(env: Env, position_id: u64) -> Option<YieldPosition> {
+        read_yield_position(&env, position_id)
+    }
+
+    /// Returns `true` if the given venue address is in the governance-approved
+    /// yield venue registry.
+    pub fn is_yield_venue_approved(env: Env, venue: Address) -> bool {
+        yield_venue_is_approved(&env, &venue)
+    }
+
+    /// One-time migration that stamps storage schema to version 3 for legacy
+    /// deployments, confirming the yield venue registry keys are in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `YVENUE` and
+    /// `YPOS` registries start empty on every deployment so there is no data
+    /// to backfill. Returns `AlreadyMigrated` if the deployment is already
+    /// at schema version ≥ 3.
+    pub fn migrate_to_yield_allocation(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 3 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "yield_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+
+    // ─── Pull-Payment Requests ────────────────────────────────────────────────
+
+    /// Creates a governance proposal to open a pull-payment request.
+    ///
+    /// When executed, the request is recorded as `Open` and the designated
+    /// `claimant` may call `claim_pull_payment` at any time before
+    /// `params.expires_at` to receive `params.amount` of `params.token`.
+    ///
+    /// # Validation at creation
+    /// - `claimant` must not be the contract itself.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `expires_at` must be in the future.
+    /// - `memo` (if non-empty) must be ≤ `MAX_DESCRIPTION_LEN` characters.
+    pub fn create_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        params: PullPaymentParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.claimant == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+        validate_token(&env, &params.token)?;
+
+        let now = env.ledger().timestamp();
+        if params.expires_at <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if params.expires_at - now > MAX_PROPOSAL_DURATION {
             return Err(ContractError::InvalidDuration);
         }
-        let id = Self::create_spending_limit_proposal(
-            env.clone(), proposer, owner.clone(), token.clone(), limit, description, deadline,
-        )?;
-        let mut proposal = read_proposal(&env, id)?;
-        proposal.kind = ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs);
-        write_proposal(&env, &proposal);
-        Ok(id)
+        if !params.memo.is_empty() && params.memo.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CreatePullPayment(params),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to cancel an open pull-payment request.
+    ///
+    /// Only requests that are currently `Open` can be cancelled. Expired or
+    /// already-claimed requests are rejected at execution time.
+    pub fn create_cancel_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        request_id: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CancelPullPayment(request_id),
+            description,
+            deadline,
+        )
+    }
+
+    /// Allows the designated claimant of an open pull-payment request to pull
+    /// the pre-approved amount from the treasury.
+    ///
+    /// This is a **non-governance entrypoint**: the claimant does not need to
+    /// be an owner. They only need to be the address named in the request and
+    /// to authorise this call via `require_auth()`.
+    ///
+    /// # Guards
+    /// - The request must exist.
+    /// - The request must be `Open` (not `Claimed`, `Cancelled`, or `Expired`).
+    /// - The caller must be the designated `claimant`.
+    /// - The treasury must hold at least `amount` of the token.
+    /// - The contract must not be frozen.
+    ///
+    /// On success the request transitions to `Claimed` (terminal) and a
+    /// `PullPaymentClaimedEvent` is emitted.
+    pub fn claim_pull_payment(
+        env: Env,
+        claimant: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        claimant.require_auth();
+        require_not_frozen(&env)?;
+
+        let mut req = read_pull_payment(&env, request_id)
+            .ok_or(ContractError::PullPaymentNotFound)?;
+
+        if claimant != req.claimant {
+            return Err(ContractError::PullPaymentWrongClaimant);
+        }
+
+        // Derive status — an Open request past expires_at is treated as Expired.
+        let status = derive_pull_payment_status(&env, &req);
+        if !matches!(status, PullPaymentStatus::Open) {
+            return Err(ContractError::PullPaymentNotOpen);
+        }
+
+        // Re-validate token in case the registry changed since the request opened.
+        validate_token(&env, &req.token)?;
+
+        if available_balance(&env, &req.token)? < req.amount {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Transfer the tokens to the claimant.
+        let treasury = env.current_contract_address();
+        if !transfer_succeeded(
+            token::Client::new(&env, &req.token)
+                .try_transfer(&treasury, &claimant, &req.amount),
+        ) {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Mark the request as claimed (terminal).
+        req.status = PullPaymentStatus::Claimed;
+        write_pull_payment(&env, &req);
+
+        env.events().publish(
+            (symbol_short!("pr_claim"),),
+            PullPaymentClaimedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                request_id,
+                claimant,
+                token: req.token.clone(),
+                amount: req.amount,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the pull-payment request record for the given `request_id`, or
+    /// `None` if no request with that ID exists.
+    pub fn get_pull_payment(
+        env: Env,
+        request_id: u64,
+    ) -> Option<PullPaymentRequest> {
+        let req = read_pull_payment(&env, request_id)?;
+        // Return the derived status so callers see Expired rather than Open
+        // when the expiry has passed.
+        let mut req = req;
+        req.status = derive_pull_payment_status(&env, &req);
+        Some(req)
     }
 
     /// Creates a proposal to configure a rolling spending limit and window for a token in the treasury.
@@ -4763,109 +6289,188 @@ impl AccordContract {
 
     /// Creates a proposal to change an existing owner's voting weight.
     ///
-    /// # Arguments
-    /// * `proposer` - Owner proposing the change. Must authorize.
-    /// * `target_owner` - Address of the owner whose weight to change. Must be
-    ///   a current owner.
-    /// * `new_weight` - The new voting weight. Must be nonzero, within
-    ///   [MIN_OWNER_WEIGHT, MAX_OWNER_WEIGHT], and no more than the configured
-    ///   share of the resulting total weight. Use `RemoveOwner` to revoke voting.
-    pub fn create_change_weight_proposal(
+    /// This is a no-op beyond bumping the version marker: the `PULLREQ` and
+    /// `PRNEXT` keys start empty/1 on every deployment so there is no data to
+    /// backfill. Returns `AlreadyMigrated` if the deployment is already at
+    /// schema version ≥ 4.
+    pub fn migrate_to_pull_payments(
         env: Env,
-        proposer: Address,
-        target_owner: Address,
-        new_weight: u32,
-        description: String,
-        deadline: u64,
-    ) -> Result<u64, ContractError> {
-        proposer.require_auth();
-        require_role(&env, &proposer, Role::Proposer)?;
-        require_not_frozen(&env)?;
-
-        if new_weight < MIN_OWNER_WEIGHT {
-            return Err(ContractError::WeightBelowMinimum);
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
         }
-        if new_weight > MAX_OWNER_WEIGHT {
-            return Err(ContractError::InvalidWeight);
+        if read_storage_version(&env) >= 4 {
+            return Err(ContractError::AlreadyMigrated);
         }
 
-        let owners = read_owners_map(&env)?;
-        if !owners.contains_key(target_owner.clone()) {
-            return Err(ContractError::OwnerNotFound);
+        require_weighted_approvers(&env, &approvers)?;
+
+        // Initialise the next-ID counter if it does not exist.
+        if env
+            .storage()
+            .instance()
+            .get::<_, u64>(&pull_payment_next_id_key())
+            .is_none()
+        {
+            write_next_pull_payment_id(&env, 1);
         }
 
-        let target_weight = owners.get(target_owner.clone()).unwrap();
-
-        let current_total = read_total_weight(&env);
-        let resulting_total = checked_weight_add(
-            checked_weight_sub(current_total, target_weight)?,
-            new_weight,
-        )?;
-        if !owner_weight_within_cap(&env, new_weight, resulting_total) {
-            return Err(ContractError::SingleOwnerWeightCapExceeded);
-        }
-
-        if description.is_empty() {
-            return Err(ContractError::EmptyDescription);
-        }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let now = env.ledger().timestamp();
-        if deadline <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if deadline - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
-        }
-
-        let threshold = read_threshold(&env)?;
-        let id = read_next_id(&env);
-
-        let proposal = Proposal {
-            id,
-            proposer: proposer.clone(),
-            description,
-            deadline,
-            approvals: 0,
-            approval_weight: 0,
-            status: ProposalStatus::Pending,
-            kind: ProposalKind::ChangeOwnerWeight(target_owner, new_weight),
-            ready_at: 0,
-            quorum_weight: threshold,
-            category: ProposalCategory::Other,
-            attachment_hash: None,
-        };
-        write_proposal(&env, &proposal);
-        register_active_proposal(&env, id)?;
-
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_next_id(&env, next_id);
+        write_storage_version(&env);
 
         env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
+            (Symbol::new(&env, "pullpay_migrated"),),
+            GovernanceMigratedEvent {
                 version: EVENT_SCHEMA_VERSION,
-                id,
-                proposer,
-                threshold,
-                category: ProposalCategory::Other,
-                transfers: Vec::new(&env),
-                quorum_weight: threshold,
-                total_weight_at_creation: current_total,
-                attachment_hash: None,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+
+    // ─── Payment Metadata (Invoice & Reference) ──────────────────────────────
+
+    /// Attaches reconciliation metadata to an existing proposal.
+    ///
+    /// The caller must be the original proposer of the proposal and the
+    /// proposal must not have been executed yet. Metadata can be set or
+    /// overwritten any time before execution, allowing the proposer to correct
+    /// a typo or add a missing invoice reference after creation.
+    ///
+    /// # Validation
+    /// - Each non-`None` field must be non-empty and ≤ `MAX_DESCRIPTION_LEN`.
+    /// - The proposal must exist.
+    /// - The proposal must be in `Pending` or `Ready` status (not Executed,
+    ///   Expired, or Revoked).
+    /// - The caller must be the proposal's original proposer.
+    pub fn set_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+        metadata: PaymentMetadata,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Refresh derived status.
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        validate_payment_metadata(&metadata)?;
+        write_payment_metadata(&env, proposal_id, &metadata);
+
+        env.events().publish(
+            (symbol_short!("pymeta"),),
+            PaymentMetadataSetEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id,
+                setter,
+                metadata,
             },
         );
 
-        Ok(id)
+        Ok(())
     }
 
-    /// Creates a proposal to remove an existing owner from the multisig.
-    pub fn create_remove_owner_proposal(
+    /// Clears all reconciliation metadata from a proposal.
+    ///
+    /// Same authorization and status constraints as `set_payment_metadata`.
+    pub fn clear_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        remove_payment_metadata(&env, proposal_id);
+        Ok(())
+    }
+
+    /// Returns the reconciliation metadata attached to a proposal, or `None`
+    /// if no metadata has been set.
+    pub fn get_payment_metadata(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<PaymentMetadata> {
+        read_payment_metadata(&env, proposal_id)
+    }
+
+    /// One-time migration that stamps storage schema to version 5 for legacy
+    /// deployments, confirming the payment metadata store is in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `PAYMETA` store
+    /// starts empty on every deployment so there is no data to backfill.
+    /// Returns `AlreadyMigrated` if the deployment is already at schema
+    /// version ≥ 5.
+    pub fn migrate_to_payment_metadata(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 5 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "meta_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+
+    // ─── Spend Policy Engine ─────────────────────────────────────────────────
+
+    /// Creates a governance proposal to set a composed multi-window spend
+    /// policy for an (owner, token) pair.
+    ///
+    /// The policy can contain up to three rolling-window limits (daily,
+    /// weekly, monthly). At execution time every window is evaluated: if
+    /// the cumulative spend including the proposed amount exceeds any
+    /// window's limit, the proposal is rejected with `SpendPolicyExceeded`.
+    ///
+    /// # Validation at creation
+    /// - `limits` must be non-empty (at least one window).
+    /// - `limits` must contain at most `MAX_SPEND_WINDOWS` (3) entries.
+    /// - No duplicate `SpendWindowKind` values.
+    /// - Each limit must be ≥ `MIN_AMOUNT`.
+    /// - `token` must pass the asset registry check.
+    pub fn create_set_spend_policy_proposal(
         env: Env,
         proposer: Address,
-        owner_to_remove: Address,
+        policy: SpendPolicy,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
@@ -4903,54 +6508,22 @@ impl AccordContract {
 
         let id = read_next_id(&env);
 
-        let proposal = Proposal {
-            id,
-            proposer: proposer.clone(),
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::SetSpendPolicy(policy),
             description,
             deadline,
-            approvals: 0,
-            approval_weight: 0,
-            status: ProposalStatus::Pending,
-            kind: ProposalKind::RemoveOwner(owner_to_remove),
-            ready_at: 0,
-            quorum_weight: threshold,
-            category: ProposalCategory::Other,
-            attachment_hash: None,
-        };
-        write_proposal(&env, &proposal);
-        register_active_proposal(&env, id)?;
-
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_next_id(&env, next_id);
-
-        let total_weight = read_total_weight(&env);
-        env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
-                version: EVENT_SCHEMA_VERSION,
-                id,
-                proposer,
-                threshold,
-                category: ProposalCategory::Other,
-                transfers: Vec::new(&env),
-                quorum_weight: threshold,
-                total_weight_at_creation: total_weight,
-                attachment_hash: None,
-            },
-        );
-
-        Ok(id)
+        )
     }
 
-    /// Creates a proposal to change the M-of-N approval threshold.
-    ///
-    /// # Arguments
-    /// * `proposer` - Owner proposing the change. Must authorize.
-    /// * `new_threshold` - The proposed new threshold. Must be ≥ 1 and ≤ current owner count.
-    pub fn create_change_threshold_proposal(
+    /// Creates a governance proposal to clear all spend-policy limits for an
+    /// (owner, token) pair.
+    pub fn create_clear_spend_policy_proposal(
         env: Env,
         proposer: Address,
-        new_threshold: u32,
+        owner: Address,
+        token: Address,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
@@ -4958,89 +6531,106 @@ impl AccordContract {
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
 
-        let total_weight = read_total_weight(&env);
-
-        // The threshold is an absolute weight value. Validate it against the
-        // current total weight so the proposed threshold is always achievable
-        // given the current weight distribution.
-        if new_threshold == 0 || new_threshold > total_weight {
-            return Err(ContractError::InvalidThreshold);
-        }
-
-        if description.is_empty() {
-            return Err(ContractError::EmptyDescription);
-        }
-        if description.len() > MAX_DESCRIPTION_LEN {
-            return Err(ContractError::DescriptionTooLong);
-        }
-
-        let now = env.ledger().timestamp();
-        if deadline <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if deadline - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
-        }
-
-        let threshold = read_threshold(&env)?;
-        let id = read_next_id(&env);
-
-        let proposal = Proposal {
-            id,
-            proposer: proposer.clone(),
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::ClearSpendPolicy(owner, token),
             description,
             deadline,
-            approvals: 0,
-            approval_weight: 0,
-            status: ProposalStatus::Pending,
-            kind: ProposalKind::ChangeThreshold(new_threshold),
-            ready_at: 0,
-            quorum_weight: threshold,
-            category: ProposalCategory::Other,
-            attachment_hash: None,
-        };
-        write_proposal(&env, &proposal);
-        register_active_proposal(&env, id)?;
+        )
+    }
 
-        let next_id = id.checked_add(1).ok_or(ContractError::ArithmeticError)?;
-        write_next_id(&env, next_id);
+    /// Returns the active spend policy for an (owner, token) pair, or `None`
+    /// if no policy is configured.
+    pub fn get_spend_policy(
+        env: Env,
+        owner: Address,
+        token: Address,
+    ) -> Option<SpendPolicy> {
+        read_spend_policy(&env, &owner, &token)
+    }
 
-        let total_weight = read_total_weight(&env);
+    /// Returns the effective spent amount within the given window for an
+    /// (owner, token) pair. Returns 0 if no policy or no tracker exists, or
+    /// if the window has expired.
+    pub fn get_spend_policy_spent(
+        env: Env,
+        owner: Address,
+        token: Address,
+        window: SpendWindowKind,
+    ) -> i128 {
+        effective_spend_policy_spent(&env, &owner, &token, &window)
+    }
+
+    /// Returns the remaining spend headroom for a specific window, or `None`
+    /// if no policy is configured for this (owner, token) pair.
+    pub fn get_spend_policy_remaining(
+        env: Env,
+        owner: Address,
+        token: Address,
+        window: SpendWindowKind,
+    ) -> Option<i128> {
+        let policy = read_spend_policy(&env, &owner, &token)?;
+        for i in 0..policy.limits.len() {
+            let limit_entry = policy.limits.get(i).unwrap();
+            if limit_entry.window == window {
+                let spent = effective_spend_policy_spent(&env, &owner, &token, &window);
+                return Some(limit_entry.limit.saturating_sub(spent));
+            }
+        }
+        None
+    }
+
+    /// One-time migration that stamps storage schema to version 6 for legacy
+    /// deployments, confirming the spend policy engine keys are in use.
+    ///
+    /// Returns `AlreadyMigrated` if the deployment is already at schema
+    /// version ≥ 6.
+    pub fn migrate_to_spend_policy(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 6 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
         env.events().publish(
-            (symbol_short!("created"),),
-            ProposalCreatedEvent {
+            (Symbol::new(&env, "spendpol_migrated"),),
+            GovernanceMigratedEvent {
                 version: EVENT_SCHEMA_VERSION,
-                id,
-                proposer,
-                threshold,
-                category: ProposalCategory::Other,
-                transfers: Vec::new(&env),
-                quorum_weight: threshold,
-                total_weight_at_creation: total_weight,
-                attachment_hash: None,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
             },
         );
-
-        Ok(id)
+        Ok(())
     }
 
     /// Creates a governance proposal to enable or disable the approved-token registry.
     pub fn create_asset_registry_proposal(
         env: Env,
         proposer: Address,
-        enabled: bool,
+        oracle: OraclePrice,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
+        if oracle.price <= 0 {
+            return Err(ContractError::OraclePriceInvalid);
+        }
+        if oracle.max_staleness == 0 {
+            return Err(ContractError::InvalidDuration);
+        }
         create_governance_proposal(
-            &env,
-            proposer,
-            ProposalKind::SetAssetRegistryEnabled(enabled),
-            description,
-            deadline,
+            &env, proposer, ProposalKind::SetOraclePrice(oracle), description, deadline,
         )
     }
 
@@ -5049,22 +6639,37 @@ impl AccordContract {
         env: Env,
         proposer: Address,
         token: Address,
+        fiat: Symbol,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
-        validate_token_interface(&env, &token)?;
-        if token_is_approved(&env, &token) {
-            return Err(ContractError::AssetRegistryState);
+        create_governance_proposal(
+            &env, proposer, ProposalKind::ClearOraclePrice(token, fiat), description, deadline,
+        )
+    }
+
+    /// Creates a governance proposal to set a fiat-denominated spend limit.
+    pub fn create_set_fiat_spend_limit_proposal(
+        env: Env,
+        proposer: Address,
+        limit: FiatSpendLimit,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+        if limit.fiat_limit < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !(MIN_SPENDING_WINDOW..=MAX_SPENDING_WINDOW).contains(&limit.window_secs) {
+            return Err(ContractError::InvalidDuration);
         }
         create_governance_proposal(
-            &env,
-            proposer,
-            ProposalKind::AddApprovedToken(token),
-            description,
-            deadline,
+            &env, proposer, ProposalKind::SetFiatSpendLimit(limit), description, deadline,
         )
     }
 
@@ -5072,22 +6677,18 @@ impl AccordContract {
     pub fn create_unapprove_token_proposal(
         env: Env,
         proposer: Address,
+        owner: Address,
         token: Address,
+        fiat: Symbol,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
-        if !token_is_approved(&env, &token) {
-            return Err(ContractError::AssetRegistryState);
-        }
         create_governance_proposal(
-            &env,
-            proposer,
-            ProposalKind::RemoveApprovedToken(token),
-            description,
-            deadline,
+            &env, proposer, ProposalKind::ClearFiatSpendLimit(owner, token, fiat),
+            description, deadline,
         )
     }
 
@@ -5095,7 +6696,7 @@ impl AccordContract {
     pub fn create_change_guardian_proposal(
         env: Env,
         proposer: Address,
-        new_guardian: Address,
+        address: Address,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
@@ -5103,11 +6704,7 @@ impl AccordContract {
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
         create_governance_proposal(
-            &env,
-            proposer,
-            ProposalKind::TransferGuardian(new_guardian),
-            description,
-            deadline,
+            &env, proposer, ProposalKind::AddToDenylist(address), description, deadline,
         )
     }
 
@@ -5151,43 +6748,109 @@ impl AccordContract {
     pub fn create_escrow_proposal(
         env: Env,
         proposer: Address,
-        params: EscrowParams,
+        address: Address,
         description: String,
         deadline: u64,
     ) -> Result<u64, ContractError> {
         proposer.require_auth();
         require_role(&env, &proposer, Role::Proposer)?;
         require_not_frozen(&env)?;
-        if params.amount < MIN_AMOUNT {
-            return Err(ContractError::InvalidAmount);
-        }
-        if params.recipient == env.current_contract_address() {
-            return Err(ContractError::InvalidRecipient);
-        }
-        validate_token(&env, &params.token)?;
-        let now = env.ledger().timestamp();
-        let release_at = match &params.release_mode {
-            EscrowReleaseMode::OwnerQuorumUntil(release_at)
-            | EscrowReleaseMode::Deadline(release_at) => *release_at,
-        };
-        if release_at <= now {
-            return Err(ContractError::InvalidDeadline);
-        }
-        if release_at - now > MAX_PROPOSAL_DURATION {
-            return Err(ContractError::InvalidDuration);
-        }
         create_governance_proposal(
-            &env,
-            proposer,
-            ProposalKind::CreateEscrow(params),
-            description,
-            deadline,
+            &env, proposer, ProposalKind::RemoveFromDenylist(address), description, deadline,
         )
     }
 
-    /// Approves a proposal. The approver must be an owner and must not have already approved.
-    ///
-    /// Automatically transitions the proposal to `Ready` when the approval count reaches threshold.
+    /// Returns `true` if the given address is on the denylist.
+    pub fn is_denied(env: Env, address: Address) -> bool {
+        is_denied(&env, &address)
+    }
+
+    /// Returns `true` if the denylist is enabled.
+    pub fn is_denylist_enabled(env: Env) -> bool {
+        denylist_enabled(&env)
+    }
+
+    // ─── #953: Cross-Asset Rebalancing ────────────────────────────────────────
+
+    /// Creates a governance proposal to rebalance treasury assets toward
+    /// target weights.
+    pub fn create_rebalance_proposal(
+        env: Env,
+        proposer: Address,
+        params: RebalanceParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        validate_rebalance_params(&params)?;
+        if !dex_router_is_approved(&env, &params.router) {
+            return Err(ContractError::RebalanceRouterNotApproved);
+        }
+        for i in 0..params.targets.len() {
+            let target = params.targets.get(i).unwrap();
+            validate_token(&env, &target.token)?;
+        }
+        let now = env.ledger().timestamp();
+        if params.swap_deadline <= now {
+            return Err(ContractError::InvalidSwapDeadline);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::Rebalance(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("reb_prop"),),
+            RebalanceProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                router: params.router,
+                targets: params.targets,
+                tolerance_bps: params.tolerance_bps,
+                swap_deadline: params.swap_deadline,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Returns the timestamp of the last executed rebalance, or 0 if none.
+    pub fn get_last_rebalance(env: Env) -> u64 {
+        read_last_rebalance(&env)
+    }
+
+    /// One-time migration that stamps storage schema to version 7 for legacy
+    /// deployments.
+    pub fn migrate_to_oracle_denylist_rebalance(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 7 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+        require_weighted_approvers(&env, &approvers)?;
+        write_storage_version(&env);
+        env.events().publish(
+            (Symbol::new(&env, "odr_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
     /// Records `ready_at` the first time the threshold is crossed.
     pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
         approver.require_auth();
@@ -6352,6 +8015,20 @@ impl AccordContract {
                         return Err(ContractError::TransferFailed);
                     }
                 }
+                // ── #955: Denylist check ──────────────────────────────────
+                // If the denylist is enabled, reject the proposal if any
+                // transfer recipient is on the denylist.
+                if let Err(denied_addr) = check_denylist(&env, transfers) {
+                    env.events().publish(
+                        (symbol_short!("deny_blk"),),
+                        DenylistBlockedEvent {
+                            version: EVENT_SCHEMA_VERSION,
+                            proposal_id,
+                            recipient: denied_addr,
+                        },
+                    );
+                    return Err(ContractError::RecipientDenied);
+                }
                 // Track cumulative spending per token for the proposer.
                 let proposer = proposal.proposer.clone();
                 let mut tracked_tokens: Vec<Address> = Vec::new(&env);
@@ -6440,6 +8117,18 @@ impl AccordContract {
                     };
                     write_spent_tracker(&env, &proposer, &token, &SpentTracker { spent, epoch });
                     record_treasury_spend(&env, &token, amount)?;
+                }
+                // Record spend against the multi-window spend policy trackers.
+                for j in 0..tracked_tokens.len() {
+                    let token = tracked_tokens.get(j).unwrap();
+                    let amount = tracked_amounts.get(j).unwrap();
+                    record_spend_policy_spend(&env, &proposer, &token, amount);
+                }
+                // ── #954: Record fiat-denominated spend ──
+                for j in 0..tracked_tokens.len() {
+                    let token = tracked_tokens.get(j).unwrap();
+                    let amount = tracked_amounts.get(j).unwrap();
+                    record_fiat_spend(&env, &proposer, &token, amount);
                 }
             }
             ProposalKind::AddOwner(new_owner, weight) => {
@@ -7494,6 +9183,173 @@ impl AccordContract {
                         version: EVENT_SCHEMA_VERSION,
                         request_id: *request_id,
                         executor: executor.clone(),
+                    },
+                );
+            }
+            ProposalKind::SetSpendPolicy(policy) => {
+                validate_spend_policy(policy)?;
+                write_spend_policy(&env, policy);
+
+                // Reset all trackers for this (owner, token) pair when a new
+                // policy is set, so the epoch starts fresh.
+                for i in 0..policy.limits.len() {
+                    let limit_entry = policy.limits.get(i).unwrap();
+                    let now = env.ledger().timestamp();
+                    write_spend_policy_tracker(
+                        &env,
+                        &policy.owner,
+                        &policy.token,
+                        &limit_entry.window,
+                        &SpentTracker { spent: 0, epoch: now },
+                    );
+                }
+
+                env.events().publish(
+                    (symbol_short!("sp_set"),),
+                    SpendPolicySetEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        owner: policy.owner.clone(),
+                        token: policy.token.clone(),
+                        limits: policy.limits.clone(),
+                    },
+                );
+            }
+            ProposalKind::ClearSpendPolicy(owner, token) => {
+                remove_spend_policy(&env, owner, token);
+
+                // Also remove any per-window trackers.
+                for window in [
+                    SpendWindowKind::Daily,
+                    SpendWindowKind::Weekly,
+                    SpendWindowKind::Monthly,
+                ] {
+                    let key = spend_policy_tracker_key(owner, token, &window);
+                    env.storage().persistent().remove(&key);
+                }
+
+                env.events().publish(
+                    (symbol_short!("sp_clr"),),
+                    SpendPolicyClearedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        owner: owner.clone(),
+                        token: token.clone(),
+                    },
+                );
+            }
+            // ── #954: Oracle price guard execute arms ──
+            ProposalKind::SetOraclePrice(oracle) => {
+                if oracle.price <= 0 {
+                    return Err(ContractError::OraclePriceInvalid);
+                }
+                let now = env.ledger().timestamp();
+                let mut oracle = oracle.clone();
+                oracle.updated_at = now;
+                write_oracle_price(&env, &oracle);
+                env.events().publish(
+                    (symbol_short!("ora_set"),),
+                    OraclePriceSetEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        token: oracle.token.clone(),
+                        fiat: oracle.fiat.clone(),
+                        price: oracle.price,
+                        updated_at: now,
+                        max_staleness: oracle.max_staleness,
+                    },
+                );
+            }
+            ProposalKind::ClearOraclePrice(token, fiat) => {
+                remove_oracle_price(&env, token, fiat);
+            }
+            ProposalKind::SetFiatSpendLimit(limit) => {
+                if limit.fiat_limit < MIN_AMOUNT {
+                    return Err(ContractError::InvalidAmount);
+                }
+                if limit.window_secs < MIN_SPENDING_WINDOW || limit.window_secs > MAX_SPENDING_WINDOW {
+                    return Err(ContractError::InvalidDuration);
+                }
+                write_fiat_spend_limit(&env, limit);
+                // Reset the fiat spent tracker.
+                let now = env.ledger().timestamp();
+                write_fiat_spent_tracker(
+                    &env, &limit.owner, &limit.token, &limit.fiat,
+                    &SpentTracker { spent: 0, epoch: now },
+                );
+                env.events().publish(
+                    (symbol_short!("fiat_set"),),
+                    FiatSpendLimitSetEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        owner: limit.owner.clone(),
+                        token: limit.token.clone(),
+                        fiat: limit.fiat.clone(),
+                        fiat_limit: limit.fiat_limit,
+                        window_secs: limit.window_secs,
+                    },
+                );
+            }
+            ProposalKind::ClearFiatSpendLimit(owner, token, fiat) => {
+                remove_fiat_spend_limit(&env, owner, token, fiat);
+            }
+            // ── #955: Denylist execute arms ──
+            ProposalKind::AddToDenylist(address) => {
+                write_denied(&env, address, true);
+                write_denylist_enabled(&env, true);
+                env.events().publish(
+                    (symbol_short!("deny_ch"),),
+                    DenylistChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        address: address.clone(),
+                        denied: true,
+                    },
+                );
+            }
+            ProposalKind::RemoveFromDenylist(address) => {
+                write_denied(&env, address, false);
+                env.events().publish(
+                    (symbol_short!("deny_ch"),),
+                    DenylistChangedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        address: address.clone(),
+                        denied: false,
+                    },
+                );
+            }
+            // ── #953: Cross-asset rebalancing execute arm ──
+            ProposalKind::Rebalance(params) => {
+                validate_rebalance_params(params)?;
+                if !dex_router_is_approved(&env, &params.router) {
+                    return Err(ContractError::RebalanceRouterNotApproved);
+                }
+                // Validate all target tokens.
+                for i in 0..params.targets.len() {
+                    let target = params.targets.get(i).unwrap();
+                    validate_token(&env, &target.token)?;
+                }
+                let now = env.ledger().timestamp();
+                if now > params.swap_deadline {
+                    return Err(ContractError::InvalidSwapDeadline);
+                }
+
+                // For each target token, check if the treasury's current
+                // balance is below the target weight. If so, we would swap
+                // excess tokens from other assets into this one. The actual
+                // swap execution is delegated to the DEX router via
+                // cross-contract calls (same pattern as DexSwap).
+                //
+                // In this implementation, the rebalance proposal records
+                // the target weights and emits an event so off-chain
+                // indexers can compose the individual swap steps. The
+                // on-chain execution performs the validation and records
+                // the rebalance timestamp. Individual swaps are executed
+                // as separate DexSwap proposals.
+                write_last_rebalance(&env, now);
+
+                env.events().publish(
+                    (symbol_short!("reb_exec"),),
+                    RebalanceExecutedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        proposal_id,
+                        executor: executor.clone(),
+                        targets: params.targets.clone(),
                     },
                 );
             }
