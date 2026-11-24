@@ -11376,8 +11376,9 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
 fn storage_migration_registry_lists_supported_versions() {
     let (_, client, _, _, _, _, _) = setup(2);
     let supported = client.get_supported_storage_versions();
-    assert_eq!(supported.len(), 3);
+    assert_eq!(supported.len(), 4);
     assert!(supported.contains(0));
+    assert!(supported.contains(3));
     assert!(supported.contains(STORAGE_SCHEMA_VERSION));
     assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
     assert!(!client.is_storage_version_supported(&99));
@@ -12170,34 +12171,33 @@ fn test_treasury_zero_limit_blocks_outflows() {
 }
 
 #[test]
-fn test_storage_version_2_and_migrate_to_v2() {
+fn test_storage_version_3_and_migrate_to_v3() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
-    // Fresh deployment initializes at version 2
-    assert_eq!(client.get_storage_version(), 2);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
 
-    // migrate_to_v2 fails if already at version 2
     let mut approvers = Vec::new(&env);
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b.clone());
-    let res = client.try_migrate_to_v2(&approvers);
-    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyMigrated);
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &3, &3),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
 
-    // Simulate pre-v2 contract at storage version 1
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&storage_version_key(), &1_u32);
+        env.storage().instance().set(&storage_version_key(), &2_u32);
     });
-    assert_eq!(client.get_storage_version(), 1);
+    assert_eq!(client.get_storage_version(), 2);
 
-    // migrate_to_v2 without quorum fails
     let mut solo_approver = Vec::new(&env);
     solo_approver.push_back(owner_a.clone());
-    let res = client.try_migrate_to_v2(&solo_approver);
-    assert_eq!(res.unwrap_err().unwrap(), ContractError::ThresholdNotMet);
+    assert_eq!(
+        client.try_migrate_storage(&solo_approver, &2, &3),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
 
-    // migrate_to_v2 with quorum succeeds and stamps version 2
-    client.migrate_to_v2(&approvers);
-    assert_eq!(client.get_storage_version(), 2);
+    client.migrate_storage(&approvers, &2, &3);
+    assert_eq!(client.get_storage_version(), 3);
 }
 
 // ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
@@ -12547,5 +12547,199 @@ proptest! {
         prop_assert_eq!(simulation.transfer_count, count);
         prop_assert_eq!(simulation.distinct_token_count, 1);
         prop_assert_eq!(simulation.owner_spending_limit_checks, 1);
+    }
+}
+
+
+#[test]
+fn delegation_create_renew_revoke_lifecycle() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let expiry = NOW + 500;
+
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+    assert_eq!(
+        client.get_delegation(&owner_b),
+        Some(Delegation {
+            delegator: owner_b.clone(),
+            delegate: owner_a.clone(),
+            weight: 1,
+            expiry: Some(expiry),
+        })
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_a), 2);
+    assert_eq!(client.get_effective_weight(&owner_b), 0);
+
+    let renewed_expiry = NOW + 1_000;
+    client.renew_delegation(&owner_b, &renewed_expiry);
+    assert_eq!(
+        client.get_delegation(&owner_b).unwrap().expiry,
+        Some(renewed_expiry)
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    client.revoke_delegation(&owner_b);
+    assert_eq!(client.get_delegation(&owner_b), None);
+    assert_eq!(client.get_delegated_weight(&owner_a), 0);
+    assert_eq!(client.get_effective_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_b), 1);
+}
+
+#[test]
+fn delegation_cap_rejects_excess_incoming_weight() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let expiry = NOW + 500;
+
+    assert_eq!(client.get_delegate_weight_cap(), 1);
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    assert_eq!(
+        client.try_create_delegation(&owner_c, &owner_a, &1, &expiry),
+        Err(Ok(ContractError::DelegateWeightCapExceeded))
+    );
+    assert_eq!(client.get_delegation(&owner_c), None);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+#[test]
+fn delegation_validation_rejects_invalid_inputs() {
+    let (env, client, owner_a, owner_b, _, non_owner, _) = setup(2);
+    let expiry = NOW + 500;
+
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_a, &1, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &0, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &2, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &1, &NOW),
+        Err(Ok(ContractError::InvalidDelegationExpiry))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &non_owner, &1, &expiry),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_renew_delegation(&owner_a, &expiry),
+        Err(Ok(ContractError::DelegationNotFound))
+    );
+    assert_eq!(
+        client.try_revoke_delegation(&owner_a),
+        Err(Ok(ContractError::DelegationNotFound))
+    );
+}
+
+#[test]
+fn expired_delegation_can_be_renewed_without_recreating() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let first_expiry = NOW + 10;
+    client.create_delegation(&owner_b, &owner_a, &1, &first_expiry);
+
+    set_timestamp(&env, NOW + 11);
+    assert_eq!(client.get_delegated_weight(&owner_a), 0);
+    assert_eq!(client.get_effective_weight(&owner_a), 1);
+
+    let renewed_expiry = NOW + 100;
+    client.renew_delegation(&owner_b, &renewed_expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_a), 2);
+
+    assert_eq!(
+        client.try_renew_delegation(&owner_b, &renewed_expiry),
+        Err(Ok(ContractError::InvalidDelegationExpiry))
+    );
+}
+
+#[test]
+fn delegation_replacement_preserves_cap_invariant() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let expiry = NOW + 500;
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+
+    assert_eq!(
+        client.try_create_delegation(&owner_b, &owner_a, &1, &expiry),
+        Ok(Ok(()))
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    client.revoke_delegation(&owner_b);
+    client.create_delegation(&owner_c, &owner_a, &1, &expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+#[test]
+fn migration_to_v3_rebuilds_delegated_weight_index() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let expiry = NOW + 500;
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&storage_version_key(), &2_u32);
+        env.storage()
+            .persistent()
+            .remove(&delegated_weight_key(&owner_a));
+    });
+    assert_eq!(client.get_delegate_weight_cap(), 1);
+
+    client.migrate_storage(&approvers, &2, &3);
+    env.as_contract(&client.address, || {
+        assert_eq!(read_delegated_weight(&env, &owner_a), 1);
+    });
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn delegated_weight_never_exceeds_cap_in_property(weight in 1u32..=3, pct in 1u32..=50) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(weight);
+        weights.push_back(weight);
+        weights.push_back(weight);
+        client.initialize(&owners, &weights, &2, &0);
+
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&max_single_owner_weight_pct_key(), &pct);
+        });
+
+        let cap = client.get_delegate_weight_cap();
+        let expiry = NOW + 100;
+        let first = client.try_create_delegation(&owner_b, &owner_a, &weight, &expiry);
+        let second = client.try_create_delegation(&owner_c, &owner_a, &weight, &expiry);
+
+        prop_assert!(client.get_delegated_weight(&owner_a) <= cap);
+        if first.is_ok() && second.is_ok() {
+            prop_assert!(cap >= weight.saturating_mul(2));
+        }
     }
 }

@@ -108,6 +108,8 @@ Each key is a separate `LedgerEntry` with its own independently tracked TTL.
 | Key                   | Type               | Description                                | TTL — bump / threshold (ledgers) | Approx. cost (XLM / 30 days) |
 | --------------------- | ------------------ | ------------------------------------------ | -------------------------------- | ---------------------------- |
 | `OWNERS`              | `Map<Address,u32>` | Owner address → voting weight map (max 20) | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("DELEG", delegator)` | `Delegation`       | Per-delegator outgoing delegation          | 518,400 / 17,280                 | ~0.052 XLM                   |
+| `("DLGWT", delegate)` | `u32`              | Indexed active incoming delegated weight   | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("PROP", id)`        | `Proposal`         | Per-proposal state                         | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("APPR", id, owner)` | `u32`              | Per-owner approval weight per proposal     | 518,400 / 17,280                 | ~0.052 XLM                   |
 | `("SREC", id)`        | `SocialRecoveryRequest` | Guardian-quorum recovery request      | 518,400 / 17,280                 | ~0.052 XLM                   |
@@ -158,6 +160,34 @@ and abstention. Owners revoke it with `revoke_soft_approval` before changing
 to a binding approval or abstention. The same auth, owner/role, frozen-state,
 proposal-status, and duplicate-vote precedence is used for every vote path.
 
+### Delegation
+
+An owner may delegate their voting weight to another current owner with
+`create_delegation(delegator, delegate, weight, expiry)`. The delegator must
+authenticate, hold the `Approver` role, and delegate no more than their raw
+owner weight. The delegate must be a different current owner, the weight must
+be positive, and the expiry must be a concrete future timestamp. A new
+delegation replaces any existing outgoing delegation, so each delegator has at
+most one `("DELEG", delegator)` entry.
+
+Incoming delegated weight is capped independently of an owner's raw weight:
+the absolute cap is `max(1, floor(TWGT * MAXOWNP / 100))`, where `MAXOWNP` is
+the governance-configured maximum single-owner weight percentage. Only active
+delegations from other owners count toward the cap; self-delegations and
+expired delegations are ignored. `create_delegation` rejects a replacement that
+would exceed the cap and leaves the previous delegation unchanged.
+
+`renew_delegation` extends the expiry of an existing delegation without
+changing its weight or creating a second record. The new expiry must be later
+than both the current time and the previous expiry, so renewal can only
+lengthen a delegation. `revoke_delegation` removes the caller's outgoing
+delegation. Each mutation emits a versioned typed event.
+
+`("DLGWT", delegate)` is a rebuildable index of active incoming delegated
+weight. It is maintained on create/renew/revoke and rebuilt by the `2` → `3`
+storage migration. `get_delegated_weight` recomputes from the authoritative
+delegation entries, while `get_delegate_weight_cap` exposes the current cap.
+
 ### Key Naming Conventions
 
 Soroban storage keys must be **short symbols** (≤ 9 bytes) because the XDR `Symbol` type allocates one byte per character with no heap overhead — longer names would require a `Bytes` type, adding allocation overhead and increasing each key's on-chain storage footprint.
@@ -183,6 +213,8 @@ Accord uses two patterns:
 
 | Tuple                 | Description                                             |
 | --------------------- | ------------------------------------------------------- |
+| `("DELEG", delegator)` | Outgoing delegation record for one delegator           |
+| `("DLGWT", delegate)` | Indexed active incoming delegated weight                |
 | `("PROP", id)`        | Proposal record keyed by proposal ID (u64)              |
 | `("APPR", id, owner)` | Approval flag keyed by proposal ID and approver address |
 | `("PDEP", id)`        | Proposal dependency DAG parent IDs list (`Vec<u64>`)   |
@@ -203,13 +235,15 @@ The contract records an explicit **storage-schema version** in instance storage 
 | ------- | ---------- | ------------------------------- |
 | `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
 | `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
-| `2` (current) | `initialize`, `migrate_to_v2`, `migrate_to_abstention_storage`, `migrate_storage` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury limits/accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`), guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. `migrate_storage` is the registry-based path; `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints. |
+| `2` | `migrate_to_v2`, `migrate_to_abstention_storage`, `migrate_storage` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury limits/accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`), guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp this version. |
+| `3` (current) | `initialize`, `migrate_storage` | Rebuildable incoming-delegation weight index (`("DLGWT", delegate)`) supporting the incoming delegation weight cap and expiry renewal. |
 
 **Upgrade path between versions:**
 
 - **`0` → `1` (legacy deployment):** deploy the current WASM with `upgrade`, then run `migrate_to_weighted_governance` (when `is_governance_migrated` is `false`) and `migrate_to_rbac` (when `get_role_version` is `0`). Each migration stamps `STOVER` with the current version when it completes. Confirm the result with `get_storage_version`.
 - **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
 - **`1` → `2`:** run `migrate_storage(approvers, 1, 2)`. The registry `SUPPORTED_STORAGE_VERSIONS` lists every readable layout; `migrate_storage` requires the caller's `from_version` to equal the recorded version, refuses unknown or newer targets, and refuses skipped, repeated, or backward steps. Legacy (`0`) deployments must finish the legacy migrations first. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp the same version.
+- **`2` → `3`:** run `migrate_storage(approvers, 2, 3)`. The migration rebuilds every `("DLGWT", delegate)` entry from active `("DELEG", delegator)` records before stamping `STOVER = 3`.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
@@ -862,8 +896,11 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("approved",)` | `ProposalApprovedEvent { id, approver, approvals, threshold, weight, cumulative_weight }` | Approval bar update |
 | `("revoked",)`  | `ProposalRevokedEvent { id, approver, approvals, weight, cumulative_weight }`             | Approval bar update |
 | `("executed",)` | `ProposalExecutedEvent { id, executor }`                        | Execution history   |
+| `("delegadd",)` | `DelegationCreatedEvent { delegator, delegate, weight, expiry, total_delegated_weight, cap, version }` | Delegation feed |
+| `("delegren",)` | `DelegationRenewedEvent { delegator, delegate, old_expiry, new_expiry, version }` | Delegation renewals |
+| `("delegrev",)` | `DelegationRevokedEvent { delegator, delegate, weight, version }` | Delegation revocations |
 
-These four cover the core approve/execute lifecycle; the contract emits 22 distinct event types in total (governance, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
+These four cover the core approve/execute lifecycle; the contract emits 25 distinct event types in total (governance, delegation, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 
 ### Event Schema Versioning
 
@@ -1220,7 +1257,7 @@ Together, these mean the indexer can safely re-run any range of ledgers — afte
 
 ### 13.4 Event Type to Storage Mapping
 
-Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 22 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
+Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 25 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
 
 | Topic | Event struct (`contracts/accord/src/lib.rs`) | Updates |
 | --- | --- | --- |
@@ -1243,6 +1280,9 @@ Every event the contract emits carries a topic symbol (§7) that the indexer use
 | `r_resum` | `RecurringPaymentResumedEvent` | `recurring_schedules` (status), `events` |
 | `r_mod` | `RecurringPaymentModifiedEvent` | `recurring_schedules` (schedule fields), `events` |
 | `r_cncl` | `RecurringPaymentCancelledEvent` | `recurring_schedules` (status), `events` |
+| `delegadd` | `DelegationCreatedEvent` | `events` |
+| `delegren` | `DelegationRenewedEvent` | `events` |
+| `delegrev` | `DelegationRevokedEvent` | `events` |
 | `guard_set` | `GuardianSetEvent` | `events` |
 | `frozen` | `FrozenEvent` | `events` |
 | `unfrozen` | `UnfrozenEvent` | `events` |
