@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { computeAnomalies } from "./anomalies.js";
 import { resolveAnomalyConfig, resolveRunwayConfig } from "./config.js";
@@ -7,12 +8,18 @@ import { parseDestination, sendTestNotification } from "./notifications.js";
 import { defaultValidator, QUARANTINE_REASONS } from "./event-validation.js";
 import { createSubscriptionManager } from "./subscriptions.js";
 import { apiKeyOpsRouteLabel, createApiKeyOps, extractApiKey } from "./api-keys.js";
-import { createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
+import { authorizeAdmin, createWebhookOps, webhookOpsRouteLabel } from "./webhook-ops.js";
+import { USAGE_KINDS } from "./metering.js";
 
 const ROUTES = new Set([
   "/health", "/healthz", "/readyz", "/status", "/lag", "/runway", "/anomalies", "/metrics", "/ledger", "/events", "/reconciliation", "/webhooks/deliveries",
   "/notifications/destinations", "/notifications/deliveries", "/graphql", "/graphql/subscriptions",
-  "/schemas", "/quarantine",
+  "/schemas", "/quarantine", "/usage",
+]);
+/** Routes whose successful responses are metered, and as what. */
+const METERED_ROUTES = new Map([
+  ["/ledger", "api_call"], ["/events", "api_call"], ["/reconciliation", "api_call"], ["/graphql/subscriptions", "api_call"],
+  ["/runway", "report"], ["/anomalies", "report"],
 ]);
 const QUARANTINE_STATUSES = ["quarantined", "released", "discarded"];
 const DELIVERY_STATUSES = ["pending", "delivered", "dead"];
@@ -147,7 +154,7 @@ async function buildStatus({ store, readiness, startLedger, finalityLag, electio
  *   POST /notifications/destinations/:id/test          send a synthetic test event right away
  *   /notifications/deliveries                          outbox inspection (?status=dead, ?destination=<id>)
  */
-export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false, lagMonitor = null, runwayConfig = resolveRunwayConfig({}), anomalyConfig = resolveAnomalyConfig({}) }) {
+export function createApi({ store, readiness, metrics, startLedger, finalityLag, tokenAddresses, subscriptions = null, election = null, webhookDashboard = {}, webhookSubscriptions = [], validator = defaultValidator, apiKeys = null, apiKeysEnabled = false, lagMonitor = null, metering = null, runwayConfig = resolveRunwayConfig({}), anomalyConfig = resolveAnomalyConfig({}) }) {
   const activeSubscriptions = subscriptions ?? createSubscriptionManager({ store, metrics });
   const webhookOps = createWebhookOps({ store, metrics, config: webhookDashboard, subscriptions: webhookSubscriptions });
 
@@ -169,7 +176,10 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
       response.setHeader("x-ratelimit-remaining", String(result.quota.remaining));
       response.setHeader("x-ratelimit-reset", String(result.quota.resetAt));
     }
-    if (result.ok) return true;
+    if (result.ok) {
+      request.meteringSubject = result.key.id;
+      return true;
+    }
     if (result.status === 401) response.setHeader("www-authenticate", 'Bearer realm="accord-indexer-api"');
     if (result.status === 429) response.setHeader("retry-after", String(result.retryAfterSeconds));
     sendJson(response, result.status, { error: result.error });
@@ -304,6 +314,23 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
         return sendJson(response, 200, { status: lag.level, ...lagSummary(lag) });
       }
 
+      case "/usage": {
+        if (!authorizeAdmin(request, response, webhookDashboard.adminToken, "usage reporting")) return;
+        const kind = url.searchParams.get("kind") ?? undefined;
+        if (kind && !USAGE_KINDS.includes(kind)) throw new Error(`kind must be one of: ${USAGE_KINDS.join(", ")}`);
+        const usage = await (metering ?? { summary: async () => [] }).summary({
+          from: parseDateParam(url.searchParams.get("from"), "from"),
+          to: parseDateParam(url.searchParams.get("to"), "to"),
+          kind,
+          subject: url.searchParams.get("subject") ?? undefined,
+        });
+        return sendJson(response, 200, {
+          enabled: Boolean(metering?.enabled),
+          usage,
+          ...(metering?.enabled ? { billing: await metering.counts() } : {}),
+        });
+      }
+
       case "/metrics":
         response.writeHead(200, { "content-type": METRICS_CONTENT_TYPE });
         return response.end(metrics.render());
@@ -412,6 +439,16 @@ export function createApi({ store, readiness, metrics, startLedger, finalityLag,
     // Unknown paths share one label so a scanner cannot blow up metric cardinality.
     const routeLabel = routeLabelFor(url.pathname);
     response.on("finish", () => {
+      const meteredKind = METERED_ROUTES.get(url.pathname);
+      if (metering && meteredKind && request.method === "GET" && response.statusCode < 400) {
+        // A request is not replayable, so each one gets its own id.
+        void metering.recordSafely({
+          eventId: `${meteredKind}:${randomUUID()}`,
+          kind: meteredKind,
+          subject: request.meteringSubject ?? "anonymous",
+          metadata: { route: routeLabel },
+        });
+      }
       metrics.httpRequests.inc({ method: request.method, route: routeLabel, status: response.statusCode });
       metrics.httpDuration.observe(
         { method: request.method, route: routeLabel },

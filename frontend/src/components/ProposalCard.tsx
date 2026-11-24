@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Check, Copy, Link2, ShieldAlert } from "lucide-react";
 import { canApprove, canExecute, formatWeightPercent, missingRoleTooltip, shortenAddr } from "../lib/soroban";
+import { buildProposalShareUrl } from "../lib/shareLinks";
 import type { Proposal, ProposalCategory, ProposalKind } from "../types/accord";
 import { ApprovalBar } from "./ApprovalBar";
 import { MarkdownDescription } from "./MarkdownDescription";
@@ -197,7 +198,7 @@ export function ProposalCard({
 
   const copyProposalLink = async () => {
     try {
-      const proposalUrl = new URL(`/proposals/${proposal.id}`, window.location.origin).toString();
+      const proposalUrl = buildProposalShareUrl(window.location.origin, proposal.id);
       await navigator.clipboard.writeText(proposalUrl);
       setCopiedLink(true);
     } catch (err) {

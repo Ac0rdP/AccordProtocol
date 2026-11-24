@@ -58,6 +58,8 @@ export function resolveStoreConfig(env = process.env) {
  *   listQuarantinedEvents / countQuarantinedEvents / resolveQuarantinedEvent
  *   createApiKey / getApiKey / listApiKeys / rotateApiKey / revokeApiKey
  *   consumeApiKeyQuota({keyId, windowStart, limit, now}) -> {allowed, used} / pruneApiKeyUsage({before})
+ *   recordUsageEvent({eventId, kind, subject, quantity, occurredAt, metadata, now}) -> boolean   false when already recorded
+ *   claimDueUsageEvents / completeUsageEvent / requeueDeadUsageEvents / countUsageEvents / summarizeUsage
  *   acquireLease({name, holderId, region, ttlMs, now}) -> {acquired, lease}
  *   getLease(name) / releaseLease({name, holderId, now})
  *   close()

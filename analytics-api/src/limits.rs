@@ -170,6 +170,8 @@ impl RateLimiter {
 struct CachedResponse {
     status: StatusCode,
     content_type: Option<HeaderValue>,
+    /// Replayed on hits so `Cache-Control` survives the in-memory cache.
+    cache_control: Option<HeaderValue>,
     body: Bytes,
     stored: Instant,
 }
@@ -277,7 +279,12 @@ impl Limits {
 /// Only read endpoints that run database queries are worth caching.
 fn is_cacheable(method: &Method, path: &str) -> bool {
     method == Method::GET
-        && (path == "/proposals" || path.starts_with("/proposals/") || path.starts_with("/spend/"))
+        && (path == "/proposals"
+            || path.starts_with("/proposals/")
+            || path.starts_with("/spend/")
+            || path == "/treasury/kpis"
+            || path == "/benchmarks/peers"
+            || path.starts_with("/costs/"))
 }
 
 /// Parameters in a different order are the same query, so sort them.
@@ -347,6 +354,11 @@ fn cached_to_response(cached: CachedResponse) -> Response {
             .headers_mut()
             .insert(header::CONTENT_TYPE, content_type);
     }
+    if let Some(cache_control) = cached.cache_control {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, cache_control);
+    }
     response
 }
 
@@ -408,6 +420,7 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
                                 CachedResponse {
                                     status: parts.status,
                                     content_type: parts.headers.get(header::CONTENT_TYPE).cloned(),
+                                    cache_control: parts.headers.get(header::CACHE_CONTROL).cloned(),
                                     body: bytes.clone(),
                                     stored: Instant::now(),
                                 },
@@ -495,6 +508,7 @@ mod tests {
         CachedResponse {
             status: StatusCode::OK,
             content_type: None,
+            cache_control: None,
             body: Bytes::from_static(body.as_bytes()),
             stored,
         }

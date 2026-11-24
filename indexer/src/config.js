@@ -276,6 +276,41 @@ export function resolveApiKeysConfig(env = process.env) {
 }
 
 /**
+ * Resolves usage metering and billing event hooks.
+ *
+ * Safe defaults:
+ *   - enabled: false. Nothing is recorded or emitted until USAGE_METERING_ENABLED=true.
+ *   - hookUrl: "" - usage is recorded and summarised, but not pushed anywhere.
+ *     A hook URL must be https (http only for localhost) and needs a secret of
+ *     16+ characters; otherwise the hook is ignored and `hookRejected` is set.
+ *   - maxAttempts / backoffBaseMs: 5 attempts, 5s doubling, then dead-lettered
+ *   - batchSize: 100 usage records handed to the hook per tick
+ */
+export function resolveUsageMeteringConfig(env = process.env) {
+  const hookUrl = env.USAGE_BILLING_HOOK_URL?.trim() || "";
+  const hookSecret = env.USAGE_BILLING_HOOK_SECRET?.trim() || "";
+  let hookValid = false;
+  if (hookUrl) {
+    try {
+      const parsed = new URL(hookUrl);
+      const local = ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+      hookValid = (parsed.protocol === "https:" || (parsed.protocol === "http:" && local)) && hookSecret.length >= 16;
+    } catch {
+      hookValid = false;
+    }
+  }
+  return {
+    enabled: parseBool(env.USAGE_METERING_ENABLED, false),
+    hookUrl: hookValid ? hookUrl : "",
+    hookSecret: hookValid ? hookSecret : "",
+    hookRejected: Boolean(hookUrl) && !hookValid,
+    maxAttempts: parseIntSafe(env.USAGE_BILLING_MAX_ATTEMPTS, 5, 1, 50),
+    backoffBaseMs: parseIntSafe(env.USAGE_BILLING_BACKOFF_BASE_MS, 5000, 0, 3_600_000),
+    batchSize: parseIntSafe(env.USAGE_BILLING_BATCH_SIZE, 100, 1, 1000),
+  };
+}
+
+/**
  * Resolves the outflow anomaly detection settings.
  *
  * Safe defaults: a 30-day baseline, scoring the last 7 days, no flag until 10
@@ -303,6 +338,7 @@ export function loadIndexerConfig(env = process.env) {
     webhookDashboard: resolveWebhookDashboardConfig(env),
     eventValidation: resolveEventValidationConfig(env),
     apiKeys: resolveApiKeysConfig(env),
+    usageMetering: resolveUsageMeteringConfig(env),
     backfill: resolveBackfillConfig(env),
     runway: resolveRunwayConfig(env),
     anomalies: resolveAnomalyConfig(env),

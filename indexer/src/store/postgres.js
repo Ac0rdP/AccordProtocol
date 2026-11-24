@@ -912,6 +912,73 @@ export async function openPostgresStore({ connectionString, schema, poolMax = 10
       return rowCount;
     },
 
+    /** The usage methods below follow the SQLite store's contract. */
+    async recordUsageEvent({ eventId, kind, subject, quantity = 1, occurredAt, metadata = {}, now }) {
+      const { rowCount } = await pool.query(
+        `INSERT INTO usage_events (event_id, kind, subject, quantity, occurred_at, metadata, next_attempt_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+         ON CONFLICT (event_id) DO NOTHING`,
+        [eventId, kind, subject, quantity, occurredAt, JSON.stringify(metadata), now]
+      );
+      return rowCount > 0;
+    },
+
+    async claimDueUsageEvents({ now, limit }) {
+      const { rows } = await pool.query(
+        `SELECT id, event_id, kind, subject, quantity, occurred_at, metadata, attempts
+         FROM usage_events WHERE status = 'pending' AND next_attempt_at <= $1 ORDER BY id ASC LIMIT $2`,
+        [now, limit]
+      );
+      return rows.map((row) => ({
+        id: Number(row.id),
+        eventId: row.event_id,
+        kind: row.kind,
+        subject: row.subject,
+        quantity: Number(row.quantity),
+        occurredAt: iso(row.occurred_at),
+        metadata: JSON.parse(row.metadata ?? "{}"),
+        attempts: Number(row.attempts),
+      }));
+    },
+
+    async completeUsageEvent({ id, outcome, attempts, nextAttemptAt = null, error = null, now }) {
+      await pool.query(
+        `UPDATE usage_events SET status = $2, attempts = $3, last_error = $4,
+           next_attempt_at = COALESCE($5::timestamptz, next_attempt_at),
+           emitted_at = CASE WHEN $7 = 'emitted' THEN $6::timestamptz ELSE emitted_at END
+         WHERE id = $1`,
+        [id, outcome === "retry" ? "pending" : outcome, attempts, error, nextAttemptAt, now, outcome]
+      );
+    },
+
+    async requeueDeadUsageEvents({ now }) {
+      const { rowCount } = await pool.query(
+        "UPDATE usage_events SET status = 'pending', attempts = 0, next_attempt_at = $1 WHERE status = 'dead'",
+        [now]
+      );
+      return rowCount;
+    },
+
+    async countUsageEvents() {
+      const counts = { pending: 0, emitted: 0, dead: 0 };
+      const { rows } = await pool.query("SELECT status, COUNT(*) AS count FROM usage_events GROUP BY status");
+      for (const row of rows) counts[row.status] = Number(row.count);
+      return counts;
+    },
+
+    async summarizeUsage({ from, to, kind, subject }) {
+      const where = ["occurred_at >= $1", "occurred_at < $2"];
+      const values = [from ?? "0001-01-01T00:00:00.000Z", to ?? "9999-12-31T23:59:59.999Z"];
+      if (kind) { values.push(kind); where.push(`kind = $${values.length}`); }
+      if (subject) { values.push(subject); where.push(`subject = $${values.length}`); }
+      const { rows } = await pool.query(
+        `SELECT kind, subject, COUNT(*) AS events, SUM(quantity) AS quantity FROM usage_events
+         WHERE ${where.join(" AND ")} GROUP BY kind, subject ORDER BY kind, subject`,
+        values
+      );
+      return rows.map((row) => ({ kind: row.kind, subject: row.subject, events: Number(row.events), quantity: Number(row.quantity) }));
+    },
+
     /** Same contract as the SQLite store; the upsert is a single atomic statement. */
     async acquireLease({ name, holderId, region = "", ttlMs, now = new Date().toISOString() }) {
       const expiresAt = new Date(Date.parse(now) + ttlMs).toISOString();
