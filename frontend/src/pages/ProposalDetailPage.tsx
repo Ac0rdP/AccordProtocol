@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
+import { Check, Link2 } from "lucide-react";
+import { buildProposalShareUrl, parseProposalId } from "../lib/shareLinks";
 import { getTokenBalanceOf, getTreasuryTokenBalance } from "../lib/contract";
 import { previewProposalExecution, type ProposalExecutionDryRun } from "../lib/transactionPreview";
 import { rawCidFromDigestHex } from "../lib/ipfs";
@@ -28,6 +30,11 @@ type ProposalDetailPageProps = {
   walletAddress: string | null;
   onApprove: (id: number) => void;
   onExecute: (id: number) => void;
+  /**
+   * Forces the read-only view. Without a wallet the page is always read-only:
+   * the proposal stays fully readable, but no write action is offered.
+   */
+  readOnly?: boolean;
   /** Forces the loading state (used by the page-state matrix tests). */
   loading?: boolean;
   /** Forces the error state (used by the page-state matrix tests). */
@@ -102,19 +109,27 @@ export function ProposalDetailPage({
   walletAddress,
   onApprove,
   onExecute,
+  readOnly = false,
   loading = false,
   error = null,
   onRetry,
 }: ProposalDetailPageProps) {
   const { id } = useParams();
-  const proposalId = Number(id);
-  const proposal = Number.isInteger(proposalId)
+  const proposalId = parseProposalId(id);
+  const proposal = proposalId !== null
     ? proposals.find((candidate) => candidate.id === proposalId)
     : undefined;
   const connected = Boolean(walletAddress);
-  const showApprove = proposal?.status === "pending" && !proposal.userHasApproved;
-  const showExecute = connected && proposal?.status === "ready";
+  const isReadOnly = readOnly || !connected;
+  const showApprove =
+    !isReadOnly && proposal?.status === "pending" && !proposal.userHasApproved;
+  const showExecute = !isReadOnly && connected && proposal?.status === "ready";
+  const shareUrl =
+    proposalId !== null && typeof window !== "undefined"
+      ? buildProposalShareUrl(window.location.origin, proposalId)
+      : "";
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [copiedShareLink, setCopiedShareLink] = useState(false);
 
   const [events, setEvents] = useState<ProposalEvent[]>([]);
   const [loadingEvents, setLoadingEvents] = useState<boolean>(true);
@@ -249,6 +264,22 @@ export function ProposalDetailPage({
     return () => { active = false; };
   }, [proposal?.id, proposal?.status, proposal?.kind, proposal?.tokenAddress, proposal?.recipientAddress]);
 
+  useEffect(() => {
+    if (!copiedShareLink) return;
+    const timeout = window.setTimeout(() => setCopiedShareLink(false), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [copiedShareLink]);
+
+  const copyShareLink = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShareLink(true);
+    } catch (err) {
+      console.error("Failed to copy proposal share link:", err);
+    }
+  };
+
   if (loading) {
     return <PageState status="loading" title="Loading proposal…" />;
   }
@@ -298,8 +329,38 @@ export function ProposalDetailPage({
             Proposal #{proposal.id}
           </h1>
         </div>
-        <StatusBadge status={proposal.status} />
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <StatusBadge status={proposal.status} />
+          <button
+            type="button"
+            onClick={copyShareLink}
+            aria-label={
+              copiedShareLink
+                ? `Proposal share link copied for proposal #${proposal.id}`
+                : `Copy proposal share link for proposal #${proposal.id}`
+            }
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-zinc-800 px-3 text-xs font-medium text-zinc-400 transition-colors hover:border-zinc-700 hover:text-white focus:outline-none focus:ring-2 focus:ring-zinc-400"
+            title={copiedShareLink ? "Link copied" : "Copy share link"}
+          >
+            {copiedShareLink ? (
+              <Check size={14} className="text-emerald-400" />
+            ) : (
+              <Link2 size={14} />
+            )}
+            {copiedShareLink ? "Copied" : "Copy link"}
+          </button>
+        </div>
       </div>
+
+      {isReadOnly && (
+        <p
+          role="note"
+          className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-400"
+        >
+          Read-only public view. Connect a wallet to approve or execute
+          proposals.
+        </p>
+      )}
 
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -365,7 +426,7 @@ export function ProposalDetailPage({
               <h2 id="execution-comparison-heading" className="text-sm font-semibold text-zinc-200">Dry-run vs. execution</h2>
               <p className="mt-1 text-sm text-zinc-400">Simulate the proposal execution to review projected balances and required authorization before signing.</p>
             </div>
-            {proposal.status === "ready" && (
+            {!isReadOnly && proposal.status === "ready" && (
               <button
                 type="button"
                 disabled={!walletAddress || dryRunLoading}
@@ -444,7 +505,7 @@ export function ProposalDetailPage({
       )}
 
       <ShareQrCode
-        url={typeof window === "undefined" ? "" : window.location.href}
+        url={shareUrl}
         name={`proposal-${proposal.id}`}
       />
 
