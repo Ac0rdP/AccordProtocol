@@ -1,7 +1,7 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi, beforeEach } from "vitest";
 import type { Proposal, ProposalEvent } from "../types/accord";
 import { ProposalDetailPage } from "./ProposalDetailPage";
 import * as contract from "../lib/contract";
@@ -49,29 +49,32 @@ function renderDetail({
   route = "/proposals/1",
   proposals = [baseProposal()],
   walletAddress = "GCONNECTED123",
+  readOnly = false,
   onApprove = vi.fn(),
   onExecute = vi.fn(),
 }: {
   route?: string;
   proposals?: Proposal[];
   walletAddress?: string | null;
+  readOnly?: boolean;
   onApprove?: (id: number) => void;
   onExecute?: (id: number) => void;
 } = {}) {
+  const page = (
+    <ProposalDetailPage
+      proposals={proposals}
+      walletAddress={walletAddress}
+      readOnly={readOnly}
+      onApprove={onApprove}
+      onExecute={onExecute}
+    />
+  );
+
   render(
     <MemoryRouter initialEntries={[route]}>
       <Routes>
-        <Route
-          path="/proposals/:id"
-          element={
-            <ProposalDetailPage
-              proposals={proposals}
-              walletAddress={walletAddress}
-              onApprove={onApprove}
-              onExecute={onExecute}
-            />
-          }
-        />
+        <Route path="/proposals/:id" element={page} />
+        <Route path="/app/proposals/:id" element={page} />
       </Routes>
     </MemoryRouter>
   );
@@ -80,6 +83,13 @@ function renderDetail({
 }
 
 describe("ProposalDetailPage", () => {
+  beforeEach(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+  });
+
   test("displays all proposal fields for the URL id", () => {
     renderDetail();
 
@@ -97,6 +107,60 @@ describe("ProposalDetailPage", () => {
     renderDetail({ route: "/proposals/9999" });
 
     expect(screen.getByText("Proposal not found")).toBeTruthy();
+  });
+
+  test("is fully readable without a wallet and offers no write actions", () => {
+    renderDetail({ walletAddress: null });
+
+    expect(screen.getByText("Proposal #1")).toBeTruthy();
+    expect(screen.getByText("25 XLM")).toBeTruthy();
+    expect(screen.getByText("Treasury payment")).toBeTruthy();
+    expect(screen.getByRole("note")).toHaveTextContent(/read-only public view/i);
+    expect(
+      screen.queryByRole("button", { name: /approve proposal/i })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /execute proposal/i })
+    ).toBeNull();
+  });
+
+  test("a read-only ready proposal exposes no execute or dry-run controls", () => {
+    renderDetail({
+      walletAddress: null,
+      proposals: [baseProposal({ status: "ready", approvals: 2 })],
+    });
+
+    expect(
+      screen.queryByRole("button", { name: /execute proposal/i })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /run dry-run/i })
+    ).toBeNull();
+  });
+
+  test("an explicit readOnly view hides write actions even when a wallet is connected", () => {
+    renderDetail({ readOnly: true });
+
+    expect(
+      screen.queryByRole("button", { name: /approve proposal/i })
+    ).toBeNull();
+  });
+
+  test("copies a stable public share link that ignores the current app URL", async () => {
+    renderDetail({ route: "/app/proposals/1?utm_source=share" });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /copy proposal share link/i })
+    );
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/proposals/1`
+      );
+    });
+    expect(
+      screen.getByRole("button", { name: /proposal share link copied/i })
+    ).toBeTruthy();
   });
 
   test("approves a pending proposal", () => {
