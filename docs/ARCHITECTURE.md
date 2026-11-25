@@ -263,7 +263,8 @@ The contract records an explicit **storage-schema version** in instance storage 
 | `2` | `migrate_to_v2`, `migrate_to_abstention_storage`, `migrate_storage` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury limits/accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`), guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp this version. |
 | `3` | `migrate_storage` | Rebuildable incoming-delegation weight index (`("DLGWT", delegate)`) supporting the incoming delegation weight cap and expiry renewal. |
 | `4` | `initialize`, `migrate_storage` | Per-asset outflow pause flags (`("OPAUSE", token)`), which reject treasury outflows for one asset while leaving governance and unrelated assets available. |
-| `5` (current) | `initialize`, `migrate_storage` | Staged-upgrade record (`UPGSTG`) holding the pending WASM hash, staging timestamp, first co-signer, and `execute_after` derived from `TLOCK`. |
+| `5` | `initialize`, `migrate_storage` | Staged-upgrade record (`UPGSTG`) holding the pending WASM hash, staging timestamp, first co-signer, and `execute_after` derived from `TLOCK`. |
+| `6` (current) | `initialize`, `migrate_storage` | Recursive `ProposalKind::Batch(Vec<ProposalKind>)` stored inside `("PROP", id)`; no new top-level storage key. |
 
 **Upgrade path between versions:**
 
@@ -273,6 +274,7 @@ The contract records an explicit **storage-schema version** in instance storage 
 - **`2` → `3`:** run `migrate_storage(approvers, 2, 3)`. The migration rebuilds every `("DLGWT", delegate)` entry from active `("DELEG", delegator)` records before stamping `STOVER = 3`.
 - **`3` → `4`:** run `migrate_storage(approvers, 3, 4)`. No backfill is needed because a missing `("OPAUSE", token)` key reads as `false`; the migration stamps `STOVER = 4`.
 - **`4` → `5`:** run `migrate_storage(approvers, 4, 5)`. No backfill is needed because a missing `UPGSTG` key already means "no staged upgrade"; the migration stamps `STOVER = 5`.
+- **`5` → `6`:** run `migrate_storage(approvers, 5, 6)`. No backfill is needed because no new storage key is introduced; the recursive batch proposal kind only affects the serialized shape of `("PROP", id)` records written after the upgrade, and the migration stamps `STOVER = 6`.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
@@ -529,7 +531,7 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 
 | Gate | Entrypoints | Rule |
 |------|-------------|------|
-| **Role: Proposer** | All `create_*_proposal` entrypoints (transfers, owner/weight/threshold/spending-limit changes, recurring schedules, grant/revoke role) | Caller must hold `Proposer`. Non-owner proposers may draft; owner proposers still get spending-limit checks. |
+| **Role: Proposer** | All `create_*_proposal` entrypoints (transfers, atomic batches, owner/weight/threshold/spending-limit changes, recurring schedules, grant/revoke role) | Caller must hold `Proposer`. Non-owner proposers may draft; owner proposers still get spending-limit checks. |
 | **Owner + Role: Approver** | `approve`, `revoke` | Caller must be an **owner** (source of voting weight) **and** hold `Approver`. |
 | **Role: Executor** | `execute`, `cancel_expired` | Caller must hold `Executor` (may be a keeper that is not an owner). |
 | **Permissionless keeper** | `sweep_expired` | Any authenticated caller may sweep expired IDs; no role is required and the entrypoint remains callable while frozen. |
@@ -538,7 +540,7 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 | **Guardian-only** | `freeze`, `freeze_asset`, `freeze_proposal_kind`, `set_asset_outflow_pause`, `pause_asset_outflows`, `resume_asset_outflows`, `enter_recovery` | Guardian address must match; separate from RBAC roles. |
 | **Guardian-quorum** | `propose_social_recovery`, `approve_social_recovery` | Caller must be in the configured guardian set; the ownership change executes after quorum plus `SOCIAL_RECOVERY_DELAY`. |
 | **Permissionless after quorum** | `execute_social_recovery`, `release_escrow_by_deadline` | Any authenticated caller may trigger once the on-chain condition is met. |
-| **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank. |
+| **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `simulate_proposal`, `simulate_batch_proposal`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank; simulations still require authentication and validate the same gates as their create entrypoints. |
 
 ```text
                  ┌──────────────────────────────┐
@@ -573,6 +575,16 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 4. `execute_upgrade(approvers)` re-checks owner weight, refuses early execution with `TimeLockActive`, applies the staged hash, clears `UPGSTG`, and emits `upgraded`. `execute_upgrade_with_hash` additionally rejects a caller-supplied hash that differs from the staged one.
 
 All mutations call `bump_instance`, so the pending record and the shared instance TTL are extended on stage, veto, and execute. Missing `UPGSTG` reads as no pending upgrade, which is why `migrate_storage(approvers, 4, 5)` needs no backfill.
+
+### Atomic multi-action batches
+
+`create_batch_proposal(proposer, actions, description, deadline, category)` stores one `ProposalKind::Batch(Vec<ProposalKind>)` record that executes its actions **in order within a single transaction**. If any action fails, the whole invocation reverts: no earlier transfer, governance mutation, approval counter, or spent-tracker write survives.
+
+- `actions` must contain 1–`MAX_BATCH_ACTIONS` (50) entries; `EmptyBatch` and `TooManyBatchActions` are typed errors.
+- Nested `ProposalKind::Batch` entries are rejected at creation and execution with `InvalidBatchAction`.
+- Every action uses the same proposer, owner/spending-limit, deadline, description, role, asset-freeze, and proposal-kind-freeze checks as its standalone entrypoint. The outer batch is tagged `Governance` for freeze checks, and each inner action is re-checked against its own kind at execution.
+- `simulate_batch_proposal` returns `ProposalSimulation` with `transfer_count` (the number of individual token transfers, excluding governance actions) and `emitted_events: 2`; it writes no state and emits no events.
+- Creation emits the usual `created` event plus `btch_crt` (`BatchProposalCreatedEvent`), and execution emits the usual `executed` event plus `btch_exec` (`BatchProposalExecutedEvent`). Batch events are compact metadata only: token movements still come from the underlying `transfer` events, so `executed` and `rpay` remain the only spend-aggregate inputs.
 
 ### Migration (`migrate_to_rbac`)
 
@@ -941,7 +953,7 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("delegrev",)` | `DelegationRevokedEvent { delegator, delegate, weight, version }` | Delegation revocations |
 | `("asset_outflow_pause",)` | `AssetOutflowPauseChangedEvent { token, paused, guardian, version }` | Per-asset outflow pauses |
 
-These four cover the core approve/execute lifecycle; the contract emits 26 distinct event types in total (governance, delegation, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
+These four cover the core approve/execute lifecycle; the contract emits 30 distinct event types in total (governance, delegation, recurring payments, RBAC, guardian/emergency actions, and atomic batches included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 
 ### Event Schema Versioning
 
@@ -1298,7 +1310,7 @@ Together, these mean the indexer can safely re-run any range of ledgers — afte
 
 ### 13.4 Event Type to Storage Mapping
 
-Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 28 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
+Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 30 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
 
 | Topic | Event struct (`contracts/accord/src/lib.rs`) | Updates |
 | --- | --- | --- |
@@ -1331,6 +1343,8 @@ Every event the contract emits carries a topic symbol (§7) that the indexer use
 | `upg_stg` | `UpgradeStagedEvent` | `events` |
 | `upg_veto` | `UpgradeVetoedEvent` | `events` |
 | `upgraded` | `UpgradeExecutedEvent` | `events` |
+| `btch_crt` | `BatchProposalCreatedEvent` | `events` (batch metadata) |
+| `btch_exec` | `BatchProposalExecutedEvent` | `events` (batch metadata) |
 
 Only `executed` and `rpay` move real tokens, so only those two feed the spend and treasury-flow aggregates — the same rule the frontend already applies client-side (`filterExecutedTransfers` in `frontend/src/lib/analytics.ts`). Every other event type is still indexed into `events` (and, where it changes proposal or schedule state, into the corresponding materialized table) because `GET /proposals/:id`'s `timeline` and `GET /proposals/:id`'s audit trail need the full history, not just the transfers.
 

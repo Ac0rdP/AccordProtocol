@@ -11376,11 +11376,12 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
 fn storage_migration_registry_lists_supported_versions() {
     let (_, client, _, _, _, _, _) = setup(2);
     let supported = client.get_supported_storage_versions();
-    assert_eq!(supported.len(), 6);
+    assert_eq!(supported.len(), 7);
     assert!(supported.contains(0));
     assert!(supported.contains(3));
     assert!(supported.contains(4));
     assert!(supported.contains(5));
+    assert!(supported.contains(6));
     assert!(supported.contains(STORAGE_SCHEMA_VERSION));
     assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
     assert!(!client.is_storage_version_supported(&99));
@@ -12173,7 +12174,7 @@ fn test_treasury_zero_limit_blocks_outflows() {
 }
 
 #[test]
-fn test_storage_version_5_and_migrate_to_v5() {
+fn test_storage_version_6_and_migrate_to_v6() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
     assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
@@ -12182,24 +12183,24 @@ fn test_storage_version_5_and_migrate_to_v5() {
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b.clone());
     assert_eq!(
-        client.try_migrate_storage(&approvers, &5, &5),
+        client.try_migrate_storage(&approvers, &6, &6),
         Err(Ok(ContractError::AlreadyMigrated))
     );
 
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&storage_version_key(), &4_u32);
+        env.storage().instance().set(&storage_version_key(), &5_u32);
     });
-    assert_eq!(client.get_storage_version(), 4);
+    assert_eq!(client.get_storage_version(), 5);
 
     let mut solo_approver = Vec::new(&env);
     solo_approver.push_back(owner_a.clone());
     assert_eq!(
-        client.try_migrate_storage(&solo_approver, &4, &5),
+        client.try_migrate_storage(&solo_approver, &5, &6),
         Err(Ok(ContractError::ThresholdNotMet))
     );
 
-    client.migrate_storage(&approvers, &4, &5);
-    assert_eq!(client.get_storage_version(), 5);
+    client.migrate_storage(&approvers, &5, &6);
+    assert_eq!(client.get_storage_version(), 6);
     assert!(client.get_pending_upgrade().is_none());
 }
 
@@ -13200,5 +13201,288 @@ proptest! {
         } else {
             prop_assert!(client.try_execute_upgrade(&approvers).is_ok());
         }
+    }
+}
+
+// ─── Atomic multi-action batch proposals ─────────────────────────────────────
+
+#[test]
+fn batch_proposal_executes_transfers_and_governance_action() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut transfers = t(&env, &recipient, 10, &token_client.address);
+    transfers.append(&t(&env, &recipient, 20, &token_client.address));
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(transfers));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "atomic payroll"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    assert_eq!(token_client.balance(&recipient), 30);
+    assert_eq!(client.get_threshold(), 3);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn batch_proposal_rollback_reverts_earlier_governance_action() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+    actions.push_back(ProposalKind::Transfer(t(&env, &recipient, 2_000_000_000_000_i128, &token_client.address)));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "failing batch"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+    assert_eq!(client.get_threshold(), 2);
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
+
+#[test]
+fn batch_proposal_enforces_authorization_and_limits() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(&env, &Address::generate(&env), 10, &token_client.address)));
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &non_owner,
+            &actions,
+            &str(&env, "unauthorized"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &Vec::new(&env),
+            &str(&env, "empty"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::EmptyBatch))
+    );
+
+    let mut nested = Vec::new(&env);
+    nested.push_back(ProposalKind::Batch(Vec::new(&env)));
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &nested,
+            &str(&env, "nested"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::InvalidBatchAction))
+    );
+
+    let mut too_many = Vec::new(&env);
+    for _ in 0..=MAX_BATCH_ACTIONS {
+        too_many.push_back(ProposalKind::ChangeThreshold(2));
+    }
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &too_many,
+            &str(&env, "too many"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::TooManyBatchActions))
+    );
+}
+
+#[test]
+fn batch_proposal_is_blocked_while_frozen() {
+    let (env, client, owner_a, owner_b, _, guardian, token_client) = setup(2);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(&env, &Address::generate(&env), 10, &token_client.address)));
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &actions,
+            &str(&env, "frozen"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn batch_proposal_simulation_does_not_write_state_or_events() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut transfers = t(&env, &recipient, 10, &token_client.address);
+    transfers.append(&t(&env, &recipient, 20, &token_client.address));
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(transfers));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let before = client.get_total_proposals();
+    let simulation = client.simulate_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "preview"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+
+    assert_eq!(simulation.transfer_count, 2);
+    assert_eq!(simulation.distinct_token_count, 1);
+    assert_eq!(simulation.owner_spending_limit_checks, 1);
+    assert_eq!(simulation.emitted_events, 2);
+    assert_eq!(client.get_total_proposals(), before);
+    assert_eq!(env.events().all().events().len(), 0);
+}
+
+#[test]
+fn batch_proposal_emits_compact_created_and_executed_events() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(
+        &env,
+        &recipient,
+        10,
+        &token_client.address,
+    )));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "events"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let created = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("btch_crt")
+        })
+        .expect("expected a 'btch_crt' event");
+    let data = match &created.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let created: BatchProposalCreatedEvent = data.into_val(&env);
+    assert_eq!(created.id, id);
+    assert_eq!(created.action_count, 2);
+    assert_eq!(created.transfer_count, 1);
+    assert_eq!(created.version, EVENT_SCHEMA_VERSION);
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let executed = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("btch_exec")
+        })
+        .expect("expected a 'btch_exec' event");
+    let data = match &executed.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let executed: BatchProposalExecutedEvent = data.into_val(&env);
+    assert_eq!(executed.id, id);
+    assert_eq!(executed.executor, owner_c);
+    assert_eq!(executed.action_count, 2);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn batch_transfers_execute_all_amounts(count in 1u32..6, amount in 1i128..1_000) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+        client.initialize(&owners, &weights, &2, &0);
+
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_address = token_id.address();
+        let token_client = token::Client::new(&env, &token_address);
+        token::StellarAssetClient::new(&env, &token_address).mint(&contract_id, &1_000_000_i128);
+
+        let mut transfers = Vec::new(&env);
+        for _ in 0..count {
+            transfers.push_back(Transfer {
+                to: recipient.clone(),
+                token: token_address.clone(),
+                amount,
+            });
+        }
+        let actions = Vec::from_array(&env, [ProposalKind::Transfer(transfers)]);
+        let id = client.create_batch_proposal(
+            &owner_a,
+            &actions,
+            &str(&env, "property batch"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &id);
+        client.approve(&owner_b, &id);
+        client.execute(&owner_c, &id);
+
+        prop_assert_eq!(token_client.balance(&recipient), amount * i128::from(count));
+        prop_assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
     }
 }

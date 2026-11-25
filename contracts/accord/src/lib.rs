@@ -546,6 +546,9 @@ pub enum ProposalKind {
     // ── #953: Cross-asset rebalancing ──
     /// Execute a cross-asset rebalance toward target weights.
     Rebalance(RebalanceParams),
+    /// Execute several actions atomically under one approval/quorum. Nested
+    /// batches are rejected at creation and execution time.
+    Batch(Vec<ProposalKind>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -829,6 +832,17 @@ pub struct DelegationRevokedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct BatchProposalCreatedEvent {
+    pub id: u64,
+    pub proposer: Address,
+    pub action_count: u32,
+    pub transfer_count: u32,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct ProposalCreatedEvent {
     pub id: u64,
     pub proposer: Address,
@@ -945,6 +959,16 @@ pub struct ProposalSoftApprovalRevokedEvent {
 pub struct ProposalExecutedEvent {
     pub id: u64,
     pub executor: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct BatchProposalExecutedEvent {
+    pub id: u64,
+    pub executor: Address,
+    pub action_count: u32,
     /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
     pub version: u32,
 }
@@ -1771,6 +1795,12 @@ pub enum ContractError {
     UpgradeVetoed = 125,
     /// Thrown when an execution hash does not match the staged hash.
     InvalidUpgradeHash = 126,
+    /// Thrown when a batch proposal has no actions.
+    EmptyBatch = 127,
+    /// Thrown when a batch proposal exceeds the action limit.
+    TooManyBatchActions = 128,
+    /// Thrown when a batch contains an unsupported nested batch.
+    InvalidBatchAction = 129,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1932,15 +1962,17 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// Version 3 adds the indexed incoming delegated weight used to cap delegation.
 /// Version 4 adds the per-asset outflow pause index.
 /// Version 5 adds the staged-upgrade record.
-const STORAGE_SCHEMA_VERSION: u32 = 5;
+/// Version 6 adds atomic multi-action batch proposals.
+const STORAGE_SCHEMA_VERSION: u32 = 6;
 
 /// Every storage layout this contract can read or migrate to. `0` is the
 /// pre-versioning legacy layout, `1` added weighted governance/RBAC, `2` added
 /// scoped freezes, guardian-quorum recovery requests, and the rotation proposal
 /// kind, `3` added the incoming delegated-weight index, `4` added the
-/// per-asset outflow pause index, and `5` added the staged-upgrade record. A
-/// version outside this list is unknown and must be refused.
-pub const SUPPORTED_STORAGE_VERSIONS: [u32; 6] = [0, 1, 2, 3, 4, 5];
+/// per-asset outflow pause index, `5` added the staged-upgrade record, and `6`
+/// added atomic multi-action batch proposals. A version outside this list is
+/// unknown and must be refused.
+pub const SUPPORTED_STORAGE_VERSIONS: [u32; 7] = [0, 1, 2, 3, 4, 5, 6];
 
 /// Minimum delay between a `RotateOwner` proposal reaching quorum and its
 /// activation. Gives the existing owner key time to object before handoff.
@@ -2130,6 +2162,7 @@ const MAX_ACTIVE_PROPOSALS: u32 = 50;
 const MAX_PROPOSAL_DEPENDENCIES: u32 = 10;
 /// Maximum number of individual transfers in one proposal.
 const MAX_BATCH_TRANSFERS: u32 = 50;
+const MAX_BATCH_ACTIONS: u32 = 50;
 /// Maximum owners in a multisig wallet.
 const MAX_OWNERS: u32 = 20;
 /// Maximum proposal lifetime: 90 days.
@@ -3419,7 +3452,8 @@ fn proposal_kind_tag(kind: &ProposalKind) -> ProposalKindTag {
         | ProposalKind::SetFiatSpendLimit(_)
         | ProposalKind::ClearFiatSpendLimit(_, _, _)
         | ProposalKind::AddToDenylist(_)
-        | ProposalKind::RemoveFromDenylist(_) => ProposalKindTag::Governance,
+        | ProposalKind::RemoveFromDenylist(_)
+        | ProposalKind::Batch(_) => ProposalKindTag::Governance,
     }
 }
 
@@ -4368,7 +4402,8 @@ pub struct AccordContract;
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
-// Proposer: create_recurring_schedule, create_proposal, create_add_owner_proposal,
+// Proposer: create_recurring_schedule, create_proposal, create_batch_proposal,
+//   simulate_batch_proposal, create_add_owner_proposal,
 //   create_spending_limit_proposal, create_change_weight_proposal,
 //   create_remove_owner_proposal, create_change_threshold_proposal,
 //   create_recurring_proposal, create_cancel_recurring_proposal,
@@ -4750,7 +4785,8 @@ impl AccordContract {
 // Initialize: initialize (all listed owners authenticate; one-time setup).
 // Migration: migrate_to_weighted_governance (distinct authenticated owners meet
 //   the legacy M-of-N count threshold; no roles); migrate_to_rbac (owner-weight).
-// Proposer: create_recurring_schedule, create_proposal, simulate_proposal, create_add_owner_proposal,
+// Proposer: create_recurring_schedule, create_proposal, simulate_proposal,
+//   create_batch_proposal, simulate_batch_proposal, create_add_owner_proposal,
 //   create_spending_limit_proposal, create_change_weight_proposal,
 //   create_remove_owner_proposal, create_change_threshold_proposal,
 //   create_recurring_proposal, create_cancel_recurring_proposal,
@@ -4867,6 +4903,124 @@ fn validate_transfer_proposal(
         return Err(ContractError::InvalidDuration);
     }
 
+    Ok(proposer_is_owner)
+}
+
+fn batch_transfer_count(actions: &Vec<ProposalKind>) -> u32 {
+    let mut count = 0_u32;
+    for action in actions.iter() {
+        if let ProposalKind::Transfer(transfers) = action {
+            count = count.saturating_add(transfers.len());
+        }
+    }
+    count
+}
+
+fn batch_distinct_token_count(env: &Env, actions: &Vec<ProposalKind>) -> u32 {
+    let mut tokens: Vec<Address> = Vec::new(env);
+    for action in actions.iter() {
+        if let ProposalKind::Transfer(transfers) = action {
+            for transfer in transfers.iter() {
+                if !tokens.contains(&transfer.token) {
+                    tokens.push_back(transfer.token);
+                }
+            }
+        }
+    }
+    tokens.len()
+}
+
+fn validate_batch_proposal(
+    env: &Env,
+    proposer: &Address,
+    actions: &Vec<ProposalKind>,
+    description: &String,
+    deadline: u64,
+) -> Result<bool, ContractError> {
+    proposer.require_auth();
+    let proposer_is_owner = read_owners_map(env)?.contains_key(proposer.clone());
+    require_role(env, proposer, Role::Proposer)?;
+    require_not_frozen(env)?;
+
+    let action_count = actions.len();
+    if action_count == 0 {
+        return Err(ContractError::EmptyBatch);
+    }
+    if action_count > MAX_BATCH_ACTIONS {
+        return Err(ContractError::TooManyBatchActions);
+    }
+    require_kind_not_frozen(env, ProposalKindTag::Governance)?;
+
+    for action in actions.iter() {
+        if matches!(action, ProposalKind::Batch(_)) {
+            return Err(ContractError::InvalidBatchAction);
+        }
+        require_kind_not_frozen(env, proposal_kind_tag(&action))?;
+        if let ProposalKind::Transfer(transfers) = action {
+            if transfers.is_empty() || transfers.len() > MAX_BATCH_TRANSFERS {
+                return Err(ContractError::InvalidAmount);
+            }
+            for transfer in transfers.iter() {
+                if transfer.amount < MIN_AMOUNT {
+                    return Err(ContractError::InvalidAmount);
+                }
+                validate_token(env, &transfer.token)?;
+                require_asset_not_frozen(env, &transfer.token)?;
+                if transfer.to == env.current_contract_address() {
+                    return Err(ContractError::InvalidRecipient);
+                }
+            }
+        }
+    }
+
+    let transfer_count = batch_transfer_count(actions);
+    if transfer_count > MAX_BATCH_TRANSFERS {
+        return Err(ContractError::TooManyBatchActions);
+    }
+
+    if proposer_is_owner {
+        let mut checked_tokens: Vec<Address> = Vec::new(env);
+        let mut checked_totals: Vec<i128> = Vec::new(env);
+        for action in actions.iter() {
+            if let ProposalKind::Transfer(transfers) = action {
+                for transfer in transfers.iter() {
+                    let mut found = false;
+                    for i in 0..checked_tokens.len() {
+                        if checked_tokens.get(i).unwrap() == transfer.token {
+                            let total = checked_totals
+                                .get(i)
+                                .unwrap()
+                                .checked_add(transfer.amount)
+                                .ok_or(ContractError::ArithmeticError)?;
+                            checked_totals.set(i, total);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        checked_tokens.push_back(transfer.token.clone());
+                        checked_totals.push_back(transfer.amount);
+                    }
+                }
+            }
+        }
+        for i in 0..checked_tokens.len() {
+            let token = checked_tokens.get(i).unwrap();
+            if let Some(limit) = read_spending_limit(env, proposer, &token) {
+                let cumulative = checked_totals
+                    .get(i)
+                    .unwrap()
+                    .checked_add(effective_spent(env, proposer, &token))
+                    .ok_or(ContractError::ArithmeticError)?;
+                if cumulative > limit {
+                    return Err(ContractError::SpendingLimitExceeded);
+                }
+            }
+        }
+    }
+
+    validate_description(description)?;
+    validate_deadline(env, deadline)?;
     Ok(proposer_is_owner)
 }
 
@@ -5161,6 +5315,103 @@ impl AccordContract {
         );
 
         Ok(id)
+    }
+
+    pub fn create_batch_proposal(
+        env: Env,
+        proposer: Address,
+        actions: Vec<ProposalKind>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+    ) -> Result<u64, ContractError> {
+        validate_batch_proposal(&env, &proposer, &actions, &description, deadline)?;
+
+        let threshold = read_threshold(&env)?;
+        let id = read_next_id(&env);
+        let action_count = actions.len();
+        let transfer_count = batch_transfer_count(&actions);
+        let proposal = Proposal {
+            id,
+            proposer: proposer.clone(),
+            description,
+            deadline,
+            approvals: 0,
+            approval_weight: 0,
+            status: ProposalStatus::Pending,
+            kind: ProposalKind::Batch(actions),
+            ready_at: 0,
+            quorum_weight: threshold,
+            category: category.clone(),
+            attachment_hash: None,
+        };
+        write_proposal(&env, &proposal);
+        register_active_proposal(&env, id)?;
+        write_next_id(
+            &env,
+            id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+        );
+
+        let total_weight = read_total_weight(&env);
+        env.events().publish(
+            (symbol_short!("created"),),
+            ProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer: proposer.clone(),
+                threshold,
+                category,
+                transfers: Vec::new(&env),
+                quorum_weight: threshold,
+                total_weight_at_creation: total_weight,
+                attachment_hash: None,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("btch_crt"),),
+            BatchProposalCreatedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                id,
+                proposer,
+                action_count,
+                transfer_count,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Validates a batch proposal without writing state or emitting events.
+    pub fn simulate_batch_proposal(
+        env: Env,
+        proposer: Address,
+        actions: Vec<ProposalKind>,
+        description: String,
+        deadline: u64,
+        category: ProposalCategory,
+    ) -> Result<ProposalSimulation, ContractError> {
+        let proposer_is_owner =
+            validate_batch_proposal(&env, &proposer, &actions, &description, deadline)?;
+        let transfer_count = batch_transfer_count(&actions);
+        let distinct_token_count = batch_distinct_token_count(&env, &actions);
+
+        Ok(ProposalSimulation {
+            category,
+            quorum_weight: read_threshold(&env)?,
+            proposer,
+            required_role: Role::Proposer,
+            proposer_auth_required: true,
+            transfer_count,
+            distinct_token_count,
+            owner_spending_limit_checks: if proposer_is_owner {
+                distinct_token_count
+            } else {
+                0
+            },
+            minimum_persistent_writes: 2,
+            minimum_instance_writes: 2,
+            emitted_events: 2,
+        })
     }
 
     /// Validates a transfer proposal and returns deterministic contract-work
@@ -8434,7 +8685,33 @@ impl AccordContract {
                     },
                 );
             }
+            ProposalKind::Batch(actions) => {
+                if actions.is_empty() {
+                    return Err(ContractError::EmptyBatch);
+                }
+                if actions.len() > MAX_BATCH_ACTIONS {
+                    return Err(ContractError::TooManyBatchActions);
+                }
+                for action in actions.iter() {
+                    if matches!(action, ProposalKind::Batch(_)) {
+                        return Err(ContractError::InvalidBatchAction);
+                    }
+                    require_kind_not_frozen(&env, proposal_kind_tag(&action))?;
+                    execute_proposal_kind(
+                        env.clone(),
+                        &executor,
+                        proposal_id,
+                        &proposal,
+                        &action,
+                    )?;
+                }
+            }
         }
+
+        let batch_action_count = match &proposal.kind {
+            ProposalKind::Batch(actions) => Some(actions.len()),
+            _ => None,
+        };
 
         proposal.status = ProposalStatus::Executed;
         write_proposal(&env, &proposal);
@@ -8446,9 +8723,21 @@ impl AccordContract {
             ProposalExecutedEvent {
                 version: EVENT_SCHEMA_VERSION,
                 id: proposal_id,
-                executor,
+                executor: executor.clone(),
             },
         );
+
+        if let Some(action_count) = batch_action_count {
+            env.events().publish(
+                (symbol_short!("btch_exec"),),
+                BatchProposalExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    id: proposal_id,
+                    executor,
+                    action_count,
+                },
+            );
+        }
 
         Ok(())
     }
@@ -11259,4 +11548,1387 @@ fn remove_spend_policy(env: &Env, owner: &Address, token: &Address) {
 
 fn pull_payment_key(request_id: u64) -> (Symbol, u64) {
     (symbol_short!("PULLREQ"), request_id)
+}
+
+fn execute_proposal_kind(
+    env: Env,
+    executor: &Address,
+    proposal_id: u64,
+    proposal: &Proposal,
+    kind: &ProposalKind,
+) -> Result<(), ContractError> {
+    match kind {
+        ProposalKind::Transfer(transfers) => {
+            // Recovery mode blocks treasury outflows but must not block
+            // governance itself (role/threshold/owner changes), so the
+            // guard belongs here rather than at the top of `execute`.
+            require_not_recovery(&env)?;
+            // Validation and balance check only. The funds move in the
+            // transfer loop below, once every check has passed — moving
+            // them here as well would pay the recipient twice.
+            for transfer in transfers.iter() {
+                validate_token(&env, &transfer.token)?;
+                require_asset_not_frozen(&env, &transfer.token)?;
+                require_asset_outflow_allowed(&env, &transfer.token)?;
+                if available_balance(&env, &transfer.token)? < transfer.amount {
+                    return Err(ContractError::TransferFailed);
+                }
+            }
+            // ── #955: Denylist check ──────────────────────────────────
+            // If the denylist is enabled, reject the proposal if any
+            // transfer recipient is on the denylist.
+            if let Err(denied_addr) = check_denylist(&env, transfers) {
+                env.events().publish(
+                    (symbol_short!("deny_blk"),),
+                    DenylistBlockedEvent {
+                        version: EVENT_SCHEMA_VERSION,
+                        proposal_id,
+                        recipient: denied_addr,
+                    },
+                );
+                return Err(ContractError::RecipientDenied);
+            }
+            // Track cumulative spending per token for the proposer.
+            let proposer = proposal.proposer.clone();
+            let mut tracked_tokens: Vec<Address> = Vec::new(&env);
+            let mut tracked_amounts: Vec<i128> = Vec::new(&env);
+            for transfer in transfers.iter() {
+                let mut found = false;
+                for j in 0..tracked_tokens.len() {
+                    if tracked_tokens.get(j).unwrap() == transfer.token {
+                        let total = tracked_amounts
+                            .get(j)
+                            .unwrap()
+                            .checked_add(transfer.amount)
+                            .ok_or(ContractError::ArithmeticError)?;
+                        tracked_amounts.set(j, total);
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    tracked_tokens.push_back(transfer.token.clone());
+                    tracked_amounts.push_back(transfer.amount);
+                }
+            }
+            for j in 0..tracked_tokens.len() {
+                let token = tracked_tokens.get(j).unwrap();
+                let amount = tracked_amounts.get(j).unwrap();
+                if let Some(limit) = read_spending_limit(&env, &proposal.proposer, &token) {
+                    let cumulative = effective_spent(&env, &proposal.proposer, &token)
+                        .checked_add(amount)
+                        .ok_or(ContractError::ArithmeticError)?;
+                    if cumulative > limit {
+                        return Err(ContractError::SpendingLimitExceeded);
+                    }
+                }
+                if let Some(t_limit) = read_treasury_spending_limit(&env, &token) {
+                    let cumulative = effective_treasury_spent(&env, &token)
+                        .checked_add(amount)
+                        .ok_or(ContractError::ArithmeticError)?;
+                    if cumulative > t_limit {
+                        return Err(ContractError::TreasurySpendingLimitExceeded);
+                    }
+                }
+            }
+            // Check the treasury can cover the full per-token total before
+            // any funds move, so a shortfall is rejected up front rather
+            // than part-way through the transfer list.
+            let treasury = env.current_contract_address();
+            for j in 0..tracked_tokens.len() {
+                let token_client = token::Client::new(&env, &tracked_tokens.get(j).unwrap());
+                let needed = tracked_amounts.get(j).unwrap();
+                match token_client.try_balance(&treasury) {
+                    Ok(Ok(balance)) if balance >= needed => {}
+                    _ => return Err(ContractError::TransferFailed),
+                }
+            }
+            // Interaction. No contract storage has been written yet in this
+            // call (proposal status, active count and spent trackers are
+            // all written after this loop), and any `Err` return reverts
+            // the whole invocation, so a failed or partial transfer leaves
+            // no state behind. See docs/SECURITY.md, "Token interaction
+            // safety".
+            for transfer in transfers.iter() {
+                if !transfer_succeeded(token::Client::new(&env, &transfer.token).try_transfer(
+                    &treasury,
+                    &transfer.to,
+                    &transfer.amount,
+                )) {
+                    return Err(ContractError::TransferFailed);
+                }
+            }
+            let now = env.ledger().timestamp();
+            for j in 0..tracked_tokens.len() {
+                let token = tracked_tokens.get(j).unwrap();
+                let amount = tracked_amounts.get(j).unwrap();
+                let tracker = read_spent_tracker(&env, &proposer, &token);
+                let expired = tracker.epoch == 0
+                    || now > tracker.epoch.saturating_add(read_spending_window(&env, &proposer, &token));
+                let epoch = if expired { now } else { tracker.epoch };
+                let spent = if expired {
+                    amount
+                } else {
+                    tracker
+                        .spent
+                        .checked_add(amount)
+                        .ok_or(ContractError::ArithmeticError)?
+                };
+                write_spent_tracker(&env, &proposer, &token, &SpentTracker { spent, epoch });
+                record_treasury_spend(&env, &token, amount)?;
+            }
+            // Record spend against the multi-window spend policy trackers.
+            for j in 0..tracked_tokens.len() {
+                let token = tracked_tokens.get(j).unwrap();
+                let amount = tracked_amounts.get(j).unwrap();
+                record_spend_policy_spend(&env, &proposer, &token, amount);
+            }
+            // ── #954: Record fiat-denominated spend ──
+            for j in 0..tracked_tokens.len() {
+                let token = tracked_tokens.get(j).unwrap();
+                let amount = tracked_amounts.get(j).unwrap();
+                record_fiat_spend(&env, &proposer, &token, amount);
+            }
+        }
+        ProposalKind::AddOwner(new_owner, weight) => {
+            if !(MIN_OWNER_WEIGHT..=MAX_OWNER_WEIGHT).contains(weight) {
+                return Err(ContractError::InvalidWeight);
+            }
+
+            let owners = read_owners_map(&env)?;
+            let prev_count = owners.len();
+
+            // Re-check at execute time: adding an owner must not push the
+            // owner count past MAX_OWNERS (20). The creation-time check
+            // in create_add_owner_proposal only validates against the
+            // owner count at proposal creation — a concurrent AddOwner
+            // proposal executed beforehand could have already filled the
+            // last slot.
+            if prev_count >= MAX_OWNERS {
+                return Err(ContractError::InvalidOwners);
+            }
+
+            let current_total = read_total_weight(&env);
+            let new_total = checked_weight_add(current_total, *weight)?;
+            if !owner_weight_within_cap(&env, *weight, new_total) {
+                return Err(ContractError::SingleOwnerWeightCapExceeded);
+            }
+
+            let mut owners = owners;
+            owners.set(new_owner.clone(), *weight);
+            let key = owners_key();
+            env.storage().persistent().set(&key, &owners);
+            bump_persistent(&env, &key);
+            let roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
+            update_owner_roles(&env, new_owner, &roles);
+            write_total_weight(&env, new_total);
+            env.events().publish(
+                (symbol_short!("a_own"),),
+                AddOwnerExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    new_owner: new_owner.clone(),
+                    owner_count: prev_count + 1,
+                },
+            );
+        }
+        ProposalKind::RemoveOwner(owner_to_remove) => {
+            let mut owners = read_owners_map(&env)?;
+            let prev_count = owners.len();
+            let weight = owners.get(owner_to_remove.clone()).unwrap_or(0);
+
+            let current_total_weight = read_total_weight(&env);
+            let resulting_total_weight = checked_weight_sub(current_total_weight, weight)?;
+
+            // Re-validation 1: Ensure the resulting total weight is still >= the contract's current threshold.
+            let current_threshold = read_threshold(&env)?;
+            if resulting_total_weight < current_threshold {
+                return Err(ContractError::WouldBreakThreshold);
+            }
+
+            // Re-validation 2: Ensure no other active (Pending/Ready) proposal would become un-quorumable.
+            // The current proposal (this one) is already being executed, so it doesn't
+            // need to be checked against itself.
+            let next_id = read_next_id(&env);
+            for id in 1..next_id {
+                if id == proposal_id {
+                    continue;
+                }
+                if let Ok(active_proposal) = read_proposal(&env, id) {
+                    let status = derive_status(&env, &active_proposal);
+                    if matches!(status, ProposalStatus::Pending | ProposalStatus::Ready)
+                        && active_proposal.quorum_weight > resulting_total_weight
+                    {
+                        return Err(ContractError::WouldBreakThreshold);
+                    }
+                }
+            }
+            owners.remove(owner_to_remove.clone());
+            let key = owners_key();
+            env.storage().persistent().set(&key, &owners);
+            bump_persistent(&env, &key);
+            update_owner_roles(&env, owner_to_remove, &Vec::new(&env));
+
+            // Drop every delegation touching the removed owner. A remaining
+            // owner's outgoing delegation to them would otherwise keep
+            // subtracting weight that no one receives, and their own
+            // outgoing delegation would revive if they were re-added.
+            remove_delegation(&env, owner_to_remove);
+            for other in owners.keys().iter() {
+                if let Some(delegation) = read_delegation(&env, &other) {
+                    if delegation.delegate == *owner_to_remove {
+                        remove_delegation(&env, &other);
+                    }
+                }
+            }
+
+            write_total_weight(&env, resulting_total_weight);
+
+            // Remove the removed owner's approval weight from all
+            // Pending and Ready proposals they previously approved.
+            // Without this, a removed owner's prior votes would
+            // continue counting toward the threshold even after
+            // they are no longer an owner — undermining the M-of-N
+            // model. Terminal proposals (Executed, Expired, Revoked)
+            // are left untouched since their outcome is final.
+            let next_id: u64 = env
+                .storage()
+                .instance()
+                .get(&next_id_key())
+                .unwrap_or(1_u64);
+            for pid in 1_u64..next_id {
+                if let Ok(mut p) = read_proposal(&env, pid) {
+                    let derived = derive_status(&env, &p);
+                    if matches!(derived, ProposalStatus::Pending | ProposalStatus::Ready) {
+                        // Reverse the exact effective weight stored for this
+                        // approval — not the owner's raw weight, which may
+                        // differ from what was actually counted.
+                        let counted_weight = read_approval_weight(&env, pid, owner_to_remove);
+                        if counted_weight > 0 {
+                            write_approval_weight(&env, pid, owner_to_remove, 0);
+                            p.approvals = checked_weight_sub(p.approvals, counted_weight)?;
+                            p.approval_weight =
+                                checked_weight_sub(p.approval_weight, counted_weight)?;
+                            p.status = derive_status(&env, &p);
+                            write_proposal(&env, &p);
+                        }
+                    }
+                }
+            }
+
+            env.events().publish(
+                (symbol_short!("r_own"),),
+                RemoveOwnerExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    removed_owner: owner_to_remove.clone(),
+                    owner_count: prev_count - 1,
+                },
+            );
+        }
+        ProposalKind::RotateOwner(old_owner, new_owner) => {
+            // Activation is deliberately staged: quorum only schedules the
+            // handoff. The delay gives the current key holder time to
+            // object before the old address loses its weight and roles.
+            let now = env.ledger().timestamp();
+            if now < proposal.ready_at.saturating_add(OWNER_ROTATION_DELAY) {
+                return Err(ContractError::OwnerRotationDelayActive);
+            }
+
+            let mut owners = read_owners_map(&env)?;
+            let weight = owners
+                .get(old_owner.clone())
+                .ok_or(ContractError::OwnerNotFound)?;
+            if owners.contains_key(new_owner.clone()) {
+                return Err(ContractError::DuplicateOwner);
+            }
+
+            // Carry the existing roles across, so a rotated key keeps its
+            // operational permissions instead of falling back to defaults.
+            let mut roles = read_owner_roles(&env, old_owner);
+            if roles.is_empty() {
+                roles = Vec::from_slice(&env, &DEFAULT_OWNER_ROLES);
+            }
+
+            owners.remove(old_owner.clone());
+            owners.set(new_owner.clone(), weight);
+            let key = owners_key();
+            env.storage().persistent().set(&key, &owners);
+            bump_persistent(&env, &key);
+
+            update_owner_roles(&env, old_owner, &Vec::new(&env));
+            update_owner_roles(&env, new_owner, &roles);
+            remove_delegations_touching(&env, old_owner);
+            purge_owner_approvals(&env, old_owner)?;
+
+            env.events().publish(
+                (symbol_short!("rot_own"),),
+                OwnerRotatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    old_owner: old_owner.clone(),
+                    new_owner: new_owner.clone(),
+                    weight,
+                },
+            );
+        }
+        ProposalKind::ChangeThreshold(new_threshold) => {
+            let current_total_weight = read_total_weight(&env);
+            if *new_threshold > current_total_weight {
+                return Err(ContractError::WouldBreakThreshold);
+            }
+
+            let old_threshold = env
+                .storage()
+                .instance()
+                .get::<_, u32>(&threshold_key())
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&threshold_key(), new_threshold);
+            bump_instance(&env);
+            env.events().publish(
+                (symbol_short!("c_thr"),),
+                ChangeThresholdExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    previous_threshold: old_threshold,
+                    new_threshold: *new_threshold,
+                },
+            );
+        }
+        ProposalKind::SetSpendingLimitWindow(owner, token, limit, window_secs) => {
+            let prev_limit = read_spending_limit(&env, owner, token);
+            write_spending_limit(&env, owner, token, *limit);
+            write_spending_window(&env, owner, token, *window_secs);
+            upsert_owner_spending_limit(&env, owner, token, *limit);
+            let now = env.ledger().timestamp();
+            write_spent_tracker(&env, owner, token, &SpentTracker { spent: 0, epoch: now });
+            env.events().publish(
+                (symbol_short!("s_lim"),),
+                SetSpendingLimitExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: owner.clone(),
+                    token: token.clone(),
+                    previous_limit: prev_limit,
+                    new_limit: *limit,
+                },
+            );
+        }
+        ProposalKind::SetSpendingLimit(owner, token, limit) => {
+            validate_asset_registry(&env, token)?;
+            let prev_limit = read_spending_limit(&env, owner, token);
+            write_spending_limit(&env, owner, token, *limit);
+            upsert_owner_spending_limit(&env, owner, token, *limit);
+            // Reset cumulative spending tracking when a new limit is set.
+            let now = env.ledger().timestamp();
+            write_spent_tracker(
+                &env,
+                owner,
+                token,
+                &SpentTracker {
+                    spent: 0,
+                    epoch: now,
+                },
+            );
+            env.events().publish(
+                (symbol_short!("s_lim"),),
+                SetSpendingLimitExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: owner.clone(),
+                    token: token.clone(),
+                    previous_limit: prev_limit,
+                    new_limit: *limit,
+                },
+            );
+        }
+        ProposalKind::SetTreasurySpendingLimit(token, limit, window_secs) => {
+            validate_asset_registry(&env, token)?;
+            if *limit < 0 {
+                return Err(ContractError::InvalidSpendingLimit);
+            }
+            let actual_window = if *window_secs == 0 {
+                SPENDING_WINDOW
+            } else {
+                if *window_secs < MIN_SPENDING_WINDOW || *window_secs > MAX_SPENDING_WINDOW {
+                    return Err(ContractError::InvalidInterval);
+                }
+                *window_secs
+            };
+            let prev_limit = read_treasury_spending_limit(&env, token);
+            write_treasury_spending_limit(&env, token, *limit);
+            write_treasury_spending_window(&env, token, actual_window);
+            let now = env.ledger().timestamp();
+            write_treasury_spent_tracker(&env, token, &SpentTracker { spent: 0, epoch: now });
+            env.events().publish(
+                (symbol_short!("tr_lim"),),
+                TreasurySpendingLimitExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    token: token.clone(),
+                    previous_limit: prev_limit,
+                    new_limit: *limit,
+                    window_secs: actual_window,
+                },
+            );
+        }
+        ProposalKind::ChangeOwnerWeight(target_owner, new_weight) => {
+            if *new_weight < MIN_OWNER_WEIGHT {
+                return Err(ContractError::WeightBelowMinimum);
+            }
+            if *new_weight > MAX_OWNER_WEIGHT {
+                return Err(ContractError::InvalidWeight);
+            }
+            let mut owners = read_owners_map(&env)?;
+            let old_weight = owners
+                .get(target_owner.clone())
+                .ok_or(ContractError::TargetOwnerNoLongerExists)?;
+            let current_total = read_total_weight(&env);
+            let new_total = checked_weight_add(
+                checked_weight_sub(current_total, old_weight)?,
+                *new_weight,
+            )?;
+
+            if !owner_weight_within_cap(&env, *new_weight, new_total) {
+                return Err(ContractError::SingleOwnerWeightCapExceeded);
+            }
+
+            // Invariant (INV-02): threshold <= total weight. The active-proposal
+            // scan below only sees quorum snapshots taken at creation, so a
+            // threshold raised after this proposal was created must be checked
+            // against the live value.
+            if new_total < read_threshold(&env)? {
+                return Err(ContractError::WouldBreakThreshold);
+            }
+
+            // Invariant: ensure no active (Pending/Ready) proposal would
+            // become un-quorumable (quorum_weight > new_total_weight).
+            let active_ids = read_active_ids(&env);
+            for id in active_ids.iter() {
+                if let Ok(active_proposal) = read_proposal(&env, id) {
+                    let status = derive_status(&env, &active_proposal);
+                    if matches!(status, ProposalStatus::Pending | ProposalStatus::Ready)
+                        && active_proposal.quorum_weight > new_total
+                    {
+                        return Err(ContractError::WouldBreakQuorum);
+                    }
+                }
+            }
+
+            owners.set(target_owner.clone(), *new_weight);
+            env.storage().persistent().set(&owners_key(), &owners);
+            write_total_weight(&env, new_total);
+
+            env.events().publish(
+                (symbol_short!("c_wgt"),),
+                OwnerWeightChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: target_owner.clone(),
+                    old_weight,
+                    new_weight: *new_weight,
+                    new_total_weight: new_total,
+                },
+            );
+        }
+        ProposalKind::CreateRecurringPayment(params) => {
+            validate_token(&env, &params.token)?;
+            let active = read_active_recurring_count(&env);
+            if active >= MAX_ACTIVE_RECURRING {
+                return Err(ContractError::TooManyActiveRecurring);
+            }
+
+            let id = read_next_recurring_id(&env);
+            write_next_recurring_id(&env, id + 1);
+
+            let schedule = RecurringPayment {
+                id,
+                proposer: proposal.proposer.clone(),
+                recipient: params.recipient.clone(),
+                token: params.token.clone(),
+                amount: params.amount,
+                interval_secs: params.interval_secs,
+                start_time: params.start_time,
+                end_time: params.end_time,
+                cliff_time: params.cliff_time,
+                total_cap: params.total_cap,
+                total_disbursed: 0,
+                last_disbursed_at: 0,
+                periods_disbursed: 0,
+                status: RecurringStatus::Active,
+                kind: params.kind.clone(),
+                category: proposal.category.clone(),
+                description: proposal.description.clone(),
+            };
+
+            write_recurring_payment(&env, &schedule);
+            write_active_recurring_count(&env, active + 1);
+
+            env.events().publish(
+                (symbol_short!("r_crt"),),
+                RecurringPaymentCreatedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    id,
+                    proposer: proposal.proposer.clone(),
+                    recipient: params.recipient.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    interval_secs: params.interval_secs,
+                    start_time: params.start_time,
+                    end_time: params.end_time,
+                    cliff_time: params.cliff_time,
+                    total_cap: params.total_cap,
+                    kind: params.kind.clone(),
+                },
+            );
+        }
+        ProposalKind::CancelRecurringPayment(schedule_id) => {
+            let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+            let status = derive_recurring_status(&env, &schedule);
+            if status == RecurringStatus::Cancelled {
+                return Err(ContractError::ScheduleAlreadyCancelled);
+            }
+            if status == RecurringStatus::Completed {
+                return Err(ContractError::ScheduleTerminal);
+            }
+
+            if schedule.status == RecurringStatus::Active
+                || schedule.status == RecurringStatus::Paused
+            {
+                let active = read_active_recurring_count(&env);
+                if active > 0 {
+                    write_active_recurring_count(&env, active - 1);
+                }
+            }
+
+            schedule.status = RecurringStatus::Cancelled;
+            write_recurring_payment(&env, &schedule);
+
+            env.events().publish(
+                (symbol_short!("r_cncl"),),
+                RecurringPaymentCancelledEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    id: *schedule_id,
+                    caller: executor.clone(),
+                },
+            );
+        }
+        ProposalKind::PauseRecurringPayment(schedule_id) => {
+            let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+            let status = derive_recurring_status(&env, &schedule);
+            if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                return Err(ContractError::ScheduleTerminal);
+            }
+            if status == RecurringStatus::Paused {
+                return Err(ContractError::ScheduleAlreadyPaused);
+            }
+
+            schedule.status = RecurringStatus::Paused;
+            write_recurring_payment(&env, &schedule);
+
+            env.events().publish(
+                (symbol_short!("r_pause"),),
+                RecurringPaymentPausedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    id: *schedule_id,
+                    caller: executor.clone(),
+                },
+            );
+        }
+        ProposalKind::ResumeRecurringPayment(schedule_id) => {
+            let mut schedule = read_recurring_payment(&env, *schedule_id)?;
+            let status = derive_recurring_status(&env, &schedule);
+            if status != RecurringStatus::Paused {
+                return Err(ContractError::ScheduleNotPaused);
+            }
+
+            schedule.status = RecurringStatus::Active;
+            write_recurring_payment(&env, &schedule);
+
+            env.events().publish(
+                (symbol_short!("r_resum"),),
+                RecurringPaymentResumedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    id: *schedule_id,
+                    caller: executor.clone(),
+                },
+            );
+        }
+        ProposalKind::ModifyRecurringPayment(params) => {
+            let mut schedule = read_recurring_payment(&env, params.schedule_id)?;
+            let status = derive_recurring_status(&env, &schedule);
+            if status == RecurringStatus::Cancelled || status == RecurringStatus::Completed {
+                return Err(ContractError::ScheduleTerminal);
+            }
+
+            let previous_amount = schedule.amount;
+            let previous_interval = schedule.interval_secs;
+            let previous_end_time = schedule.end_time;
+
+            if let Some(amt) = params.new_amount {
+                if amt < MIN_AMOUNT {
+                    return Err(ContractError::InvalidAmount);
+                }
+                schedule.amount = amt;
+            }
+            if let Some(inv) = params.new_interval_secs {
+                if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&inv) {
+                    return Err(ContractError::InvalidInterval);
+                }
+                schedule.interval_secs = inv;
+            }
+            if let Some(end_t) = params.new_end_time {
+                if end_t <= schedule.start_time {
+                    return Err(ContractError::InvalidDeadline);
+                }
+                schedule.end_time = end_t;
+            }
+
+            write_recurring_payment(&env, &schedule);
+
+            env.events().publish(
+                (symbol_short!("r_mod"),),
+                RecurringPaymentModifiedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    schedule_id: params.schedule_id,
+                    previous_amount,
+                    new_amount: schedule.amount,
+                    previous_interval,
+                    new_interval: schedule.interval_secs,
+                    previous_end_time,
+                    new_end_time: schedule.end_time,
+                },
+            );
+        }
+        ProposalKind::GrantRole(target, role_sym) => {
+            let role = symbol_to_role(&env, role_sym)?;
+            if has_role(&env, target, &role) {
+                return Err(ContractError::RoleAlreadyGranted);
+            }
+            let before = read_owner_roles(&env, target);
+            let mut roles = before.clone();
+            roles.push_back(role.clone());
+            update_owner_roles(&env, target, &roles);
+            let after = read_owner_roles(&env, target);
+            env.events().publish(
+                (Symbol::new(&env, "role_granted"),),
+                RoleGrantedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    target: target.clone(),
+                    role: role.clone(),
+                    before,
+                    after,
+                },
+            );
+        }
+        ProposalKind::RevokeRole(target, role_sym) => {
+            let role = symbol_to_role(&env, role_sym)?;
+            if !has_role(&env, target, &role) {
+                return Err(ContractError::RoleNotGranted);
+            }
+            // Re-validate quorum-stranding at execute time: state may have
+            // drifted since proposal creation (another revoke could have
+            // already reduced approver weight).
+            if role == Role::Approver {
+                let threshold = read_threshold(&env)?;
+                let remaining = remaining_approver_weight_after_revoke(&env, target)?;
+                if remaining < threshold {
+                    return Err(ContractError::WouldBreakQuorum);
+                }
+            }
+            let before = read_owner_roles(&env, target);
+            let mut next = Vec::new(&env);
+            for r in before.iter() {
+                if r != role {
+                    next.push_back(r);
+                }
+            }
+            update_owner_roles(&env, target, &next);
+            let after = read_owner_roles(&env, target);
+            env.events().publish(
+                (Symbol::new(&env, "role_revoked"),),
+                RoleRevokedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    target: target.clone(),
+                    role: role.clone(),
+                    before,
+                    after,
+                },
+            );
+        }
+        ProposalKind::SetAssetRegistryEnabled(enabled) => {
+            env.storage()
+                .instance()
+                .set(&asset_registry_enabled_key(), enabled);
+            bump_instance(&env);
+            env.events().publish(
+                (symbol_short!("ast_en"),),
+                AssetRegistryEnabledEvent { enabled: *enabled },
+            );
+        }
+        ProposalKind::AddApprovedToken(token_address) => {
+            validate_token_interface(&env, token_address)?;
+            if token_is_approved(&env, token_address) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_token_approved(&env, token_address, true);
+            env.events().publish(
+                (symbol_short!("ast_tok"),),
+                ApprovedTokenChangedEvent {
+                    token: token_address.clone(),
+                    approved: true,
+                },
+            );
+        }
+        ProposalKind::RemoveApprovedToken(token_address) => {
+            if !token_is_approved(&env, token_address) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_token_approved(&env, token_address, false);
+            env.events().publish(
+                (symbol_short!("ast_tok"),),
+                ApprovedTokenChangedEvent {
+                    token: token_address.clone(),
+                    approved: false,
+                },
+            );
+        }
+        ProposalKind::TransferGuardian(new_guardian) => {
+            write_guardian(&env, new_guardian);
+            env.events().publish(
+                (symbol_short!("guard_set"),),
+                GuardianSetEvent {
+                    guardian: new_guardian.clone(),
+                    version: EVENT_SCHEMA_VERSION,
+                },
+            );
+        }
+        ProposalKind::CreateEscrow(params) => {
+            validate_token(&env, &params.token)?;
+            require_asset_not_frozen(&env, &params.token)?;
+            if params.recipient == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+            let release_at = match &params.release_mode {
+                EscrowReleaseMode::OwnerQuorumUntil(timestamp)
+                | EscrowReleaseMode::Deadline(timestamp) => *timestamp,
+            };
+            if release_at <= env.ledger().timestamp() {
+                return Err(ContractError::InvalidDeadline);
+            }
+            if params.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            let reserved = read_reserved_balance(&env, &params.token);
+            let new_reserved = reserved
+                .checked_add(params.amount)
+                .ok_or(ContractError::ArithmeticError)?;
+            if available_balance(&env, &params.token)? < params.amount {
+                return Err(ContractError::EscrowFundsUnavailable);
+            }
+
+            let id = read_next_escrow_id(&env);
+            write_next_escrow_id(
+                &env,
+                id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+            );
+            write_escrow(
+                &env,
+                &EscrowRecord {
+                    id,
+                    recipient: params.recipient.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    release_mode: params.release_mode.clone(),
+                },
+            );
+            write_reserved_balance(&env, &params.token, new_reserved);
+            env.events().publish(
+                (symbol_short!("esc_crt"),),
+                EscrowCreatedEvent {
+                    id,
+                    recipient: params.recipient.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    release_mode: params.release_mode.clone(),
+                },
+            );
+        }
+        ProposalKind::DexSwap(params) => {
+            // ── Pre-execution guards ──────────────────────────────────
+            // 1. Swap deadline: reject stale approvals that passed their
+            //    execution window.
+            let now = env.ledger().timestamp();
+            if now > params.swap_deadline {
+                return Err(ContractError::InvalidSwapDeadline);
+            }
+
+            // 2. Router must still be in the approved registry.
+            if !dex_router_is_approved(&env, &params.router) {
+                return Err(ContractError::Unauthorized);
+            }
+
+            // 3. All tokens in path must pass the asset registry check.
+            validate_swap_path(&env, &params.path)?;
+
+            // 4. Treasury must hold at least send_amount of path[0].
+            let send_token = params.path.get(0).ok_or(ContractError::InvalidSwapPath)?;
+            require_asset_outflow_allowed(&env, &send_token)?;
+            if available_balance(&env, &send_token)? < params.send_amount {
+                return Err(ContractError::TransferFailed);
+            }
+
+            // ── Approve the router to pull send_amount ────────────────
+            // The multisig contract is the token owner; approve the
+            // router up to `send_amount` for exactly the next ledger so
+            // the allowance cannot be re-used after this transaction.
+            token::Client::new(&env, &send_token).approve(
+                &env.current_contract_address(),
+                &params.router,
+                &params.send_amount,
+                &(env.ledger().sequence() + 1),
+            );
+
+            // ── Cross-contract swap call ──────────────────────────────
+            let destination = params
+                .destination
+                .clone()
+                .unwrap_or_else(|| env.current_contract_address());
+
+            let mut swap_args = Vec::new(&env);
+            swap_args.push_back(params.send_amount.into_val(&env));
+            swap_args.push_back(params.min_recv.into_val(&env));
+            swap_args.push_back(params.path.clone().into_val(&env));
+            swap_args.push_back(destination.clone().into_val(&env));
+            swap_args.push_back(params.swap_deadline.into_val(&env));
+
+            // `invoke_contract` traps on any error from the callee,
+            // which reverts this entire invocation. The `try_invoke_contract`
+            // variant returns Err instead of trapping.
+            let amounts: Vec<i128> = env
+                .try_invoke_contract::<Vec<i128>, soroban_sdk::Error>(
+                    &params.router,
+                    &Symbol::new(&env, "swap_exact_tokens_for_tokens"),
+                    swap_args,
+                )
+                .map_err(|_| ContractError::SwapFailed)?
+                .map_err(|_| ContractError::SwapFailed)?;
+
+            let recv_amount: i128 = amounts.last().unwrap_or(0);
+
+            // Belt-and-suspenders slippage guard. The router should have
+            // already failed if output < min_recv, but we re-check so
+            // our event only reflects a valid execution.
+            if recv_amount < params.min_recv {
+                return Err(ContractError::SlippageExceeded);
+            }
+
+            env.events().publish(
+                (symbol_short!("dex_swap"),),
+                DexSwapExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    proposal_id,
+                    executor: executor.clone(),
+                    router: params.router.clone(),
+                    path: params.path.clone(),
+                    send_amount: params.send_amount,
+                    min_recv: params.min_recv,
+                    recv_amount,
+                    destination,
+                },
+            );
+        }
+        ProposalKind::AddDexRouter(router) => {
+            if dex_router_is_approved(&env, router) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_dex_router_approved(&env, router, true);
+            env.events().publish(
+                (symbol_short!("dex_rtr"),),
+                DexRouterChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    router: router.clone(),
+                    approved: true,
+                },
+            );
+        }
+        ProposalKind::RemoveDexRouter(router) => {
+            if !dex_router_is_approved(&env, router) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_dex_router_approved(&env, router, false);
+            env.events().publish(
+                (symbol_short!("dex_rtr"),),
+                DexRouterChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    router: router.clone(),
+                    approved: false,
+                },
+            );
+        }
+        ProposalKind::AddYieldVenue(venue) => {
+            if yield_venue_is_approved(&env, venue) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_yield_venue_approved(&env, venue, true);
+            env.events().publish(
+                (symbol_short!("y_venue"),),
+                YieldVenueChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    venue: venue.clone(),
+                    approved: true,
+                },
+            );
+        }
+        ProposalKind::RemoveYieldVenue(venue) => {
+            if !yield_venue_is_approved(&env, venue) {
+                return Err(ContractError::AssetRegistryState);
+            }
+            write_yield_venue_approved(&env, venue, false);
+            env.events().publish(
+                (symbol_short!("y_venue"),),
+                YieldVenueChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    venue: venue.clone(),
+                    approved: false,
+                },
+            );
+        }
+        ProposalKind::YieldDeposit(params) => {
+            // ── Pre-execution guards ─────────────────────────────────
+            if !yield_venue_is_approved(&env, &params.venue) {
+                return Err(ContractError::YieldVenueNotApproved);
+            }
+            validate_token(&env, &params.token)?;
+            require_asset_outflow_allowed(&env, &params.token)?;
+            if read_yield_position(&env, params.position_id).is_some() {
+                return Err(ContractError::YieldPositionAlreadyOpen);
+            }
+            if available_balance(&env, &params.token)? < params.amount {
+                return Err(ContractError::TransferFailed);
+            }
+
+            // ── Approve the venue for one ledger ─────────────────────
+            token::Client::new(&env, &params.token).approve(
+                &env.current_contract_address(),
+                &params.venue,
+                &params.amount,
+                &(env.ledger().sequence() + 1),
+            );
+
+            // ── Cross-contract deposit call ──────────────────────────
+            let (func_name, deposit_args) = match params.kind {
+                YieldVenueKind::Blend => {
+                    // Blend: supply(from, spender, asset, amount)
+                    let mut args = Vec::new(&env);
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    (Symbol::new(&env, "supply"), args)
+                }
+                YieldVenueKind::Soroswap => {
+                    // Soroswap: add_liquidity expects two tokens; for a
+                    // single-sided deposit we pass the same token twice.
+                    let mut args = Vec::new(&env);
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    args.push_back(params.min_return.into_val(&env));
+                    args.push_back(params.min_return.into_val(&env));
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(env.ledger().timestamp().into_val(&env));
+                    (Symbol::new(&env, "add_liquidity"), args)
+                }
+                YieldVenueKind::Generic => {
+                    // Generic: deposit(token, amount)
+                    let mut args = Vec::new(&env);
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    (Symbol::new(&env, "deposit"), args)
+                }
+            };
+
+            env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &params.venue,
+                &func_name,
+                deposit_args,
+            )
+            .map_err(|_| ContractError::YieldVenueFailed)?
+            .map_err(|_| ContractError::YieldVenueFailed)?;
+
+            // ── Record the open position ─────────────────────────────
+            let now = env.ledger().timestamp();
+            write_yield_position(
+                &env,
+                &YieldPosition {
+                    id: params.position_id,
+                    venue: params.venue.clone(),
+                    token: params.token.clone(),
+                    deposited: params.amount,
+                    opened_at: now,
+                    kind: params.kind.clone(),
+                },
+            );
+
+            env.events().publish(
+                (symbol_short!("y_dep"),),
+                YieldDepositedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    proposal_id,
+                    executor: executor.clone(),
+                    venue: params.venue.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    position_id: params.position_id,
+                    kind: params.kind.clone(),
+                },
+            );
+        }
+        ProposalKind::YieldWithdraw(params) => {
+            // ── Pre-execution guards ─────────────────────────────────
+            if !yield_venue_is_approved(&env, &params.venue) {
+                return Err(ContractError::YieldVenueNotApproved);
+            }
+            validate_token(&env, &params.token)?;
+
+            let position = read_yield_position(&env, params.position_id)
+                .ok_or(ContractError::YieldPositionNotFound)?;
+
+            // The venue and token in the withdraw proposal must match the
+            // recorded position to prevent misrouted withdrawals.
+            if position.venue != params.venue || position.token != params.token {
+                return Err(ContractError::Unauthorized);
+            }
+
+            // ── Balance snapshot before withdrawal ───────────────────
+            let balance_before = token::Client::new(&env, &params.token)
+                .try_balance(&env.current_contract_address())
+                .map_err(|_| ContractError::YieldVenueFailed)?
+                .map_err(|_| ContractError::YieldVenueFailed)?;
+
+            // ── Cross-contract withdrawal call ───────────────────────
+            let (func_name, withdraw_args) = match params.kind {
+                YieldVenueKind::Blend => {
+                    // Blend: withdraw(from, spender, asset, amount)
+                    let mut args = Vec::new(&env);
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    (Symbol::new(&env, "withdraw"), args)
+                }
+                YieldVenueKind::Soroswap => {
+                    // Soroswap: remove_liquidity(token_a, token_b, lp_amount,
+                    //   min_a, min_b, to, deadline)
+                    let mut args = Vec::new(&env);
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    args.push_back(params.min_return.into_val(&env));
+                    args.push_back(params.min_return.into_val(&env));
+                    args.push_back(env.current_contract_address().into_val(&env));
+                    args.push_back(env.ledger().timestamp().into_val(&env));
+                    (Symbol::new(&env, "remove_liquidity"), args)
+                }
+                YieldVenueKind::Generic => {
+                    // Generic: withdraw(token, amount)
+                    let mut args = Vec::new(&env);
+                    args.push_back(params.token.clone().into_val(&env));
+                    args.push_back(params.amount.into_val(&env));
+                    (Symbol::new(&env, "withdraw"), args)
+                }
+            };
+
+            env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &params.venue,
+                &func_name,
+                withdraw_args,
+            )
+            .map_err(|_| ContractError::YieldVenueFailed)?
+            .map_err(|_| ContractError::YieldVenueFailed)?;
+
+            // ── Slippage guard: measure tokens returned ──────────────
+            let balance_after = token::Client::new(&env, &params.token)
+                .try_balance(&env.current_contract_address())
+                .map_err(|_| ContractError::YieldVenueFailed)?
+                .map_err(|_| ContractError::YieldVenueFailed)?;
+
+            let recv_amount = balance_after
+                .checked_sub(balance_before)
+                .unwrap_or(0)
+                .max(0);
+
+            if recv_amount < params.min_return {
+                return Err(ContractError::YieldReturnBelowMinimum);
+            }
+
+            // ── Close the position record ────────────────────────────
+            remove_yield_position(&env, params.position_id);
+
+            env.events().publish(
+                (symbol_short!("y_wdraw"),),
+                YieldWithdrawnEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    proposal_id,
+                    executor: executor.clone(),
+                    venue: params.venue.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    recv_amount,
+                    position_id: params.position_id,
+                },
+            );
+        }
+        ProposalKind::CreatePullPayment(params) => {
+            // ── Validation ───────────────────────────────────────────
+            validate_token(&env, &params.token)?;
+            if params.amount < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            if params.claimant == env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+            let now = env.ledger().timestamp();
+            if params.expires_at <= now {
+                return Err(ContractError::InvalidDeadline);
+            }
+            if available_balance(&env, &params.token)? < params.amount {
+                return Err(ContractError::TransferFailed);
+            }
+
+            // ── Open the request ─────────────────────────────────────
+            let request_id = read_next_pull_payment_id(&env);
+            write_next_pull_payment_id(
+                &env,
+                request_id.checked_add(1).ok_or(ContractError::ArithmeticError)?,
+            );
+
+            write_pull_payment(
+                &env,
+                &PullPaymentRequest {
+                    id: request_id,
+                    proposer: proposal.proposer.clone(),
+                    claimant: params.claimant.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    expires_at: params.expires_at,
+                    status: PullPaymentStatus::Open,
+                    memo: params.memo.clone(),
+                },
+            );
+
+            env.events().publish(
+                (symbol_short!("pr_open"),),
+                PullPaymentOpenedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    request_id,
+                    proposer: proposal.proposer.clone(),
+                    claimant: params.claimant.clone(),
+                    token: params.token.clone(),
+                    amount: params.amount,
+                    expires_at: params.expires_at,
+                },
+            );
+        }
+        ProposalKind::CancelPullPayment(request_id) => {
+            let mut req = read_pull_payment(&env, *request_id)
+                .ok_or(ContractError::PullPaymentNotFound)?;
+
+            let status = derive_pull_payment_status(&env, &req);
+            if !matches!(status, PullPaymentStatus::Open) {
+                return Err(ContractError::PullPaymentNotOpen);
+            }
+
+            req.status = PullPaymentStatus::Cancelled;
+            write_pull_payment(&env, &req);
+
+            env.events().publish(
+                (symbol_short!("pr_cncl"),),
+                PullPaymentCancelledEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    request_id: *request_id,
+                    executor: executor.clone(),
+                },
+            );
+        }
+        ProposalKind::SetSpendPolicy(policy) => {
+            validate_spend_policy(policy)?;
+            write_spend_policy(&env, policy);
+
+            // Reset all trackers for this (owner, token) pair when a new
+            // policy is set, so the epoch starts fresh.
+            for i in 0..policy.limits.len() {
+                let limit_entry = policy.limits.get(i).unwrap();
+                let now = env.ledger().timestamp();
+                write_spend_policy_tracker(
+                    &env,
+                    &policy.owner,
+                    &policy.token,
+                    &limit_entry.window,
+                    &SpentTracker { spent: 0, epoch: now },
+                );
+            }
+
+            env.events().publish(
+                (symbol_short!("sp_set"),),
+                SpendPolicySetEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: policy.owner.clone(),
+                    token: policy.token.clone(),
+                    limits: policy.limits.clone(),
+                },
+            );
+        }
+        ProposalKind::ClearSpendPolicy(owner, token) => {
+            remove_spend_policy(&env, owner, token);
+
+            // Also remove any per-window trackers.
+            for window in [
+                SpendWindowKind::Daily,
+                SpendWindowKind::Weekly,
+                SpendWindowKind::Monthly,
+            ] {
+                let key = spend_policy_tracker_key(owner, token, &window);
+                env.storage().persistent().remove(&key);
+            }
+
+            env.events().publish(
+                (symbol_short!("sp_clr"),),
+                SpendPolicyClearedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: owner.clone(),
+                    token: token.clone(),
+                },
+            );
+        }
+        // ── #954: Oracle price guard execute arms ──
+        ProposalKind::SetOraclePrice(oracle) => {
+            if oracle.price <= 0 {
+                return Err(ContractError::OraclePriceInvalid);
+            }
+            let now = env.ledger().timestamp();
+            let mut oracle = oracle.clone();
+            oracle.updated_at = now;
+            write_oracle_price(&env, &oracle);
+            env.events().publish(
+                (symbol_short!("ora_set"),),
+                OraclePriceSetEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    token: oracle.token.clone(),
+                    fiat: oracle.fiat.clone(),
+                    price: oracle.price,
+                    updated_at: now,
+                    max_staleness: oracle.max_staleness,
+                },
+            );
+        }
+        ProposalKind::ClearOraclePrice(token, fiat) => {
+            remove_oracle_price(&env, token, fiat);
+        }
+        ProposalKind::SetFiatSpendLimit(limit) => {
+            if limit.fiat_limit < MIN_AMOUNT {
+                return Err(ContractError::InvalidAmount);
+            }
+            if limit.window_secs < MIN_SPENDING_WINDOW || limit.window_secs > MAX_SPENDING_WINDOW {
+                return Err(ContractError::InvalidDuration);
+            }
+            write_fiat_spend_limit(&env, limit);
+            // Reset the fiat spent tracker.
+            let now = env.ledger().timestamp();
+            write_fiat_spent_tracker(
+                &env, &limit.owner, &limit.token, &limit.fiat,
+                &SpentTracker { spent: 0, epoch: now },
+            );
+            env.events().publish(
+                (symbol_short!("fiat_set"),),
+                FiatSpendLimitSetEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    owner: limit.owner.clone(),
+                    token: limit.token.clone(),
+                    fiat: limit.fiat.clone(),
+                    fiat_limit: limit.fiat_limit,
+                    window_secs: limit.window_secs,
+                },
+            );
+        }
+        ProposalKind::ClearFiatSpendLimit(owner, token, fiat) => {
+            remove_fiat_spend_limit(&env, owner, token, fiat);
+        }
+        // ── #955: Denylist execute arms ──
+        ProposalKind::AddToDenylist(address) => {
+            write_denied(&env, address, true);
+            write_denylist_enabled(&env, true);
+            env.events().publish(
+                (symbol_short!("deny_ch"),),
+                DenylistChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    address: address.clone(),
+                    denied: true,
+                },
+            );
+        }
+        ProposalKind::RemoveFromDenylist(address) => {
+            write_denied(&env, address, false);
+            env.events().publish(
+                (symbol_short!("deny_ch"),),
+                DenylistChangedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    address: address.clone(),
+                    denied: false,
+                },
+            );
+        }
+        // ── #953: Cross-asset rebalancing execute arm ──
+        ProposalKind::Rebalance(params) => {
+            validate_rebalance_params(params)?;
+            if !dex_router_is_approved(&env, &params.router) {
+                return Err(ContractError::RebalanceRouterNotApproved);
+            }
+            // Validate all target tokens.
+            for i in 0..params.targets.len() {
+                let target = params.targets.get(i).unwrap();
+                validate_token(&env, &target.token)?;
+            }
+            let now = env.ledger().timestamp();
+            if now > params.swap_deadline {
+                return Err(ContractError::InvalidSwapDeadline);
+            }
+
+            // For each target token, check if the treasury's current
+            // balance is below the target weight. If so, we would swap
+            // excess tokens from other assets into this one. The actual
+            // swap execution is delegated to the DEX router via
+            // cross-contract calls (same pattern as DexSwap).
+            //
+            // In this implementation, the rebalance proposal records
+            // the target weights and emits an event so off-chain
+            // indexers can compose the individual swap steps. The
+            // on-chain execution performs the validation and records
+            // the rebalance timestamp. Individual swaps are executed
+            // as separate DexSwap proposals.
+            write_last_rebalance(&env, now);
+
+            env.events().publish(
+                (symbol_short!("reb_exec"),),
+                RebalanceExecutedEvent {
+                    version: EVENT_SCHEMA_VERSION,
+                    proposal_id,
+                    executor: executor.clone(),
+                    targets: params.targets.clone(),
+                },
+            );
+        }
+        ProposalKind::Batch(actions) => {
+            if actions.is_empty() {
+                return Err(ContractError::EmptyBatch);
+            }
+            if actions.len() > MAX_BATCH_ACTIONS {
+                return Err(ContractError::TooManyBatchActions);
+            }
+            for action in actions.iter() {
+                if matches!(action, ProposalKind::Batch(_)) {
+                    return Err(ContractError::InvalidBatchAction);
+                }
+                require_kind_not_frozen(&env, proposal_kind_tag(&action))?;
+                execute_proposal_kind(env.clone(), executor, proposal_id, proposal, &action)?;
+            }
+        }
+    }
+    Ok(())
 }
