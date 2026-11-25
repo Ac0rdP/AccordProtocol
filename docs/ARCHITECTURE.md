@@ -98,6 +98,7 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `SRNEXT` | `u64`  | Monotonic social-recovery request ID counter | 518,400 / 17,280              |
 | `("AFRZ", token)` | `bool` | Scoped freeze for one asset      | 518,400 / 17,280                 |
 | `("KFRZ", kind)`  | `bool` | Scoped freeze for one proposal kind | 518,400 / 17,280              |
+| `("OPAUSE", token)` | `bool` | Pause all treasury outflows for one asset | 518,400 / 17,280         |
 
 **Instance entry cost**: all instance keys together occupy roughly **~150 bytes** XDR-encoded (rounds to 1 KB for billing) → **~0.052 XLM per 30 days** (see [Storage Cost Methodology](#storage-cost-methodology) below).
 
@@ -188,6 +189,29 @@ weight. It is maintained on create/renew/revoke and rebuilt by the `2` → `3`
 storage migration. `get_delegated_weight` recomputes from the authoritative
 delegation entries, while `get_delegate_weight_cap` exposes the current cap.
 
+### Asset Outflow Pause
+
+A guardian may pause every treasury outflow of one asset with
+`set_asset_outflow_pause(guardian, token, paused)` or the convenience
+`pause_asset_outflows` / `resume_asset_outflows` entrypoints. The token must be
+a valid token contract, and the guardian check mirrors `freeze_asset`; no RBAC
+role or owner co-signers are involved. The pause remains callable during a
+global freeze so it can be used as an emergency control.
+
+The flag lives at `("OPAUSE", token)` in instance storage and defaults to
+`false` when absent. It is enforced only at the final treasury-movement
+boundary: transfer, DEX swap, yield deposit, stream claims, pull-payment
+claims, recurring disbursements, and escrow releases. Proposal creation,
+approval, governance-executable proposals, registry/router/venue configuration,
+reservations, refunds, and yield withdrawals back to the treasury remain
+available. A paused outflow returns `AssetOutflowPaused` even if the proposal
+was created and approved before the pause.
+
+Each change emits `AssetOutflowPauseChangedEvent` under the
+`asset_outflow_pause` topic. `is_asset_outflow_paused` exposes the current flag.
+The `3` → `4` storage migration accepts the new layout without a backfill
+because a missing `("OPAUSE", token)` key already reads as `false`.
+
 ### Key Naming Conventions
 
 Soroban storage keys must be **short symbols** (≤ 9 bytes) because the XDR `Symbol` type allocates one byte per character with no heap overhead — longer names would require a `Bytes` type, adding allocation overhead and increasing each key's on-chain storage footprint.
@@ -236,7 +260,8 @@ The contract records an explicit **storage-schema version** in instance storage 
 | `0` (implicit) | — | Pre-versioning / legacy deployments: the `STOVER` key does not exist, so `get_storage_version` returns `0`. Covers the original layout (`INIT`, `THRESH`, `OWNERS`, `NEXT`, `ACTCNT`, `TLOCK`, `("PROP", id)`, `("APPR", id, owner)`) and any keys added before versioning was introduced. |
 | `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
 | `2` | `migrate_to_v2`, `migrate_to_abstention_storage`, `migrate_storage` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury limits/accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`), guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp this version. |
-| `3` (current) | `initialize`, `migrate_storage` | Rebuildable incoming-delegation weight index (`("DLGWT", delegate)`) supporting the incoming delegation weight cap and expiry renewal. |
+| `3` | `migrate_storage` | Rebuildable incoming-delegation weight index (`("DLGWT", delegate)`) supporting the incoming delegation weight cap and expiry renewal. |
+| `4` (current) | `initialize`, `migrate_storage` | Per-asset outflow pause flags (`("OPAUSE", token)`), which reject treasury outflows for one asset while leaving governance and unrelated assets available. |
 
 **Upgrade path between versions:**
 
@@ -244,6 +269,7 @@ The contract records an explicit **storage-schema version** in instance storage 
 - **Fresh deployment:** `initialize` writes `STOVER = STORAGE_SCHEMA_VERSION` directly, so a newly deployed contract never reports `0`.
 - **`1` → `2`:** run `migrate_storage(approvers, 1, 2)`. The registry `SUPPORTED_STORAGE_VERSIONS` lists every readable layout; `migrate_storage` requires the caller's `from_version` to equal the recorded version, refuses unknown or newer targets, and refuses skipped, repeated, or backward steps. Legacy (`0`) deployments must finish the legacy migrations first. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp the same version.
 - **`2` → `3`:** run `migrate_storage(approvers, 2, 3)`. The migration rebuilds every `("DLGWT", delegate)` entry from active `("DELEG", delegator)` records before stamping `STOVER = 3`.
+- **`3` → `4`:** run `migrate_storage(approvers, 3, 4)`. No backfill is needed because a missing `("OPAUSE", token)` key reads as `false`; the migration stamps `STOVER = 4`.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
@@ -506,7 +532,7 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 | **Permissionless keeper** | `sweep_expired` | Any authenticated caller may sweep expired IDs; no role is required and the entrypoint remains callable while frozen. |
 | **Proposal proposer** | `cancel_proposal` | Only the original proposer may cancel a proposal that is still `Pending`. |
 | **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `configure_guardian_quorum`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `migrate_storage`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
-| **Guardian-only** | `freeze`, `freeze_asset`, `freeze_proposal_kind`, `enter_recovery` | Guardian address must match; separate from RBAC roles. |
+| **Guardian-only** | `freeze`, `freeze_asset`, `freeze_proposal_kind`, `set_asset_outflow_pause`, `pause_asset_outflows`, `resume_asset_outflows`, `enter_recovery` | Guardian address must match; separate from RBAC roles. |
 | **Guardian-quorum** | `propose_social_recovery`, `approve_social_recovery` | Caller must be in the configured guardian set; the ownership change executes after quorum plus `SOCIAL_RECOVERY_DELAY`. |
 | **Permissionless after quorum** | `execute_social_recovery`, `release_escrow_by_deadline` | Any authenticated caller may trigger once the on-chain condition is met. |
 | **Ungated (read-only)** | `get_*` views, `is_owner`, `has_approved`, `has_role`, `get_roles`, `get_role_members`, `get_role_version`, `disburse_recurring` (public crank) | No role or owner check for pure reads / public crank. |
@@ -899,8 +925,9 @@ The contract address plus one topic string together uniquely identify a stream o
 | `("delegadd",)` | `DelegationCreatedEvent { delegator, delegate, weight, expiry, total_delegated_weight, cap, version }` | Delegation feed |
 | `("delegren",)` | `DelegationRenewedEvent { delegator, delegate, old_expiry, new_expiry, version }` | Delegation renewals |
 | `("delegrev",)` | `DelegationRevokedEvent { delegator, delegate, weight, version }` | Delegation revocations |
+| `("asset_outflow_pause",)` | `AssetOutflowPauseChangedEvent { token, paused, guardian, version }` | Per-asset outflow pauses |
 
-These four cover the core approve/execute lifecycle; the contract emits 25 distinct event types in total (governance, delegation, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
+These four cover the core approve/execute lifecycle; the contract emits 26 distinct event types in total (governance, delegation, recurring payments, RBAC, and guardian/emergency actions included). See [§13.4 — Event Type Mapping](#134-event-type-to-storage-mapping) for the full list and [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for field-by-field schemas.
 
 ### Event Schema Versioning
 
@@ -1257,7 +1284,7 @@ Together, these mean the indexer can safely re-run any range of ledgers — afte
 
 ### 13.4 Event Type to Storage Mapping
 
-Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 25 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
+Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 26 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
 
 | Topic | Event struct (`contracts/accord/src/lib.rs`) | Updates |
 | --- | --- | --- |
@@ -1283,6 +1310,7 @@ Every event the contract emits carries a topic symbol (§7) that the indexer use
 | `delegadd` | `DelegationCreatedEvent` | `events` |
 | `delegren` | `DelegationRenewedEvent` | `events` |
 | `delegrev` | `DelegationRevokedEvent` | `events` |
+| `asset_outflow_pause` | `AssetOutflowPauseChangedEvent` | `events` |
 | `guard_set` | `GuardianSetEvent` | `events` |
 | `frozen` | `FrozenEvent` | `events` |
 | `unfrozen` | `UnfrozenEvent` | `events` |

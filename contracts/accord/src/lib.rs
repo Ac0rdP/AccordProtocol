@@ -676,6 +676,15 @@ pub struct ScopedFreezeChangedEvent {
     pub version: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct AssetOutflowPauseChangedEvent {
+    pub token: Address,
+    pub paused: bool,
+    pub guardian: Address,
+    pub version: u32,
+}
+
 /// A guardian set authorized to start social recovery when owner keys are
 /// lost. Operates independently of the single emergency guardian that can
 /// freeze the contract.
@@ -1724,6 +1733,7 @@ pub enum ContractError {
     InvalidDelegationWeight = 120,
     /// Thrown when a delegate would receive more delegated weight than the cap.
     DelegateWeightCapExceeded = 121,
+    AssetOutflowPaused = 122,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1814,6 +1824,10 @@ fn asset_freeze_key(token: &Address) -> (Symbol, Address) {
     (symbol_short!("AFRZ"), token.clone())
 }
 
+fn asset_outflow_pause_key(token: &Address) -> (Symbol, Address) {
+    (symbol_short!("OPAUSE"), token.clone())
+}
+
 fn kind_freeze_key(kind: ProposalKindTag) -> (Symbol, ProposalKindTag) {
     (symbol_short!("KFRZ"), kind)
 }
@@ -1875,14 +1889,16 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// spend limits, additive per-proposal abstention and soft-approval records,
 /// scoped freezes, guardian-quorum social recovery, and staged owner rotation.
 /// Version 3 adds the indexed incoming delegated weight used to cap delegation.
-const STORAGE_SCHEMA_VERSION: u32 = 3;
+/// Version 4 adds the per-asset outflow pause index.
+const STORAGE_SCHEMA_VERSION: u32 = 4;
 
 /// Every storage layout this contract can read or migrate to. `0` is the
 /// pre-versioning legacy layout, `1` added weighted governance/RBAC, `2` added
 /// scoped freezes, guardian-quorum recovery requests, and the rotation proposal
-/// kind, and `3` added the incoming delegated-weight index. A version outside
-/// this list is unknown and must be refused.
-pub const SUPPORTED_STORAGE_VERSIONS: [u32; 4] = [0, 1, 2, 3];
+/// kind, `3` added the incoming delegated-weight index, and `4` added the
+/// per-asset outflow pause index. A version outside this list is unknown and
+/// must be refused.
+pub const SUPPORTED_STORAGE_VERSIONS: [u32; 5] = [0, 1, 2, 3, 4];
 
 /// Minimum delay between a `RotateOwner` proposal reaching quorum and its
 /// activation. Gives the existing owner key time to object before handoff.
@@ -3332,6 +3348,30 @@ fn is_asset_frozen(env: &Env, token: &Address) -> bool {
         .unwrap_or(false)
 }
 
+fn is_asset_outflow_paused(env: &Env, token: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&asset_outflow_pause_key(token))
+        .unwrap_or(false)
+}
+
+fn write_asset_outflow_pause(env: &Env, token: &Address, paused: bool) {
+    let key = asset_outflow_pause_key(token);
+    if paused {
+        env.storage().instance().set(&key, &true);
+    } else {
+        env.storage().instance().remove(&key);
+    }
+    bump_instance(env);
+}
+
+fn require_asset_outflow_allowed(env: &Env, token: &Address) -> Result<(), ContractError> {
+    if is_asset_outflow_paused(env, token) {
+        return Err(ContractError::AssetOutflowPaused);
+    }
+    Ok(())
+}
+
 fn is_kind_frozen(env: &Env, kind: ProposalKindTag) -> bool {
     env.storage()
         .instance()
@@ -3361,7 +3401,8 @@ fn require_outflow_allowed(
     kind: ProposalKindTag,
 ) -> Result<(), ContractError> {
     require_kind_not_frozen(env, kind)?;
-    require_asset_not_frozen(env, token)
+    require_asset_not_frozen(env, token)?;
+    require_asset_outflow_allowed(env, token)
 }
 
 fn read_guardian_quorum(env: &Env) -> Option<GuardianQuorumConfig> {
@@ -5382,6 +5423,8 @@ impl AccordContract {
             .checked_add(amount)
             .ok_or(ContractError::ArithmeticError)?;
 
+        require_asset_outflow_allowed(&env, &schedule.token)?;
+
         let token_client = token::Client::new(&env, &schedule.token);
         let treasury = env.current_contract_address();
         if token_client.balance(&treasury) < amount
@@ -5832,6 +5875,7 @@ impl AccordContract {
 
         // Re-validate token in case the registry changed since the request opened.
         validate_token(&env, &req.token)?;
+        require_asset_outflow_allowed(&env, &req.token)?;
 
         if available_balance(&env, &req.token)? < req.amount {
             return Err(ContractError::TransferFailed);
@@ -6959,6 +7003,7 @@ impl AccordContract {
                 for transfer in transfers.iter() {
                     validate_token(&env, &transfer.token)?;
                     require_asset_not_frozen(&env, &transfer.token)?;
+                    require_asset_outflow_allowed(&env, &transfer.token)?;
                     if available_balance(&env, &transfer.token)? < transfer.amount {
                         return Err(ContractError::TransferFailed);
                     }
@@ -7756,6 +7801,7 @@ impl AccordContract {
 
                 // 4. Treasury must hold at least send_amount of path[0].
                 let send_token = params.path.get(0).ok_or(ContractError::InvalidSwapPath)?;
+                require_asset_outflow_allowed(&env, &send_token)?;
                 if available_balance(&env, &send_token)? < params.send_amount {
                     return Err(ContractError::TransferFailed);
                 }
@@ -7882,6 +7928,7 @@ impl AccordContract {
                     return Err(ContractError::YieldVenueNotApproved);
                 }
                 validate_token(&env, &params.token)?;
+                require_asset_outflow_allowed(&env, &params.token)?;
                 if read_yield_position(&env, params.position_id).is_some() {
                     return Err(ContractError::YieldPositionAlreadyOpen);
                 }
@@ -9844,6 +9891,52 @@ impl AccordContract {
         Ok(())
     }
 
+    /// Pauses or resumes every treasury outflow of a single asset. Governance,
+    /// approvals, and unrelated assets remain available. Only the configured
+    /// emergency guardian may call.
+    pub fn set_asset_outflow_pause(
+        env: Env,
+        guardian: Address,
+        token: Address,
+        paused: bool,
+    ) -> Result<(), ContractError> {
+        guardian.require_auth();
+        let stored = read_guardian(&env).ok_or(ContractError::NoGuardian)?;
+        if stored != guardian {
+            return Err(ContractError::Unauthorized);
+        }
+        validate_token_interface(&env, &token)?;
+
+        write_asset_outflow_pause(&env, &token, paused);
+
+        env.events().publish(
+            (Symbol::new(&env, "asset_outflow_pause"),),
+            AssetOutflowPauseChangedEvent {
+                token,
+                paused,
+                guardian,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn pause_asset_outflows(
+        env: Env,
+        guardian: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        Self::set_asset_outflow_pause(env, guardian, token, true)
+    }
+
+    pub fn resume_asset_outflows(
+        env: Env,
+        guardian: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        Self::set_asset_outflow_pause(env, guardian, token, false)
+    }
+
     /// Freezes or unfreezes one proposal-kind family. Only the configured
     /// emergency guardian may call. Governance and other kinds stay available.
     pub fn freeze_proposal_kind(
@@ -9881,6 +9974,11 @@ impl AccordContract {
     /// Returns whether `token` is under a scoped emergency freeze.
     pub fn is_asset_frozen(env: Env, token: Address) -> bool {
         is_asset_frozen(&env, &token)
+    }
+
+    /// Returns whether treasury outflows of `token` are paused.
+    pub fn is_asset_outflow_paused(env: Env, token: Address) -> bool {
+        is_asset_outflow_paused(&env, &token)
     }
 
     /// Returns whether proposals of `kind` are under a scoped emergency freeze.

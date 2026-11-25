@@ -11376,9 +11376,10 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
 fn storage_migration_registry_lists_supported_versions() {
     let (_, client, _, _, _, _, _) = setup(2);
     let supported = client.get_supported_storage_versions();
-    assert_eq!(supported.len(), 4);
+    assert_eq!(supported.len(), 5);
     assert!(supported.contains(0));
     assert!(supported.contains(3));
+    assert!(supported.contains(4));
     assert!(supported.contains(STORAGE_SCHEMA_VERSION));
     assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
     assert!(!client.is_storage_version_supported(&99));
@@ -12171,7 +12172,7 @@ fn test_treasury_zero_limit_blocks_outflows() {
 }
 
 #[test]
-fn test_storage_version_3_and_migrate_to_v3() {
+fn test_storage_version_4_and_migrate_to_v4() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
     assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
@@ -12180,24 +12181,24 @@ fn test_storage_version_3_and_migrate_to_v3() {
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b.clone());
     assert_eq!(
-        client.try_migrate_storage(&approvers, &3, &3),
+        client.try_migrate_storage(&approvers, &4, &4),
         Err(Ok(ContractError::AlreadyMigrated))
     );
 
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&storage_version_key(), &2_u32);
+        env.storage().instance().set(&storage_version_key(), &3_u32);
     });
-    assert_eq!(client.get_storage_version(), 2);
+    assert_eq!(client.get_storage_version(), 3);
 
     let mut solo_approver = Vec::new(&env);
     solo_approver.push_back(owner_a.clone());
     assert_eq!(
-        client.try_migrate_storage(&solo_approver, &2, &3),
+        client.try_migrate_storage(&solo_approver, &3, &4),
         Err(Ok(ContractError::ThresholdNotMet))
     );
 
-    client.migrate_storage(&approvers, &2, &3);
-    assert_eq!(client.get_storage_version(), 3);
+    client.migrate_storage(&approvers, &3, &4);
+    assert_eq!(client.get_storage_version(), 4);
 }
 
 // ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
@@ -12741,5 +12742,212 @@ proptest! {
         if first.is_ok() && second.is_ok() {
             prop_assert!(cap >= weight.saturating_mul(2));
         }
+    }
+}
+
+#[test]
+fn asset_outflow_pause_is_guardian_only_and_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&guardian, &token_client.address, &true),
+        Err(Ok(ContractError::NoGuardian))
+    );
+
+    client.set_guardian(&approvers, &guardian);
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&owner_a, &token_client.address, &true),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&guardian, &Address::generate(&env), &true),
+        Err(Ok(ContractError::InvalidToken))
+    );
+
+    client.pause_asset_outflows(&guardian, &token_client.address);
+    let events = env.events().all().filter_by_contract(&client.address);
+    assert!(!events.events().is_empty());
+    assert!(client.is_asset_outflow_paused(&token_client.address));
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    assert!(!client.is_asset_outflow_paused(&token_client.address));
+}
+
+#[test]
+fn paused_asset_blocks_transfer_execution_but_not_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+    client.pause_asset_outflows(&guardian, &token_client.address);
+
+    let recipient = Address::generate(&env);
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "paused transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &transfer_id);
+    client.approve(&owner_b, &transfer_id);
+    assert_eq!(
+        client.try_execute(&owner_c, &transfer_id),
+        Err(Ok(ContractError::AssetOutflowPaused))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    let governance_id = client.create_change_threshold_proposal(
+        &owner_a,
+        &2,
+        &str(&env, "governance while paused"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &governance_id);
+    client.approve(&owner_b, &governance_id);
+    client.execute(&owner_c, &governance_id);
+    assert_eq!(client.get_threshold(), 2);
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    client.execute(&owner_c, &transfer_id);
+    assert_eq!(token_client.balance(&recipient), 10);
+}
+
+#[test]
+fn asset_outflow_pause_is_scoped_to_one_token() {
+    let (env, client, owner_a, owner_b, owner_c, _, paused_token) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+    client.pause_asset_outflows(&guardian, &paused_token.address);
+
+    let other_admin = Address::generate(&env);
+    let other_id = env.register_stellar_asset_contract_v2(other_admin);
+    let other_token = token::Client::new(&env, &other_id.address());
+    token::StellarAssetClient::new(&env, &other_id.address()).mint(&client.address, &1_000_000);
+
+    let recipient = Address::generate(&env);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &other_token.address),
+        &str(&env, "unpaused transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_eq!(other_token.balance(&recipient), 10);
+    assert!(client.is_asset_outflow_paused(&paused_token.address));
+    assert!(!client.is_asset_outflow_paused(&other_token.address));
+}
+
+#[test]
+fn paused_asset_blocks_stream_claims() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        0,
+    );
+
+    client.pause_asset_outflows(&guardian, &token_client.address);
+    set_timestamp(&env, NOW + 2);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::AssetOutflowPaused))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 6);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn outflow_pause_isolates_paused_token_in_property(pause_first in any::<bool>()) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+        client.initialize(&owners, &weights, &2, &0);
+        client.set_guardian(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+            &guardian,
+        );
+
+        let token_a_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_b_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_a = token::Client::new(&env, &token_a_id.address());
+        let token_b = token::Client::new(&env, &token_b_id.address());
+        token::StellarAssetClient::new(&env, &token_a_id.address()).mint(&contract_id, &1_000_000);
+        token::StellarAssetClient::new(&env, &token_b_id.address()).mint(&contract_id, &1_000_000);
+
+        let (paused_token, unpaused_token) = if pause_first {
+            (&token_a, &token_b)
+        } else {
+            (&token_b, &token_a)
+        };
+        client.pause_asset_outflows(&guardian, &paused_token.address);
+
+        prop_assert_eq!(client.is_asset_outflow_paused(&token_a.address), pause_first);
+        prop_assert_eq!(client.is_asset_outflow_paused(&token_b.address), !pause_first);
+
+        let paused_recipient = Address::generate(&env);
+        let paused_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &paused_recipient, 10, &paused_token.address),
+            &str(&env, "paused outflow"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &paused_id);
+        client.approve(&owner_b, &paused_id);
+        prop_assert_eq!(
+            client.try_execute(&owner_c, &paused_id),
+            Err(Ok(ContractError::AssetOutflowPaused))
+        );
+        prop_assert_eq!(paused_token.balance(&paused_recipient), 0);
+
+        let unpaused_recipient = Address::generate(&env);
+        let unpaused_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &unpaused_recipient, 10, &unpaused_token.address),
+            &str(&env, "allowed outflow"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &unpaused_id);
+        client.approve(&owner_b, &unpaused_id);
+        client.execute(&owner_c, &unpaused_id);
+        prop_assert_eq!(unpaused_token.balance(&unpaused_recipient), 10);
     }
 }
