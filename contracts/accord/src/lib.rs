@@ -1113,6 +1113,160 @@ pub struct YieldDepositedEvent {
 /// Emitted when a `YieldWithdraw` proposal is created.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct YieldWithdrawProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub min_return: i128,
+    pub position_id: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldWithdrawnEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Actual tokens returned to the treasury.
+    pub recv_amount: i128,
+    pub position_id: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a yield venue is added to or removed from the approved registry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldVenueChangedEvent {
+    pub venue: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `CreatePullPayment` proposal executes and the request is opened.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentOpenedEvent {
+    pub request_id: u64,
+    pub proposer: Address,
+    pub claimant: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub expires_at: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a claimant successfully claims a pull-payment request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentClaimedEvent {
+    pub request_id: u64,
+    pub claimant: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `CancelPullPayment` proposal executes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PullPaymentCancelledEvent {
+    pub request_id: u64,
+    pub executor: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when reconciliation metadata is attached to a proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PaymentMetadataSetEvent {
+    pub proposal_id: u64,
+    pub setter: Address,
+    pub metadata: PaymentMetadata,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct FrozenEvent {
+    pub guardian: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+/// Emitted when a `DexSwap` proposal is successfully executed. Records both
+/// the requested parameters and the actual output reported by the router so
+/// indexers and auditors can track realised slippage.
+pub struct DexSwapExecutedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub router: Address,
+    pub path: Vec<Address>,
+    pub send_amount: i128,
+    pub min_recv: i128,
+    /// Actual amount of output token returned by the router.
+    pub recv_amount: i128,
+    pub destination: Address,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct DexRouterChangedEvent {
+    pub router: Address,
+    pub approved: bool,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositProposedEvent {
+    pub proposal_id: u64,
+    pub proposer: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldDeposit` proposal executes successfully.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct YieldDepositedEvent {
+    pub proposal_id: u64,
+    pub executor: Address,
+    pub venue: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub position_id: u64,
+    pub kind: YieldVenueKind,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+/// Emitted when a `YieldWithdraw` proposal is created.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct RecurringStreamClaimedEvent {
     pub schedule_id: u64,
     pub recipient: Address,
@@ -2085,6 +2239,39 @@ fn escrow_reserved_key(token: &Address) -> (Symbol, Address) {
 /// A router address is stored as `(DXRTR, router_addr) → bool`.
 fn dex_router_approved_key(router: &Address) -> (Symbol, Address) {
     (symbol_short!("DXRTR"), router.clone())
+}
+
+/// Persistent key for the approved yield venue registry.
+/// A venue address is stored as `(YVENUE, venue_addr) → bool`.
+fn yield_venue_approved_key(venue: &Address) -> (Symbol, Address) {
+    (symbol_short!("YVENUE"), venue.clone())
+}
+
+/// Persistent key for an open yield position record.
+/// Stored as `(YPOS, position_id) → YieldPosition`.
+fn yield_position_key(position_id: u64) -> (Symbol, u64) {
+    (symbol_short!("YPOS"), position_id)
+}
+
+/// Persistent key for a pull-payment request record.
+/// Stored as `(PULLREQ, request_id) → PullPaymentRequest`.
+fn pull_payment_key(request_id: u64) -> (Symbol, u64) {
+    (symbol_short!("PULLREQ"), request_id)
+}
+
+/// Instance key for the next pull-payment request ID counter.
+fn pull_payment_next_id_key() -> Symbol {
+    symbol_short!("PRNEXT")
+}
+
+/// Persistent key for payment metadata attached to a proposal.
+/// Stored as `(PAYMETA, proposal_id) → PaymentMetadata`.
+fn payment_metadata_key(proposal_id: u64) -> (Symbol, u64) {
+    (symbol_short!("PAYMETA"), proposal_id)
+}
+
+fn checked_weight_add(a: u32, b: u32) -> Result<u32, ContractError> {
+    a.checked_add(b).ok_or(ContractError::ArithmeticError)
 }
 
 /// Persistent key for the approved yield venue registry.
@@ -3689,6 +3876,133 @@ fn write_dex_router_approved(env: &Env, router: &Address, approved: bool) {
         bump_persistent(env, &key);
     } else {
         env.storage().persistent().remove(&key);
+    }
+}
+
+/// Validates all tokens in a DEX swap path against the asset registry.
+fn validate_swap_path(env: &Env, path: &Vec<Address>) -> Result<(), ContractError> {
+    if path.len() < 2 {
+        return Err(ContractError::InvalidSwapPath);
+    }
+    for token_addr in path.iter() {
+        validate_token(env, &token_addr)?;
+    }
+    Ok(())
+}
+
+fn yield_venue_is_approved(env: &Env, venue: &Address) -> bool {
+    let key = yield_venue_approved_key(venue);
+    env.storage().persistent().get(&key).unwrap_or(false)
+}
+
+fn write_yield_venue_approved(env: &Env, venue: &Address, approved: bool) {
+    let key = yield_venue_approved_key(venue);
+    if approved {
+        env.storage().persistent().set(&key, &true);
+        bump_persistent(env, &key);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+fn read_yield_position(env: &Env, position_id: u64) -> Option<YieldPosition> {
+    let key = yield_position_key(position_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_yield_position(env: &Env, position: &YieldPosition) {
+    let key = yield_position_key(position.id);
+    env.storage().persistent().set(&key, position);
+    bump_persistent(env, &key);
+}
+
+fn remove_yield_position(env: &Env, position_id: u64) {
+    let key = yield_position_key(position_id);
+    env.storage().persistent().remove(&key);
+}
+
+fn read_next_pull_payment_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&pull_payment_next_id_key())
+        .unwrap_or(1_u64)
+}
+
+fn write_next_pull_payment_id(env: &Env, id: u64) {
+    env.storage()
+        .instance()
+        .set(&pull_payment_next_id_key(), &id);
+    bump_instance(env);
+}
+
+fn read_pull_payment(env: &Env, request_id: u64) -> Option<PullPaymentRequest> {
+    let key = pull_payment_key(request_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_pull_payment(env: &Env, req: &PullPaymentRequest) {
+    let key = pull_payment_key(req.id);
+    env.storage().persistent().set(&key, req);
+    bump_persistent(env, &key);
+}
+
+/// Derives the current status of a pull-payment request, taking the ledger
+/// timestamp into account. A stored `Open` request whose `expires_at` has
+/// passed is treated as `Expired` without any on-chain write.
+fn derive_pull_payment_status(env: &Env, req: &PullPaymentRequest) -> PullPaymentStatus {
+    match &req.status {
+        PullPaymentStatus::Open => {
+            if env.ledger().timestamp() >= req.expires_at {
+                PullPaymentStatus::Expired
+            } else {
+                PullPaymentStatus::Open
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+fn read_payment_metadata(env: &Env, proposal_id: u64) -> Option<PaymentMetadata> {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().get(&key)
+}
+
+fn write_payment_metadata(env: &Env, proposal_id: u64, metadata: &PaymentMetadata) {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().set(&key, metadata);
+    bump_persistent(env, &key);
+}
+
+fn remove_payment_metadata(env: &Env, proposal_id: u64) {
+    let key = payment_metadata_key(proposal_id);
+    env.storage().persistent().remove(&key);
+}
+
+/// Validates that each set string field is non-empty and within
+/// `MAX_DESCRIPTION_LEN`. `None` fields are always valid (meaning "not set").
+fn validate_payment_metadata(metadata: &PaymentMetadata) -> Result<(), ContractError> {
+    if let Some(ref inv) = metadata.invoice_id {
+        if inv.is_empty() || inv.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref ext) = metadata.external_ref {
+        if ext.is_empty() || ext.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    if let Some(ref m) = metadata.memo {
+        if m.is_empty() || m.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::MetadataTooLong);
+        }
+    }
+    Ok(())
+}
+    let client = token::Client::new(env, token_address);
+    // Require decimals, symbol, and name to all succeed to consider this a valid token.
+    if client.try_decimals().is_err() || client.try_symbol().is_err() || client.try_name().is_err()
+    {
+        return Err(ContractError::InvalidToken);
     }
 }
 
@@ -6890,6 +7204,708 @@ impl AccordContract {
             require_owner_and_weight(&env, &approver)?
         };
         require_not_frozen(&env)?;
+        let mut proposal = read_proposal(&env, proposal_id)?;
+
+        // Refresh derived status so an already-expired proposal is caught here.
+        proposal.status = derive_status(&env, &proposal);
+
+    /// Creates a proposal to execute a governed DEX path-payment swap.
+    ///
+    /// At execution the multisig contract calls `swap_exact_tokens_for_tokens`
+    /// on the given `router` contract, selling `send_amount` of `path[0]` for
+    /// `path[last]` with a minimum output of `min_recv`. The output is sent to
+    /// `destination` (or the contract itself when `None`).
+    ///
+    /// # Validation at creation
+    /// - `path` must have at least 2 entries.
+    /// - All tokens in `path` are validated against the asset registry.
+    /// - `router` must be in the approved-router registry.
+    /// - `send_amount` ≥ `MIN_AMOUNT` and `min_recv` ≥ 1.
+    /// - `swap_deadline` must be in the future and within `MAX_PROPOSAL_DURATION`.
+    pub fn create_dex_swap_proposal(
+        env: Env,
+        proposer: Address,
+        params: DexSwapParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.send_amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_recv < 1 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        // Path must have at least 2 entries and all tokens must be valid.
+        validate_swap_path(&env, &params.path)?;
+
+        // Router must be in the governance-approved registry.
+        if !dex_router_is_approved(&env, &params.router) {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // swap_deadline must be in the future and within the proposal window.
+        let now = env.ledger().timestamp();
+        if params.swap_deadline <= now {
+            return Err(ContractError::InvalidSwapDeadline);
+        }
+        if params.swap_deadline - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidSwapDeadline);
+        }
+
+        // Destination (if set) must not be the contract itself to prevent
+        // double-accounting of treasury inflows via misrouted governance.
+        // `None` explicitly means "treasury self-rebalance" and is allowed.
+        if let Some(ref dest) = params.destination {
+            if dest == &env.current_contract_address() {
+                return Err(ContractError::InvalidRecipient);
+            }
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::DexSwap(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("dex_prop"),),
+            DexSwapProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                router: params.router,
+                path: params.path,
+                send_amount: params.send_amount,
+                min_recv: params.min_recv,
+                destination: params.destination,
+                swap_deadline: params.swap_deadline,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a governance proposal to add a DEX router to the approved registry.
+    ///
+    /// A router address must be approved before it can be referenced in a
+    /// `DexSwap` proposal. This guards against governance being tricked into
+    /// swapping through a malicious router.
+    pub fn create_add_dex_router_proposal(
+        env: Env,
+        proposer: Address,
+        router: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddDexRouter(router),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to remove a DEX router from the approved registry.
+    pub fn create_remove_dex_router_proposal(
+        env: Env,
+        proposer: Address,
+        router: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if !dex_router_is_approved(&env, &router) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveDexRouter(router),
+            description,
+            deadline,
+        )
+    }
+
+    /// Returns `true` if the given router address is in the governance-approved
+    /// DEX router registry.
+    pub fn is_dex_router_approved(env: Env, router: Address) -> bool {
+        dex_router_is_approved(&env, &router)
+    }
+
+    // ─── Yield Allocation ────────────────────────────────────────────────────
+
+    /// Creates a governance proposal to add a yield venue to the approved registry.
+    ///
+    /// A venue must be approved before it can be referenced in a
+    /// `YieldDeposit` or `YieldWithdraw` proposal.
+    pub fn create_add_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::AddYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to remove a yield venue from the approved registry.
+    pub fn create_remove_yield_venue_proposal(
+        env: Env,
+        proposer: Address,
+        venue: Address,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if !yield_venue_is_approved(&env, &venue) {
+            return Err(ContractError::AssetRegistryState);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::RemoveYieldVenue(venue),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a proposal to deposit treasury tokens into an approved yield venue.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `position_id` must not already be open (no existing `YieldPosition`).
+    pub fn create_yield_deposit_proposal(
+        env: Env,
+        proposer: Address,
+        params: YieldAllocationParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
+        }
+        validate_token(&env, &params.token)?;
+        if read_yield_position(&env, params.position_id).is_some() {
+            return Err(ContractError::YieldPositionAlreadyOpen);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldDeposit(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("y_dprop"),),
+            YieldDepositProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                position_id: params.position_id,
+                kind: params.kind,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Creates a proposal to withdraw tokens from a yield venue back to the treasury.
+    ///
+    /// # Validation at creation
+    /// - `venue` must be in the approved venue registry.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `min_return` ≥ 1.
+    /// - `position_id` must reference an existing open `YieldPosition`.
+    /// - The position's recorded `venue` and `token` must match `params`.
+    pub fn create_yield_withdraw_proposal(
+        env: Env,
+        proposer: Address,
+        params: YieldAllocationParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.min_return < 1 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if !yield_venue_is_approved(&env, &params.venue) {
+            return Err(ContractError::YieldVenueNotApproved);
+        }
+        validate_token(&env, &params.token)?;
+
+        let position = read_yield_position(&env, params.position_id)
+            .ok_or(ContractError::YieldPositionNotFound)?;
+        if position.venue != params.venue || position.token != params.token {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let id = create_governance_proposal(
+            &env,
+            proposer.clone(),
+            ProposalKind::YieldWithdraw(params.clone()),
+            description,
+            deadline,
+        )?;
+
+        env.events().publish(
+            (symbol_short!("y_wprop"),),
+            YieldWithdrawProposedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id: id,
+                proposer,
+                venue: params.venue,
+                token: params.token,
+                amount: params.amount,
+                min_return: params.min_return,
+                position_id: params.position_id,
+            },
+        );
+
+        Ok(id)
+    }
+
+    /// Returns the open `YieldPosition` for the given `position_id`, or `None`
+    /// if no position with that ID exists.
+    pub fn get_yield_position(env: Env, position_id: u64) -> Option<YieldPosition> {
+        read_yield_position(&env, position_id)
+    }
+
+    /// Returns `true` if the given venue address is in the governance-approved
+    /// yield venue registry.
+    pub fn is_yield_venue_approved(env: Env, venue: Address) -> bool {
+        yield_venue_is_approved(&env, &venue)
+    }
+
+    /// One-time migration that stamps storage schema to version 3 for legacy
+    /// deployments, confirming the yield venue registry keys are in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `YVENUE` and
+    /// `YPOS` registries start empty on every deployment so there is no data
+    /// to backfill. Returns `AlreadyMigrated` if the deployment is already
+    /// at schema version ≥ 3.
+    pub fn migrate_to_yield_allocation(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 3 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "yield_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+
+    // ─── Pull-Payment Requests ────────────────────────────────────────────────
+
+    /// Creates a governance proposal to open a pull-payment request.
+    ///
+    /// When executed, the request is recorded as `Open` and the designated
+    /// `claimant` may call `claim_pull_payment` at any time before
+    /// `params.expires_at` to receive `params.amount` of `params.token`.
+    ///
+    /// # Validation at creation
+    /// - `claimant` must not be the contract itself.
+    /// - `token` must pass the asset registry check.
+    /// - `amount` ≥ `MIN_AMOUNT`.
+    /// - `expires_at` must be in the future.
+    /// - `memo` (if non-empty) must be ≤ `MAX_DESCRIPTION_LEN` characters.
+    pub fn create_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        params: PullPaymentParams,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        if params.amount < MIN_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if params.claimant == env.current_contract_address() {
+            return Err(ContractError::InvalidRecipient);
+        }
+        validate_token(&env, &params.token)?;
+
+        let now = env.ledger().timestamp();
+        if params.expires_at <= now {
+            return Err(ContractError::InvalidDeadline);
+        }
+        if params.expires_at - now > MAX_PROPOSAL_DURATION {
+            return Err(ContractError::InvalidDuration);
+        }
+        if !params.memo.is_empty() && params.memo.len() > MAX_DESCRIPTION_LEN {
+            return Err(ContractError::DescriptionTooLong);
+        }
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CreatePullPayment(params),
+            description,
+            deadline,
+        )
+    }
+
+    /// Creates a governance proposal to cancel an open pull-payment request.
+    ///
+    /// Only requests that are currently `Open` can be cancelled. Expired or
+    /// already-claimed requests are rejected at execution time.
+    pub fn create_cancel_pull_payment_proposal(
+        env: Env,
+        proposer: Address,
+        request_id: u64,
+        description: String,
+        deadline: u64,
+    ) -> Result<u64, ContractError> {
+        proposer.require_auth();
+        require_role(&env, &proposer, Role::Proposer)?;
+        require_not_frozen(&env)?;
+
+        create_governance_proposal(
+            &env,
+            proposer,
+            ProposalKind::CancelPullPayment(request_id),
+            description,
+            deadline,
+        )
+    }
+
+    /// Allows the designated claimant of an open pull-payment request to pull
+    /// the pre-approved amount from the treasury.
+    ///
+    /// This is a **non-governance entrypoint**: the claimant does not need to
+    /// be an owner. They only need to be the address named in the request and
+    /// to authorise this call via `require_auth()`.
+    ///
+    /// # Guards
+    /// - The request must exist.
+    /// - The request must be `Open` (not `Claimed`, `Cancelled`, or `Expired`).
+    /// - The caller must be the designated `claimant`.
+    /// - The treasury must hold at least `amount` of the token.
+    /// - The contract must not be frozen.
+    ///
+    /// On success the request transitions to `Claimed` (terminal) and a
+    /// `PullPaymentClaimedEvent` is emitted.
+    pub fn claim_pull_payment(
+        env: Env,
+        claimant: Address,
+        request_id: u64,
+    ) -> Result<(), ContractError> {
+        claimant.require_auth();
+        require_not_frozen(&env)?;
+
+        let mut req = read_pull_payment(&env, request_id)
+            .ok_or(ContractError::PullPaymentNotFound)?;
+
+        if claimant != req.claimant {
+            return Err(ContractError::PullPaymentWrongClaimant);
+        }
+
+        // Derive status — an Open request past expires_at is treated as Expired.
+        let status = derive_pull_payment_status(&env, &req);
+        if !matches!(status, PullPaymentStatus::Open) {
+            return Err(ContractError::PullPaymentNotOpen);
+        }
+
+        // Re-validate token in case the registry changed since the request opened.
+        validate_token(&env, &req.token)?;
+
+        if available_balance(&env, &req.token)? < req.amount {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Transfer the tokens to the claimant.
+        let treasury = env.current_contract_address();
+        if !transfer_succeeded(
+            token::Client::new(&env, &req.token)
+                .try_transfer(&treasury, &claimant, &req.amount),
+        ) {
+            return Err(ContractError::TransferFailed);
+        }
+
+        // Mark the request as claimed (terminal).
+        req.status = PullPaymentStatus::Claimed;
+        write_pull_payment(&env, &req);
+
+        env.events().publish(
+            (symbol_short!("pr_claim"),),
+            PullPaymentClaimedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                request_id,
+                claimant,
+                token: req.token.clone(),
+                amount: req.amount,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Returns the pull-payment request record for the given `request_id`, or
+    /// `None` if no request with that ID exists.
+    pub fn get_pull_payment(
+        env: Env,
+        request_id: u64,
+    ) -> Option<PullPaymentRequest> {
+        let req = read_pull_payment(&env, request_id)?;
+        // Return the derived status so callers see Expired rather than Open
+        // when the expiry has passed.
+        let mut req = req;
+        req.status = derive_pull_payment_status(&env, &req);
+        Some(req)
+    }
+
+    /// Returns the next pull-payment request ID that will be assigned.
+    pub fn get_next_pull_payment_id(env: Env) -> u64 {
+        read_next_pull_payment_id(&env)
+    }
+
+    /// One-time migration that stamps storage schema to version 4 for legacy
+    /// deployments, confirming the pull-payment request keys are in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `PULLREQ` and
+    /// `PRNEXT` keys start empty/1 on every deployment so there is no data to
+    /// backfill. Returns `AlreadyMigrated` if the deployment is already at
+    /// schema version ≥ 4.
+    pub fn migrate_to_pull_payments(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 4 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        // Initialise the next-ID counter if it does not exist.
+        if env
+            .storage()
+            .instance()
+            .get::<_, u64>(&pull_payment_next_id_key())
+            .is_none()
+        {
+            write_next_pull_payment_id(&env, 1);
+        }
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "pullpay_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+
+    // ─── Payment Metadata (Invoice & Reference) ──────────────────────────────
+
+    /// Attaches reconciliation metadata to an existing proposal.
+    ///
+    /// The caller must be the original proposer of the proposal and the
+    /// proposal must not have been executed yet. Metadata can be set or
+    /// overwritten any time before execution, allowing the proposer to correct
+    /// a typo or add a missing invoice reference after creation.
+    ///
+    /// # Validation
+    /// - Each non-`None` field must be non-empty and ≤ `MAX_DESCRIPTION_LEN`.
+    /// - The proposal must exist.
+    /// - The proposal must be in `Pending` or `Ready` status (not Executed,
+    ///   Expired, or Revoked).
+    /// - The caller must be the proposal's original proposer.
+    pub fn set_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+        metadata: PaymentMetadata,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Refresh derived status.
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        validate_payment_metadata(&metadata)?;
+        write_payment_metadata(&env, proposal_id, &metadata);
+
+        env.events().publish(
+            (symbol_short!("pymeta"),),
+            PaymentMetadataSetEvent {
+                version: EVENT_SCHEMA_VERSION,
+                proposal_id,
+                setter,
+                metadata,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Clears all reconciliation metadata from a proposal.
+    ///
+    /// Same authorization and status constraints as `set_payment_metadata`.
+    pub fn clear_payment_metadata(
+        env: Env,
+        setter: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        setter.require_auth();
+
+        let proposal = read_proposal(&env, proposal_id)?;
+        if proposal.proposer != setter {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let status = derive_status(&env, &proposal);
+        if matches!(status, ProposalStatus::Executed) {
+            return Err(ContractError::ProposalAlreadyExecuted);
+        }
+        if !matches!(status, ProposalStatus::Pending | ProposalStatus::Ready) {
+            return Err(ContractError::ProposalNotActive);
+        }
+
+        remove_payment_metadata(&env, proposal_id);
+        Ok(())
+    }
+
+    /// Returns the reconciliation metadata attached to a proposal, or `None`
+    /// if no metadata has been set.
+    pub fn get_payment_metadata(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<PaymentMetadata> {
+        read_payment_metadata(&env, proposal_id)
+    }
+
+    /// One-time migration that stamps storage schema to version 5 for legacy
+    /// deployments, confirming the payment metadata store is in use.
+    ///
+    /// This is a no-op beyond bumping the version marker: the `PAYMETA` store
+    /// starts empty on every deployment so there is no data to backfill.
+    /// Returns `AlreadyMigrated` if the deployment is already at schema
+    /// version ≥ 5.
+    pub fn migrate_to_payment_metadata(
+        env: Env,
+        approvers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        if !is_initialized(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if read_storage_version(&env) >= 5 {
+            return Err(ContractError::AlreadyMigrated);
+        }
+
+        require_weighted_approvers(&env, &approvers)?;
+
+        write_storage_version(&env);
+
+        env.events().publish(
+            (Symbol::new(&env, "meta_migrated"),),
+            GovernanceMigratedEvent {
+                version: EVENT_SCHEMA_VERSION,
+                owner_count: read_owners_map(&env)?.len(),
+                total_weight: read_total_weight(&env),
+            },
+        );
+        Ok(())
+    }
+    /// Records `ready_at` the first time the threshold is crossed.
+    pub fn approve(env: Env, approver: Address, proposal_id: u64) -> Result<(), ContractError> {
+        approver.require_auth();
+        let raw_weight = {
+            require_role(&env, &approver, Role::Approver)?;
+            require_owner_and_weight(&env, &approver)?
+        };
         let mut proposal = read_proposal(&env, proposal_id)?;
 
         // Refresh derived status so an already-expired proposal is caught here.
