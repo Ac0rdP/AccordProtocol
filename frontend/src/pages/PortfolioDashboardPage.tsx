@@ -7,9 +7,10 @@ import {
   type PortfolioContractSummary,
 } from "../lib/contract";
 import {
-  loadPortfolioContractIds,
-  savePortfolioContractIds,
-} from "../lib/portfolio";
+  loadWorkspaces,
+  saveWorkspaces,
+  type Workspace,
+} from "../lib/workspaces";
 
 type PortfolioRow =
   | { contractId: string; summary: PortfolioContractSummary; error: null }
@@ -18,6 +19,7 @@ type PortfolioRow =
 type PortfolioDashboardPageProps = {
   activeContractId: string;
   onSelectContract: (contractId: string) => void;
+  onWorkspacesChange?: (workspaces: Workspace[]) => void;
 };
 
 function formatAggregateBalance(
@@ -48,11 +50,14 @@ function formatCount(value: number): string {
 export function PortfolioDashboardPage({
   activeContractId,
   onSelectContract,
+  onWorkspacesChange,
 }: PortfolioDashboardPageProps) {
   const [contractIds, setContractIds] = useState<string[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [portfolioReady, setPortfolioReady] = useState(false);
   const [rows, setRows] = useState<PortfolioRow[]>([]);
   const [newContractId, setNewContractId] = useState("");
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -60,7 +65,9 @@ export function PortfolioDashboardPage({
 
   useEffect(() => {
     try {
-      setContractIds(loadPortfolioContractIds());
+      const loadedWorkspaces = loadWorkspaces();
+      setWorkspaces(loadedWorkspaces);
+      setContractIds(loadedWorkspaces.map((workspace) => workspace.contractId));
       setLoadError(null);
     } catch (error) {
       setLoadError(
@@ -146,8 +153,19 @@ export function PortfolioDashboardPage({
 
   function persistContractIds(nextIds: string[]) {
     try {
-      savePortfolioContractIds(nextIds);
+      const nextWorkspaces = nextIds.map((contractId) => {
+        const existing = workspaces.find((workspace) => workspace.contractId === contractId);
+        return existing ?? {
+          id: contractId,
+          name: "Workspace",
+          contractId,
+          network: (import.meta.env.VITE_NETWORK_PASSPHRASE as string | undefined) ?? "stellar",
+        };
+      });
+      saveWorkspaces(nextWorkspaces);
+      setWorkspaces(nextWorkspaces);
       setContractIds(nextIds);
+      onWorkspacesChange?.(nextWorkspaces);
       setFormError(null);
     } catch (error) {
       setFormError(
@@ -169,8 +187,37 @@ export function PortfolioDashboardPage({
       setFormError("This contract is already in your portfolio.");
       return;
     }
-    persistContractIds([...contractIds, contractId]);
+    const name = newWorkspaceName.trim();
+    if (!name) {
+      setFormError("Workspace name is required.");
+      return;
+    }
+    const nextWorkspace: Workspace = {
+      id: contractId,
+      name,
+      contractId,
+      network: (import.meta.env.VITE_NETWORK_PASSPHRASE as string | undefined) ?? "stellar",
+    };
+    const nextWorkspaces = [
+      ...workspaces,
+      nextWorkspace,
+    ];
+    try {
+      saveWorkspaces(nextWorkspaces);
+      setWorkspaces(nextWorkspaces);
+      setContractIds([...contractIds, contractId]);
+      onWorkspacesChange?.(nextWorkspaces);
+      setFormError(null);
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not save the workspace.",
+      );
+      return;
+    }
     setNewContractId("");
+    setNewWorkspaceName("");
   }
 
   function removePortfolio(contractId: string) {
@@ -204,6 +251,23 @@ export function PortfolioDashboardPage({
         onSubmit={addPortfolio}
         className="flex flex-col gap-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4 sm:flex-row"
       >
+        <div className="min-w-0 sm:w-48">
+          <label
+            htmlFor="workspace-name"
+            className="mb-1.5 block text-xs text-zinc-400"
+          >
+            Workspace name
+          </label>
+          <input
+            id="workspace-name"
+            value={newWorkspaceName}
+            onChange={(event) => setNewWorkspaceName(event.target.value)}
+            disabled={!portfolioReady}
+            placeholder="Operations"
+            autoComplete="off"
+            className="min-h-11 w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-400"
+          />
+        </div>
         <div className="min-w-0 flex-1">
           <label
             htmlFor="portfolio-contract-id"
@@ -302,9 +366,14 @@ export function PortfolioDashboardPage({
                   }`}
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <p className="break-all font-mono text-xs text-zinc-300">
-                      {row.contractId}
-                    </p>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-zinc-100">
+                        {workspaces.find((workspace) => workspace.contractId === row.contractId)?.name ?? "Workspace"}
+                      </p>
+                      <p className="mt-1 break-all font-mono text-xs text-zinc-400">
+                        {row.contractId}
+                      </p>
+                    </div>
                     {row.contractId === activeContractId && (
                       <span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300">
                         Active

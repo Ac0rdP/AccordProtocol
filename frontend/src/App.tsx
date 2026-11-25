@@ -35,6 +35,7 @@ import { ChangelogPanel } from "./components/ChangelogPanel";
 import { FeedbackWidget } from "./components/FeedbackWidget";
 import { LiveUpdatesAnnouncer } from "./components/LiveUpdatesAnnouncer";
 import { WalletSessionSwitcher } from "./components/WalletSessionSwitcher";
+import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { isTypingTarget, type Command } from "./lib/commandPalette";
 import {
   getActiveContractId,
@@ -64,6 +65,12 @@ import { IntegrationMarketplacePage } from "./pages/IntegrationMarketplacePage";
 import { ProposalInboxPage } from "./pages/ProposalInboxPage";
 import type { ProposalInboxEntry } from "./lib/proposalInbox";
 import type { Proposal } from "./types/accord";
+import {
+  getActiveWorkspace,
+  loadWorkspaces,
+  setActiveWorkspace,
+  type Workspace,
+} from "./lib/workspaces";
 
 const NAV_ITEMS = [
   { key: "dashboard", to: "/app" },
@@ -93,8 +100,22 @@ type OptimisticPatch = {
 export default function App() {
   const { t } = useTranslation();
   const [showCreate, setShowCreate] = useState(false);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
+    try {
+      return loadWorkspaces();
+    } catch (error) {
+      console.error("Could not load workspaces.", error);
+      return [];
+    }
+  });
   const [activeContractId, setActiveContractSelection] = useState(
-    () => getActiveContractId(),
+    () => {
+      try {
+        return getActiveWorkspace(loadWorkspaces())?.contractId ?? getActiveContractId();
+      } catch {
+        return getActiveContractId();
+      }
+    },
   );
   const [showCreateRecurring, setShowCreateRecurring] = useState(false);
   const [roleModalTarget, setRoleModalTarget] = useState<string | null>(null);
@@ -126,6 +147,8 @@ export default function App() {
 
   const handleSelectPortfolioContract = useCallback((contractId: string) => {
     try {
+      const workspace = workspaces.find((item) => item.contractId === contractId);
+      if (workspace) setActiveWorkspace(workspace);
       setActiveContractId(contractId);
       setActiveContractSelection(contractId);
     } catch (error) {
@@ -135,7 +158,7 @@ export default function App() {
           : "Could not switch the active contract.",
       );
     }
-  }, []);
+  }, [workspaces]);
 
   useEventPolling(refresh, 5000);
   useNotifications(wallet.address, proposals);
@@ -497,6 +520,12 @@ export default function App() {
 
           <GlobalSearch proposals={proposals} owners={owners} />
 
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            activeContractId={activeContractId}
+            onSelect={handleSelectPortfolioContract}
+          />
+
           <nav className="order-last flex w-full flex-wrap items-center justify-end gap-1 pt-1">
             {NAV_ITEMS.map(({ key, to }) => (
               <Link
@@ -623,6 +652,7 @@ export default function App() {
                   <PortfolioDashboardPage
                     activeContractId={activeContractId}
                     onSelectContract={handleSelectPortfolioContract}
+                    onWorkspacesChange={setWorkspaces}
                   />
                 }
               />
