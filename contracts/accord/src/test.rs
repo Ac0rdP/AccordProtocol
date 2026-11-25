@@ -11376,8 +11376,12 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
 fn storage_migration_registry_lists_supported_versions() {
     let (_, client, _, _, _, _, _) = setup(2);
     let supported = client.get_supported_storage_versions();
-    assert_eq!(supported.len(), 3);
+    assert_eq!(supported.len(), 7);
     assert!(supported.contains(0));
+    assert!(supported.contains(3));
+    assert!(supported.contains(4));
+    assert!(supported.contains(5));
+    assert!(supported.contains(6));
     assert!(supported.contains(STORAGE_SCHEMA_VERSION));
     assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
     assert!(!client.is_storage_version_supported(&99));
@@ -12170,34 +12174,34 @@ fn test_treasury_zero_limit_blocks_outflows() {
 }
 
 #[test]
-fn test_storage_version_2_and_migrate_to_v2() {
+fn test_storage_version_6_and_migrate_to_v6() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
-    // Fresh deployment initializes at version 2
-    assert_eq!(client.get_storage_version(), 2);
+    assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
 
-    // migrate_to_v2 fails if already at version 2
     let mut approvers = Vec::new(&env);
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b.clone());
-    let res = client.try_migrate_to_v2(&approvers);
-    assert_eq!(res.unwrap_err().unwrap(), ContractError::AlreadyMigrated);
+    assert_eq!(
+        client.try_migrate_storage(&approvers, &6, &6),
+        Err(Ok(ContractError::AlreadyMigrated))
+    );
 
-    // Simulate pre-v2 contract at storage version 1
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&storage_version_key(), &1_u32);
+        env.storage().instance().set(&storage_version_key(), &5_u32);
     });
-    assert_eq!(client.get_storage_version(), 1);
+    assert_eq!(client.get_storage_version(), 5);
 
-    // migrate_to_v2 without quorum fails
     let mut solo_approver = Vec::new(&env);
     solo_approver.push_back(owner_a.clone());
-    let res = client.try_migrate_to_v2(&solo_approver);
-    assert_eq!(res.unwrap_err().unwrap(), ContractError::ThresholdNotMet);
+    assert_eq!(
+        client.try_migrate_storage(&solo_approver, &5, &6),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
 
-    // migrate_to_v2 with quorum succeeds and stamps version 2
-    client.migrate_to_v2(&approvers);
-    assert_eq!(client.get_storage_version(), 2);
+    client.migrate_storage(&approvers, &5, &6);
+    assert_eq!(client.get_storage_version(), 6);
+    assert!(client.get_pending_upgrade().is_none());
 }
 
 // ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
@@ -12547,5 +12551,938 @@ proptest! {
         prop_assert_eq!(simulation.transfer_count, count);
         prop_assert_eq!(simulation.distinct_token_count, 1);
         prop_assert_eq!(simulation.owner_spending_limit_checks, 1);
+    }
+}
+
+
+#[test]
+fn delegation_create_renew_revoke_lifecycle() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let expiry = NOW + 500;
+
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+    assert_eq!(
+        client.get_delegation(&owner_b),
+        Some(Delegation {
+            delegator: owner_b.clone(),
+            delegate: owner_a.clone(),
+            weight: 1,
+            expiry: Some(expiry),
+        })
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_a), 2);
+    assert_eq!(client.get_effective_weight(&owner_b), 0);
+
+    let renewed_expiry = NOW + 1_000;
+    client.renew_delegation(&owner_b, &renewed_expiry);
+    assert_eq!(
+        client.get_delegation(&owner_b).unwrap().expiry,
+        Some(renewed_expiry)
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    client.revoke_delegation(&owner_b);
+    assert_eq!(client.get_delegation(&owner_b), None);
+    assert_eq!(client.get_delegated_weight(&owner_a), 0);
+    assert_eq!(client.get_effective_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_b), 1);
+}
+
+#[test]
+fn delegation_cap_rejects_excess_incoming_weight() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let expiry = NOW + 500;
+
+    assert_eq!(client.get_delegate_weight_cap(), 1);
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    assert_eq!(
+        client.try_create_delegation(&owner_c, &owner_a, &1, &expiry),
+        Err(Ok(ContractError::DelegateWeightCapExceeded))
+    );
+    assert_eq!(client.get_delegation(&owner_c), None);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+#[test]
+fn delegation_validation_rejects_invalid_inputs() {
+    let (env, client, owner_a, owner_b, _, non_owner, _) = setup(2);
+    let expiry = NOW + 500;
+
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_a, &1, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &0, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &2, &expiry),
+        Err(Ok(ContractError::InvalidDelegationWeight))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &owner_b, &1, &NOW),
+        Err(Ok(ContractError::InvalidDelegationExpiry))
+    );
+    assert_eq!(
+        client.try_create_delegation(&owner_a, &non_owner, &1, &expiry),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_renew_delegation(&owner_a, &expiry),
+        Err(Ok(ContractError::DelegationNotFound))
+    );
+    assert_eq!(
+        client.try_revoke_delegation(&owner_a),
+        Err(Ok(ContractError::DelegationNotFound))
+    );
+}
+
+#[test]
+fn expired_delegation_can_be_renewed_without_recreating() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let first_expiry = NOW + 10;
+    client.create_delegation(&owner_b, &owner_a, &1, &first_expiry);
+
+    set_timestamp(&env, NOW + 11);
+    assert_eq!(client.get_delegated_weight(&owner_a), 0);
+    assert_eq!(client.get_effective_weight(&owner_a), 1);
+
+    let renewed_expiry = NOW + 100;
+    client.renew_delegation(&owner_b, &renewed_expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+    assert_eq!(client.get_effective_weight(&owner_a), 2);
+
+    assert_eq!(
+        client.try_renew_delegation(&owner_b, &renewed_expiry),
+        Err(Ok(ContractError::InvalidDelegationExpiry))
+    );
+}
+
+#[test]
+fn delegation_replacement_preserves_cap_invariant() {
+    let (env, client, owner_a, owner_b, owner_c, _, _) = setup(2);
+    let expiry = NOW + 500;
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+
+    assert_eq!(
+        client.try_create_delegation(&owner_b, &owner_a, &1, &expiry),
+        Ok(Ok(()))
+    );
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+
+    client.revoke_delegation(&owner_b);
+    client.create_delegation(&owner_c, &owner_a, &1, &expiry);
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+#[test]
+fn migration_to_v3_rebuilds_delegated_weight_index() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let expiry = NOW + 500;
+    client.create_delegation(&owner_b, &owner_a, &1, &expiry);
+
+    let mut approvers = Vec::new(&env);
+    approvers.push_back(owner_a.clone());
+    approvers.push_back(owner_b.clone());
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&storage_version_key(), &2_u32);
+        env.storage()
+            .persistent()
+            .remove(&delegated_weight_key(&owner_a));
+    });
+    assert_eq!(client.get_delegate_weight_cap(), 1);
+
+    client.migrate_storage(&approvers, &2, &3);
+    env.as_contract(&client.address, || {
+        assert_eq!(read_delegated_weight(&env, &owner_a), 1);
+    });
+    assert_eq!(client.get_delegated_weight(&owner_a), 1);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn delegated_weight_never_exceeds_cap_in_property(weight in 1u32..=3, pct in 1u32..=50) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner_a.clone());
+        owners.push_back(owner_b.clone());
+        owners.push_back(owner_c.clone());
+        let mut weights = Vec::new(&env);
+        weights.push_back(weight);
+        weights.push_back(weight);
+        weights.push_back(weight);
+        client.initialize(&owners, &weights, &2, &0);
+
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&max_single_owner_weight_pct_key(), &pct);
+        });
+
+        let cap = client.get_delegate_weight_cap();
+        let expiry = NOW + 100;
+        let first = client.try_create_delegation(&owner_b, &owner_a, &weight, &expiry);
+        let second = client.try_create_delegation(&owner_c, &owner_a, &weight, &expiry);
+
+        prop_assert!(client.get_delegated_weight(&owner_a) <= cap);
+        if first.is_ok() && second.is_ok() {
+            prop_assert!(cap >= weight.saturating_mul(2));
+        }
+    }
+}
+
+#[test]
+fn asset_outflow_pause_is_guardian_only_and_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&guardian, &token_client.address, &true),
+        Err(Ok(ContractError::NoGuardian))
+    );
+
+    client.set_guardian(&approvers, &guardian);
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&owner_a, &token_client.address, &true),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_set_asset_outflow_pause(&guardian, &Address::generate(&env), &true),
+        Err(Ok(ContractError::InvalidToken))
+    );
+
+    client.pause_asset_outflows(&guardian, &token_client.address);
+    let events = env.events().all().filter_by_contract(&client.address);
+    assert!(!events.events().is_empty());
+    assert!(client.is_asset_outflow_paused(&token_client.address));
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    assert!(!client.is_asset_outflow_paused(&token_client.address));
+}
+
+#[test]
+fn paused_asset_blocks_transfer_execution_but_not_governance() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+    client.pause_asset_outflows(&guardian, &token_client.address);
+
+    let recipient = Address::generate(&env);
+    let transfer_id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &token_client.address),
+        &str(&env, "paused transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &transfer_id);
+    client.approve(&owner_b, &transfer_id);
+    assert_eq!(
+        client.try_execute(&owner_c, &transfer_id),
+        Err(Ok(ContractError::AssetOutflowPaused))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    let governance_id = client.create_change_threshold_proposal(
+        &owner_a,
+        &2,
+        &str(&env, "governance while paused"),
+        &DEADLINE,
+    );
+    client.approve(&owner_a, &governance_id);
+    client.approve(&owner_b, &governance_id);
+    client.execute(&owner_c, &governance_id);
+    assert_eq!(client.get_threshold(), 2);
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    client.execute(&owner_c, &transfer_id);
+    assert_eq!(token_client.balance(&recipient), 10);
+}
+
+#[test]
+fn asset_outflow_pause_is_scoped_to_one_token() {
+    let (env, client, owner_a, owner_b, owner_c, _, paused_token) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+    client.pause_asset_outflows(&guardian, &paused_token.address);
+
+    let other_admin = Address::generate(&env);
+    let other_id = env.register_stellar_asset_contract_v2(other_admin);
+    let other_token = token::Client::new(&env, &other_id.address());
+    token::StellarAssetClient::new(&env, &other_id.address()).mint(&client.address, &1_000_000);
+
+    let recipient = Address::generate(&env);
+    let id = client.create_proposal(
+        &owner_a,
+        &t(&env, &recipient, 10, &other_token.address),
+        &str(&env, "unpaused transfer"),
+        &DEADLINE,
+        &ProposalCategory::Transfer,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+    assert_eq!(other_token.balance(&recipient), 10);
+    assert!(client.is_asset_outflow_paused(&paused_token.address));
+    assert!(!client.is_asset_outflow_paused(&other_token.address));
+}
+
+#[test]
+fn paused_asset_blocks_stream_claims() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let guardian = Address::generate(&env);
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+    client.set_guardian(&approvers, &guardian);
+
+    let recipient = Address::generate(&env);
+    let schedule_id = create_test_stream(
+        &env,
+        &client,
+        &owner_a,
+        &owner_b,
+        &owner_c,
+        &recipient,
+        &token_client.address,
+        3,
+        NOW,
+        NOW + 100,
+        0,
+        0,
+    );
+
+    client.pause_asset_outflows(&guardian, &token_client.address);
+    set_timestamp(&env, NOW + 2);
+    assert_eq!(
+        client.try_claim_stream(&recipient, &schedule_id),
+        Err(Ok(ContractError::AssetOutflowPaused))
+    );
+    assert_eq!(token_client.balance(&recipient), 0);
+
+    client.resume_asset_outflows(&guardian, &token_client.address);
+    client.claim_stream(&recipient, &schedule_id);
+    assert_eq!(token_client.balance(&recipient), 6);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn outflow_pause_isolates_paused_token_in_property(pause_first in any::<bool>()) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+        client.initialize(&owners, &weights, &2, &0);
+        client.set_guardian(
+            &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+            &guardian,
+        );
+
+        let token_a_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_b_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_a = token::Client::new(&env, &token_a_id.address());
+        let token_b = token::Client::new(&env, &token_b_id.address());
+        token::StellarAssetClient::new(&env, &token_a_id.address()).mint(&contract_id, &1_000_000);
+        token::StellarAssetClient::new(&env, &token_b_id.address()).mint(&contract_id, &1_000_000);
+
+        let (paused_token, unpaused_token) = if pause_first {
+            (&token_a, &token_b)
+        } else {
+            (&token_b, &token_a)
+        };
+        client.pause_asset_outflows(&guardian, &paused_token.address);
+
+        prop_assert_eq!(client.is_asset_outflow_paused(&token_a.address), pause_first);
+        prop_assert_eq!(client.is_asset_outflow_paused(&token_b.address), !pause_first);
+
+        let paused_recipient = Address::generate(&env);
+        let paused_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &paused_recipient, 10, &paused_token.address),
+            &str(&env, "paused outflow"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &paused_id);
+        client.approve(&owner_b, &paused_id);
+        prop_assert_eq!(
+            client.try_execute(&owner_c, &paused_id),
+            Err(Ok(ContractError::AssetOutflowPaused))
+        );
+        prop_assert_eq!(paused_token.balance(&paused_recipient), 0);
+
+        let unpaused_recipient = Address::generate(&env);
+        let unpaused_id = client.create_proposal(
+            &owner_a,
+            &t(&env, &unpaused_recipient, 10, &unpaused_token.address),
+            &str(&env, "allowed outflow"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &unpaused_id);
+        client.approve(&owner_b, &unpaused_id);
+        client.execute(&owner_c, &unpaused_id);
+        prop_assert_eq!(unpaused_token.balance(&unpaused_recipient), 10);
+    }
+}
+
+// ─── Staged upgrade timelock and veto ────────────────────────────────────────
+
+#[test]
+fn stage_upgrade_requires_owner_weight_and_unique_approvers() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+
+    let mut non_owners = Vec::new(&env);
+    non_owners.push_back(non_owner);
+    non_owners.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_stage_upgrade(&non_owners, &hash),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    let mut one_owner = Vec::new(&env);
+    one_owner.push_back(owner_a.clone());
+    assert_eq!(
+        client.try_stage_upgrade(&one_owner, &hash),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+
+    let mut duplicate = Vec::new(&env);
+    duplicate.push_back(owner_a.clone());
+    duplicate.push_back(owner_a);
+    assert_eq!(
+        client.try_stage_upgrade(&duplicate, &hash),
+        Err(Ok(ContractError::DuplicateOwner))
+    );
+}
+
+#[test]
+fn stage_upgrade_stores_pending_record_and_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let staged_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upg_stg")
+        })
+        .expect("expected an 'upg_stg' event");
+    let data = match &staged_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeStagedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert_eq!(event.staged_at, NOW);
+    assert_eq!(event.execute_after, NOW + 3_600);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+
+    let pending = client
+        .get_pending_upgrade()
+        .expect("expected a staged upgrade record");
+    assert_eq!(pending.new_wasm_hash, hash);
+    assert_eq!(pending.staged_at, NOW);
+    assert_eq!(pending.execute_after, NOW + 3_600);
+    assert_eq!(pending.staged_by, owner_a);
+}
+
+#[test]
+fn staged_upgrade_waits_for_timelock_then_clears_record() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::TimeLockActive))
+    );
+
+    set_timestamp(&env, NOW + 3_599);
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::TimeLockActive))
+    );
+
+    set_timestamp(&env, NOW + 3_600);
+    client.execute_upgrade(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let upgraded_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upgraded")
+        })
+        .expect("expected an 'upgraded' event");
+    let data = match &upgraded_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeExecutedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert!(!env.as_contract(&client.address, || {
+        env.storage().instance().has(&pending_upgrade_key())
+    }));
+}
+
+#[test]
+fn veto_upgrade_clears_pending_and_blocks_later_execution() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+    set_timestamp(&env, NOW + 3_600);
+    client.veto_upgrade(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let veto_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upg_veto")
+        })
+        .expect("expected an 'upg_veto' event");
+    let data = match &veto_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeVetoedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+
+    assert!(client.get_pending_upgrade().is_none());
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::NoPendingUpgrade))
+    );
+}
+
+#[test]
+fn veto_upgrade_requires_owner_weight() {
+    let (env, client, owner_a, owner_b, _, non_owner, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone()]);
+    client.stage_upgrade(&Vec::from_array(&env, [owner_a, owner_b]), &hash);
+
+    let mut non_owners = Vec::new(&env);
+    non_owners.push_back(non_owner);
+    non_owners.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_veto_upgrade(&non_owners),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_veto_upgrade(&approvers),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    assert!(client.get_pending_upgrade().is_some());
+}
+
+#[test]
+fn staged_upgrade_rejects_restage_and_wrong_execution_hash() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let wrong_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let approvers = Vec::from_array(&env, [owner_a, owner_b]);
+
+    client.stage_upgrade(&approvers, &hash);
+    assert_eq!(
+        client.try_stage_upgrade(&approvers, &wrong_hash),
+        Err(Ok(ContractError::UpgradeAlreadyStaged))
+    );
+    assert_eq!(
+        client.try_execute_upgrade_with_hash(&approvers, &wrong_hash),
+        Err(Ok(ContractError::InvalidUpgradeHash))
+    );
+    assert!(client.get_pending_upgrade().is_some());
+
+    client.execute_upgrade_with_hash(&approvers, &hash);
+    assert!(!env.as_contract(&client.address, || {
+        env.storage().instance().has(&pending_upgrade_key())
+    }));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn staged_upgrade_enforces_timelock_and_veto(delay in 0u64..500, offset in 0u64..500, veto in any::<bool>()) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1]);
+        client.initialize(&owners, &weights, &2, &delay);
+
+        let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+        let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+        client.stage_upgrade(&approvers, &hash);
+
+        let pending = client.get_pending_upgrade().expect("staged upgrade must exist");
+        prop_assert_eq!(pending.staged_at, NOW);
+        prop_assert_eq!(pending.execute_after, NOW.saturating_add(delay));
+        prop_assert_eq!(pending.new_wasm_hash, hash);
+
+        set_timestamp(&env, NOW.saturating_add(offset));
+        if offset < delay {
+            prop_assert_eq!(
+                client.try_execute_upgrade(&approvers),
+                Err(Ok(ContractError::TimeLockActive))
+            );
+            prop_assert!(client.get_pending_upgrade().is_some());
+        } else if veto {
+            client.veto_upgrade(&approvers);
+            prop_assert!(client.get_pending_upgrade().is_none());
+            prop_assert_eq!(
+                client.try_execute_upgrade(&approvers),
+                Err(Ok(ContractError::NoPendingUpgrade))
+            );
+        } else {
+            prop_assert!(client.try_execute_upgrade(&approvers).is_ok());
+        }
+    }
+}
+
+// ─── Atomic multi-action batch proposals ─────────────────────────────────────
+
+#[test]
+fn batch_proposal_executes_transfers_and_governance_action() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut transfers = t(&env, &recipient, 10, &token_client.address);
+    transfers.append(&t(&env, &recipient, 20, &token_client.address));
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(transfers));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "atomic payroll"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    assert_eq!(token_client.balance(&recipient), 30);
+    assert_eq!(client.get_threshold(), 3);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
+}
+
+#[test]
+fn batch_proposal_rollback_reverts_earlier_governance_action() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+    actions.push_back(ProposalKind::Transfer(t(&env, &recipient, 2_000_000_000_000_i128, &token_client.address)));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "failing batch"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+
+    assert_eq!(
+        client.try_execute(&owner_c, &id),
+        Err(Ok(ContractError::TransferFailed))
+    );
+    assert_eq!(client.get_threshold(), 2);
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(client.get_proposal(&id).status, ProposalStatus::Ready);
+}
+
+#[test]
+fn batch_proposal_enforces_authorization_and_limits() {
+    let (env, client, owner_a, _, _, non_owner, token_client) = setup(2);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(&env, &Address::generate(&env), 10, &token_client.address)));
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &non_owner,
+            &actions,
+            &str(&env, "unauthorized"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::MissingRole))
+    );
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &Vec::new(&env),
+            &str(&env, "empty"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::EmptyBatch))
+    );
+
+    let mut nested = Vec::new(&env);
+    nested.push_back(ProposalKind::Batch(Vec::new(&env)));
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &nested,
+            &str(&env, "nested"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::InvalidBatchAction))
+    );
+
+    let mut too_many = Vec::new(&env);
+    for _ in 0..=MAX_BATCH_ACTIONS {
+        too_many.push_back(ProposalKind::ChangeThreshold(2));
+    }
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &too_many,
+            &str(&env, "too many"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::TooManyBatchActions))
+    );
+}
+
+#[test]
+fn batch_proposal_is_blocked_while_frozen() {
+    let (env, client, owner_a, owner_b, _, guardian, token_client) = setup(2);
+    client.set_guardian(
+        &Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]),
+        &guardian,
+    );
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(&env, &Address::generate(&env), 10, &token_client.address)));
+    client.freeze(&guardian);
+
+    assert_eq!(
+        client.try_create_batch_proposal(
+            &owner_a,
+            &actions,
+            &str(&env, "frozen"),
+            &DEADLINE,
+            &ProposalCategory::Ops,
+        ),
+        Err(Ok(ContractError::ContractFrozen))
+    );
+}
+
+#[test]
+fn batch_proposal_simulation_does_not_write_state_or_events() {
+    let (env, client, owner_a, _, _, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut transfers = t(&env, &recipient, 10, &token_client.address);
+    transfers.append(&t(&env, &recipient, 20, &token_client.address));
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(transfers));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let before = client.get_total_proposals();
+    let simulation = client.simulate_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "preview"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+
+    assert_eq!(simulation.transfer_count, 2);
+    assert_eq!(simulation.distinct_token_count, 1);
+    assert_eq!(simulation.owner_spending_limit_checks, 1);
+    assert_eq!(simulation.emitted_events, 2);
+    assert_eq!(client.get_total_proposals(), before);
+    assert_eq!(env.events().all().events().len(), 0);
+}
+
+#[test]
+fn batch_proposal_emits_compact_created_and_executed_events() {
+    let (env, client, owner_a, owner_b, owner_c, _, token_client) = setup(2);
+    let recipient = Address::generate(&env);
+    let mut actions = Vec::new(&env);
+    actions.push_back(ProposalKind::Transfer(t(
+        &env,
+        &recipient,
+        10,
+        &token_client.address,
+    )));
+    actions.push_back(ProposalKind::ChangeThreshold(3));
+
+    let id = client.create_batch_proposal(
+        &owner_a,
+        &actions,
+        &str(&env, "events"),
+        &DEADLINE,
+        &ProposalCategory::Ops,
+    );
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let created = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("btch_crt")
+        })
+        .expect("expected a 'btch_crt' event");
+    let data = match &created.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let created: BatchProposalCreatedEvent = data.into_val(&env);
+    assert_eq!(created.id, id);
+    assert_eq!(created.action_count, 2);
+    assert_eq!(created.transfer_count, 1);
+    assert_eq!(created.version, EVENT_SCHEMA_VERSION);
+
+    client.approve(&owner_a, &id);
+    client.approve(&owner_b, &id);
+    client.execute(&owner_c, &id);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let executed = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("btch_exec")
+        })
+        .expect("expected a 'btch_exec' event");
+    let data = match &executed.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let executed: BatchProposalExecutedEvent = data.into_val(&env);
+    assert_eq!(executed.id, id);
+    assert_eq!(executed.executor, owner_c);
+    assert_eq!(executed.action_count, 2);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn batch_transfers_execute_all_amounts(count in 1u32..6, amount in 1i128..1_000) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let owner_c = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1, 1]);
+        client.initialize(&owners, &weights, &2, &0);
+
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_address = token_id.address();
+        let token_client = token::Client::new(&env, &token_address);
+        token::StellarAssetClient::new(&env, &token_address).mint(&contract_id, &1_000_000_i128);
+
+        let mut transfers = Vec::new(&env);
+        for _ in 0..count {
+            transfers.push_back(Transfer {
+                to: recipient.clone(),
+                token: token_address.clone(),
+                amount,
+            });
+        }
+        let actions = Vec::from_array(&env, [ProposalKind::Transfer(transfers)]);
+        let id = client.create_batch_proposal(
+            &owner_a,
+            &actions,
+            &str(&env, "property batch"),
+            &DEADLINE,
+            &ProposalCategory::Transfer,
+        );
+        client.approve(&owner_a, &id);
+        client.approve(&owner_b, &id);
+        client.execute(&owner_c, &id);
+
+        prop_assert_eq!(token_client.balance(&recipient), amount * i128::from(count));
+        prop_assert_eq!(client.get_proposal(&id).status, ProposalStatus::Executed);
     }
 }
