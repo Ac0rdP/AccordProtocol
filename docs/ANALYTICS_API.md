@@ -562,6 +562,38 @@ Removes the workspace's template so its reports return to the default layout. Sa
 
 Reads are open like every other endpoint. When `ADMIN_TOKEN` is set, `PUT` and `DELETE /report-templates` require `Authorization: Bearer <ADMIN_TOKEN>` and otherwise answer `401 UNAUTHORIZED`. With `ADMIN_TOKEN` unset the writes are as open as `POST /reports/run`, so set it on any deployment reachable beyond a trusted network.
 
+## Owner digest emails
+
+Owners can receive a periodic email that lists the **pending** and **ready** proposals still waiting for their approval, with a direct link to each proposal, instead of polling the dashboard. Digests run on their own cron schedule in the analytics API, are built from the indexed `proposals` table, and are sent through the same transport as scheduled reports and alert emails (`SMTP_URL`, or `REPORT_OUTPUT_DIR` for a directory drop).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `OWNER_DIGEST_SCHEDULE` | unset (off) | Cron expression for digest runs: `seconds minutes hours day-of-month month day-of-week`. For example `0 0 8 * * Mon` is 08:00 UTC every Monday. |
+| `OWNER_DIGEST_PREFERENCES` | unset | Inline JSON array of per-owner preferences (see below). |
+| `OWNER_DIGEST_PREFERENCES_FILE` | unset | Path to a JSON file holding the same array. Takes precedence over the inline value. |
+| `OWNER_DIGEST_LINK_BASE_URL` | `http://localhost:5173` | Frontend origin used for proposal links; must be an `http://` or `https://` URL. |
+| `OWNER_DIGEST_MAX_ATTEMPTS` | `3` | Delivery attempts before an owner's digest is marked failed. |
+| `OWNER_DIGEST_RETRY_BACKOFF_MS` | `2000` | Linear retry backoff between delivery attempts. |
+
+Each preference names the workspace, the owner address and where the digest is sent. `enabled`, `notifyPending` and `notifyReady` are optional and default to `true`; setting `enabled` to `false` keeps the address on file but sends nothing.
+
+```json
+[
+  {
+    "network": "testnet",
+    "contractId": "CD4YAMHZETIO3GTHP4JB3SF2LQFQMZ6MW5FUNCTMXYGOVN6AAXDBQKJS",
+    "owner": "GAPPROVER...",
+    "email": "owner@example.com",
+    "notifyPending": true,
+    "notifyReady": true
+  }
+]
+```
+
+**What is included.** For each enabled owner the run reads that workspace's `pending` and `ready` proposals, drops `pending` proposals the owner has already approved (`approver_addresses`) — a `ready` proposal stays because it still has to be executed — and then applies `notifyPending`/`notifyReady`. Only proposals that still need the owner's action are listed, grouped as *Ready to execute* and *Pending approval*, each line carrying a direct link such as `https://app.example/proposals/42?contractId=...&network=testnet`. When nothing remains, no email is sent rather than an empty one. A failing read or delivery is recorded in the service log and never blocks other owners.
+
+A malformed preference (missing `network`/`contractId`/`owner`, an invalid email, a duplicate owner in the same workspace, or an unknown field) stops the service at startup with an error naming the problem, exactly like an invalid `ALERT_RULES` entry.
+
 ## Alerting
 
 The analytics API watches indexed data and raises alerts for **spend over a threshold** and **unusual approval patterns**. Rules come from two places: the deployment configuration, `ALERT_RULES` (inline JSON) or `ALERT_RULES_FILE` (a path to a JSON file), a JSON array of rules; and the rules created, edited, paused and tested through the [alert rule management](#alert-rule-management) API, which the dashboard's alert rules page uses. With neither, alerting is idle: no rule is evaluated and no alert is raised.
