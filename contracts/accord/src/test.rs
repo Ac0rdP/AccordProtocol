@@ -11376,10 +11376,11 @@ fn permissionless_sweep_skips_live_proposals_and_is_idempotent_while_frozen() {
 fn storage_migration_registry_lists_supported_versions() {
     let (_, client, _, _, _, _, _) = setup(2);
     let supported = client.get_supported_storage_versions();
-    assert_eq!(supported.len(), 5);
+    assert_eq!(supported.len(), 6);
     assert!(supported.contains(0));
     assert!(supported.contains(3));
     assert!(supported.contains(4));
+    assert!(supported.contains(5));
     assert!(supported.contains(STORAGE_SCHEMA_VERSION));
     assert!(client.is_storage_version_supported(&STORAGE_SCHEMA_VERSION));
     assert!(!client.is_storage_version_supported(&99));
@@ -12172,7 +12173,7 @@ fn test_treasury_zero_limit_blocks_outflows() {
 }
 
 #[test]
-fn test_storage_version_4_and_migrate_to_v4() {
+fn test_storage_version_5_and_migrate_to_v5() {
     let (env, client, owner_a, owner_b, _, _, _) = setup(2);
 
     assert_eq!(client.get_storage_version(), STORAGE_SCHEMA_VERSION);
@@ -12181,24 +12182,25 @@ fn test_storage_version_4_and_migrate_to_v4() {
     approvers.push_back(owner_a.clone());
     approvers.push_back(owner_b.clone());
     assert_eq!(
-        client.try_migrate_storage(&approvers, &4, &4),
+        client.try_migrate_storage(&approvers, &5, &5),
         Err(Ok(ContractError::AlreadyMigrated))
     );
 
     env.as_contract(&client.address, || {
-        env.storage().instance().set(&storage_version_key(), &3_u32);
+        env.storage().instance().set(&storage_version_key(), &4_u32);
     });
-    assert_eq!(client.get_storage_version(), 3);
+    assert_eq!(client.get_storage_version(), 4);
 
     let mut solo_approver = Vec::new(&env);
     solo_approver.push_back(owner_a.clone());
     assert_eq!(
-        client.try_migrate_storage(&solo_approver, &3, &4),
+        client.try_migrate_storage(&solo_approver, &4, &5),
         Err(Ok(ContractError::ThresholdNotMet))
     );
 
-    client.migrate_storage(&approvers, &3, &4);
-    assert_eq!(client.get_storage_version(), 4);
+    client.migrate_storage(&approvers, &4, &5);
+    assert_eq!(client.get_storage_version(), 5);
+    assert!(client.get_pending_upgrade().is_none());
 }
 
 // ─── Adversarial & Property Tests for #940 & #939 ───────────────────────────
@@ -12949,5 +12951,254 @@ proptest! {
         client.approve(&owner_b, &unpaused_id);
         client.execute(&owner_c, &unpaused_id);
         prop_assert_eq!(unpaused_token.balance(&unpaused_recipient), 10);
+    }
+}
+
+// ─── Staged upgrade timelock and veto ────────────────────────────────────────
+
+#[test]
+fn stage_upgrade_requires_owner_weight_and_unique_approvers() {
+    let (env, client, owner_a, _, _, non_owner, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+
+    let mut non_owners = Vec::new(&env);
+    non_owners.push_back(non_owner);
+    non_owners.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_stage_upgrade(&non_owners, &hash),
+        Err(Ok(ContractError::Unauthorized))
+    );
+
+    let mut one_owner = Vec::new(&env);
+    one_owner.push_back(owner_a.clone());
+    assert_eq!(
+        client.try_stage_upgrade(&one_owner, &hash),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+
+    let mut duplicate = Vec::new(&env);
+    duplicate.push_back(owner_a.clone());
+    duplicate.push_back(owner_a);
+    assert_eq!(
+        client.try_stage_upgrade(&duplicate, &hash),
+        Err(Ok(ContractError::DuplicateOwner))
+    );
+}
+
+#[test]
+fn stage_upgrade_stores_pending_record_and_emits_event() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let staged_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upg_stg")
+        })
+        .expect("expected an 'upg_stg' event");
+    let data = match &staged_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeStagedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert_eq!(event.staged_at, NOW);
+    assert_eq!(event.execute_after, NOW + 3_600);
+    assert_eq!(event.version, EVENT_SCHEMA_VERSION);
+
+    let pending = client
+        .get_pending_upgrade()
+        .expect("expected a staged upgrade record");
+    assert_eq!(pending.new_wasm_hash, hash);
+    assert_eq!(pending.staged_at, NOW);
+    assert_eq!(pending.execute_after, NOW + 3_600);
+    assert_eq!(pending.staged_by, owner_a);
+}
+
+#[test]
+fn staged_upgrade_waits_for_timelock_then_clears_record() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::TimeLockActive))
+    );
+
+    set_timestamp(&env, NOW + 3_599);
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::TimeLockActive))
+    );
+
+    set_timestamp(&env, NOW + 3_600);
+    client.execute_upgrade(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let upgraded_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upgraded")
+        })
+        .expect("expected an 'upgraded' event");
+    let data = match &upgraded_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeExecutedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+    assert!(!env.as_contract(&client.address, || {
+        env.storage().instance().has(&pending_upgrade_key())
+    }));
+}
+
+#[test]
+fn veto_upgrade_clears_pending_and_blocks_later_execution() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup_with_timelock(2, 3_600);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+
+    client.stage_upgrade(&approvers, &hash);
+    set_timestamp(&env, NOW + 3_600);
+    client.veto_upgrade(&approvers);
+
+    let contract_events = env.events().all().filter_by_contract(&client.address);
+    let veto_event = contract_events
+        .events()
+        .iter()
+        .find(|event| {
+            let topics = match &event.body {
+                xdr::ContractEventBody::V0(body) => body.topics.clone(),
+            };
+            let Some(topic) = topics.first() else {
+                return false;
+            };
+            let topic: Symbol = topic.clone().into_val(&env);
+            topic == symbol_short!("upg_veto")
+        })
+        .expect("expected an 'upg_veto' event");
+    let data = match &veto_event.body {
+        xdr::ContractEventBody::V0(body) => body.data.clone(),
+    };
+    let event: UpgradeVetoedEvent = data.into_val(&env);
+    assert_eq!(event.caller, owner_a);
+    assert_eq!(event.new_wasm_hash, hash);
+
+    assert!(client.get_pending_upgrade().is_none());
+    assert_eq!(
+        client.try_execute_upgrade(&approvers),
+        Err(Ok(ContractError::NoPendingUpgrade))
+    );
+}
+
+#[test]
+fn veto_upgrade_requires_owner_weight() {
+    let (env, client, owner_a, owner_b, _, non_owner, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let approvers = Vec::from_array(&env, [owner_a.clone()]);
+    client.stage_upgrade(&Vec::from_array(&env, [owner_a, owner_b]), &hash);
+
+    let mut non_owners = Vec::new(&env);
+    non_owners.push_back(non_owner);
+    non_owners.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_veto_upgrade(&non_owners),
+        Err(Ok(ContractError::Unauthorized))
+    );
+    assert_eq!(
+        client.try_veto_upgrade(&approvers),
+        Err(Ok(ContractError::ThresholdNotMet))
+    );
+    assert!(client.get_pending_upgrade().is_some());
+}
+
+#[test]
+fn staged_upgrade_rejects_restage_and_wrong_execution_hash() {
+    let (env, client, owner_a, owner_b, _, _, _) = setup(2);
+    let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+    let wrong_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let approvers = Vec::from_array(&env, [owner_a, owner_b]);
+
+    client.stage_upgrade(&approvers, &hash);
+    assert_eq!(
+        client.try_stage_upgrade(&approvers, &wrong_hash),
+        Err(Ok(ContractError::UpgradeAlreadyStaged))
+    );
+    assert_eq!(
+        client.try_execute_upgrade_with_hash(&approvers, &wrong_hash),
+        Err(Ok(ContractError::InvalidUpgradeHash))
+    );
+    assert!(client.get_pending_upgrade().is_some());
+
+    client.execute_upgrade_with_hash(&approvers, &hash);
+    assert!(!env.as_contract(&client.address, || {
+        env.storage().instance().has(&pending_upgrade_key())
+    }));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn staged_upgrade_enforces_timelock_and_veto(delay in 0u64..500, offset in 0u64..500, veto in any::<bool>()) {
+        let env = non_snapshot_env();
+        env.mock_all_auths();
+        set_timestamp(&env, NOW);
+
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let contract_id = env.register(AccordContract, ());
+        let client = AccordContractClient::new(&env, &contract_id);
+        let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+        let weights = Vec::from_array(&env, [1_u32, 1]);
+        client.initialize(&owners, &weights, &2, &delay);
+
+        let hash = env.deployer().upload_contract_wasm(minimal_wasm(&env));
+        let approvers = Vec::from_array(&env, [owner_a.clone(), owner_b.clone()]);
+        client.stage_upgrade(&approvers, &hash);
+
+        let pending = client.get_pending_upgrade().expect("staged upgrade must exist");
+        prop_assert_eq!(pending.staged_at, NOW);
+        prop_assert_eq!(pending.execute_after, NOW.saturating_add(delay));
+        prop_assert_eq!(pending.new_wasm_hash, hash);
+
+        set_timestamp(&env, NOW.saturating_add(offset));
+        if offset < delay {
+            prop_assert_eq!(
+                client.try_execute_upgrade(&approvers),
+                Err(Ok(ContractError::TimeLockActive))
+            );
+            prop_assert!(client.get_pending_upgrade().is_some());
+        } else if veto {
+            client.veto_upgrade(&approvers);
+            prop_assert!(client.get_pending_upgrade().is_none());
+            prop_assert_eq!(
+                client.try_execute_upgrade(&approvers),
+                Err(Ok(ContractError::NoPendingUpgrade))
+            );
+        } else {
+            prop_assert!(client.try_execute_upgrade(&approvers).is_ok());
+        }
     }
 }

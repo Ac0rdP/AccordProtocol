@@ -1460,6 +1460,35 @@ pub struct UpgradeExecutedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct PendingUpgrade {
+    pub new_wasm_hash: BytesN<32>,
+    pub staged_at: u64,
+    pub execute_after: u64,
+    pub staged_by: Address,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UpgradeStagedEvent {
+    pub caller: Address,
+    pub new_wasm_hash: BytesN<32>,
+    pub staged_at: u64,
+    pub execute_after: u64,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UpgradeVetoedEvent {
+    pub caller: Address,
+    pub new_wasm_hash: BytesN<32>,
+    /// Event-schema version. See `EVENT_SCHEMA_VERSION`.
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub struct AddOwnerExecutedEvent {
     pub new_owner: Address,
     pub owner_count: u32,
@@ -1734,6 +1763,14 @@ pub enum ContractError {
     /// Thrown when a delegate would receive more delegated weight than the cap.
     DelegateWeightCapExceeded = 121,
     AssetOutflowPaused = 122,
+    /// Thrown when an upgrade action finds no staged upgrade.
+    NoPendingUpgrade = 123,
+    /// Thrown when an upgrade is staged while another is pending.
+    UpgradeAlreadyStaged = 124,
+    /// Thrown when a vetoed upgrade is executed.
+    UpgradeVetoed = 125,
+    /// Thrown when an execution hash does not match the staged hash.
+    InvalidUpgradeHash = 126,
 }
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
@@ -1794,6 +1831,10 @@ fn active_ids_key() -> Symbol {
 
 fn timelock_key() -> Symbol {
     symbol_short!("TLOCK")
+}
+
+fn pending_upgrade_key() -> Symbol {
+    symbol_short!("UPGSTG")
 }
 
 fn guardian_key() -> Symbol {
@@ -1890,15 +1931,16 @@ pub const DEFAULT_OWNER_ROLES: [Role; 3] = [Role::Proposer, Role::Approver, Role
 /// scoped freezes, guardian-quorum social recovery, and staged owner rotation.
 /// Version 3 adds the indexed incoming delegated weight used to cap delegation.
 /// Version 4 adds the per-asset outflow pause index.
-const STORAGE_SCHEMA_VERSION: u32 = 4;
+/// Version 5 adds the staged-upgrade record.
+const STORAGE_SCHEMA_VERSION: u32 = 5;
 
 /// Every storage layout this contract can read or migrate to. `0` is the
 /// pre-versioning legacy layout, `1` added weighted governance/RBAC, `2` added
 /// scoped freezes, guardian-quorum recovery requests, and the rotation proposal
-/// kind, `3` added the incoming delegated-weight index, and `4` added the
-/// per-asset outflow pause index. A version outside this list is unknown and
-/// must be refused.
-pub const SUPPORTED_STORAGE_VERSIONS: [u32; 5] = [0, 1, 2, 3, 4];
+/// kind, `3` added the incoming delegated-weight index, `4` added the
+/// per-asset outflow pause index, and `5` added the staged-upgrade record. A
+/// version outside this list is unknown and must be refused.
+pub const SUPPORTED_STORAGE_VERSIONS: [u32; 6] = [0, 1, 2, 3, 4, 5];
 
 /// Minimum delay between a `RotateOwner` proposal reaching quorum and its
 /// activation. Gives the existing owner key time to object before handoff.
@@ -2253,6 +2295,46 @@ fn read_storage_version(env: &Env) -> u32 {
         .instance()
         .get(&storage_version_key())
         .unwrap_or(0)
+}
+
+fn read_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    env.storage().instance().get(&pending_upgrade_key())
+}
+
+fn write_pending_upgrade(env: &Env, pending: &PendingUpgrade) {
+    env.storage()
+        .instance()
+        .set(&pending_upgrade_key(), pending);
+    bump_instance(env);
+}
+
+fn remove_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&pending_upgrade_key());
+    bump_instance(env);
+}
+
+fn finish_pending_upgrade(
+    env: &Env,
+    pending: PendingUpgrade,
+    caller: Address,
+) -> Result<(), ContractError> {
+    if env.ledger().timestamp() < pending.execute_after {
+        return Err(ContractError::TimeLockActive);
+    }
+
+    let new_wasm_hash = pending.new_wasm_hash.clone();
+    env.deployer()
+        .update_current_contract_wasm(new_wasm_hash.clone());
+    remove_pending_upgrade(env);
+    env.events().publish(
+        (symbol_short!("upgraded"),),
+        UpgradeExecutedEvent {
+            version: EVENT_SCHEMA_VERSION,
+            caller,
+            new_wasm_hash,
+        },
+    );
+    Ok(())
 }
 
 fn write_storage_version(env: &Env) {
@@ -4302,11 +4384,13 @@ pub struct AccordContract;
 //   crank); disburse_recurring (any authenticated caller); release_escrow_by_deadline
 //   and refund_escrow (any authenticated caller).
 // Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
-//   set_guardian, release_escrow, unfreeze, upgrade. TransferGuardian proposals
+//   set_guardian, release_escrow, unfreeze, upgrade, stage_upgrade, veto_upgrade,
+//   execute_upgrade, execute_upgrade_with_hash. TransferGuardian proposals
 //   rotate the guardian through the standard proposal quorum. Guardian-only: freeze.
 // Read-only, no authorization: get_spent_tracker, get_recurring_payment,
 //   get_next_disbursement_time, get_recurring_payments_paged,
-//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   get_active_recurring_count, get_approvers, get_version, get_pending_upgrade,
+//   get_total_weight,
 //   is_governance_migrated, get_role_version, get_roles, has_role,
 //   get_role_members, get_owner_weight, get_owner_weights,
 //   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
@@ -4682,11 +4766,13 @@ impl AccordContract {
 //   crank); disburse_recurring (any authenticated caller); release_escrow_by_deadline
 //   and refund_escrow (any authenticated caller).
 // Owner-weight governance (no role checks): set_max_single_owner_weight_pct,
-//   set_guardian, release_escrow, unfreeze, upgrade. TransferGuardian proposals
+//   set_guardian, release_escrow, unfreeze, upgrade, stage_upgrade, veto_upgrade,
+//   execute_upgrade, execute_upgrade_with_hash. TransferGuardian proposals
 //   rotate the guardian through the standard proposal quorum. Guardian-only: freeze.
 // Read-only, no authorization: get_spent_tracker, get_recurring_payment,
 //   get_next_disbursement_time, get_recurring_payments_paged,
-//   get_active_recurring_count, get_approvers, get_version, get_total_weight,
+//   get_active_recurring_count, get_approvers, get_version, get_pending_upgrade,
+//   get_total_weight,
 //   is_governance_migrated, get_role_version, get_roles, has_role,
 //   get_role_members, get_owner_weight, get_owner_weights,
 //   get_max_single_owner_weight_pct, get_delegations, get_active_delegations,
@@ -9178,6 +9264,13 @@ impl AccordContract {
         CONTRACT_VERSION
     }
 
+    /// Returns the currently staged upgrade, if any. The record includes the
+    /// staged WASM hash, the timestamp it was staged at, the earliest execution
+    /// timestamp, and the first co-signer. Read-only; no auth required.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        read_pending_upgrade(&env)
+    }
+
     /// Returns the on-chain storage-schema version for this deployment: `0` for
     /// a legacy contract deployed before schema versioning existed, otherwise
     /// the current `STORAGE_SCHEMA_VERSION`. The value is written by
@@ -10478,6 +10571,92 @@ impl AccordContract {
 
         Ok(())
     }
+
+    /// Stages a WASM hash behind the configured `time_lock_delay`. Staging is
+    /// owner-weight gated, just like `upgrade`; a second stage is refused while
+    /// one is pending so the veto window cannot be reset or bypassed.
+    pub fn stage_upgrade(
+        env: Env,
+        approvers: Vec<Address>,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        if read_pending_upgrade(&env).is_some() {
+            return Err(ContractError::UpgradeAlreadyStaged);
+        }
+
+        let staged_at = env.ledger().timestamp();
+        let delay: u64 = env.storage().instance().get(&timelock_key()).unwrap_or(0);
+        let execute_after = staged_at.saturating_add(delay);
+        let caller = approvers.get(0).unwrap();
+        let pending = PendingUpgrade {
+            new_wasm_hash: new_wasm_hash.clone(),
+            staged_at,
+            execute_after,
+            staged_by: caller.clone(),
+        };
+
+        write_pending_upgrade(&env, &pending);
+        env.events().publish(
+            (symbol_short!("upg_stg"),),
+            UpgradeStagedEvent {
+                caller,
+                new_wasm_hash,
+                staged_at,
+                execute_after,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    /// Vetoes the staged upgrade. Owner-weight governed so a single role holder
+    /// cannot cancel a co-signed upgrade. The pending record is removed, which
+    /// makes any later execution fail with `NoPendingUpgrade`.
+    pub fn veto_upgrade(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        let pending = read_pending_upgrade(&env).ok_or(ContractError::NoPendingUpgrade)?;
+        let caller = approvers.get(0).unwrap();
+
+        remove_pending_upgrade(&env);
+        env.events().publish(
+            (symbol_short!("upg_veto"),),
+            UpgradeVetoedEvent {
+                caller,
+                new_wasm_hash: pending.new_wasm_hash,
+                version: EVENT_SCHEMA_VERSION,
+            },
+        );
+        Ok(())
+    }
+
+    /// Lands a staged upgrade once the timelock has elapsed. The owner-weight
+    /// gate is repeated at execution time, and the staged hash is the only hash
+    /// that can be applied.
+    pub fn execute_upgrade(env: Env, approvers: Vec<Address>) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        let pending = read_pending_upgrade(&env).ok_or(ContractError::NoPendingUpgrade)?;
+        let caller = approvers.get(0).unwrap();
+        finish_pending_upgrade(&env, pending, caller)
+    }
+
+    /// Execution variant that refuses to land if the caller-supplied hash does
+    /// not match the staged record. Useful for integrations that want to bind
+    /// the final authorization to a hash they inspected off-chain.
+    pub fn execute_upgrade_with_hash(
+        env: Env,
+        approvers: Vec<Address>,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        require_weighted_approvers(&env, &approvers)?;
+        let pending = read_pending_upgrade(&env).ok_or(ContractError::NoPendingUpgrade)?;
+        if pending.new_wasm_hash != new_wasm_hash {
+            return Err(ContractError::InvalidUpgradeHash);
+        }
+        let caller = approvers.get(0).unwrap();
+        finish_pending_upgrade(&env, pending, caller)
+    }
+
     pub fn create_add_owner_proposal(
         env: Env,
         proposer: Address,

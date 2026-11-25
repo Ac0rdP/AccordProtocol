@@ -93,6 +93,7 @@ All instance-storage keys share **one** `LedgerEntry` (the contract instance). T
 | `ACTCNT` | `u32`  | Active proposal count (budget guard)      | 518,400 / 17,280                 |
 | `TWGT`   | `u32`  | Cached total owner weight                  | 518,400 / 17,280                 |
 | `TLOCK`  | `u64`  | Time-lock delay in seconds (0 = disabled) | 518,400 / 17,280                 |
+| `UPGSTG` | `PendingUpgrade` | Staged WASM hash and earliest execution timestamp | 518,400 / 17,280        |
 | `STOVER` | `u32`  | Storage-schema version (see [Storage Schema Versioning](#storage-schema-versioning)) | 518,400 / 17,280                 |
 | `GUARDS` | `GuardianQuorumConfig` | Guardian set and quorum for social recovery | 518,400 / 17,280        |
 | `SRNEXT` | `u64`  | Monotonic social-recovery request ID counter | 518,400 / 17,280              |
@@ -261,7 +262,8 @@ The contract records an explicit **storage-schema version** in instance storage 
 | `1` | `initialize`, `migrate_to_weighted_governance`, `migrate_to_rbac` | Weighted governance (`TWEIGHT`, per-owner weights inside `OWNERS`), single-owner weight cap (`MAXOWNP`), RBAC (`("ROLES", address)`, `("RMEM", role)`, `ROLEVER`), recurring-payment schedules (`("RECUR", id)`, `RPNEXT`, `ACTREC`), delegations (`("DELEG", delegator)`), spending (`("SLIM", owner, token)`, `("OSLIM", owner)`, `("SPENT", owner, token)`), the governance-migration flag (`GOVVER`), the active-set guard (`ACTIDS`), and the schema marker itself (`STOVER`). |
 | `2` | `migrate_to_v2`, `migrate_to_abstention_storage`, `migrate_storage` | Proposal dependency graph (`("PDEP", proposal_id)`), per-asset treasury limits/accounting (`("TRLIM", token)`, `("TRWIND", token)`, `("TRSPENT", token)`, `("TRTOT", token)`), abstentions (`("ABST", id, owner)`) and soft approvals (`("SOFT", id, owner)`), guardian-quorum social recovery (`GUARDS`, `SRNEXT`, `("SREC", id)`), scoped emergency freezes (`("AFRZ", token)`, `("KFRZ", kind)`), and the `RotateOwner` proposal kind. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp this version. |
 | `3` | `migrate_storage` | Rebuildable incoming-delegation weight index (`("DLGWT", delegate)`) supporting the incoming delegation weight cap and expiry renewal. |
-| `4` (current) | `initialize`, `migrate_storage` | Per-asset outflow pause flags (`("OPAUSE", token)`), which reject treasury outflows for one asset while leaving governance and unrelated assets available. |
+| `4` | `initialize`, `migrate_storage` | Per-asset outflow pause flags (`("OPAUSE", token)`), which reject treasury outflows for one asset while leaving governance and unrelated assets available. |
+| `5` (current) | `initialize`, `migrate_storage` | Staged-upgrade record (`UPGSTG`) holding the pending WASM hash, staging timestamp, first co-signer, and `execute_after` derived from `TLOCK`. |
 
 **Upgrade path between versions:**
 
@@ -270,6 +272,7 @@ The contract records an explicit **storage-schema version** in instance storage 
 - **`1` → `2`:** run `migrate_storage(approvers, 1, 2)`. The registry `SUPPORTED_STORAGE_VERSIONS` lists every readable layout; `migrate_storage` requires the caller's `from_version` to equal the recorded version, refuses unknown or newer targets, and refuses skipped, repeated, or backward steps. Legacy (`0`) deployments must finish the legacy migrations first. `migrate_to_v2` and `migrate_to_abstention_storage` remain compatible entrypoints that stamp the same version.
 - **`2` → `3`:** run `migrate_storage(approvers, 2, 3)`. The migration rebuilds every `("DLGWT", delegate)` entry from active `("DELEG", delegator)` records before stamping `STOVER = 3`.
 - **`3` → `4`:** run `migrate_storage(approvers, 3, 4)`. No backfill is needed because a missing `("OPAUSE", token)` key reads as `false`; the migration stamps `STOVER = 4`.
+- **`4` → `5`:** run `migrate_storage(approvers, 4, 5)`. No backfill is needed because a missing `UPGSTG` key already means "no staged upgrade"; the migration stamps `STOVER = 5`.
 
 Because the version key lives in the shared instance entry, it is bumped by the same threshold-and-bump policy as every other instance key (see [Bump-on-Access Strategy and Configuration](#bump-on-access-strategy-and-configuration)).
 
@@ -531,7 +534,7 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 | **Role: Executor** | `execute`, `cancel_expired` | Caller must hold `Executor` (may be a keeper that is not an owner). |
 | **Permissionless keeper** | `sweep_expired` | Any authenticated caller may sweep expired IDs; no role is required and the entrypoint remains callable while frozen. |
 | **Proposal proposer** | `cancel_proposal` | Only the original proposer may cancel a proposal that is still `Pending`. |
-| **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `configure_guardian_quorum`, `upgrade`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `migrate_storage`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
+| **Owner-weight (not role)** | `set_guardian`, `freeze` / `unfreeze`, `configure_guardian_quorum`, `upgrade`, `stage_upgrade`, `veto_upgrade`, `execute_upgrade`, `execute_upgrade_with_hash`, `migrate_to_weighted_governance`, `migrate_to_rbac`, `migrate_storage`, `set_max_single_owner_weight_pct` | Distinct owner co-signers whose combined weight reaches threshold (`require_weighted_approvers`). Roles alone are insufficient. |
 | **Guardian-only** | `freeze`, `freeze_asset`, `freeze_proposal_kind`, `set_asset_outflow_pause`, `pause_asset_outflows`, `resume_asset_outflows`, `enter_recovery` | Guardian address must match; separate from RBAC roles. |
 | **Guardian-quorum** | `propose_social_recovery`, `approve_social_recovery` | Caller must be in the configured guardian set; the ownership change executes after quorum plus `SOCIAL_RECOVERY_DELAY`. |
 | **Permissionless after quorum** | `execute_social_recovery`, `release_escrow_by_deadline` | Any authenticated caller may trigger once the on-chain condition is met. |
@@ -559,6 +562,17 @@ Grant and revoke flow through governance: `ProposalKind::GrantRole(Address, Role
 ```
 
 `Viewer` is reserved for read-oriented assignments and UI affordances; it does not by itself unlock create/approve/execute. Holding `Viewer` alone never substitutes for the gates above.
+
+### Staged upgrades and veto window
+
+`upgrade` remains the immediate owner-weight escape hatch. `stage_upgrade`, `veto_upgrade`, and `execute_upgrade` add a deliberate path for planned WASM changes:
+
+1. `stage_upgrade(approvers, new_wasm_hash)` repeats the owner-weight gate and records `PendingUpgrade` in the shared instance entry. `execute_after` is the staging timestamp plus the configured `TLOCK` delay; a delay of `0` makes the upgrade immediately executable.
+2. `get_pending_upgrade()` exposes the staged hash, `staged_at`, `execute_after`, and first co-signer without authorization. The staged hash cannot be changed; a second stage returns `UpgradeAlreadyStaged` while one is pending.
+3. `veto_upgrade(approvers)` also requires owner weight. It removes `UPGSTG`, emits `upg_veto`, and makes every later execution fail with `NoPendingUpgrade`. A veto remains available after the delay but before the upgrade lands.
+4. `execute_upgrade(approvers)` re-checks owner weight, refuses early execution with `TimeLockActive`, applies the staged hash, clears `UPGSTG`, and emits `upgraded`. `execute_upgrade_with_hash` additionally rejects a caller-supplied hash that differs from the staged one.
+
+All mutations call `bump_instance`, so the pending record and the shared instance TTL are extended on stage, veto, and execute. Missing `UPGSTG` reads as no pending upgrade, which is why `migrate_storage(approvers, 4, 5)` needs no backfill.
 
 ### Migration (`migrate_to_rbac`)
 
@@ -1284,7 +1298,7 @@ Together, these mean the indexer can safely re-run any range of ledgers — afte
 
 ### 13.4 Event Type to Storage Mapping
 
-Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 26 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
+Every event the contract emits carries a topic symbol (§7) that the indexer uses to select which decoder and which downstream table(s) to update. The table below covers all 28 event types the contract can emit — see [ANALYTICS_API.md](ANALYTICS_API.md#event-payload-schemas) for each event's field-by-field schema, and [CONTRACT_API.md — Event Payloads](CONTRACT_API.md#event-payloads) for the subset also documented at the contract-API level.
 
 | Topic | Event struct (`contracts/accord/src/lib.rs`) | Updates |
 | --- | --- | --- |
@@ -1314,6 +1328,8 @@ Every event the contract emits carries a topic symbol (§7) that the indexer use
 | `guard_set` | `GuardianSetEvent` | `events` |
 | `frozen` | `FrozenEvent` | `events` |
 | `unfrozen` | `UnfrozenEvent` | `events` |
+| `upg_stg` | `UpgradeStagedEvent` | `events` |
+| `upg_veto` | `UpgradeVetoedEvent` | `events` |
 | `upgraded` | `UpgradeExecutedEvent` | `events` |
 
 Only `executed` and `rpay` move real tokens, so only those two feed the spend and treasury-flow aggregates — the same rule the frontend already applies client-side (`filterExecutedTransfers` in `frontend/src/lib/analytics.ts`). Every other event type is still indexed into `events` (and, where it changes proposal or schedule state, into the corresponding materialized table) because `GET /proposals/:id`'s `timeline` and `GET /proposals/:id`'s audit trail need the full history, not just the transfers.
